@@ -20,6 +20,7 @@ use crate::db::logs::spawn as spawn_batcher;
 use crate::devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe};
 use crate::errors::ExpectedError;
 use crate::inflight::InflightTable;
+use crate::oneshot::{OneshotRegistry, PortPool};
 use crate::proxy;
 use crate::retention;
 use crate::service_registry::ServiceRegistry;
@@ -187,8 +188,8 @@ pub async fn run() -> Result<(), ExpectedError> {
         }
     }
 
-    let port_pool = Arc::new(Mutex::new(crate::oneshot::PortPool::new(18000..19000)));
-    let oneshots = crate::oneshot::OneshotRegistry::new();
+    let port_pool = Arc::new(Mutex::new(PortPool::new(18000..19000)));
+    let oneshots = OneshotRegistry::new();
 
     // Build AppState for the routers.
     let app_state = AppState {
