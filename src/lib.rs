@@ -23,3 +23,4 @@ pub mod signals;
 pub mod snapshotter;
 pub mod state;
 pub mod supervise;
+pub mod templates;
