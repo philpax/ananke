@@ -33,6 +33,7 @@ pub struct ServiceConfig {
     pub health: HealthSettings,
     pub placement_override: BTreeMap<DeviceSlot, u64>,
     pub placement_policy: PlacementPolicy,
+    pub filters: Filters,
     pub idle_timeout_ms: u64,
     pub warming_grace_ms: u64,
     pub drain_timeout_ms: u64,
@@ -49,6 +50,13 @@ pub enum Template {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
     Persistent,
+    OnDemand,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Filters {
+    pub strip_params: Vec<String>,
+    pub set_params: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,11 +149,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             .unwrap_or_else(|| SmolStr::new("on_demand"));
         let lifecycle = match lifecycle_str.as_str() {
             "persistent" => Lifecycle::Persistent,
-            "on_demand" => {
-                return Err(fail(format!(
-                    "service {name}: lifecycle `on_demand` is deferred to phase 2"
-                )));
-            }
+            "on_demand" => Lifecycle::OnDemand,
             "oneshot" => {
                 return Err(fail(format!(
                     "service {name}: lifecycle `oneshot` is invalid in a [[service]] block (API-only)"
@@ -302,6 +306,21 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             .map_err(|e| fail(format!("service {name} max_request_duration: {e}")))?
             .unwrap_or(600_000);
 
+        let mut filters = Filters::default();
+        if let Some(raw_filters) = &raw.filters {
+            if let Some(strip) = &raw_filters.strip_params {
+                filters.strip_params = strip.clone();
+            }
+            if let Some(set) = &raw_filters.set_params {
+                for (k, v) in set {
+                    let json_val = toml_value_to_json(v.clone()).map_err(|e| {
+                        fail(format!("service {name} filters.set_params[{k}]: {e}"))
+                    })?;
+                    filters.set_params.insert(k.clone(), json_val);
+                }
+            }
+        }
+
         // Allocate a private loopback port deterministically based on the external port plus a large
         // offset so two services with adjacent external ports don't collide on private ports.
         let private_port = 40_000u16.saturating_add(port.wrapping_sub(11_000));
@@ -316,6 +335,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             health,
             placement_override,
             placement_policy,
+            filters,
             idle_timeout_ms,
             warming_grace_ms,
             drain_timeout_ms,
@@ -337,6 +357,30 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
 
 fn fail(msg: String) -> ExpectedError {
     ExpectedError::config_unparseable(PathBuf::from("<config>"), msg)
+}
+
+fn toml_value_to_json(v: toml::Value) -> Result<serde_json::Value, String> {
+    Ok(match v {
+        toml::Value::String(s) => serde_json::Value::String(s),
+        toml::Value::Integer(i) => serde_json::Value::Number(i.into()),
+        toml::Value::Float(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| "non-finite float".to_string())?,
+        toml::Value::Boolean(b) => serde_json::Value::Bool(b),
+        toml::Value::Array(a) => serde_json::Value::Array(
+            a.into_iter()
+                .map(toml_value_to_json)
+                .collect::<Result<_, _>>()?,
+        ),
+        toml::Value::Table(t) => {
+            let mut m = serde_json::Map::new();
+            for (k, v) in t {
+                m.insert(k, toml_value_to_json(v)?);
+            }
+            serde_json::Value::Object(m)
+        }
+        toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
+    })
 }
 
 fn parse_duration_ms(s: &str) -> Result<u64, String> {
@@ -506,7 +550,7 @@ devices.placement_override = { "gpu:0" = 1000 }
     }
 
     #[test]
-    fn phase1_rejects_on_demand_with_clear_message() {
+    fn phase2_accepts_on_demand() {
         let cfg = parse_and_merge(
             r#"
 [[service]]
@@ -518,9 +562,63 @@ lifecycle = "on_demand"
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("on_demand"));
-        assert!(format!("{err}").contains("phase"));
+        let ec = validate(&cfg).unwrap();
+        assert_eq!(ec.services[0].lifecycle, Lifecycle::OnDemand);
+    }
+
+    #[test]
+    fn default_lifecycle_is_on_demand() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "a"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        assert_eq!(ec.services[0].lifecycle, Lifecycle::OnDemand);
+    }
+
+    #[test]
+    fn parses_filters() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "a"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+filters.strip_params = ["temperature"]
+filters.set_params = { max_tokens = 4096 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let s = &ec.services[0];
+        assert_eq!(s.filters.strip_params, vec!["temperature"]);
+        assert!(s.filters.set_params.contains_key("max_tokens"));
+    }
+
+    #[test]
+    fn parses_idle_timeout() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "a"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+lifecycle = "on_demand"
+idle_timeout = "5m"
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        assert_eq!(ec.services[0].idle_timeout_ms, 300_000);
     }
 
     #[test]

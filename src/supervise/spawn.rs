@@ -222,6 +222,7 @@ mod tests {
             },
             placement_override: placement,
             placement_policy: PlacementPolicy::GpuOnly,
+            filters: Default::default(),
             idle_timeout_ms: 600_000,
             warming_grace_ms: 60_000,
             drain_timeout_ms: 30_000,

@@ -79,6 +79,7 @@ mod tests {
             },
             placement_override: override_map,
             placement_policy: PlacementPolicy::CpuOnly,
+            filters: Default::default(),
             idle_timeout_ms: 600_000,
             warming_grace_ms: 1000,
             drain_timeout_ms: 1000,
