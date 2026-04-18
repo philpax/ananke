@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod allocator;
+pub mod balloon;
 pub mod app_state;
 pub mod config;
 pub mod daemon;
