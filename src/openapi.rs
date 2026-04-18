@@ -9,6 +9,7 @@ use utoipa::OpenApi;
 use crate::app_state::AppState;
 use crate::management_api::handlers as mgmt_handlers;
 use crate::management_api::types as mgmt_types;
+use crate::oneshot::handlers as oneshot_handlers;
 use crate::openai_api::errors as openai_errors;
 use crate::openai_api::handlers as openai_handlers;
 use crate::openai_api::schema as openai_schema;
@@ -23,6 +24,10 @@ use crate::openai_api::schema as openai_schema;
         mgmt_handlers::list_services,
         mgmt_handlers::service_detail,
         mgmt_handlers::list_devices,
+        oneshot_handlers::post_oneshot,
+        oneshot_handlers::list_oneshots,
+        oneshot_handlers::get_oneshot,
+        oneshot_handlers::delete_oneshot,
     ),
     components(schemas(
         openai_schema::ModelListing,
@@ -37,6 +42,10 @@ use crate::openai_api::schema as openai_schema;
         mgmt_types::LogLine,
         mgmt_types::DeviceSummary,
         mgmt_types::DeviceReservation,
+        oneshot_handlers::OneshotRequest,
+        oneshot_handlers::OneshotAllocation,
+        oneshot_handlers::OneshotResponse,
+        oneshot_handlers::OneshotStatus,
     )),
     info(title = "Ananke API", version = "0.1.0")
 )]

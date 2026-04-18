@@ -43,6 +43,8 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             port: svc_cfg.port,
             run_id: snap.as_ref().and_then(|s| s.run_id),
             pid: snap.as_ref().and_then(|s| s.pid),
+            // Placeholder: elastic borrower tracking is deferred to a later phase.
+            elastic_borrower: None,
         });
     }
     (StatusCode::OK, Json(out)).into_response()
@@ -132,6 +134,8 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         rolling_mean: rc.rolling_mean,
         rolling_samples: rc.sample_count,
         observed_peak_bytes,
+        // Placeholder: elastic borrower tracking is deferred to a later phase.
+        elastic_borrower: None,
     };
     (StatusCode::OK, Json(detail)).into_response()
 }
@@ -155,6 +159,8 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
                 a.get(&slot).map(|mb| DeviceReservation {
                     service: svc.to_string(),
                     bytes: mb * 1024 * 1024,
+                    // Placeholder: elastic tracking is deferred to a later phase.
+                    elastic: false,
                 })
             })
             .collect();
@@ -175,6 +181,8 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
                     .map(|mb| DeviceReservation {
                         service: svc.to_string(),
                         bytes: mb * 1024 * 1024,
+                        // Placeholder: elastic tracking is deferred to a later phase.
+                        elastic: false,
                     })
             })
             .collect();

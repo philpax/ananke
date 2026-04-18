@@ -12,6 +12,10 @@ pub struct ServiceSummary {
     pub port: u16,
     pub run_id: Option<i64>,
     pub pid: Option<i32>,
+    /// The name of the service currently borrowing this service's VRAM allocation
+    /// under elastic (dynamic-balloon) sharing. `None` when the service is not
+    /// currently lending its allocation.
+    pub elastic_borrower: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -36,6 +40,8 @@ pub struct ServiceDetail {
     /// Observed peak memory (GPU VRAM + CPU RSS) in bytes for the current or
     /// most recent run. `0` if no observation has been recorded yet.
     pub observed_peak_bytes: u64,
+    /// See `ServiceSummary.elastic_borrower`.
+    pub elastic_borrower: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -58,4 +64,7 @@ pub struct DeviceSummary {
 pub struct DeviceReservation {
     pub service: String,
     pub bytes: u64,
+    /// Whether this reservation is held under elastic (balloon) sharing rather
+    /// than a hard static allocation. Placeholder — full wiring is deferred.
+    pub elastic: bool,
 }
