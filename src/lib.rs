@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod db;
 pub mod devices;
 pub mod errors;
+pub mod openai_api;
 pub mod proxy;
 pub mod retention;
 pub mod service_registry;
