@@ -264,10 +264,40 @@ async fn run(
                             let snap = snapshot.read().clone();
                             let table = allocations.lock().clone();
 
-                            // Determine the allocation to reserve. If placement_override is
-                            // non-empty, use it as the escape hatch (no estimator/placement).
-                            // Otherwise, run the estimator + placement engine.
-                            let want = if !svc.placement_override.is_empty() {
+                            // Determine the allocation to reserve. Command-template
+                            // services use their declared `allocation.{static|dynamic}`
+                            // sizing; llama-cpp services use `placement_override` as
+                            // the escape hatch or fall back to the GGUF estimator +
+                            // layer-aware packer.
+                            let want = if matches!(svc.template, crate::config::Template::Command) {
+                                packed_for_spawn = None;
+                                let bytes_mb = match svc.allocation_mode {
+                                    crate::config::AllocationMode::Static { vram_mb } => vram_mb,
+                                    crate::config::AllocationMode::Dynamic { min_mb, .. } => min_mb,
+                                    crate::config::AllocationMode::None => 0,
+                                };
+                                let target_gpu: Option<u32> = svc
+                                    .raw
+                                    .devices
+                                    .as_ref()
+                                    .and_then(|d| d.gpu_allow.as_ref())
+                                    .and_then(|list| list.first().copied())
+                                    .or_else(|| snap.gpus.first().map(|g| g.id));
+                                let mut map = std::collections::BTreeMap::new();
+                                if bytes_mb > 0 {
+                                    let slot = match svc.placement_policy {
+                                        crate::config::PlacementPolicy::CpuOnly => {
+                                            crate::config::DeviceSlot::Cpu
+                                        }
+                                        _ => match target_gpu {
+                                            Some(id) => crate::config::DeviceSlot::Gpu(id),
+                                            None => crate::config::DeviceSlot::Cpu,
+                                        },
+                                    };
+                                    map.insert(slot, bytes_mb);
+                                }
+                                map
+                            } else if !svc.placement_override.is_empty() {
                                 packed_for_spawn = None;
                                 svc.placement_override.clone()
                             } else {
