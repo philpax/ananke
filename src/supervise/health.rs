@@ -20,10 +20,7 @@ pub struct HealthConfig {
 
 /// Runs until one of: health passes → `Healthy`; total elapsed exceeds
 /// `timeout` → `TimedOut`; `cancel` resolves to true → `Cancelled`.
-pub async fn wait_healthy(
-    cfg: HealthConfig,
-    mut cancel: watch::Receiver<bool>,
-) -> HealthOutcome {
+pub async fn wait_healthy(cfg: HealthConfig, mut cancel: watch::Receiver<bool>) -> HealthOutcome {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()

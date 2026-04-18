@@ -77,8 +77,8 @@ mod tests {
     use tokio::process::Command;
 
     use super::*;
-    use crate::db::logs::spawn as spawn_batcher;
     use crate::db::Database;
+    use crate::db::logs::spawn as spawn_batcher;
 
     #[tokio::test(flavor = "current_thread")]
     async fn pumps_echoed_lines() {
@@ -109,9 +109,7 @@ mod tests {
         let lines: Vec<String> = db
             .with_conn(|c| {
                 let mut stmt = c
-                    .prepare(
-                        "SELECT line FROM service_logs WHERE service_id = ?1 ORDER BY seq",
-                    )
+                    .prepare("SELECT line FROM service_logs WHERE service_id = ?1 ORDER BY seq")
                     .unwrap();
                 let rows = stmt.query_map([svc], |r| r.get::<_, String>(0)).unwrap();
                 Ok(rows.collect::<Result<Vec<_>, _>>().unwrap())

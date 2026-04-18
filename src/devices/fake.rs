@@ -20,7 +20,9 @@ pub struct FakeProbe {
 
 impl FakeProbe {
     pub fn new(gpus: Vec<FakeGpu>) -> Self {
-        Self { inner: Arc::new(Mutex::new(gpus)) }
+        Self {
+            inner: Arc::new(Mutex::new(gpus)),
+        }
     }
 
     pub fn set_free(&self, id: u32, free_bytes: u64) {
@@ -44,10 +46,14 @@ impl GpuProbe for FakeProbe {
     }
 
     fn query(&self, id: u32) -> Option<GpuMemory> {
-        self.inner.lock().iter().find(|g| g.info.id == id).map(|g| GpuMemory {
-            total_bytes: g.info.total_bytes,
-            free_bytes: g.free_bytes,
-        })
+        self.inner
+            .lock()
+            .iter()
+            .find(|g| g.info.id == id)
+            .map(|g| GpuMemory {
+                total_bytes: g.info.total_bytes,
+                free_bytes: g.free_bytes,
+            })
     }
 
     fn processes(&self, id: u32) -> Vec<GpuProcess> {
@@ -103,7 +109,14 @@ mod tests {
     #[test]
     fn processes_round_trip() {
         let p = fixture();
-        p.add_process(0, GpuProcess { pid: 1234, used_bytes: 100, name: "test".into() });
+        p.add_process(
+            0,
+            GpuProcess {
+                pid: 1234,
+                used_bytes: 100,
+                name: "test".into(),
+            },
+        );
         assert_eq!(p.processes(0).len(), 1);
         assert_eq!(p.processes(0)[0].pid, 1234);
     }

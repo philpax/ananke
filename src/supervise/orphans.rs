@@ -8,9 +8,20 @@ use crate::db::Database;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrphanDisposition {
-    Adopted { pid: i32, service_id: i64, run_id: i64 },
-    Cleaned { pid: i32, service_id: i64, run_id: i64 },
-    Ignored { pid: i32, reason: String },
+    Adopted {
+        pid: i32,
+        service_id: i64,
+        run_id: i64,
+    },
+    Cleaned {
+        pid: i32,
+        service_id: i64,
+        run_id: i64,
+    },
+    Ignored {
+        pid: i32,
+        reason: String,
+    },
 }
 
 /// Runs orphan recovery against the `running_services` table. Returns a
@@ -21,9 +32,7 @@ pub fn reconcile(db: &Database, procfs_root: &Path) -> Vec<OrphanDisposition> {
     let rows: Vec<(i64, i64, i64, String)> = db
         .with_conn(|c| {
             let mut stmt = c
-                .prepare(
-                    "SELECT service_id, run_id, pid, command_line FROM running_services",
-                )
+                .prepare("SELECT service_id, run_id, pid, command_line FROM running_services")
                 .unwrap();
             let rows = stmt
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
@@ -42,7 +51,11 @@ pub fn reconcile(db: &Database, procfs_root: &Path) -> Vec<OrphanDisposition> {
                 let live_cmdline = null_sep_to_space(&raw);
                 if live_cmdline == recorded_cmdline {
                     info!(pid, service_id, run_id, "adopted orphan");
-                    out.push(OrphanDisposition::Adopted { pid, service_id, run_id });
+                    out.push(OrphanDisposition::Adopted {
+                        pid,
+                        service_id,
+                        run_id,
+                    });
                 } else {
                     warn!(
                         pid,
@@ -53,13 +66,21 @@ pub fn reconcile(db: &Database, procfs_root: &Path) -> Vec<OrphanDisposition> {
                         "unrelated process at recorded pid; cleaning row"
                     );
                     cleanup_row(db, service_id, run_id);
-                    out.push(OrphanDisposition::Cleaned { pid, service_id, run_id });
+                    out.push(OrphanDisposition::Cleaned {
+                        pid,
+                        service_id,
+                        run_id,
+                    });
                 }
             }
             Err(_) => {
                 info!(pid, service_id, run_id, "dead child; cleaning row");
                 cleanup_row(db, service_id, run_id);
-                out.push(OrphanDisposition::Cleaned { pid, service_id, run_id });
+                out.push(OrphanDisposition::Cleaned {
+                    pid,
+                    service_id,
+                    run_id,
+                });
             }
         }
     }
@@ -138,10 +159,12 @@ mod tests {
                 let mut s = c
                     .prepare("SELECT service_id, run_id FROM running_services")
                     .unwrap();
-                Ok(s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
-                    .unwrap()
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap())
+                Ok(
+                    s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                        .unwrap()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap(),
+                )
             })
             .unwrap();
         assert!(rows.is_empty());

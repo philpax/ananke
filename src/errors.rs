@@ -23,23 +23,33 @@ enum ExpectedErrorKind {
 
 impl ExpectedError {
     pub fn bind_failed(addr: String, cause: String) -> Self {
-        Self { kind: ExpectedErrorKind::BindFailed { addr, cause } }
+        Self {
+            kind: ExpectedErrorKind::BindFailed { addr, cause },
+        }
     }
 
     pub fn config_unparseable(path: PathBuf, cause: String) -> Self {
-        Self { kind: ExpectedErrorKind::ConfigUnparseable { path, cause } }
+        Self {
+            kind: ExpectedErrorKind::ConfigUnparseable { path, cause },
+        }
     }
 
     pub fn config_file_missing(path: PathBuf) -> Self {
-        Self { kind: ExpectedErrorKind::ConfigFileMissing { path } }
+        Self {
+            kind: ExpectedErrorKind::ConfigFileMissing { path },
+        }
     }
 
     pub fn database_open_failed(path: PathBuf, cause: String) -> Self {
-        Self { kind: ExpectedErrorKind::DatabaseOpenFailed { path, cause } }
+        Self {
+            kind: ExpectedErrorKind::DatabaseOpenFailed { path, cause },
+        }
     }
 
     pub fn no_devices() -> Self {
-        Self { kind: ExpectedErrorKind::NoDevices }
+        Self {
+            kind: ExpectedErrorKind::NoDevices,
+        }
     }
 
     pub fn exit_code(&self) -> u8 {
@@ -91,7 +101,8 @@ mod tests {
 
     #[test]
     fn config_error_kinds_distinguished() {
-        let err = ExpectedError::config_unparseable("/tmp/x.toml".into(), "unexpected token".into());
+        let err =
+            ExpectedError::config_unparseable("/tmp/x.toml".into(), "unexpected token".into());
         assert!(format!("{err}").contains("/tmp/x.toml"));
         assert_eq!(err.exit_code(), 3);
     }

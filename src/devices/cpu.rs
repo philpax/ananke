@@ -32,7 +32,10 @@ pub(crate) fn parse_meminfo(content: &str) -> Option<CpuMemory> {
             avail_kb = parse_kb(rest);
         }
     }
-    Some(CpuMemory { total_bytes: total_kb? * 1024, available_bytes: avail_kb? * 1024 })
+    Some(CpuMemory {
+        total_bytes: total_kb? * 1024,
+        available_bytes: avail_kb? * 1024,
+    })
 }
 
 fn parse_kb(rest: &str) -> Option<u64> {

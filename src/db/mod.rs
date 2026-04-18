@@ -24,12 +24,10 @@ impl Database {
                 ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
             })?;
         }
-        let conn = Connection::open(path).map_err(|e| {
-            ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
-        })?;
-        conn.execute_batch(schema::MIGRATION_0001).map_err(|e| {
-            ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
-        })?;
+        let conn = Connection::open(path)
+            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
+        conn.execute_batch(schema::MIGRATION_0001)
+            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: path.to_path_buf(),
@@ -44,9 +42,7 @@ impl Database {
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| {
-                ExpectedError::database_open_failed(self.path.clone(), e.to_string())
-            })?;
+            .map_err(|e| ExpectedError::database_open_failed(self.path.clone(), e.to_string()))?;
         Ok(v)
     }
 
@@ -64,9 +60,7 @@ impl Database {
                 [name],
                 |row| row.get(0),
             )
-            .map_err(|e| {
-                ExpectedError::database_open_failed(self.path.clone(), e.to_string())
-            })?;
+            .map_err(|e| ExpectedError::database_open_failed(self.path.clone(), e.to_string()))?;
         Ok(id)
     }
 

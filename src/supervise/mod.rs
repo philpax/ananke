@@ -16,19 +16,23 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::config::validate::ServiceConfig;
-use crate::db::logs::BatcherHandle;
 use crate::db::Database;
+use crate::db::logs::BatcherHandle;
 use crate::devices::Allocation;
-use crate::state::{transition, DisableReason, Event as StateEvent, ServiceState};
-use crate::supervise::health::{wait_healthy, HealthConfig, HealthOutcome};
+use crate::state::{DisableReason, Event as StateEvent, ServiceState, transition};
+use crate::supervise::health::{HealthConfig, HealthOutcome, wait_healthy};
 use crate::supervise::logs::{spawn_pump_stderr, spawn_pump_stdout};
 use crate::supervise::spawn::spawn_child;
 
 #[derive(Debug)]
 pub enum SupervisorCommand {
-    Shutdown { ack: tokio::sync::oneshot::Sender<()> },
+    Shutdown {
+        ack: tokio::sync::oneshot::Sender<()>,
+    },
     /// Request state snapshot for tests / management surface.
-    Snapshot { ack: tokio::sync::oneshot::Sender<SupervisorSnapshot> },
+    Snapshot {
+        ack: tokio::sync::oneshot::Sender<SupervisorSnapshot>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -48,14 +52,22 @@ pub struct SupervisorHandle {
 impl SupervisorHandle {
     pub async fn shutdown(self) {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        let _ = self.tx.send(SupervisorCommand::Shutdown { ack: ack_tx }).await;
+        let _ = self
+            .tx
+            .send(SupervisorCommand::Shutdown { ack: ack_tx })
+            .await;
         let _ = ack_rx.await;
         let _ = self.join.await;
     }
 
     pub async fn snapshot(&self) -> Option<SupervisorSnapshot> {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        if self.tx.send(SupervisorCommand::Snapshot { ack: ack_tx }).await.is_err() {
+        if self
+            .tx
+            .send(SupervisorCommand::Snapshot { ack: ack_tx })
+            .await
+            .is_err()
+        {
             return None;
         }
         ack_rx.await.ok()

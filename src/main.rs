@@ -4,7 +4,9 @@ use ananke::errors::ExpectedError;
 // Silence unused-import warning until `run` returns a real `ExpectedError`; keeps
 // the type in scope so future signature changes surface here first.
 #[allow(dead_code)]
-fn _ensure_error_type_in_scope() -> Option<ExpectedError> { None }
+fn _ensure_error_type_in_scope() -> Option<ExpectedError> {
+    None
+}
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> std::process::ExitCode {
