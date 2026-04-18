@@ -1,0 +1,120 @@
+//! Shared lookup from service name to `SupervisorHandle`.
+//!
+//! Read-heavy; wrapped in an `Arc<RwLock<...>>` so both HTTP routers and
+//! the daemon lifecycle code can share visibility without cloning the
+//! whole map per request.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+use smol_str::SmolStr;
+
+use crate::supervise::SupervisorHandle;
+
+#[derive(Clone, Default)]
+pub struct ServiceRegistry {
+    inner: Arc<RwLock<BTreeMap<SmolStr, Arc<SupervisorHandle>>>>,
+}
+
+impl ServiceRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&self, name: SmolStr, handle: Arc<SupervisorHandle>) {
+        self.inner.write().insert(name, handle);
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<SupervisorHandle>> {
+        self.inner.read().get(name).cloned()
+    }
+
+    pub fn names(&self) -> Vec<SmolStr> {
+        self.inner.read().keys().cloned().collect()
+    }
+
+    pub fn all(&self) -> Vec<(SmolStr, Arc<SupervisorHandle>)> {
+        self.inner
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use smol_str::SmolStr;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::config::parse::RawService;
+    use crate::config::validate::{
+        DeviceSlot, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+    };
+    use crate::db::Database;
+    use crate::db::logs::spawn as spawn_batcher;
+    use crate::devices::Allocation;
+    use crate::supervise::spawn_supervisor;
+
+    fn minimal_svc(name: &str) -> ServiceConfig {
+        let mut override_map = BTreeMap::new();
+        override_map.insert(DeviceSlot::Cpu, 100);
+        ServiceConfig {
+            name: SmolStr::new(name),
+            template: Template::LlamaCpp,
+            port: 0,
+            private_port: 0,
+            lifecycle: Lifecycle::Persistent,
+            priority: 50,
+            health: HealthSettings {
+                http_path: "/".into(),
+                timeout_ms: 1000,
+                probe_interval_ms: 500,
+            },
+            placement_override: override_map,
+            placement_policy: PlacementPolicy::CpuOnly,
+            idle_timeout_ms: 600_000,
+            warming_grace_ms: 1000,
+            drain_timeout_ms: 1000,
+            extended_stream_drain_ms: 1000,
+            max_request_duration_ms: 1000,
+            raw: RawService {
+                name: Some(SmolStr::new(name)),
+                template: Some(SmolStr::new("llama-cpp")),
+                model: Some(PathBuf::from("/fake/path")),
+                port: Some(0),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn insert_and_get() {
+        let tmp = tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
+        let batcher = spawn_batcher(db.clone());
+        let svc = minimal_svc("demo");
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let handle = Arc::new(spawn_supervisor(
+            svc.clone(),
+            alloc,
+            db.clone(),
+            batcher.clone(),
+            1,
+        ));
+
+        let registry = ServiceRegistry::new();
+        registry.insert(SmolStr::new("demo"), handle.clone());
+        assert!(registry.get("demo").is_some());
+        assert!(registry.get("missing").is_none());
+        assert_eq!(registry.names(), vec![SmolStr::new("demo")]);
+
+        handle.shutdown().await;
+    }
+}

@@ -47,18 +47,20 @@ pub struct SupervisorSnapshot {
 pub struct SupervisorHandle {
     pub name: smol_str::SmolStr,
     tx: mpsc::Sender<SupervisorCommand>,
-    join: JoinHandle<()>,
+    join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl SupervisorHandle {
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         let _ = self
             .tx
             .send(SupervisorCommand::Shutdown { ack: ack_tx })
             .await;
         let _ = ack_rx.await;
-        let _ = self.join.await;
+        if let Some(handle) = self.join.lock().await.take() {
+            let _ = handle.await;
+        }
     }
 
     pub async fn snapshot(&self) -> Option<SupervisorSnapshot> {
@@ -85,7 +87,11 @@ pub fn spawn_supervisor(
     let (tx, rx) = mpsc::channel(32);
     let name = svc.name.clone();
     let join = tokio::spawn(run(svc, allocation, db, batcher, service_id, rx));
-    SupervisorHandle { name, tx, join }
+    SupervisorHandle {
+        name,
+        tx,
+        join: tokio::sync::Mutex::new(Some(join)),
+    }
 }
 
 async fn run(

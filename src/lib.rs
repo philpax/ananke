@@ -8,6 +8,7 @@ pub mod devices;
 pub mod errors;
 pub mod proxy;
 pub mod retention;
+pub mod service_registry;
 pub mod signals;
 pub mod state;
 pub mod supervise;

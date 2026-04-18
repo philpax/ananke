@@ -107,7 +107,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         ShutdownKind::Emergency => Duration::from_secs(5),
     };
     let _ = tokio::time::timeout(drain_bound, async {
-        for sup in supervisors {
+        for sup in &supervisors {
             sup.shutdown().await;
         }
     })
