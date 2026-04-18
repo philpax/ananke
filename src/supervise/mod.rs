@@ -21,6 +21,8 @@ use crate::config::validate::ServiceConfig;
 use crate::db::Database;
 use crate::db::logs::BatcherHandle;
 use crate::devices::Allocation;
+use crate::observation::ObservationTable;
+use crate::rolling::RollingTable;
 use crate::state::{DisableReason, Event as StateEvent, ServiceState, transition};
 use crate::supervise::health::{HealthConfig, HealthOutcome, wait_healthy};
 use crate::supervise::logs::{spawn_pump_stderr, spawn_pump_stdout};
@@ -144,6 +146,8 @@ pub fn spawn_supervisor(
     last_activity: Arc<AtomicU64>,
     snapshot: crate::snapshotter::SharedSnapshot,
     allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
+    rolling: RollingTable,
+    observation: ObservationTable,
 ) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(32);
     let name = svc.name.clone();
@@ -156,6 +160,8 @@ pub fn spawn_supervisor(
         last_activity,
         snapshot,
         allocations,
+        rolling,
+        observation,
         rx,
     ));
     SupervisorHandle {
@@ -175,6 +181,8 @@ async fn run(
     last_activity: Arc<AtomicU64>,
     snapshot: crate::snapshotter::SharedSnapshot,
     allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
+    rolling: RollingTable,
+    observation: ObservationTable,
     mut rx: mpsc::Receiver<SupervisorCommand>,
 ) {
     let mut state = ServiceState::Idle;
@@ -183,6 +191,9 @@ async fn run(
     // Carries a broadcast sender from Idle through to Starting so waiters can
     // be notified of the outcome once the child finishes warming.
     let mut start_bus_carry: Option<tokio::sync::broadcast::Sender<StartOutcome>> = None;
+    // Carries the placement-derived CommandArgs from Idle (where they are
+    // computed) into Starting (where render_argv consumes them).
+    let mut packed_for_spawn: Option<crate::placement::Packed> = None;
 
     loop {
         match &state {
@@ -205,14 +216,87 @@ async fn run(
                             });
                         }
                         Some(SupervisorCommand::Ensure { ack }) => {
-                            // Allocator feasibility check before committing.
-                            let want = svc.placement_override.clone();
                             let snap = snapshot.read().clone();
                             let table = allocations.lock().clone();
+
+                            // Determine the allocation to reserve. If placement_override is
+                            // non-empty, use it as the escape hatch (no estimator/placement).
+                            // Otherwise, run the estimator + placement engine.
+                            let want = if !svc.placement_override.is_empty() {
+                                packed_for_spawn = None;
+                                svc.placement_override.clone()
+                            } else {
+                                // Attempt estimator + placement; fall back to unavailable on error.
+                                let model_path = match svc.raw.model.as_ref() {
+                                    Some(p) => p.clone(),
+                                    None => {
+                                        let _ = ack.send(EnsureResponse::Unavailable {
+                                            reason: "no model path configured".into(),
+                                        });
+                                        continue;
+                                    }
+                                };
+                                let mut est = match crate::estimator::estimate_from_path(
+                                    &model_path,
+                                    &svc,
+                                ) {
+                                    Ok(e) => e,
+                                    Err(e) => {
+                                        let _ = ack.send(EnsureResponse::Unavailable {
+                                            reason: format!("estimator: {e}"),
+                                        });
+                                        continue;
+                                    }
+                                };
+                                // Apply rolling correction to weights_bytes.
+                                let rc = rolling.get(&svc.name);
+                                est.weights_bytes =
+                                    (est.weights_bytes as f64 * rc.rolling_mean) as u64;
+
+                                let packed = match crate::placement::pack(&est, &svc, &snap, &table)
+                                {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        let _ = ack.send(EnsureResponse::Unavailable {
+                                            reason: format!("placement: {e}"),
+                                        });
+                                        continue;
+                                    }
+                                };
+                                // Convert Allocation bytes (per-DeviceId, in bytes) to the
+                                // BTreeMap<DeviceSlot, u64> in MB that can_fit + insert expects.
+                                let want_mb: std::collections::BTreeMap<
+                                    crate::config::DeviceSlot,
+                                    u64,
+                                > = packed
+                                    .allocation
+                                    .bytes
+                                    .iter()
+                                    .map(|(id, bytes)| {
+                                        let slot = match id {
+                                            crate::devices::DeviceId::Cpu => {
+                                                crate::config::DeviceSlot::Cpu
+                                            }
+                                            crate::devices::DeviceId::Gpu(n) => {
+                                                crate::config::DeviceSlot::Gpu(*n)
+                                            }
+                                        };
+                                        // Convert bytes → MB, rounding up so we never under-reserve.
+                                        let mb = bytes.div_ceil(1024 * 1024);
+                                        (slot, mb)
+                                    })
+                                    .collect();
+                                packed_for_spawn = Some(packed);
+                                want_mb
+                            };
+
                             if let Err(nofit) =
                                 crate::allocator::can_fit(&want, &snap, &table, Some(&svc.name))
                             {
                                 let msg = format!("{nofit}");
+                                // Clear any computed packed args so they are not used on the next
+                                // Ensure attempt after this failure.
+                                let _ = packed_for_spawn.take();
                                 let _ = ack.send(EnsureResponse::Unavailable { reason: msg });
                                 continue;
                             }
@@ -236,11 +320,16 @@ async fn run(
                 }
             }
             ServiceState::Starting => {
-                let spawn_cfg = render_argv(&svc, &allocation);
+                let spawn_cfg = render_argv(
+                    &svc,
+                    &allocation,
+                    packed_for_spawn.as_ref().map(|p| &p.args),
+                );
                 let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
                 match spawn_child(&spawn_cfg).await {
                     Ok(mut child) => {
                         let pid = child.id().unwrap_or(0) as i32;
+                        observation.register(&svc.name, pid as u32);
                         let run_id = ((std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()

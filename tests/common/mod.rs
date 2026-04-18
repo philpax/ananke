@@ -100,6 +100,8 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         taken_at_ms: 0,
     };
 
+    let rolling = ananke::rolling::RollingTable::new();
+    let observation = ananke::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -115,6 +117,8 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             last_activity,
             snapshot.clone(),
             allocations.clone(),
+            rolling.clone(),
+            observation.clone(),
         ));
         registry.insert(svc.name.clone(), handle.clone());
         supervisors.push(handle);
@@ -126,8 +130,8 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         allocations,
         snapshot,
         activity,
-        rolling: ananke::rolling::RollingTable::new(),
-        observation: ananke::observation::ObservationTable::new(),
+        rolling,
+        observation,
         db,
     };
 

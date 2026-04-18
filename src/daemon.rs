@@ -106,6 +106,8 @@ pub async fn run() -> Result<(), ExpectedError> {
             last_activity,
             shared_snapshot.clone(),
             allocations.clone(),
+            rolling.clone(),
+            observation.clone(),
         ));
         registry.insert(svc.name.clone(), handle.clone());
 

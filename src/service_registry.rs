@@ -118,6 +118,8 @@ mod tests {
             last_activity,
             snapshot,
             allocations,
+            crate::rolling::RollingTable::new(),
+            crate::observation::ObservationTable::new(),
         ));
 
         let registry = ServiceRegistry::new();

@@ -14,6 +14,7 @@ use tokio::process::{Child, Command};
 use crate::config::validate::{PlacementPolicy, ServiceConfig, Template};
 use crate::devices::{Allocation, cuda_env};
 use crate::errors::ExpectedError;
+use crate::placement::CommandArgs;
 
 pub struct SpawnConfig {
     pub binary: String,
@@ -21,9 +22,17 @@ pub struct SpawnConfig {
     pub env: BTreeMap<String, String>,
 }
 
-/// Render the child command line plus env from a validated `ServiceConfig`
-/// and its `Allocation`.
-pub fn render_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
+/// Render the child command line plus env from a validated `ServiceConfig`,
+/// its `Allocation`, and optional placement `CommandArgs`.
+///
+/// When `cmd_args` is `Some`, the placement engine has already computed
+/// `-ngl`/`--tensor-split`/`-ot` values. Any existing `-ngl` flags from the
+/// static config path are replaced by the placement-derived value.
+pub fn render_argv(
+    svc: &ServiceConfig,
+    alloc: &Allocation,
+    cmd_args: Option<&CommandArgs>,
+) -> SpawnConfig {
     let mut args: Vec<String> = Vec::new();
 
     match svc.template {
@@ -39,21 +48,31 @@ pub fn render_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
                 args.push("-c".into());
                 args.push(ctx.to_string());
             }
-            match svc.placement_policy {
-                PlacementPolicy::CpuOnly => {
+
+            if let Some(ca) = cmd_args {
+                // Placement engine provided -ngl; ignore the static config path.
+                if let Some(ngl) = ca.ngl {
                     args.push("-ngl".into());
-                    args.push("0".into());
+                    args.push(ngl.to_string());
                 }
-                PlacementPolicy::GpuOnly | PlacementPolicy::Hybrid => {
-                    if let Some(ngl) = raw.n_gpu_layers {
+            } else {
+                match svc.placement_policy {
+                    PlacementPolicy::CpuOnly => {
                         args.push("-ngl".into());
-                        args.push(ngl.to_string());
-                    } else {
-                        args.push("-ngl".into());
-                        args.push("999".into());
+                        args.push("0".into());
+                    }
+                    PlacementPolicy::GpuOnly | PlacementPolicy::Hybrid => {
+                        if let Some(ngl) = raw.n_gpu_layers {
+                            args.push("-ngl".into());
+                            args.push(ngl.to_string());
+                        } else {
+                            args.push("-ngl".into());
+                            args.push("999".into());
+                        }
                     }
                 }
             }
+
             if raw.flash_attn == Some(true) {
                 args.push("-fa".into());
                 args.push("on".into());
@@ -99,12 +118,31 @@ pub fn render_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
                 args.push("-np".into());
                 args.push(p.to_string());
             }
-            if let Some(rules) = &raw.override_tensor {
+
+            if let Some(ca) = cmd_args {
+                // Placement-derived tensor-split and override-tensor rules take
+                // precedence; raw.override_tensor is subsumed into CommandArgs by
+                // the placement engine already.
+                if let Some(ref split) = ca.tensor_split {
+                    let split_str = split
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    args.push("--tensor-split".into());
+                    args.push(split_str);
+                }
+                for rule in &ca.override_tensor {
+                    args.push("-ot".into());
+                    args.push(rule.clone());
+                }
+            } else if let Some(rules) = &raw.override_tensor {
                 for rule in rules {
                     args.push("-ot".into());
                     args.push(rule.clone());
                 }
             }
+
             // Sampling params are passed as extra flags when set.
             if let Some(s) = &raw.sampling {
                 if let Some(t) = s.get("temperature") {
@@ -265,7 +303,7 @@ mod tests {
     fn renders_core_flags() {
         let svc = base_service();
         let alloc = Allocation::from_override(&svc.placement_override);
-        let cmd = render_argv(&svc, &alloc);
+        let cmd = render_argv(&svc, &alloc, None);
         assert_eq!(cmd.binary, "llama-server");
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.iter().any(|a| a == "/m/x.gguf"));
@@ -282,7 +320,7 @@ mod tests {
         let mut svc = base_service();
         svc.raw.mmproj = Some(PathBuf::from("/m/x-mmproj.gguf"));
         let alloc = Allocation::from_override(&svc.placement_override);
-        let cmd = render_argv(&svc, &alloc);
+        let cmd = render_argv(&svc, &alloc, None);
         let idx = cmd.args.iter().position(|a| a == "--mmproj").unwrap();
         assert_eq!(cmd.args[idx + 1], "/m/x-mmproj.gguf");
     }
@@ -294,9 +332,29 @@ mod tests {
         svc.placement_override.clear();
         svc.placement_override.insert(DeviceSlot::Cpu, 10240);
         let alloc = Allocation::from_override(&svc.placement_override);
-        let cmd = render_argv(&svc, &alloc);
+        let cmd = render_argv(&svc, &alloc, None);
         let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
         assert_eq!(cmd.args[ngl_idx + 1], "0");
         assert_eq!(cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    #[test]
+    fn placement_cmd_args_override_ngl_and_add_tensor_split() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let ca = CommandArgs {
+            ngl: Some(24),
+            tensor_split: Some(vec![12, 12]),
+            override_tensor: vec![],
+        };
+        let cmd = render_argv(&svc, &alloc, Some(&ca));
+        let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
+        assert_eq!(cmd.args[ngl_idx + 1], "24");
+        let ts_idx = cmd
+            .args
+            .iter()
+            .position(|a| a == "--tensor-split")
+            .unwrap();
+        assert_eq!(cmd.args[ts_idx + 1], "12,12");
     }
 }
