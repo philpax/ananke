@@ -10,6 +10,7 @@ pub mod devices;
 pub mod errors;
 pub mod management_api;
 pub mod openai_api;
+pub mod openapi;
 pub mod proxy;
 pub mod retention;
 pub mod service_registry;
