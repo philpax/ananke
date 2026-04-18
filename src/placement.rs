@@ -128,8 +128,13 @@ pub fn pack(
         }
     }
 
-    // If the architecture gave no per-layer info (Mamba), place the
-    // entire weights bundle into the first GPU with room (or CPU).
+    // If the architecture gave no per-layer info (Mamba, or fallback for
+    // unknown architectures), place the entire weights bundle into the
+    // first GPU with room (or CPU). `fallback_on_gpu` marks that we
+    // reserved whole-model space on a GPU without per-layer detail —
+    // the ngl derivation later sets -ngl 999 so llama.cpp offloads
+    // everything.
+    let mut fallback_on_gpu = false;
     if per_layer.is_empty() && estimate.weights_bytes > 0 {
         let mut placed = false;
         for gpu in &allowed_gpus {
@@ -138,6 +143,7 @@ pub fn pack(
                 *rem = rem.saturating_sub(estimate.weights_bytes);
                 *per_device.entry(DeviceSlot::Gpu(*gpu)).or_default() += estimate.weights_bytes;
                 placed = true;
+                fallback_on_gpu = true;
                 break;
             }
         }
@@ -203,6 +209,10 @@ pub fn pack(
     let ngl = if allowed_gpus.is_empty() {
         // cpu-only: emit -ngl 0 via the spawn code path (kept out of our args struct).
         Some(0)
+    } else if fallback_on_gpu {
+        // Unknown architecture / no per-layer info: emit -ngl 999 so
+        // llama.cpp offloads everything we reserved for.
+        Some(999)
     } else {
         Some(total_on_gpus)
     };

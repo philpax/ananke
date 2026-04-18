@@ -1,6 +1,6 @@
 //! MoE estimator.
 //!
-//! Applies to: llama4, qwen3moe, deepseek2, mixtral, gpt-oss.
+//! Applies to: llama4, qwen3moe, qwen3vlmoe, deepseek2, mixtral, gpt-oss.
 //!
 //! Identifies expert tensors by the `_exps` suffix on
 //! `blk.N.ffn_{gate,up,down}_exps.weight`. When `n_cpu_moe > 0`, the
@@ -17,7 +17,14 @@ use super::types::Estimate;
 use crate::config::ServiceConfig;
 use crate::gguf::GgufSummary;
 
-pub const MOE_FAMILY: &[&str] = &["llama4", "qwen3moe", "deepseek2", "mixtral", "gpt-oss"];
+pub const MOE_FAMILY: &[&str] = &[
+    "llama4",
+    "qwen3moe",
+    "qwen3vlmoe",
+    "deepseek2",
+    "mixtral",
+    "gpt-oss",
+];
 
 pub fn is_moe(arch: &str) -> bool {
     MOE_FAMILY.contains(&arch)
