@@ -45,7 +45,10 @@ mod tests {
     #[test]
     fn sets_keys() {
         let mut body = json!({"model":"m"});
-        apply(&mut body, &filters_with(&[], &[("max_tokens", json!(4096))]));
+        apply(
+            &mut body,
+            &filters_with(&[], &[("max_tokens", json!(4096))]),
+        );
         assert_eq!(body["max_tokens"], json!(4096));
     }
 

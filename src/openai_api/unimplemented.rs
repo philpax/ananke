@@ -1,9 +1,9 @@
 //! 501 Not Implemented handlers for unsupported OpenAI endpoints.
 
+use axum::Router;
 use axum::extract::Path;
 use axum::response::Response;
 use axum::routing::any;
-use axum::Router;
 
 use crate::app_state::AppState;
 use crate::openai_api::errors;
