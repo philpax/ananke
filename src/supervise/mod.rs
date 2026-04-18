@@ -8,9 +8,10 @@ pub mod spawn;
 pub use orphans::{OrphanDisposition, reconcile};
 pub use spawn::{SpawnConfig, render_argv};
 
+use std::os::unix::process::ExitStatusExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{mpsc, watch};
@@ -194,6 +195,11 @@ async fn run(
     // Carries the placement-derived CommandArgs from Idle (where they are
     // computed) into Starting (where render_argv consumes them).
     let mut packed_for_spawn: Option<crate::placement::Packed> = None;
+    // OOM retry state: counts consecutive OOM kills for the current service.
+    let mut oom_attempts: u32 = 0;
+    // Stash the total reserved bytes (in bytes) from the Ensure path so the
+    // rolling update on drain can use the original estimate as the base.
+    let mut base_total_bytes_for_rolling: u64 = 0;
 
     loop {
         match &state {
@@ -302,6 +308,10 @@ async fn run(
                             }
 
                             // Reserve in the allocation table before spawning.
+                            // Capture the total reserved bytes (MB → bytes) for the rolling
+                            // update that fires when the service later drains back to Idle.
+                            base_total_bytes_for_rolling =
+                                want.values().sum::<u64>() * 1024 * 1024;
                             allocations.lock().insert(svc.name.clone(), want);
 
                             // Create broadcast channel and subscribe the caller.
@@ -330,6 +340,7 @@ async fn run(
                     Ok(mut child) => {
                         let pid = child.id().unwrap_or(0) as i32;
                         observation.register(&svc.name, pid as u32);
+                        let spawn_time = Instant::now();
                         let run_id = ((std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
@@ -381,13 +392,53 @@ async fn run(
                             tokio::select! {
                                 exit = child.wait() => {
                                     warn!(?exit, "child exited during starting/warming");
+                                    allocations.lock().remove(&svc.name);
+                                    observation.clear(&svc.name);
+
+                                    // Detect OOM kill: process died within 30 s and was
+                                    // killed by SIGKILL (kernel OOM killer or cgroup limit).
+                                    let runtime = spawn_time.elapsed();
+                                    let was_sigkill = exit
+                                        .as_ref()
+                                        .ok()
+                                        .and_then(|s| s.signal())
+                                        .map(|sig| sig == libc::SIGKILL)
+                                        .unwrap_or(false);
+                                    if runtime < Duration::from_secs(30) && was_sigkill {
+                                        oom_attempts += 1;
+                                        if oom_attempts >= 2 {
+                                            warn!(service = %svc.name, attempts = oom_attempts, "OOM retry limit reached; disabling");
+                                            if let Some(bus) = start_bus_carry.take() {
+                                                let _ = bus.send(StartOutcome::Err(StartFailure {
+                                                    kind: StartFailureKind::LaunchFailed,
+                                                    message: "disabled after repeated OOM kills".into(),
+                                                }));
+                                            }
+                                            state = ServiceState::Disabled { reason: DisableReason::LaunchFailed };
+                                            *state_mirror.lock() = state.clone();
+                                        } else {
+                                            warn!(service = %svc.name, "OOM kill detected; bumping rolling factor for retry");
+                                            rolling.bump_for_oom_retry(&svc.name);
+                                            // Return to Idle so the next Ensure triggers a
+                                            // re-estimated start with the bumped safety factor.
+                                            if let Some(bus) = start_bus_carry.take() {
+                                                let _ = bus.send(StartOutcome::Err(StartFailure {
+                                                    kind: StartFailureKind::LaunchFailed,
+                                                    message: "OOM kill; retrying with larger reservation".into(),
+                                                }));
+                                            }
+                                            state = ServiceState::Idle;
+                                            *state_mirror.lock() = state.clone();
+                                        }
+                                        break;
+                                    }
+
                                     if let Some(bus) = start_bus_carry.take() {
                                         let _ = bus.send(StartOutcome::Err(StartFailure {
                                             kind: StartFailureKind::LaunchFailed,
                                             message: "child exited during starting".into(),
                                         }));
                                     }
-                                    allocations.lock().remove(&svc.name);
                                     state = ServiceState::Failed { retry_count: 0 };
                                     *state_mirror.lock() = state.clone();
                                     break;
@@ -448,6 +499,8 @@ async fn run(
                                                 tokio::select! {
                                                     exit = child.wait() => {
                                                         warn!(?exit, "child exited from running");
+                                                        rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
+                                                        observation.clear(&svc.name);
                                                         allocations.lock().remove(&svc.name);
                                                         state = ServiceState::Failed { retry_count: 0 };
                                                         *state_mirror.lock() = state.clone();
@@ -470,6 +523,8 @@ async fn run(
                                                             "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
                                                             (service_id, run_id),
                                                         ));
+                                                        rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
+                                                        observation.clear(&svc.name);
                                                         allocations.lock().remove(&svc.name);
                                                         state = ServiceState::Idle;
                                                         *state_mirror.lock() = state.clone();
@@ -487,6 +542,8 @@ async fn run(
                                                                     "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
                                                                     (service_id, run_id),
                                                                 ));
+                                                                rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
+                                                                observation.clear(&svc.name);
                                                                 allocations.lock().remove(&svc.name);
                                                                 let _ = ack.send(());
                                                                 return;

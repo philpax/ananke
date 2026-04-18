@@ -39,6 +39,14 @@ impl RollingTable {
         self.inner.read().get(name).copied().unwrap_or_default()
     }
 
+    /// Inject a synthetic 1.4× correction after an OOM kill to force the next
+    /// estimate to reserve more memory before retrying.
+    pub fn bump_for_oom_retry(&self, name: &SmolStr) {
+        // A ratio of 1.4 signals the estimator was 40% short, which is the
+        // maximum useful nudge before triggering the drift warning path.
+        self.update(name, 140, 100);
+    }
+
     pub fn update(&self, name: &SmolStr, observed_peak_bytes: u64, base_estimate_bytes: u64) {
         if base_estimate_bytes == 0 {
             return;
