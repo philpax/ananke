@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub enum ShutdownKind {
 /// Blocks until a shutdown signal arrives.
 pub async fn await_shutdown() -> ShutdownKind {
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
-    let mut int  = signal(SignalKind::interrupt()).expect("SIGINT handler");
+    let mut int = signal(SignalKind::interrupt()).expect("SIGINT handler");
     let mut quit = signal(SignalKind::quit()).expect("SIGQUIT handler");
     tokio::select! {
         _ = term.recv() => { info!("SIGTERM received"); ShutdownKind::Graceful }
