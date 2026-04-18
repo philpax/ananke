@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 use crate::activity::ActivityTable;
 use crate::allocator::AllocationTable;
 use crate::app_state::AppState;
+use crate::inflight::InflightTable;
 use crate::config::{Lifecycle, Migration, load_config};
 use crate::db::Database;
 use crate::db::logs::spawn as spawn_batcher;
@@ -81,6 +82,7 @@ pub async fn run() -> Result<(), ExpectedError> {
 
     let activity = ActivityTable::new();
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
+    let inflight = InflightTable::new();
 
     // Persistent services start in priority-desc + name-asc order;
     // on_demand services are registered but remain idle.
@@ -152,6 +154,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         rolling: rolling.clone(),
         observation: observation.clone(),
         db: db.clone(),
+        inflight: inflight.clone(),
     };
 
     // OpenAI listener.

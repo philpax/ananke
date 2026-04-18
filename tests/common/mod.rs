@@ -24,6 +24,7 @@ use std::sync::Arc;
 use ananke::activity::ActivityTable;
 use ananke::allocator::AllocationTable;
 use ananke::app_state::AppState;
+use ananke::inflight::InflightTable;
 use ananke::config::parse::RawService;
 use ananke::config::{
     AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
@@ -133,6 +134,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         rolling,
         observation,
         db,
+        inflight: InflightTable::new(),
     };
 
     TestHarness {

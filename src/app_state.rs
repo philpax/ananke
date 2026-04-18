@@ -8,6 +8,7 @@ use crate::activity::ActivityTable;
 use crate::allocator::AllocationTable;
 use crate::config::EffectiveConfig;
 use crate::db::Database;
+use crate::inflight::InflightTable;
 use crate::observation::ObservationTable;
 use crate::rolling::RollingTable;
 use crate::service_registry::ServiceRegistry;
@@ -23,4 +24,5 @@ pub struct AppState {
     pub rolling: RollingTable,
     pub observation: ObservationTable,
     pub db: Database,
+    pub inflight: InflightTable,
 }

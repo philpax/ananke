@@ -10,6 +10,7 @@ pub mod devices;
 pub mod errors;
 pub mod estimator;
 pub mod gguf;
+pub mod inflight;
 pub mod management_api;
 pub mod observation;
 pub mod openai_api;
