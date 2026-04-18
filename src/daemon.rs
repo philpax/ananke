@@ -187,6 +187,9 @@ pub async fn run() -> Result<(), ExpectedError> {
         }
     }
 
+    let port_pool = Arc::new(Mutex::new(crate::oneshot::PortPool::new(18000..19000)));
+    let oneshots = crate::oneshot::OneshotRegistry::new();
+
     // Build AppState for the routers.
     let app_state = AppState {
         config: effective.clone(),
@@ -198,6 +201,9 @@ pub async fn run() -> Result<(), ExpectedError> {
         observation: observation.clone(),
         db: db.clone(),
         inflight: inflight.clone(),
+        port_pool,
+        oneshots,
+        batcher: batcher.clone(),
     };
 
     // OpenAI listener.
