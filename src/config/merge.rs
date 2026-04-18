@@ -155,6 +155,7 @@ fn merge_service(
     take!(drain_timeout);
     take!(extended_stream_drain);
     take!(max_request_duration);
+    take!(start_queue_depth);
 
     // Nested tables deep-merge field-by-field so that child overrides only what it sets.
     merged.sampling = deep_merge_map(parent.sampling.clone(), child.sampling.clone());

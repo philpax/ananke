@@ -177,6 +177,17 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
     }
 }
 
+/// Build a minimal on-demand `ServiceConfig` with a capped start queue.
+///
+/// Identical to `minimal_llama_service` except `start_queue_depth` is set to
+/// `depth`, which limits how many concurrent callers may wait for the same
+/// in-flight start before the supervisor returns `QueueFull`.
+pub fn service_with_queue_depth(name: &str, port: u16, depth: usize) -> ServiceConfig {
+    let mut s = minimal_llama_service(name, port);
+    s.raw.start_queue_depth = Some(depth);
+    s
+}
+
 impl TestHarness {
     /// Shut down the echo server and all supervisors.
     pub async fn cleanup(self) {
