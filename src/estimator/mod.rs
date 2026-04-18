@@ -6,6 +6,7 @@ pub mod kv;
 pub mod llama;
 pub mod mamba;
 pub mod moe;
+pub mod override_tensor;
 pub mod types;
 
 pub use types::{Estimate, NonLayer};
@@ -24,6 +25,12 @@ pub fn estimate_from_path(path: &Path, svc: &ServiceConfig) -> Result<Estimate, 
     let summary = gguf::read(path).map_err(|e| e.to_string())?;
 
     let mut est = dispatch(&summary, svc);
+
+    // Apply user-declared override_tensor rules BEFORE mmproj so matched
+    // tensors leave the layer/non-layer budget cleanly (spec §8.2.4).
+    if let Some(rules) = svc.raw.override_tensor.as_ref() {
+        override_tensor::parse_and_apply(&mut est, &summary, rules);
+    }
 
     // Add mmproj bytes to GPU 0 weights (per spec §8.3).
     if let Some(mmproj) = svc.raw.mmproj.as_ref() {

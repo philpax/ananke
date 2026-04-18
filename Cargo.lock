@@ -42,6 +42,7 @@ dependencies = [
  "pin-project-lite",
  "pretty_assertions",
  "proptest",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",
