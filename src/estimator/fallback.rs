@@ -1,0 +1,65 @@
+//! Fallback estimator for unknown architectures (spec §8.3).
+
+use std::collections::BTreeMap;
+
+use smol_str::SmolStr;
+use tracing::warn;
+
+use super::types::{Estimate, NonLayer};
+use crate::gguf::GgufSummary;
+
+/// Produce a coarse estimate for any GGUF: `total_tensor_bytes × 1.15 + 512 MB`
+/// goes into `weights_bytes`; no KV modelling; no per-layer split. Emits
+/// a warning so the operator knows rolling correction is the only tuning.
+pub fn estimate_fallback(summary: &GgufSummary, context: u32) -> Estimate {
+    warn!(
+        architecture = %summary.architecture,
+        "unknown architecture — using fallback estimator (total_tensor_bytes × 1.15 + 512 MB)"
+    );
+    let weights = ((summary.total_tensor_bytes as f64) * 1.15) as u64 + 512 * 1024 * 1024;
+    Estimate {
+        weights_bytes: weights,
+        kv_per_token: 0,
+        compute_buffer_mb: 400,
+        per_layer_bytes: None,
+        attention_layers: None,
+        non_layer: NonLayer {
+            output_head_bytes: 0,
+            token_embd_bytes: 0,
+            other_bytes: 0,
+        },
+        override_tensor_bytes: BTreeMap::new(),
+        expert_layers: Vec::new(),
+        expert_layer_cpu_bytes: BTreeMap::new(),
+        context,
+        architecture: SmolStr::new(summary.architecture.as_str()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary_with(total_bytes: u64, arch: &str) -> GgufSummary {
+        GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: total_bytes,
+            tensors: Default::default(),
+            metadata: Default::default(),
+            block_count: None,
+            architecture: SmolStr::new(arch),
+            shards: vec!["/fake".into()],
+        }
+    }
+
+    #[test]
+    fn fallback_uses_1_point_15_plus_512mb() {
+        let s = summary_with(1_000_000_000, "nonsense-arch");
+        let e = estimate_fallback(&s, 4096);
+        assert_eq!(
+            e.weights_bytes,
+            (1_000_000_000f64 * 1.15) as u64 + 512 * 1024 * 1024
+        );
+        assert_eq!(e.kv_per_token, 0);
+    }
+}

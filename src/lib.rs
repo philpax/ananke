@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod db;
 pub mod devices;
 pub mod errors;
+pub mod estimator;
 pub mod gguf;
 pub mod management_api;
 pub mod openai_api;
