@@ -129,6 +129,10 @@ pub enum GgufValue {
 impl GgufValue {
     pub fn as_u32(&self) -> Option<u32> {
         match self {
+            GgufValue::U8(v) => Some(*v as u32),
+            GgufValue::I8(v) if *v >= 0 => Some(*v as u32),
+            GgufValue::U16(v) => Some(*v as u32),
+            GgufValue::I16(v) if *v >= 0 => Some(*v as u32),
             GgufValue::U32(v) => Some(*v),
             GgufValue::I32(v) if *v >= 0 => Some(*v as u32),
             GgufValue::U64(v) if *v <= u32::MAX as u64 => Some(*v as u32),
@@ -139,6 +143,10 @@ impl GgufValue {
 
     pub fn as_u64(&self) -> Option<u64> {
         match self {
+            GgufValue::U8(v) => Some(*v as u64),
+            GgufValue::I8(v) if *v >= 0 => Some(*v as u64),
+            GgufValue::U16(v) => Some(*v as u64),
+            GgufValue::I16(v) if *v >= 0 => Some(*v as u64),
             GgufValue::U32(v) => Some(*v as u64),
             GgufValue::U64(v) => Some(*v),
             GgufValue::I32(v) if *v >= 0 => Some(*v as u64),

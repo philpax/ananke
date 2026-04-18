@@ -93,38 +93,63 @@ pub fn pack(
     let mut layers_per_gpu: BTreeMap<u32, u32> = BTreeMap::new();
     let mut layers_on_cpu: u32 = 0;
     let mut gpu_remaining: BTreeMap<u32, u64> = BTreeMap::new();
+
+    // Pre-reserve per-GPU headroom so the walker doesn't fill to the brim
+    // and get pushed over by Steps 3-5 (KV, compute buffer, one-layer fudge).
+    // Headroom per GPU: kv_share + compute_buffer_mb + one_layer_fudge.
+    let n_layers_nonzero = per_layer.iter().filter(|b| **b > 0).count() as u64;
+    let per_layer_avg = per_layer
+        .iter()
+        .sum::<u64>()
+        .checked_div(n_layers_nonzero)
+        .unwrap_or(0);
+    let kv_total_pre = estimate
+        .kv_per_token
+        .saturating_mul(estimate.context as u64);
+    let compute_headroom = estimate.compute_buffer_mb as u64 * 1024 * 1024;
+    let gpu_headroom_each = compute_headroom
+        + kv_total_pre.saturating_div(allowed_gpus.len().max(1) as u64)
+        + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
+
     for gpu in &allowed_gpus {
         let free = snapshot.free_bytes(&DeviceSlot::Gpu(*gpu)).unwrap_or(0);
         let reserved_here = sum_reserved(reserved, &DeviceSlot::Gpu(*gpu), &svc.name);
-        gpu_remaining.insert(
-            *gpu,
-            free.saturating_sub(reserved_here)
-                .saturating_sub(*per_device.get(&DeviceSlot::Gpu(*gpu)).unwrap_or(&0)),
-        );
+        let raw = free
+            .saturating_sub(reserved_here)
+            .saturating_sub(*per_device.get(&DeviceSlot::Gpu(*gpu)).unwrap_or(&0));
+        gpu_remaining.insert(*gpu, raw.saturating_sub(gpu_headroom_each));
     }
 
     for (idx, bytes) in per_layer.iter().enumerate() {
         if *bytes == 0 {
             continue;
         }
-        let mut placed = false;
-        for gpu in &allowed_gpus {
-            let rem = gpu_remaining.get_mut(gpu).unwrap();
-            if *rem >= *bytes {
+        // Pick the GPU with the most remaining room that can hold this
+        // layer — balances layers across equal-capacity GPUs rather than
+        // filling GPU 0 to the brim first.
+        let best_gpu = allowed_gpus
+            .iter()
+            .filter(|g| gpu_remaining.get(g).copied().unwrap_or(0) >= *bytes)
+            .max_by_key(|g| gpu_remaining.get(g).copied().unwrap_or(0))
+            .copied();
+        match best_gpu {
+            Some(gpu) => {
+                let rem = gpu_remaining.get_mut(&gpu).unwrap();
                 *rem = rem.saturating_sub(*bytes);
-                *per_device.entry(DeviceSlot::Gpu(*gpu)).or_default() += *bytes;
-                *layers_per_gpu.entry(*gpu).or_default() += 1;
-                placed = true;
-                break;
+                *per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += *bytes;
+                *layers_per_gpu.entry(gpu).or_default() += 1;
             }
-        }
-        if !placed && allow_cpu {
-            *per_device.entry(DeviceSlot::Cpu).or_default() += *bytes;
-            layers_on_cpu += 1;
-        } else if !placed {
-            return Err(PackError {
-                reason: format!("layer {idx} ({bytes} bytes) does not fit on any allowed GPU"),
-            });
+            None if allow_cpu => {
+                *per_device.entry(DeviceSlot::Cpu).or_default() += *bytes;
+                layers_on_cpu += 1;
+            }
+            None => {
+                return Err(PackError {
+                    reason: format!(
+                        "layer {idx} ({bytes} bytes) does not fit on any allowed GPU"
+                    ),
+                });
+            }
         }
     }
 

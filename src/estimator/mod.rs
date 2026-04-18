@@ -13,7 +13,7 @@ pub use types::{Estimate, NonLayer};
 
 use std::path::Path;
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::config::ServiceConfig;
 use crate::gguf::{self, GgufSummary};
@@ -24,7 +24,25 @@ use crate::gguf::{self, GgufSummary};
 pub fn estimate_from_path(path: &Path, svc: &ServiceConfig) -> Result<Estimate, String> {
     let summary = gguf::read(path).map_err(|e| e.to_string())?;
 
+    info!(
+        service = %svc.name,
+        architecture = %summary.architecture,
+        block_count = ?summary.block_count,
+        tensor_count = summary.tensors.len(),
+        total_tensor_gb = summary.total_tensor_bytes / (1024 * 1024 * 1024),
+        shard_count = summary.shards.len(),
+        "gguf summary",
+    );
+
     let mut est = dispatch(&summary, svc);
+
+    info!(
+        service = %svc.name,
+        weights_gb = est.weights_bytes / (1024 * 1024 * 1024),
+        per_layer_len = est.per_layer_bytes.as_ref().map(|v| v.len()).unwrap_or(0),
+        kv_per_token = est.kv_per_token,
+        "post-dispatch estimate",
+    );
 
     // Apply user-declared override_tensor rules BEFORE mmproj so matched
     // tensors leave the layer/non-layer budget cleanly (spec §8.2.4).
