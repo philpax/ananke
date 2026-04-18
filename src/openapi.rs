@@ -38,7 +38,7 @@ use crate::openai_api::schema as openai_schema;
         mgmt_types::DeviceSummary,
         mgmt_types::DeviceReservation,
     )),
-    info(title = "Ananke API", version = "0.1.0"),
+    info(title = "Ananke API", version = "0.1.0")
 )]
 pub struct AnankeApi;
 

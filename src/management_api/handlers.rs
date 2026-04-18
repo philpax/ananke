@@ -53,10 +53,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
     path = "/api/services/{name}",
     responses((status = 200, body = ServiceDetail), (status = 404))
 )]
-pub async fn service_detail(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Response {
+pub async fn service_detail(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     let Some(svc_cfg) = state.config.services.iter().find(|s| s.name == name) else {
         return (
             StatusCode::NOT_FOUND,
@@ -107,7 +104,7 @@ pub async fn service_detail(
                         line: r.get(2)?,
                     })
                 })?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                rows.collect::<Result<Vec<_>, _>>()
             })
             .unwrap_or_default(),
         None => Vec::new(),
@@ -168,10 +165,11 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
         let reservations: Vec<DeviceReservation> = alloc
             .iter()
             .filter_map(|(svc, a)| {
-                a.get(&crate::config::DeviceSlot::Cpu).map(|mb| DeviceReservation {
-                    service: svc.to_string(),
-                    bytes: mb * 1024 * 1024,
-                })
+                a.get(&crate::config::DeviceSlot::Cpu)
+                    .map(|mb| DeviceReservation {
+                        service: svc.to_string(),
+                        bytes: mb * 1024 * 1024,
+                    })
             })
             .collect();
         out.push(DeviceSummary {

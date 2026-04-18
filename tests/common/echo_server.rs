@@ -1,103 +1,143 @@
-//! Toy HTTP server used by integration tests in place of a real model backend.
-//!
-//! Routes:
-//! - `GET /health`, `GET /v1/models` → 200 `{}`
-//! - `GET /sse` → `text/event-stream` with 5 chunks `data: N\n\n`, 50 ms apart
-//! - Anything else → 200 `hello`
+//! Phase 2 echo server: adds spawn counter, /sink, and configurable /v1/* bodies.
 
 // Not every integration test binary uses every symbol in this module.
 #![allow(dead_code)]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, StreamBody, combinators::BoxBody};
-use hyper::body::{Frame, Incoming};
+use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use hyper::body::Frame;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
+use parking_lot::Mutex;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-use tokio_stream::StreamExt as _;
+use tokio_stream::wrappers::ReceiverStream;
 
-type Body = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
-
-fn full(s: &'static str) -> Body {
-    http_body_util::Full::new(Bytes::from_static(s.as_bytes()))
-        .map_err(|never| match never {})
-        .boxed()
+/// State shared across all connections to track spawns and collect request bodies.
+#[derive(Clone, Default)]
+pub struct EchoState {
+    /// Counter incremented each time `serve()` is called.
+    pub spawn_counter: Arc<AtomicU32>,
+    /// Sink for recording request bodies from /v1/* endpoints.
+    pub sink: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
-async fn handle(req: Request<Incoming>) -> Result<Response<Body>, Infallible> {
-    let path = req.uri().path().to_owned();
+type EchoBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
-    let resp = match path.as_str() {
-        "/health" | "/v1/models" => Response::builder()
-            .status(StatusCode::OK)
-            .body(full("{}"))
-            .unwrap(),
-
-        "/sse" => {
-            // Produce 5 SSE events, one every 50 ms.
-            let stream = tokio_stream::iter(0u8..5).then(|n| async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let chunk = format!("data: {n}\n\n");
-                Ok::<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>(Frame::data(
-                    Bytes::from(chunk),
-                ))
-            });
-            let body: Body = BodyExt::map_err(StreamBody::new(stream), |e| e).boxed();
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "text/event-stream")
-                .header("cache-control", "no-cache")
-                .body(body)
-                .unwrap()
-        }
-
-        _ => Response::builder()
-            .status(StatusCode::OK)
-            .body(full("hello"))
-            .unwrap(),
-    };
-
-    Ok(resp)
-}
-
-/// Spawns the echo server on `addr` and returns a shutdown sender.
+/// Serves HTTP requests on `addr` with the given `state`.
 ///
-/// Drop the returned `watch::Sender` or send `true` to initiate graceful
-/// shutdown.  The server task exits within one accept timeout.
-pub async fn spawn(addr: SocketAddr) -> watch::Sender<bool> {
-    let listener = TcpListener::bind(addr).await.expect("bind echo server");
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
-                        return;
-                    }
-                }
-                accept = listener.accept() => {
-                    let (stream, _peer) = match accept {
-                        Ok(x) => x,
-                        Err(_) => continue,
-                    };
-                    let io = TokioIo::new(stream);
-                    tokio::spawn(async move {
-                        let svc = service_fn(handle);
-                        let _ = auto::Builder::new(TokioExecutor::new())
-                            .serve_connection(io, svc)
-                            .await;
-                    });
+/// Increments `state.spawn_counter` on entry. On `/v1/chat/completions`,
+/// `/v1/completions`, and `/v1/embeddings`, records the request body into
+/// `state.sink`. `/health` and `/v1/models` responses include the
+/// `x-echo-spawn-count` header. `/sse` streams 5 events 50ms apart.
+/// Anything else returns "hello".
+pub async fn serve(addr: SocketAddr, state: EchoState, mut shutdown: watch::Receiver<bool>) {
+    state.spawn_counter.fetch_add(1, Ordering::Relaxed);
+    let listener = TcpListener::bind(addr).await.expect("echo bind");
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    return;
                 }
             }
+            accept = listener.accept() => {
+                let Ok((stream, _)) = accept else { continue; };
+                let io = TokioIo::new(stream);
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req| {
+                        let state = state.clone();
+                        handle(req, state)
+                    });
+                    let _ = auto::Builder::new(TokioExecutor::new())
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
         }
-    });
+    }
+}
 
-    shutdown_tx
+async fn handle(
+    req: Request<hyper::body::Incoming>,
+    state: EchoState,
+) -> Result<Response<EchoBody>, Infallible> {
+    let path = req.uri().path();
+
+    match path {
+        "/health" | "/v1/models" => {
+            let body = Full::new(Bytes::from("{}")).map_err(|n| match n {}).boxed();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    "x-echo-spawn-count",
+                    state.spawn_counter.load(Ordering::Relaxed).to_string(),
+                )
+                .body(body)
+                .unwrap())
+        }
+
+        "/sse" => {
+            let (tx, rx) = tokio::sync::mpsc::channel::<
+                Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
+            >(8);
+            tokio::spawn(async move {
+                for i in 0..5 {
+                    let chunk = format!("data: {i}\n\n");
+                    if tx.send(Ok(Frame::data(Bytes::from(chunk)))).await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+            let stream = ReceiverStream::new(rx);
+            let body = StreamBody::new(stream).boxed();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(body)
+                .unwrap())
+        }
+
+        "/v1/chat/completions" | "/v1/completions" | "/v1/embeddings" => {
+            let body_bytes = req
+                .into_body()
+                .collect()
+                .await
+                .map(|c| c.to_bytes())
+                .unwrap_or_default();
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                state.sink.lock().push(v);
+            }
+            let body = Full::new(Bytes::from(
+                r#"{"id":"cmpl-echo","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+            ))
+            .map_err(|n| match n {})
+            .boxed();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(body)
+                .unwrap())
+        }
+
+        _ => {
+            let body = Full::new(Bytes::from("hello"))
+                .map_err(|n| match n {})
+                .boxed();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap())
+        }
+    }
 }
