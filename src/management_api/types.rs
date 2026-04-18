@@ -28,6 +28,14 @@ pub struct ServiceDetail {
     pub run_id: Option<i64>,
     pub pid: Option<i32>,
     pub recent_logs: Vec<LogLine>,
+    /// Rolling correction mean from the last N completed runs. `1.0` means
+    /// the estimator is on target; values above `1.0` indicate under-estimation.
+    pub rolling_mean: f64,
+    /// Number of completed runs used to compute `rolling_mean`.
+    pub rolling_samples: u32,
+    /// Observed peak memory (GPU VRAM + CPU RSS) in bytes for the current or
+    /// most recent run. `0` if no observation has been recorded yet.
+    pub observed_peak_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

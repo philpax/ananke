@@ -110,6 +110,9 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         None => Vec::new(),
     };
 
+    let rc = state.rolling.get(&svc_cfg.name);
+    let observed_peak_bytes = state.observation.read_peak(&svc_cfg.name);
+
     let detail = ServiceDetail {
         name: svc_cfg.name.to_string(),
         state: snap
@@ -126,6 +129,9 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         run_id: snap.as_ref().and_then(|s| s.run_id),
         pid: snap.as_ref().and_then(|s| s.pid),
         recent_logs,
+        rolling_mean: rc.rolling_mean,
+        rolling_samples: rc.sample_count,
+        observed_peak_bytes,
     };
     (StatusCode::OK, Json(detail)).into_response()
 }
