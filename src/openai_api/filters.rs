@@ -25,14 +25,14 @@ mod tests {
     use super::*;
 
     fn filters_with(strip: &[&str], set: &[(&str, Value)]) -> Filters {
-        let mut f = Filters::default();
-        f.strip_params = strip.iter().map(|s| s.to_string()).collect();
-        let mut m = BTreeMap::new();
+        let mut set_params = BTreeMap::new();
         for (k, v) in set {
-            m.insert(k.to_string(), v.clone());
+            set_params.insert(k.to_string(), v.clone());
         }
-        f.set_params = m;
-        f
+        Filters {
+            strip_params: strip.iter().map(|s| s.to_string()).collect(),
+            set_params,
+        }
     }
 
     #[test]
