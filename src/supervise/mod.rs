@@ -341,6 +341,12 @@ async fn run(
                                     let all_services = registry.all();
                                     let mut out = Vec::new();
                                     for (_name, handle) in all_services {
+                                        // Skip self: we're currently inside this supervisor's
+                                        // own run loop, so awaiting our own Snapshot would
+                                        // deadlock.
+                                        if handle.name.as_str() == svc.name.as_str() {
+                                            continue;
+                                        }
                                         let Some(service_snap) = handle.snapshot().await else {
                                             continue;
                                         };
