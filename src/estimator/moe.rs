@@ -6,6 +6,7 @@
 //! `blk.N.ffn_{gate,up,down}_exps.weight`. When `n_cpu_moe > 0`, the
 //! top-N expert-bearing layers move their expert bytes to CPU.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
@@ -19,7 +20,7 @@ use crate::gguf::GgufSummary;
 pub const MOE_FAMILY: &[&str] = &["llama4", "qwen3moe", "deepseek2", "mixtral", "gpt-oss"];
 
 pub fn is_moe(arch: &str) -> bool {
-    MOE_FAMILY.iter().any(|&a| a == arch)
+    MOE_FAMILY.contains(&arch)
 }
 
 pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
@@ -56,7 +57,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         .enumerate()
         .map(|(i, b)| (i as u32, *b))
         .collect();
-    layer_scores.sort_by(|a, b| b.1.cmp(&a.1));
+    layer_scores.sort_by_key(|&(_, b)| Reverse(b));
     let offload_layers: Vec<u32> = layer_scores
         .iter()
         .take(n_cpu_moe)
@@ -142,13 +143,13 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
 /// Pattern: `blk.N.ffn_{gate,up,down}_exps.weight` (and `_shexp` counterparts
 /// are *not* considered experts for offload purposes).
 pub(crate) fn is_expert_tensor(name: &str) -> bool {
-    if let Some(rest) = name.strip_prefix("blk.") {
-        if let Some((_, kind)) = rest.split_once('.') {
-            return (kind.starts_with("ffn_gate_exps")
-                || kind.starts_with("ffn_up_exps")
-                || kind.starts_with("ffn_down_exps"))
-                && !kind.contains("shexp");
-        }
+    if let Some(rest) = name.strip_prefix("blk.")
+        && let Some((_, kind)) = rest.split_once('.')
+    {
+        return (kind.starts_with("ffn_gate_exps")
+            || kind.starts_with("ffn_up_exps")
+            || kind.starts_with("ffn_down_exps"))
+            && !kind.contains("shexp");
     }
     false
 }

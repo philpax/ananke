@@ -20,7 +20,7 @@ pub const LLAMA_FAMILY: &[&str] = &[
 ];
 
 pub fn is_llama_family(arch: &str) -> bool {
-    LLAMA_FAMILY.iter().any(|&a| a == arch)
+    LLAMA_FAMILY.contains(&arch)
 }
 
 pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
@@ -91,10 +91,10 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
 pub(crate) fn collect_per_layer(summary: &GgufSummary, n_layers: u32) -> Vec<u64> {
     let mut out = vec![0u64; n_layers as usize];
     for tensor in summary.tensors.values() {
-        if let Some(idx) = layer_index(&tensor.name) {
-            if (idx as usize) < out.len() {
-                out[idx as usize] += tensor.byte_size;
-            }
+        if let Some(idx) = layer_index(&tensor.name)
+            && (idx as usize) < out.len()
+        {
+            out[idx as usize] += tensor.byte_size;
         }
     }
     out
