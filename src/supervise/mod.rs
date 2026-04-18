@@ -5,6 +5,7 @@ pub mod logs;
 pub mod orphans;
 pub mod spawn;
 
+pub use orphans::{OrphanDisposition, reconcile};
 pub use spawn::{SpawnConfig, render_argv};
 
 use std::sync::Arc;
