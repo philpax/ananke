@@ -3,4 +3,42 @@ name = "ananke"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "ananke"
+path = "src/main.rs"
+
+[lib]
+name = "ananke"
+path = "src/lib.rs"
+
 [dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "process", "time", "fs", "sync"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "client", "client-legacy", "http1"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+toml_edit = { version = "0.22", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+nvml-wrapper = "0.10"
+nix = { version = "0.29", features = ["signal", "fs", "process"] }
+# toasty = "..."  # TODO: add when rusqlite alone is insufficient (phase 5)
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures = "0.3"
+smol_str = { version = "0.3", features = ["serde"] }
+parking_lot = "0.12"
+libc = "0.2"
+
+[dev-dependencies]
+proptest = "1"
+pretty_assertions = "1"
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+
+[features]
+default = []
+test-fakes = []
