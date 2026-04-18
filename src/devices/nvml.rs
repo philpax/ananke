@@ -43,6 +43,28 @@ impl NvmlProbe {
     }
 }
 
+impl NvmlProbe {
+    pub fn running_pids_with_vram(&self, id: u32) -> Vec<(u32, u64)> {
+        let Ok(dev) = self.nvml.device_by_index(id) else {
+            return Vec::new();
+        };
+        dev.running_compute_processes()
+            .map(|procs| {
+                procs
+                    .into_iter()
+                    .filter_map(|p| {
+                        let used = match p.used_gpu_memory {
+                            nvml_wrapper::enums::device::UsedGpuMemory::Used(b) => b,
+                            nvml_wrapper::enums::device::UsedGpuMemory::Unavailable => 0,
+                        };
+                        if used > 0 { Some((p.pid, used)) } else { None }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 impl GpuProbe for NvmlProbe {
     fn list(&self) -> Vec<GpuInfo> {
         self.cache.lock().clone()
