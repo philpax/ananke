@@ -26,8 +26,8 @@ use ananke::allocator::AllocationTable;
 use ananke::app_state::AppState;
 use ananke::config::parse::RawService;
 use ananke::config::{
-    DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings, Lifecycle,
-    PlacementPolicy, ServiceConfig, Template,
+    AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
+    Lifecycle, PlacementPolicy, ServiceConfig, Template,
 };
 use ananke::db::Database;
 use ananke::db::logs::spawn as spawn_batcher;
@@ -173,6 +173,10 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
         filters: Filters::default(),
+        allocation_mode: AllocationMode::None,
+        command: None,
+        workdir: None,
+        openai_compat: true,
         raw: RawService {
             name: Some(SmolStr::new(name)),
             template: Some(SmolStr::new("llama-cpp")),

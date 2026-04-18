@@ -127,7 +127,8 @@ mod tests {
     use super::*;
     use crate::config::parse::RawService;
     use crate::config::validate::{
-        DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+        ServiceConfig, Template,
     };
     use crate::gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
     use smol_str::SmolStr;
@@ -225,6 +226,10 @@ mod tests {
             extended_stream_drain_ms: 1000,
             max_request_duration_ms: 1000,
             filters: Filters::default(),
+            allocation_mode: AllocationMode::None,
+            command: None,
+            workdir: None,
+            openai_compat: true,
             raw,
         }
     }

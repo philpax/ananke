@@ -10,6 +10,7 @@ use tracing::warn;
 use crate::config::parse::{RawConfig, RawService};
 use crate::errors::ExpectedError;
 
+
 #[derive(Debug, Clone)]
 pub struct EffectiveConfig {
     pub daemon: DaemonSettings,
@@ -41,12 +42,25 @@ pub struct ServiceConfig {
     pub drain_timeout_ms: u64,
     pub extended_stream_drain_ms: u64,
     pub max_request_duration_ms: u64,
+    pub allocation_mode: AllocationMode,
+    pub command: Option<Vec<String>>,
+    pub workdir: Option<PathBuf>,
+    pub openai_compat: bool,
     pub raw: RawService,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Template {
     LlamaCpp,
+    Command,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocationMode {
+    /// Llama-cpp services: placement decided by estimator/override; mode absent.
+    None,
+    Static { vram_mb: u64 },
+    Dynamic { min_mb: u64, max_mb: u64, min_borrower_runtime_ms: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,12 +144,66 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             .ok_or_else(|| fail(format!("service {name} missing template")))?;
         let template = match template_str.as_str() {
             "llama-cpp" => Template::LlamaCpp,
-            "command" => {
+            "command" => Template::Command,
+            other => return Err(fail(format!("service {name}: unknown template `{other}`"))),
+        };
+
+        let raw_alloc = raw.allocation.clone().unwrap_or_default();
+        let allocation_mode = match (template, raw_alloc.mode.as_deref()) {
+            (Template::LlamaCpp, Some(m)) => {
                 return Err(fail(format!(
-                    "service {name}: template `command` is deferred to phase 4"
+                    "service {name}: allocation.mode `{m}` invalid for llama-cpp \
+                     (use placement_override or estimator)"
                 )));
             }
-            other => return Err(fail(format!("service {name}: unknown template `{other}`"))),
+            (Template::LlamaCpp, None) => AllocationMode::None,
+            (Template::Command, Some("static")) => {
+                let gb = raw_alloc.vram_gb.ok_or_else(|| {
+                    fail(format!("service {name}: allocation.mode=static requires vram_gb"))
+                })?;
+                AllocationMode::Static { vram_mb: (gb * 1024.0) as u64 }
+            }
+            (Template::Command, Some("dynamic")) => {
+                let min = raw_alloc.min_vram_gb.ok_or_else(|| {
+                    fail(format!(
+                        "service {name}: allocation.mode=dynamic requires min_vram_gb"
+                    ))
+                })?;
+                let max = raw_alloc.max_vram_gb.ok_or_else(|| {
+                    fail(format!(
+                        "service {name}: allocation.mode=dynamic requires max_vram_gb"
+                    ))
+                })?;
+                if max <= min {
+                    return Err(fail(format!(
+                        "service {name}: max_vram_gb must be > min_vram_gb"
+                    )));
+                }
+                let runtime_ms = raw_alloc
+                    .min_borrower_runtime
+                    .as_deref()
+                    .map(parse_duration_ms)
+                    .transpose()
+                    .map_err(|e| {
+                        fail(format!("service {name} min_borrower_runtime: {e}"))
+                    })?
+                    .unwrap_or(60_000);
+                AllocationMode::Dynamic {
+                    min_mb: (min * 1024.0) as u64,
+                    max_mb: (max * 1024.0) as u64,
+                    min_borrower_runtime_ms: runtime_ms,
+                }
+            }
+            (Template::Command, Some(other)) => {
+                return Err(fail(format!(
+                    "service {name}: unknown allocation.mode `{other}`"
+                )));
+            }
+            (Template::Command, None) => {
+                return Err(fail(format!(
+                    "service {name}: command template requires allocation.mode (static|dynamic)"
+                )));
+            }
         };
 
         if !names.insert(name.clone()) {
@@ -189,7 +257,26 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
                     }
                 }
             }
+            Template::Command => {
+                let cmd = raw.command.as_ref().ok_or_else(|| {
+                    fail(format!("service {name}: command template requires `command`"))
+                })?;
+                if cmd.is_empty() {
+                    return Err(fail(format!("service {name}: command is empty")));
+                }
+            }
         }
+
+        let openai_compat = raw
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("openai_compat"))
+            .and_then(|v| match v {
+                toml::Value::Boolean(b) => Some(*b),
+                _ => None,
+            })
+            // llama-cpp defaults to true; command defaults to false.
+            .unwrap_or(template == Template::LlamaCpp);
 
         let dev = raw.devices.clone().unwrap_or_default();
         let placement_policy = match dev.placement.as_deref().unwrap_or("gpu-only") {
@@ -350,6 +437,10 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             drain_timeout_ms,
             extended_stream_drain_ms,
             max_request_duration_ms,
+            allocation_mode,
+            command: raw.command.clone(),
+            workdir: raw.workdir.clone(),
+            openai_compat,
             raw: raw.clone(),
         });
     }
@@ -393,7 +484,7 @@ fn toml_value_to_json(v: toml::Value) -> Result<serde_json::Value, String> {
     })
 }
 
-fn parse_duration_ms(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
     // Accepts "10m", "30s", "500ms", "2h". Returns milliseconds.
     let s = s.trim();
     if let Some(rest) = s.strip_suffix("ms") {
@@ -640,5 +731,99 @@ devices.placement_override = { "gpu:0" = 1000 }
         assert_eq!(parse_duration_ms("10m").unwrap(), 600_000);
         assert_eq!(parse_duration_ms("2h").unwrap(), 7_200_000);
         assert!(parse_duration_ms("bogus").is_err());
+    }
+
+    #[test]
+    fn command_template_with_static_allocation() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "comfy"
+template = "command"
+command = ["python", "main.py"]
+port = 8188
+lifecycle = "on_demand"
+allocation.mode = "static"
+allocation.vram_gb = 6
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let svc = &ec.services[0];
+        assert_eq!(svc.template, Template::Command);
+        assert!(matches!(svc.allocation_mode, AllocationMode::Static { vram_mb: 6144 }));
+    }
+
+    #[test]
+    fn command_template_with_dynamic_allocation() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "comfy"
+template = "command"
+command = ["python", "main.py"]
+port = 8188
+lifecycle = "on_demand"
+allocation.mode = "dynamic"
+allocation.min_vram_gb = 4
+allocation.max_vram_gb = 20
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let svc = &ec.services[0];
+        assert!(matches!(
+            svc.allocation_mode,
+            AllocationMode::Dynamic { min_mb: 4096, max_mb: 20480, .. }
+        ));
+    }
+
+    #[test]
+    fn llama_cpp_rejects_allocation_mode() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "llama"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+allocation.mode = "static"
+allocation.vram_gb = 4
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("allocation.mode"));
+    }
+
+    #[test]
+    fn command_rejects_missing_command() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "comfy"
+template = "command"
+port = 8188
+allocation.mode = "static"
+allocation.vram_gb = 6
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("requires `command`"));
+    }
+
+    #[test]
+    fn dynamic_rejects_max_le_min() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "comfy"
+template = "command"
+command = ["python"]
+port = 8188
+allocation.mode = "dynamic"
+allocation.min_vram_gb = 10
+allocation.max_vram_gb = 5
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("max_vram_gb"));
     }
 }

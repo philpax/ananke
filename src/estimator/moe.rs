@@ -106,8 +106,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     let kv_per_token = if n_layers > 0 && n_kv_heads > 0 {
         let per_layer_bytes_kv = n_kv_heads
             * ((key_length as f64 * kv::kv_bytes_per_element(cache_k))
-                + (value_length as f64 * kv::kv_bytes_per_element(cache_v)))
-                as u64;
+                + (value_length as f64 * kv::kv_bytes_per_element(cache_v))) as u64;
         n_layers as u64 * per_layer_bytes_kv
     } else {
         0
@@ -172,8 +171,8 @@ mod tests {
     fn n_cpu_moe_offloads_top_layers() {
         use crate::config::parse::RawService;
         use crate::config::validate::{
-            DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-            Template,
+            AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+            ServiceConfig, Template,
         };
         use crate::gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
         use smol_str::SmolStr;
@@ -262,6 +261,10 @@ mod tests {
             extended_stream_drain_ms: 1000,
             max_request_duration_ms: 1000,
             filters: Filters::default(),
+            allocation_mode: AllocationMode::None,
+            command: None,
+            workdir: None,
+            openai_compat: true,
             raw,
         };
 

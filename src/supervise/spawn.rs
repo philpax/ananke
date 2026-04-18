@@ -177,6 +177,14 @@ pub fn render_argv(
             args.push("--port".into());
             args.push(svc.private_port.to_string());
         }
+        Template::Command => {
+            // Argv rendering for command-template services is handled by
+            // the templates::placeholders module at spawn time; here we
+            // just record the raw command for use by the caller.
+            if let Some(cmd) = &svc.command {
+                args.extend(cmd.iter().cloned());
+            }
+        }
     }
 
     let mut env = BTreeMap::new();
@@ -187,11 +195,20 @@ pub fn render_argv(
     }
     env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
-    SpawnConfig {
-        binary: "llama-server".into(),
-        args,
-        env,
-    }
+    let binary = match svc.template {
+        Template::LlamaCpp => "llama-server".to_string(),
+        Template::Command => {
+            svc.command.as_ref().and_then(|c| c.first()).cloned().unwrap_or_default()
+        }
+    };
+    // For command template, the first element is the binary; remaining args follow.
+    let args = if svc.template == Template::Command {
+        args.into_iter().skip(1).collect()
+    } else {
+        args
+    };
+
+    SpawnConfig { binary, args, env }
 }
 
 /// Spawn the real llama-server child process.
@@ -258,7 +275,8 @@ mod tests {
     use super::*;
     use crate::config::parse::RawService;
     use crate::config::validate::{
-        DeviceSlot, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+        ServiceConfig, Template,
     };
 
     fn base_service() -> ServiceConfig {
@@ -289,12 +307,16 @@ mod tests {
             },
             placement_override: placement,
             placement_policy: PlacementPolicy::GpuOnly,
-            filters: Default::default(),
+            filters: Filters::default(),
             idle_timeout_ms: 600_000,
             warming_grace_ms: 60_000,
             drain_timeout_ms: 30_000,
             extended_stream_drain_ms: 30_000,
             max_request_duration_ms: 600_000,
+            allocation_mode: AllocationMode::None,
+            command: None,
+            workdir: None,
+            openai_compat: true,
             raw,
         }
     }
@@ -350,11 +372,7 @@ mod tests {
         let cmd = render_argv(&svc, &alloc, Some(&ca));
         let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
         assert_eq!(cmd.args[ngl_idx + 1], "24");
-        let ts_idx = cmd
-            .args
-            .iter()
-            .position(|a| a == "--tensor-split")
-            .unwrap();
+        let ts_idx = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();
         assert_eq!(cmd.args[ts_idx + 1], "12,12");
     }
 }

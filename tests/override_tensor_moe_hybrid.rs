@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use ananke::allocator::AllocationTable;
 use ananke::config::parse::RawService;
 use ananke::config::{
-    Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+    AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
 };
 use ananke::devices::{DeviceSnapshot, GpuSnapshot};
 use ananke::estimator;
@@ -37,6 +37,10 @@ fn moe_svc_with_override_tensor(model_path: std::path::PathBuf) -> ServiceConfig
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
         filters: Filters::default(),
+        allocation_mode: AllocationMode::None,
+        command: None,
+        workdir: None,
+        openai_compat: true,
         raw: RawService {
             name: Some(SmolStr::new("moe-ot-svc")),
             template: Some(SmolStr::new("llama-cpp")),

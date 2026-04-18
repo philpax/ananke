@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use ananke::config::parse::RawService;
 use ananke::config::{
-    DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+    AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+    Template,
 };
 use ananke::estimator;
 use common::synth_gguf;
@@ -39,6 +40,10 @@ fn svc_with_mmproj(model: PathBuf, mmproj: PathBuf) -> ServiceConfig {
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
         filters: Filters::default(),
+        allocation_mode: AllocationMode::None,
+        command: None,
+        workdir: None,
+        openai_compat: true,
         raw: RawService {
             name: Some(SmolStr::new("mmproj-svc")),
             template: Some(SmolStr::new("llama-cpp")),

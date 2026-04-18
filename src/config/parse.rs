@@ -9,6 +9,20 @@ use smol_str::SmolStr;
 use crate::errors::ExpectedError;
 
 #[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawAllocation {
+    pub mode: Option<SmolStr>,
+    /// Static allocation only: VRAM in GiB.
+    pub vram_gb: Option<f32>,
+    /// Dynamic allocation only: minimum VRAM in GiB.
+    pub min_vram_gb: Option<f32>,
+    /// Dynamic allocation only: maximum VRAM in GiB.
+    pub max_vram_gb: Option<f32>,
+    /// Balloon resolver grace period (default 60s); dynamic only.
+    pub min_borrower_runtime: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RawConfig {
     #[serde(default)]
@@ -132,6 +146,12 @@ pub struct RawService {
     pub max_request_duration: Option<String>,
     #[serde(default)]
     pub start_queue_depth: Option<usize>,
+    /// Command template: the argv to execute.
+    pub command: Option<Vec<String>>,
+    /// Command template: working directory for the spawned process.
+    pub workdir: Option<PathBuf>,
+    /// Allocation mode for command-template services.
+    pub allocation: Option<RawAllocation>,
 }
 
 impl RawService {

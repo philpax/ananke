@@ -98,11 +98,8 @@ pub fn pack(
         let reserved_here = sum_reserved(reserved, &DeviceSlot::Gpu(*gpu), &svc.name);
         gpu_remaining.insert(
             *gpu,
-            free.saturating_sub(reserved_here).saturating_sub(
-                *per_device
-                    .get(&DeviceSlot::Gpu(*gpu))
-                    .unwrap_or(&0),
-            ),
+            free.saturating_sub(reserved_here)
+                .saturating_sub(*per_device.get(&DeviceSlot::Gpu(*gpu)).unwrap_or(&0)),
         );
     }
 
@@ -126,9 +123,7 @@ pub fn pack(
             layers_on_cpu += 1;
         } else if !placed {
             return Err(PackError {
-                reason: format!(
-                    "layer {idx} ({bytes} bytes) does not fit on any allowed GPU"
-                ),
+                reason: format!("layer {idx} ({bytes} bytes) does not fit on any allowed GPU"),
             });
         }
     }
@@ -158,7 +153,9 @@ pub fn pack(
     // Step 3: add KV bytes to GPUs proportional to layers placed, or
     // CPU for layers that spilled.
     let n_layers = per_layer.len() as u32;
-    let kv_total = estimate.kv_per_token.saturating_mul(estimate.context as u64);
+    let kv_total = estimate
+        .kv_per_token
+        .saturating_mul(estimate.context as u64);
     if n_layers > 0 && kv_total > 0 {
         for gpu in &allowed_gpus {
             let share = layers_per_gpu.get(gpu).copied().unwrap_or(0);
@@ -252,16 +249,11 @@ fn allowed_gpu_list(svc: &ServiceConfig, snapshot: &DeviceSnapshot) -> Vec<u32> 
     if svc.placement_policy == PlacementPolicy::CpuOnly {
         return Vec::new();
     }
-    let declared_allow: Option<Vec<u32>> = svc
-        .raw
-        .devices
-        .as_ref()
-        .and_then(|d| d.gpu_allow.clone());
+    let declared_allow: Option<Vec<u32>> =
+        svc.raw.devices.as_ref().and_then(|d| d.gpu_allow.clone());
     let all: Vec<u32> = snapshot.gpus.iter().map(|g| g.id).collect();
     match declared_allow {
-        Some(list) if !list.is_empty() => {
-            list.into_iter().filter(|id| all.contains(id)).collect()
-        }
+        Some(list) if !list.is_empty() => list.into_iter().filter(|id| all.contains(id)).collect(),
         _ => all,
     }
 }
@@ -280,7 +272,7 @@ fn sum_reserved(table: &AllocationTable, slot: &DeviceSlot, exclude: &SmolStr) -
 mod tests {
     use super::*;
     use crate::config::parse::RawService;
-    use crate::config::validate::{Filters, HealthSettings, Lifecycle, Template};
+    use crate::config::validate::{AllocationMode, Filters, HealthSettings, Lifecycle, Template};
     use crate::devices::{CpuSnapshot, GpuSnapshot};
     use crate::estimator::NonLayer;
     use smol_str::SmolStr;
@@ -320,6 +312,10 @@ mod tests {
             extended_stream_drain_ms: 1000,
             max_request_duration_ms: 1000,
             filters: Filters::default(),
+            allocation_mode: AllocationMode::None,
+            command: None,
+            workdir: None,
+            openai_compat: true,
             raw,
         }
     }
@@ -388,8 +384,7 @@ mod tests {
         let e = trivial_estimate(10, 100);
         let snap = snapshot(&[0]); // GPU full
         let alloc = AllocationTable::new();
-        let packed =
-            pack(&e, &svc(PlacementPolicy::Hybrid, None), &snap, &alloc).unwrap();
+        let packed = pack(&e, &svc(PlacementPolicy::Hybrid, None), &snap, &alloc).unwrap();
         // All layers should have spilled to CPU.
         assert!(packed.allocation.bytes.contains_key(&DeviceId::Cpu));
     }
@@ -399,8 +394,7 @@ mod tests {
         let e = trivial_estimate(10, 100);
         let snap = snapshot(&[8]);
         let alloc = AllocationTable::new();
-        let packed =
-            pack(&e, &svc(PlacementPolicy::CpuOnly, None), &snap, &alloc).unwrap();
+        let packed = pack(&e, &svc(PlacementPolicy::CpuOnly, None), &snap, &alloc).unwrap();
         assert_eq!(packed.args.ngl, Some(0));
         assert!(packed.args.tensor_split.is_none());
     }

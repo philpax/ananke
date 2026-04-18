@@ -30,8 +30,10 @@ pub fn estimate_from_path(path: &Path, svc: &ServiceConfig) -> Result<Estimate, 
         match gguf::read(mmproj.as_path()) {
             Ok(proj) => {
                 est.weights_bytes = est.weights_bytes.saturating_add(proj.total_tensor_bytes);
-                est.non_layer.other_bytes =
-                    est.non_layer.other_bytes.saturating_add(proj.total_tensor_bytes);
+                est.non_layer.other_bytes = est
+                    .non_layer
+                    .other_bytes
+                    .saturating_add(proj.total_tensor_bytes);
             }
             Err(e) => warn!(error = %e, path = %mmproj.display(), "mmproj read failed"),
         }
@@ -63,7 +65,8 @@ mod tests {
     use super::*;
     use crate::config::parse::RawService;
     use crate::config::validate::{
-        DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+        ServiceConfig, Template,
     };
     use crate::gguf::types::{GgufSummary, GgufValue};
     use smol_str::SmolStr;
@@ -103,6 +106,10 @@ mod tests {
             extended_stream_drain_ms: 1000,
             max_request_duration_ms: 1000,
             filters: Filters::default(),
+            allocation_mode: AllocationMode::None,
+            command: None,
+            workdir: None,
+            openai_compat: true,
             raw,
         }
     }

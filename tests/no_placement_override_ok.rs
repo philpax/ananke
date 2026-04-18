@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use ananke::config::parse::RawService;
 use ananke::config::{
-    Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+    AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
 };
 use ananke::devices::{CpuSnapshot, DeviceSnapshot};
 use ananke::openai_api;
@@ -42,6 +42,10 @@ fn service_without_override(model_path: PathBuf) -> ServiceConfig {
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
         filters: Filters::default(),
+        allocation_mode: AllocationMode::None,
+        command: None,
+        workdir: None,
+        openai_compat: true,
         raw: RawService {
             name: Some(SmolStr::new("no-override")),
             template: Some(SmolStr::new("llama-cpp")),
