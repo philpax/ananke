@@ -16,6 +16,7 @@ pub mod gguf;
 pub mod inflight;
 pub mod management_api;
 pub mod observation;
+pub mod oneshot;
 pub mod openai_api;
 pub mod openapi;
 pub mod placement;
