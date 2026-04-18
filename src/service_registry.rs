@@ -114,6 +114,7 @@ mod tests {
         let allocations = Arc::new(parking_lot::Mutex::new(
             crate::allocator::AllocationTable::new(),
         ));
+        let inflight = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let handle = Arc::new(spawn_supervisor(
             svc.clone(),
             alloc,
@@ -125,6 +126,7 @@ mod tests {
             allocations,
             crate::rolling::RollingTable::new(),
             crate::observation::ObservationTable::new(),
+            inflight,
         ));
 
         let registry = ServiceRegistry::new();

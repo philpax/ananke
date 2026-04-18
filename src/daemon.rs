@@ -99,6 +99,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         let service_id = db.upsert_service(&svc.name, now_ms())?;
         let allocation = Allocation::from_override(&svc.placement_override);
         let last_activity = activity.get_or_init(&svc.name);
+        let inflight_counter = inflight.counter(&svc.name);
         let handle = Arc::new(spawn_supervisor(
             svc.clone(),
             allocation,
@@ -110,6 +111,7 @@ pub async fn run() -> Result<(), ExpectedError> {
             allocations.clone(),
             rolling.clone(),
             observation.clone(),
+            inflight_counter,
         ));
         registry.insert(svc.name.clone(), handle.clone());
 

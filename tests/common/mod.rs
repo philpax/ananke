@@ -24,7 +24,6 @@ use std::sync::Arc;
 use ananke::activity::ActivityTable;
 use ananke::allocator::AllocationTable;
 use ananke::app_state::AppState;
-use ananke::inflight::InflightTable;
 use ananke::config::parse::RawService;
 use ananke::config::{
     AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
@@ -33,6 +32,7 @@ use ananke::config::{
 use ananke::db::Database;
 use ananke::db::logs::spawn as spawn_batcher;
 use ananke::devices::{Allocation, CpuSnapshot, DeviceSnapshot};
+use ananke::inflight::InflightTable;
 use ananke::service_registry::ServiceRegistry;
 use ananke::snapshotter;
 use ananke::supervise::{SupervisorHandle, spawn_supervisor};
@@ -109,6 +109,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         let service_id = db.upsert_service(&svc.name, 0).unwrap();
         let alloc = Allocation::from_override(&svc.placement_override);
         let last_activity = activity.get_or_init(&svc.name);
+        let inflight_counter = ananke::inflight::InflightTable::new().counter(&svc.name);
         let handle = Arc::new(spawn_supervisor(
             svc.clone(),
             alloc,
@@ -120,6 +121,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             allocations.clone(),
             rolling.clone(),
             observation.clone(),
+            inflight_counter,
         ));
         registry.insert(svc.name.clone(), handle.clone());
         supervisors.push(handle);

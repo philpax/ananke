@@ -47,6 +47,16 @@ pub enum SupervisorCommand {
     },
     /// Record that a request was served; resets the idle timer.
     ActivityPing,
+    /// Enter the full drain pipeline for eviction / TTL / user-kill.
+    BeginDrain {
+        reason: crate::drain::DrainReason,
+        ack: tokio::sync::oneshot::Sender<()>,
+    },
+    /// Balloon-resolver fast-path: 5 s SIGTERM grace then SIGKILL.
+    FastKill {
+        reason: crate::drain::DrainReason,
+        ack: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 #[derive(Debug)]
@@ -136,6 +146,24 @@ impl SupervisorHandle {
     pub fn ping(&self) {
         let _ = self.tx.try_send(SupervisorCommand::ActivityPing);
     }
+
+    pub async fn begin_drain(&self, reason: crate::drain::DrainReason) {
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .tx
+            .send(SupervisorCommand::BeginDrain { reason, ack })
+            .await;
+        let _ = rx.await;
+    }
+
+    pub async fn fast_kill(&self, reason: crate::drain::DrainReason) {
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let _ = self
+            .tx
+            .send(SupervisorCommand::FastKill { reason, ack })
+            .await;
+        let _ = rx.await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -150,6 +178,7 @@ pub fn spawn_supervisor(
     allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
     rolling: RollingTable,
     observation: ObservationTable,
+    inflight: Arc<AtomicU64>,
 ) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(32);
     let name = svc.name.clone();
@@ -164,6 +193,7 @@ pub fn spawn_supervisor(
         allocations,
         rolling,
         observation,
+        inflight,
         rx,
     ));
     SupervisorHandle {
@@ -185,6 +215,7 @@ async fn run(
     allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
     rolling: RollingTable,
     observation: ObservationTable,
+    inflight: Arc<AtomicU64>,
     mut rx: mpsc::Receiver<SupervisorCommand>,
 ) {
     let mut state = ServiceState::Idle;
@@ -323,6 +354,13 @@ async fn run(
                             break;
                         }
                         Some(SupervisorCommand::ActivityPing) => {}
+                        // Service is not running; drain/kill commands are no-ops.
+                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                            let _ = ack.send(());
+                        }
+                        Some(SupervisorCommand::FastKill { ack, .. }) => {
+                            let _ = ack.send(());
+                        }
                         None => return,
                     }
                 }
@@ -564,6 +602,50 @@ async fn run(
                                                                     .as_millis() as u64;
                                                                 last_activity.store(now, Ordering::Relaxed);
                                                             }
+                                                            Some(SupervisorCommand::BeginDrain { reason, ack }) => {
+                                                                info!(service = %svc.name, ?reason, "BeginDrain received; draining");
+                                                                state = crate::state::ServiceState::Draining;
+                                                                *state_mirror.lock() = state.clone();
+
+                                                                let cfg = crate::drain::DrainConfig {
+                                                                    max_request_duration: Duration::from_millis(svc.max_request_duration_ms),
+                                                                    drain_timeout: Duration::from_millis(svc.drain_timeout_ms),
+                                                                    extended_stream_drain: Duration::from_millis(svc.extended_stream_drain_ms),
+                                                                    sigterm_grace: Duration::from_secs(10),
+                                                                };
+                                                                crate::drain::drain_pipeline(&mut child, &cfg, inflight.clone(), reason).await;
+
+                                                                let _ = db.with_conn(|c| c.execute(
+                                                                    "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
+                                                                    (service_id, run_id),
+                                                                ));
+                                                                rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
+                                                                observation.clear(&svc.name);
+                                                                allocations.lock().remove(&svc.name);
+
+                                                                let _ = ack.send(());
+                                                                state = ServiceState::Idle;
+                                                                *state_mirror.lock() = state.clone();
+                                                                break;
+                                                            }
+                                                            Some(SupervisorCommand::FastKill { reason, ack }) => {
+                                                                info!(service = %svc.name, ?reason, "FastKill received");
+                                                                state = crate::state::ServiceState::Draining;
+                                                                *state_mirror.lock() = state.clone();
+
+                                                                crate::drain::fast_kill(&mut child, reason).await;
+
+                                                                let _ = db.with_conn(|c| c.execute(
+                                                                    "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
+                                                                    (service_id, run_id),
+                                                                ));
+                                                                allocations.lock().remove(&svc.name);
+                                                                observation.clear(&svc.name);
+                                                                let _ = ack.send(());
+                                                                state = ServiceState::Idle;
+                                                                *state_mirror.lock() = state.clone();
+                                                                break;
+                                                            }
                                                             None => return,
                                                         }
                                                     }
@@ -624,6 +706,13 @@ async fn run(
                                             }
                                         }
                                         Some(SupervisorCommand::ActivityPing) => {}
+                                        // Service is not yet running; drain/kill are no-ops during starting.
+                                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                                            let _ = ack.send(());
+                                        }
+                                        Some(SupervisorCommand::FastKill { ack, .. }) => {
+                                            let _ = ack.send(());
+                                        }
                                         None => return,
                                     }
                                 }
@@ -689,6 +778,13 @@ async fn run(
                             });
                         }
                         Some(SupervisorCommand::ActivityPing) => {}
+                        // Service is disabled; drain/kill are no-ops.
+                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                            let _ = ack.send(());
+                        }
+                        Some(SupervisorCommand::FastKill { ack, .. }) => {
+                            let _ = ack.send(());
+                        }
                         None => return,
                     }
                 }

@@ -5,6 +5,7 @@ pub mod allocator;
 pub mod app_state;
 pub mod config;
 pub mod daemon;
+pub mod drain;
 pub mod db;
 pub mod devices;
 pub mod errors;
