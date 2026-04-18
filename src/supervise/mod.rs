@@ -221,8 +221,7 @@ async fn run(
                             allocations.lock().insert(svc.name.clone(), want);
 
                             // Create broadcast channel and subscribe the caller.
-                            let sender =
-                                tokio::sync::broadcast::channel::<StartOutcome>(16).0;
+                            let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
                             let bus_rx = sender.subscribe();
                             let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
                             start_bus_carry = Some(sender);

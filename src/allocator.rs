@@ -109,8 +109,7 @@ mod tests {
     fn no_fit_on_gpu() {
         let mut want = BTreeMap::new();
         want.insert(DeviceSlot::Gpu(0), mb(30 * 1024));
-        let err =
-            can_fit(&want, &snapshot_with(10, 100), &BTreeMap::new(), None).unwrap_err();
+        let err = can_fit(&want, &snapshot_with(10, 100), &BTreeMap::new(), None).unwrap_err();
         assert_eq!(err.slot, DeviceSlot::Gpu(0));
     }
 
@@ -153,8 +152,7 @@ mod tests {
     fn unknown_slot_is_no_fit_zero() {
         let mut want = BTreeMap::new();
         want.insert(DeviceSlot::Gpu(7), mb(1));
-        let err =
-            can_fit(&want, &snapshot_with(20, 100), &BTreeMap::new(), None).unwrap_err();
+        let err = can_fit(&want, &snapshot_with(20, 100), &BTreeMap::new(), None).unwrap_err();
         assert_eq!(err.slot, DeviceSlot::Gpu(7));
         assert_eq!(err.available_bytes, 0);
     }
