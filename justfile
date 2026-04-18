@@ -14,6 +14,7 @@ lint-rust:
 lint-frontend:
     cd frontend && npm run lint
 
+# Format Rust and TypeScript sources in place.
 fmt:
     cargo fmt --all
     cd frontend && npm run format
