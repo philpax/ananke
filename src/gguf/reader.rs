@@ -1,15 +1,20 @@
-//! Single-file GGUF reader, implemented as a thin adapter over the `gguf` crate.
+//! Single-file GGUF reader.
 //!
-//! The file is memory-mapped so multi-GB models never require a full heap
-//! allocation; the crate's parser then walks the mapped bytes in place.
+//! GGUF v3 layout: magic "GGUF" (4 bytes), version u32, tensor_count u64,
+//! kv_count u64, then kv_count metadata entries, then tensor_count
+//! tensor-info entries, then alignment padding, then the tensor data.
+//! This reader walks the header only; it never mmaps or loads tensor data.
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use smol_str::SmolStr;
 
 use super::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
+
+const MAGIC: &[u8; 4] = b"GGUF";
 
 #[derive(Debug)]
 pub struct ReadError(pub String);
@@ -24,20 +29,29 @@ impl std::error::Error for ReadError {}
 
 pub fn read_single(path: &Path) -> Result<GgufSummary, ReadError> {
     let file = File::open(path).map_err(|e| ReadError(format!("open {}: {e}", path.display())))?;
+    let mut r = BufReader::new(file);
 
-    // SAFETY: the file is not modified while we hold the map; we read it
-    // entirely within this function and drop the map before returning.
-    let mmap = unsafe {
-        memmap2::Mmap::map(&file).map_err(|e| ReadError(format!("mmap {}: {e}", path.display())))?
-    };
+    let mut magic = [0u8; 4];
+    r.read_exact(&mut magic)
+        .map_err(|e| ReadError(format!("read magic: {e}")))?;
+    if &magic != MAGIC {
+        return Err(ReadError(format!("bad magic: {magic:?}")));
+    }
 
-    let gguf_file = gguf::GGUFFile::read(&mmap)
-        .map_err(|e| ReadError(format!("parse {}: {e}", path.display())))?
-        .ok_or_else(|| ReadError(format!("incomplete data in {}", path.display())))?;
+    let version = read_u32(&mut r)?;
+    if version != 3 && version != 2 {
+        return Err(ReadError(format!("unsupported GGUF version {version}")));
+    }
 
-    let mut metadata: BTreeMap<SmolStr, GgufValue> = BTreeMap::new();
-    for entry in &gguf_file.header.metadata {
-        metadata.insert(SmolStr::new(&entry.key), convert_value(&entry.value));
+    let tensor_count = read_u64(&mut r)?;
+    let kv_count = read_u64(&mut r)?;
+
+    let mut metadata = BTreeMap::new();
+    for _ in 0..kv_count {
+        let key = read_string(&mut r)?;
+        let value_type = read_u32(&mut r)?;
+        let value = read_value(&mut r, value_type)?;
+        metadata.insert(SmolStr::new(&key), value);
     }
 
     let architecture = metadata
@@ -51,24 +65,30 @@ pub fn read_single(path: &Path) -> Result<GgufSummary, ReadError> {
         .get(block_count_key.as_str())
         .and_then(|v| v.as_u32());
 
-    let mut tensors: BTreeMap<SmolStr, GgufTensor> = BTreeMap::new();
+    let mut tensors = BTreeMap::new();
     let mut total_tensor_bytes = 0u64;
 
-    for tensor_info in &gguf_file.tensors {
-        let dtype = convert_ggml_type(tensor_info.tensor_type);
-        let shape = tensor_info.dimensions.clone();
+    for _ in 0..tensor_count {
+        let name = read_string(&mut r)?;
+        let n_dims = read_u32(&mut r)?;
+        let mut shape = Vec::with_capacity(n_dims as usize);
+        for _ in 0..n_dims {
+            shape.push(read_u64(&mut r)?);
+        }
+        let dtype = GgufType::from_u32(read_u32(&mut r)?);
+        let offset = read_u64(&mut r)?;
         let byte_size = tensor_byte_size(dtype, &shape);
         total_tensor_bytes += byte_size;
-        let name = SmolStr::new(&tensor_info.name);
+        let sname = SmolStr::new(&name);
         tensors.insert(
-            name.clone(),
+            sname.clone(),
             GgufTensor {
-                name,
+                name: sname,
                 dtype,
                 shape,
                 byte_size,
                 shard_idx: 0,
-                offset: tensor_info.offset,
+                offset,
             },
         );
     }
@@ -84,68 +104,97 @@ pub fn read_single(path: &Path) -> Result<GgufSummary, ReadError> {
     })
 }
 
-/// Convert a crate `GGMLType` to our `GgufType`.
-///
-/// The `gguf` 0.1.2 crate only covers the original GGML type table up to
-/// `Count` (numeric id 19). Newer quantisation formats (IQ-series, BF16,
-/// I64, F64) are beyond that range and will have caused a parse error before
-/// this function is reached, so only the types the crate actually recognises
-/// appear here.
-fn convert_ggml_type(t: gguf::GGMLType) -> GgufType {
-    use gguf::GGMLType;
-    match t {
-        GGMLType::F32 => GgufType::F32,
-        GGMLType::F16 => GgufType::F16,
-        GGMLType::Q4_0 => GgufType::Q4_0,
-        GGMLType::Q4_1 => GgufType::Q4_1,
-        GGMLType::Q5_0 => GgufType::Q5_0,
-        GGMLType::Q5_1 => GgufType::Q5_1,
-        GGMLType::Q8_0 => GgufType::Q8_0,
-        GGMLType::Q8_1 => GgufType::Q8_1,
-        GGMLType::Q2K => GgufType::Q2K,
-        GGMLType::Q3K => GgufType::Q3K,
-        GGMLType::Q4K => GgufType::Q4K,
-        GGMLType::Q5K => GgufType::Q5K,
-        GGMLType::Q6K => GgufType::Q6K,
-        GGMLType::Q8K => GgufType::Q8K,
-        // The crate's I8/I16/I32 map to discriminant values 16/17/18 in its
-        // own enum, which differ from the current GGML spec (24/25/26). Files
-        // produced by current llama.cpp will never reach this path because
-        // the crate's parser errors on values > 19 before we get here.
-        GGMLType::I8 => GgufType::I8,
-        GGMLType::I16 => GgufType::I16,
-        GGMLType::I32 => GgufType::I32,
-        // Count is a sentinel, not a real type; treat it as unknown.
-        GGMLType::Count => GgufType::Unknown(19),
-    }
+fn read_u8<R: Read>(r: &mut R) -> Result<u8, ReadError> {
+    let mut b = [0u8; 1];
+    r.read_exact(&mut b)
+        .map_err(|e| ReadError(format!("read u8: {e}")))?;
+    Ok(b[0])
 }
 
-/// Convert a crate `GGUFMetadataValue` to our `GgufValue`.
-fn convert_value(v: &gguf::GGUFMetadataValue) -> GgufValue {
-    use gguf::GGUFMetadataValue;
-    match v {
-        GGUFMetadataValue::Uint8(x) => GgufValue::U8(*x),
-        GGUFMetadataValue::Int8(x) => GgufValue::I8(*x),
-        GGUFMetadataValue::Uint16(x) => GgufValue::U16(*x),
-        GGUFMetadataValue::Int16(x) => GgufValue::I16(*x),
-        GGUFMetadataValue::Uint32(x) => GgufValue::U32(*x),
-        GGUFMetadataValue::Int32(x) => GgufValue::I32(*x),
-        GGUFMetadataValue::Float32(x) => GgufValue::F32(*x),
-        GGUFMetadataValue::Uint64(x) => GgufValue::U64(*x),
-        GGUFMetadataValue::Int64(x) => GgufValue::I64(*x),
-        GGUFMetadataValue::Float64(x) => GgufValue::F64(*x),
-        GGUFMetadataValue::Bool(x) => GgufValue::Bool(*x),
-        GGUFMetadataValue::String(x) => GgufValue::String(x.clone()),
-        GGUFMetadataValue::Array(arr) => {
-            GgufValue::Array(arr.value.iter().map(convert_value).collect())
+fn read_i8<R: Read>(r: &mut R) -> Result<i8, ReadError> {
+    Ok(read_u8(r)? as i8)
+}
+
+fn read_u16<R: Read>(r: &mut R) -> Result<u16, ReadError> {
+    let mut b = [0u8; 2];
+    r.read_exact(&mut b)
+        .map_err(|e| ReadError(format!("read u16: {e}")))?;
+    Ok(u16::from_le_bytes(b))
+}
+
+fn read_i16<R: Read>(r: &mut R) -> Result<i16, ReadError> {
+    Ok(read_u16(r)? as i16)
+}
+
+fn read_u32<R: Read>(r: &mut R) -> Result<u32, ReadError> {
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)
+        .map_err(|e| ReadError(format!("read u32: {e}")))?;
+    Ok(u32::from_le_bytes(b))
+}
+
+fn read_i32<R: Read>(r: &mut R) -> Result<i32, ReadError> {
+    Ok(read_u32(r)? as i32)
+}
+
+fn read_u64<R: Read>(r: &mut R) -> Result<u64, ReadError> {
+    let mut b = [0u8; 8];
+    r.read_exact(&mut b)
+        .map_err(|e| ReadError(format!("read u64: {e}")))?;
+    Ok(u64::from_le_bytes(b))
+}
+
+fn read_i64<R: Read>(r: &mut R) -> Result<i64, ReadError> {
+    Ok(read_u64(r)? as i64)
+}
+
+fn read_f32<R: Read>(r: &mut R) -> Result<f32, ReadError> {
+    Ok(f32::from_bits(read_u32(r)?))
+}
+
+fn read_f64<R: Read>(r: &mut R) -> Result<f64, ReadError> {
+    Ok(f64::from_bits(read_u64(r)?))
+}
+
+fn read_bool<R: Read>(r: &mut R) -> Result<bool, ReadError> {
+    Ok(read_u8(r)? != 0)
+}
+
+fn read_string<R: Read>(r: &mut R) -> Result<String, ReadError> {
+    let len = read_u64(r)? as usize;
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)
+        .map_err(|e| ReadError(format!("read string bytes: {e}")))?;
+    String::from_utf8(buf).map_err(|e| ReadError(format!("utf8: {e}")))
+}
+
+fn read_value<R: Read>(r: &mut R, tag: u32) -> Result<GgufValue, ReadError> {
+    Ok(match tag {
+        0 => GgufValue::U8(read_u8(r)?),
+        1 => GgufValue::I8(read_i8(r)?),
+        2 => GgufValue::U16(read_u16(r)?),
+        3 => GgufValue::I16(read_i16(r)?),
+        4 => GgufValue::U32(read_u32(r)?),
+        5 => GgufValue::I32(read_i32(r)?),
+        6 => GgufValue::F32(read_f32(r)?),
+        7 => GgufValue::Bool(read_bool(r)?),
+        8 => GgufValue::String(read_string(r)?),
+        9 => {
+            let inner = read_u32(r)?;
+            let n = read_u64(r)? as usize;
+            let mut v = Vec::with_capacity(n);
+            for _ in 0..n {
+                v.push(read_value(r, inner)?);
+            }
+            GgufValue::Array(v)
         }
-    }
+        10 => GgufValue::U64(read_u64(r)?),
+        11 => GgufValue::I64(read_i64(r)?),
+        12 => GgufValue::F64(read_f64(r)?),
+        other => return Err(ReadError(format!("unknown metadata type {other}"))),
+    })
 }
 
-/// Compute the on-disk byte size of a tensor from its dtype and shape.
-///
-/// All block-quantised formulas use integer arithmetic to avoid floating-point
-/// rounding; the divisor is the super-block element count.
 fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
     let elements: u64 = shape.iter().product();
     match dtype {
@@ -153,7 +202,7 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::F16 | GgufType::BF16 | GgufType::I16 => elements * 2,
         GgufType::I8 => elements,
         GgufType::I64 | GgufType::F64 => elements * 8,
-        GgufType::Q8_0 => elements * 34 / 32, // block=32, 34 bytes/block ≈ 1.0625 bpe
+        GgufType::Q8_0 => elements * 34 / 32,      // block=32, 34 bytes/block ≈ 1.0625 bpe
         GgufType::Q8_1 => elements * 36 / 32,
         GgufType::Q4_0 | GgufType::IQ4_NL => elements * 18 / 32, // 0.5625 bpe
         GgufType::Q4_1 => elements * 20 / 32,
@@ -231,6 +280,6 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), b"XXXXdata").unwrap();
         let err = read_single(tmp.path()).unwrap_err();
-        assert!(err.0.contains("bad magic") || err.0.contains("parse"));
+        assert!(err.0.contains("bad magic"));
     }
 }
