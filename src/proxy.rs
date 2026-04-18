@@ -2,6 +2,8 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -17,6 +19,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::errors::ExpectedError;
+use crate::inflight::InflightGuard;
 
 /// Boxed body type used for both upstream requests and downstream responses.
 type ProxyBody =
@@ -68,14 +71,16 @@ pub async fn serve(
 
 /// Like [`serve`] but calls `on_request()` before forwarding each request, so the
 /// caller can record activity timestamps without coupling the proxy to the activity
-/// module directly.
-pub async fn serve_with_activity<F: Fn() + Send + Sync + 'static>(
+/// module directly. Also accepts an `inflight_counter` that is incremented for each
+/// in-flight request and decremented when the response (including streaming body)
+/// completes.
+pub async fn serve_with_activity(
     listen: SocketAddr,
     upstream_port: u16,
     mut shutdown: watch::Receiver<bool>,
-    on_request: F,
+    on_request: Arc<dyn Fn() + Send + Sync>,
+    inflight_counter: Arc<AtomicU64>,
 ) -> Result<(), ExpectedError> {
-    let on_request = std::sync::Arc::new(on_request);
     let listener = TcpListener::bind(listen)
         .await
         .map_err(|e| ExpectedError::bind_failed(listen.to_string(), e.to_string()))?;
@@ -99,11 +104,16 @@ pub async fn serve_with_activity<F: Fn() + Send + Sync + 'static>(
                 let io = TokioIo::new(stream);
                 let client = client.clone();
                 let on_request = on_request.clone();
+                let counter = inflight_counter.clone();
                 tokio::spawn(async move {
                     let svc = service_fn(move |req: Request<Incoming>| {
                         (on_request)();
+                        let counter = counter.clone();
                         let client = client.clone();
-                        async move { handle(req, client, upstream_port, peer).await }
+                        async move {
+                            let _guard = InflightGuard::new(counter);
+                            handle(req, client, upstream_port, peer).await
+                        }
                     });
                     if let Err(e) = auto::Builder::new(TokioExecutor::new())
                         .serve_connection(io, svc)

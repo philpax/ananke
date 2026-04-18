@@ -39,6 +39,7 @@ utoipa-axum = "0.2"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 async-trait = "0.1"
+pin-project-lite = "0.2"
 
 [dev-dependencies]
 proptest = "1"

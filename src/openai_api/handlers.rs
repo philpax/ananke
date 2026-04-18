@@ -1,5 +1,6 @@
 //! Handlers for /v1/models and the three POST body-rewriting endpoints.
 
+use std::task::Poll;
 use std::time::Duration;
 
 use axum::Json;
@@ -11,12 +12,13 @@ use axum::routing::{Router, get, post};
 use bytes::Bytes;
 use futures::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
-use hyper::body::Frame;
+use hyper::body::{Frame, SizeHint};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::app_state::AppState;
+use crate::inflight::InflightGuard;
 use crate::openai_api::errors;
 use crate::openai_api::filters;
 use crate::openai_api::schema::{
@@ -24,6 +26,36 @@ use crate::openai_api::schema::{
 };
 use crate::state::ServiceState;
 use crate::supervise::{EnsureResponse, StartFailureKind, StartOutcome};
+
+pin_project_lite::pin_project! {
+    /// Wraps a body and holds an [`InflightGuard`] so the counter stays elevated
+    /// until the full response body (including SSE streams) has been consumed.
+    struct GuardedBody<B> {
+        #[pin]
+        body: B,
+        _guard: InflightGuard,
+    }
+}
+
+impl<B: hyper::body::Body> hyper::body::Body for GuardedBody<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.project().body.poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
+}
 
 pub fn register(router: Router, state: AppState) -> Router {
     // Build the main routes against AppState, collapse to Router<()>, then
@@ -179,8 +211,10 @@ async fn forward_json_post(
         Err(e) => return errors::bad_request(format!("re-serialise failed: {e}")),
     };
 
-    // Bump activity.
+    // Bump activity and acquire an in-flight guard before forwarding.
     state.activity.ping(&svc.name);
+    let counter = state.inflight.counter(&svc.name);
+    let guard = InflightGuard::new(counter);
 
     // Build hyper client and forward to the upstream service.
     let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
@@ -219,8 +253,8 @@ async fn forward_json_post(
 
     let (parts, upstream_body) = resp.into_parts();
     // Convert the upstream body into a stream of data frames for axum to proxy.
-    // We convert to a BoxBody so the opaque Body::new bound (HttpBody<Data=Bytes>)
-    // is satisfied without threading through the full generic chain.
+    // Wrap in GuardedBody so the in-flight counter stays elevated for the full
+    // duration of the response, including SSE streams.
     let stream = upstream_body.into_data_stream().map_ok(Frame::data);
     let boxed: http_body_util::combinators::BoxBody<
         Bytes,
@@ -230,7 +264,11 @@ async fn forward_json_post(
         |e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) },
     )
     .boxed();
-    let axum_body = Body::new(boxed);
+    let guarded = GuardedBody {
+        body: boxed,
+        _guard: guard,
+    };
+    let axum_body = Body::new(guarded);
     let mut out = Response::from_parts(parts, axum_body);
     out.headers_mut().remove(hyper::header::CONNECTION);
     out.headers_mut().remove("transfer-encoding");

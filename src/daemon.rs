@@ -14,12 +14,12 @@ use tracing::{error, info, warn};
 use crate::activity::ActivityTable;
 use crate::allocator::AllocationTable;
 use crate::app_state::AppState;
-use crate::inflight::InflightTable;
 use crate::config::{Lifecycle, Migration, load_config};
 use crate::db::Database;
 use crate::db::logs::spawn as spawn_batcher;
 use crate::devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe};
 use crate::errors::ExpectedError;
+use crate::inflight::InflightTable;
 use crate::proxy;
 use crate::retention;
 use crate::service_registry::ServiceRegistry;
@@ -132,11 +132,20 @@ pub async fn run() -> Result<(), ExpectedError> {
         let upstream = svc.private_port;
         let name = svc.name.clone();
         let activity_for_proxy = activity.clone();
+        let inflight_counter = inflight.counter(&svc.name);
         proxy_tasks.push(tokio::spawn(async move {
             let name_ping = name.clone();
-            let ping_cb = move || activity_for_proxy.ping(&name_ping);
-            if let Err(e) =
-                proxy::serve_with_activity(listen, upstream, shutdown_rx2, ping_cb).await
+            let on_request = std::sync::Arc::new(move || {
+                activity_for_proxy.ping(&name_ping);
+            }) as std::sync::Arc<dyn Fn() + Send + Sync>;
+            if let Err(e) = proxy::serve_with_activity(
+                listen,
+                upstream,
+                shutdown_rx2,
+                on_request,
+                inflight_counter,
+            )
+            .await
             {
                 error!(service = %name, error = %e, "proxy failed");
             }
