@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use smol_str::SmolStr;
+use tracing::warn;
 
 use crate::config::parse::{RawConfig, RawService};
 use crate::errors::ExpectedError;
@@ -206,13 +207,15 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             other => return Err(fail(format!("service {name}: unknown placement `{other}`"))),
         };
 
-        let raw_override = dev.placement_override.clone().ok_or_else(|| {
-            fail(format!(
-                "service {name}: devices.placement_override is required in phase 1 \
-                 (estimator lands in phase 3)"
-            ))
-        })?;
-        if raw_override.is_empty() {
+        if raw.context.is_none() {
+            warn!(
+                service = %name,
+                "no context set; the estimator will default to 4096 tokens"
+            );
+        }
+
+        let raw_override = dev.placement_override.clone().unwrap_or_default();
+        if dev.placement_override.is_some() && raw_override.is_empty() {
             return Err(fail(format!(
                 "service {name}: devices.placement_override is empty"
             )));
@@ -460,7 +463,7 @@ lifecycle = "persistent"
     }
 
     #[test]
-    fn rejects_missing_placement_override() {
+    fn phase3_accepts_missing_placement_override() {
         let cfg = parse_and_merge(
             r#"
 [[service]]
@@ -468,12 +471,14 @@ name = "demo"
 template = "llama-cpp"
 model = "/m/x.gguf"
 port = 11435
+context = 4096
 devices.placement = "gpu-only"
 lifecycle = "persistent"
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("placement_override"));
+        let ec = validate(&cfg).unwrap();
+        // placement_override is empty — the estimator will handle placement at runtime.
+        assert!(ec.services[0].placement_override.is_empty());
     }
 
     #[test]
