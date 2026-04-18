@@ -2,10 +2,29 @@
 
 The repository contains two main components:
 
-- The Rust backend at the crate root (`src/`, `Cargo.toml`).
+- The Rust backend at the crate root (`src/`, `Cargo.toml`), which produces two binaries: `ananke` (the daemon) and `anankectl` (the CLI).
 - The frontend at `frontend/`, which is the web UI for this project. It is a Vite-based React 19 application written in TypeScript, styled with Tailwind CSS 4, and built with the React Compiler enabled.
 
 Both components share the general conventions below. The Rust- and TypeScript-specific sections that follow apply to their respective trees.
+
+### Platform scope
+
+v1 targets Linux only — the daemon depends on NVML, `/proc`, and `prctl`, none of which have direct equivalents elsewhere. Linux-specific code is fine today; write it directly rather than introducing cross-platform shims that don't yet have a second platform to justify them. When a second platform does land, follow the cross-platform guidance under "User experience as a primary driver" and keep OS-specific logic behind `#[cfg(...)]` boundaries.
+
+### Task automation
+
+A top-level `justfile` is the canonical entry point for project-wide tasks: regenerating types, running both linters together, release flows, etc. It is not yet present — add it when the first cross-cutting recipe appears, and put future cross-cutting recipes there rather than inventing parallel scripts. Component-local invocations (`cargo …`, `npm run …`) stay where they are; `just` is for things that span the two halves or encode a multi-step flow.
+
+### The Rust ↔ TypeScript boundary
+
+All types that cross the wire between the Rust backend and the TypeScript frontend are **generated, not hand-written**. This is a hard rule, because hand-maintained duplicate type definitions are the single biggest source of silent drift in two-language projects.
+
+The pipeline is not yet wired up — implement it when the first API handler lands, and keep it as the only way cross-boundary types enter the frontend:
+
+- Rust handlers are annotated with `utoipa`. The daemon serves the live schema at `/api/openapi.json`.
+- `just gen-types` runs `openapi-typescript` to produce `frontend/src/api/types.ts` and `orval` to produce typed React Query hooks in `frontend/src/api/client.ts`.
+- CI enforces that the generated files are up to date. A PR that changes an API handler without regenerating fails.
+- The frontend never declares an inline TypeScript type to describe an API payload; always import from the generated module.
 
 ## General conventions
 
@@ -101,6 +120,21 @@ Within each module, organize code as follows:
 - Careful attention to cloning referencing. Avoid cloning if code has a natural tree structure.
 - Stream data (e.g. iterators) where possible rather than buffering.
 
+### Chosen dependencies
+
+The Rust stack is chosen; don't silently introduce alternatives when one of these already covers the need. Most are not yet added — pull them in when the corresponding subsystem is first implemented, and prefer these over comparable crates unless there's a concrete reason not to.
+
+- **Async runtime**: `tokio` (multi-threaded).
+- **HTTP**: `hyper` for the proxy data plane; `axum` for the management and OpenAI-compatible routing surface.
+- **OpenAPI generation**: `utoipa` annotations on handlers, served at `/api/openapi.json`.
+- **GPU probing**: `nvml-wrapper` (behind a `GpuProbe` trait so ROCm/XPU can slot in later).
+- **Config watching**: `notify`.
+- **TOML**: `toml_edit` for parse-preserving read/write (needed so the config editor keeps comments and formatting).
+- **Database**: `toasty` over SQLite; keep a raw-SQL migration fallback path.
+- **Logging**: `tracing` to stderr; journald captures it under systemd.
+- **Child supervision**: `nix` for `prctl(PR_SET_PDEATHSIG)` and related Linux-specific calls.
+- **GGUF**: start with the `gguf` crate; fall back to a small custom reader if it can't enumerate the tensor table or handle sharded files.
+
 ## TypeScript code style
 
 The same correctness-first mindset that governs the Rust side applies here: TypeScript's type system is strong enough to encode most of the same invariants, and it should be pushed to do so. "Just cast it" is not an acceptable answer.
@@ -161,12 +195,30 @@ Treat these as the TypeScript analogues of the Rust patterns above. The goal is 
 - Use named exports by default. Reserve default exports for cases where a framework or tool requires them (e.g. route modules, some Vite entry points).
 - Keep file layout consistent with the Rust convention: public API first, private helpers below, ordered by use.
 
+### Chosen dependencies
+
+Same principle as the Rust side: the frontend stack is chosen, and most of these will be added only when first needed. Prefer them over alternatives unless there's a concrete reason.
+
+- **Build tool**: Vite (already in place).
+- **UI**: React 19 with the React Compiler; Tailwind CSS 4 (already in place).
+- **Server state**: TanStack Query, with typed hooks generated by `orval` from the daemon's OpenAPI schema.
+- **API types**: `openapi-typescript` generates raw types; `orval` generates the hooks on top. See "The Rust ↔ TypeScript boundary" above.
+- **Code editor component**: CodeMirror 6 (for the in-app TOML config editor).
+
 ## Testing 
 
-### Testing tools
+### Rust testing tools
 
 - **test-case**: For parameterized tests.
 - **proptest**: For property-based testing.
 - **insta**: For snapshot testing.
 - **libtest-mimic**: For custom test harnesses.
 - **pretty_assertions**: For better assertion output.
+
+### Frontend testing tools
+
+No frontend tests exist yet, and none are required until the UI has logic worth testing on its own terms. When the first test lands, use these rather than reaching for alternatives:
+
+- **Vitest**: Unit and component tests. Natural fit alongside Vite; shares the same config surface.
+- **React Testing Library**: For component tests — query by user-visible semantics, not implementation details.
+- **Playwright**: For end-to-end flows against a running daemon + frontend, if and when one is justified. Do not reach for this for what a component test can cover.
