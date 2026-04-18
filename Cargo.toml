@@ -19,6 +19,7 @@ http = "1"
 http-body-util = "0.1"
 bytes = "1"
 toml_edit = { version = "0.22", features = ["serde"] }
+toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
