@@ -173,8 +173,9 @@ async fn run(
                                         Ok(HealthOutcome::Healthy) => {
                                             state = transition(&state, StateEvent::HealthPassed).unwrap();
                                             *state_mirror.lock() = state.clone();
-                                            // Warming grace.
+                                            // Warming grace — also listen for shutdown and child exit.
                                             let grace = Duration::from_millis(svc.warming_grace_ms);
+                                            let mut bail = false;
                                             tokio::select! {
                                                 _ = tokio::time::sleep(grace) => {
                                                     state = transition(&state, StateEvent::WarmingComplete).unwrap();
@@ -184,9 +185,26 @@ async fn run(
                                                     warn!("child exited during warming grace");
                                                     state = ServiceState::Failed { retry_count: 0 };
                                                     *state_mirror.lock() = state.clone();
-                                                    break;
+                                                    bail = true;
+                                                }
+                                                cmd = rx.recv() => {
+                                                    if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
+                                                        info!(service = %svc.name, "draining during warming");
+                                                        let _ = cancel_tx.send(true);
+                                                        send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
+                                                        let _ = db.with_conn(|c| c.execute(
+                                                            "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
+                                                            (service_id, run_id),
+                                                        ));
+                                                        let _ = ack.send(());
+                                                        return;
+                                                    }
+                                                    // Snapshot or channel-closed: fall through to warming complete.
+                                                    state = transition(&state, StateEvent::WarmingComplete).unwrap();
+                                                    *state_mirror.lock() = state.clone();
                                                 }
                                             }
+                                            if bail { break; }
 
                                             // Running: wait for child exit or shutdown command.
                                             tokio::select! {

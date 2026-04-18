@@ -8,6 +8,10 @@ Real-hardware validation outside CI. Run once before declaring phase 1 done.
 - `llama-server` on `$PATH` (build from llama.cpp `master` or install prebuilt binary).
 - A small GGUF (`qwen3-4b-instruct-q5_k_xl.gguf` or similar) under `$HOME/models/`.
 
+### NixOS note
+
+On NixOS the NVIDIA userspace libraries do not live on the default loader path. Run ananke with `LD_LIBRARY_PATH=/run/opengl-driver/lib` so `nvml-wrapper` can find `libnvidia-ml.so.1`. The daemon falls back to CPU-only observation if NVML fails to load, and placement-override services still spawn with the correct `CUDA_VISIBLE_DEVICES` — but VRAM observation and later phases' scheduler depend on NVML. The phase 7 Nix module will set this automatically.
+
 ## Steps
 
 1. Build release:
