@@ -19,7 +19,7 @@ Non-goals for this phase: eviction, dynamic/command template, oneshots, full man
 - Enumerate metadata key-value pairs as typed `GgufValue`.
 - Handle sharded GGUFs per spec §8.3: read shard 0 header, follow `split.count` and `split.tensors.count`; walk remaining shards summing tensor bytes.
 - Detect shard-0 from any shard via `split.no` + the conventional `{basename}-{NNNNN}-of-{MMMMM}.gguf` naming.
-- Start with the `gguf` crate; fall back to a custom `~200`-line reader if it doesn't expose tensor-table enumeration.
+- **Custom 285-line reader, not the `gguf` crate.** The `gguf` 0.1.2 crate has a stale type table (last update covers only through pre-IQ quants) and hard-fails on BF16, IQ2/IQ3/IQ4/IQ1 variants, and has wrong discriminants for I8/I16/I32. `llama-gguf` pulls a full inference engine; `gguf-utils` / `gguf-rs-lib` have undocumented coverage. Our 285-line reader encodes the current GGML type table exactly and is the safe baseline until one of those crates catches up.
 
 **Architecture-aware estimator** (`src/estimator/`), dispatched on `general.architecture`:
 
