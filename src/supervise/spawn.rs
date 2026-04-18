@@ -2,9 +2,12 @@
 //! the child with `prctl(PR_SET_PDEATHSIG, SIGTERM)`.
 
 use std::collections::BTreeMap;
+#[cfg(not(feature = "test-fakes"))]
 use std::ffi::OsString;
 
+#[cfg(not(feature = "test-fakes"))]
 use nix::sys::prctl;
+#[cfg(not(feature = "test-fakes"))]
 use nix::sys::signal::Signal;
 use tokio::process::{Child, Command};
 
@@ -153,6 +156,11 @@ pub fn render_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
     }
 }
 
+/// Spawn the real llama-server child process.
+///
+/// Uses `prctl(PR_SET_PDEATHSIG, SIGTERM)` so the child is killed if the
+/// daemon exits before explicitly terminating it.
+#[cfg(not(feature = "test-fakes"))]
 pub async fn spawn_child(cfg: &SpawnConfig) -> Result<Child, ExpectedError> {
     let mut cmd = Command::new(&cfg.binary);
     cmd.args(cfg.args.iter().map(OsString::from));
@@ -177,6 +185,27 @@ pub async fn spawn_child(cfg: &SpawnConfig) -> Result<Child, ExpectedError> {
         ExpectedError::config_unparseable(
             std::path::PathBuf::from("<spawn>"),
             format!("spawn {}: {e}", cfg.binary),
+        )
+    })
+}
+
+/// Fake spawn for integration tests.
+///
+/// Spawns a long-running `/bin/sh -c 'sleep 300'` that keeps the process
+/// alive while the echo server (co-located in the harness on the same
+/// `private_port`) serves HTTP. `kill_on_drop(true)` ensures cleanup.
+#[cfg(feature = "test-fakes")]
+pub async fn spawn_child(_cfg: &SpawnConfig) -> Result<Child, ExpectedError> {
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", "sleep 300"]);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    cmd.spawn().map_err(|e| {
+        ExpectedError::config_unparseable(
+            std::path::PathBuf::from("<fake-spawn>"),
+            format!("fake spawn failed: {e}"),
         )
     })
 }
