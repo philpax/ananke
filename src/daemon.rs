@@ -66,12 +66,21 @@ pub async fn run() -> Result<(), ExpectedError> {
     let batcher = spawn_batcher(db.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let rolling = crate::rolling::RollingTable::new();
+    let observation = crate::observation::ObservationTable::new();
+    let registry = ServiceRegistry::new();
+
     let shared_snapshot = snapshotter::new_shared();
-    let snapshotter_join = snapshotter::spawn(shared_snapshot.clone(), probe, shutdown_rx.clone());
+    let snapshotter_join = snapshotter::spawn(
+        shared_snapshot.clone(),
+        probe,
+        observation.clone(),
+        registry.clone(),
+        shutdown_rx.clone(),
+    );
 
     let activity = ActivityTable::new();
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
-    let registry = ServiceRegistry::new();
 
     // Persistent services start in priority-desc + name-asc order;
     // on_demand services are registered but remain idle.
@@ -130,9 +139,6 @@ pub async fn run() -> Result<(), ExpectedError> {
         }));
         supervisors.push(handle);
     }
-
-    let rolling = crate::rolling::RollingTable::new();
-    let observation = crate::observation::ObservationTable::new();
 
     // Build AppState for the routers.
     let app_state = AppState {

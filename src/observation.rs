@@ -47,6 +47,14 @@ impl ObservationTable {
             .unwrap_or(0)
     }
 
+    pub fn pids(&self, service: &SmolStr) -> Vec<u32> {
+        self.inner
+            .read()
+            .get(service)
+            .map(|s| s.pids.clone())
+            .unwrap_or_default()
+    }
+
     pub fn clear(&self, service: &SmolStr) {
         self.inner.write().remove(service);
     }
