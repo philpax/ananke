@@ -81,6 +81,7 @@ pub enum StartFailureKind {
     LaunchFailed,
     HealthTimeout,
     Disabled,
+    Oom,
 }
 
 #[derive(Debug, Clone)]
@@ -242,18 +243,16 @@ async fn run(
                                         continue;
                                     }
                                 };
-                                let mut est = match crate::estimator::estimate_from_path(
-                                    &model_path,
-                                    &svc,
-                                ) {
-                                    Ok(e) => e,
-                                    Err(e) => {
-                                        let _ = ack.send(EnsureResponse::Unavailable {
-                                            reason: format!("estimator: {e}"),
-                                        });
-                                        continue;
-                                    }
-                                };
+                                let mut est =
+                                    match crate::estimator::estimate_from_path(&model_path, &svc) {
+                                        Ok(e) => e,
+                                        Err(e) => {
+                                            let _ = ack.send(EnsureResponse::Unavailable {
+                                                reason: format!("estimator: {e}"),
+                                            });
+                                            continue;
+                                        }
+                                    };
                                 // Apply rolling correction to weights_bytes.
                                 let rc = rolling.get(&svc.name);
                                 est.weights_bytes =
@@ -310,8 +309,7 @@ async fn run(
                             // Reserve in the allocation table before spawning.
                             // Capture the total reserved bytes (MB → bytes) for the rolling
                             // update that fires when the service later drains back to Idle.
-                            base_total_bytes_for_rolling =
-                                want.values().sum::<u64>() * 1024 * 1024;
+                            base_total_bytes_for_rolling = want.values().sum::<u64>() * 1024 * 1024;
                             allocations.lock().insert(svc.name.clone(), want);
 
                             // Create broadcast channel and subscribe the caller.
@@ -410,11 +408,11 @@ async fn run(
                                             warn!(service = %svc.name, attempts = oom_attempts, "OOM retry limit reached; disabling");
                                             if let Some(bus) = start_bus_carry.take() {
                                                 let _ = bus.send(StartOutcome::Err(StartFailure {
-                                                    kind: StartFailureKind::LaunchFailed,
+                                                    kind: StartFailureKind::Oom,
                                                     message: "disabled after repeated OOM kills".into(),
                                                 }));
                                             }
-                                            state = ServiceState::Disabled { reason: DisableReason::LaunchFailed };
+                                            state = ServiceState::Disabled { reason: DisableReason::Oom };
                                             *state_mirror.lock() = state.clone();
                                         } else {
                                             warn!(service = %svc.name, "OOM kill detected; bumping rolling factor for retry");
@@ -423,7 +421,7 @@ async fn run(
                                             // re-estimated start with the bumped safety factor.
                                             if let Some(bus) = start_bus_carry.take() {
                                                 let _ = bus.send(StartOutcome::Err(StartFailure {
-                                                    kind: StartFailureKind::LaunchFailed,
+                                                    kind: StartFailureKind::Oom,
                                                     message: "OOM kill; retrying with larger reservation".into(),
                                                 }));
                                             }

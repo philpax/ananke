@@ -162,6 +162,7 @@ async fn forward_json_post(
                     }
                     StartFailureKind::Disabled => errors::service_disabled(&model, &f.message),
                     StartFailureKind::LaunchFailed => errors::start_failed(&model, &f.message),
+                    StartFailureKind::Oom => errors::insufficient_vram(&model, &f.message),
                 };
             }
             Ok(Err(e)) => {
