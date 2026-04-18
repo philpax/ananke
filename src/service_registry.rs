@@ -115,6 +115,16 @@ mod tests {
             crate::allocator::AllocationTable::new(),
         ));
         let inflight = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let registry = ServiceRegistry::new();
+        let effective = Arc::new(crate::config::EffectiveConfig {
+            daemon: crate::config::DaemonSettings {
+                management_listen: String::new(),
+                openai_listen: String::new(),
+                data_dir: std::path::PathBuf::new(),
+                shutdown_timeout_ms: 5000,
+            },
+            services: vec![svc.clone()],
+        });
         let handle = Arc::new(spawn_supervisor(
             svc.clone(),
             alloc,
@@ -127,6 +137,8 @@ mod tests {
             crate::rolling::RollingTable::new(),
             crate::observation::ObservationTable::new(),
             inflight,
+            registry,
+            effective,
         ));
 
         let registry = ServiceRegistry::new();

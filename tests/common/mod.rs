@@ -122,6 +122,8 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             rolling.clone(),
             observation.clone(),
             inflight_counter,
+            registry.clone(),
+            effective.clone(),
         ));
         registry.insert(svc.name.clone(), handle.clone());
         supervisors.push(handle);

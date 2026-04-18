@@ -18,12 +18,13 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::config::validate::ServiceConfig;
+use crate::config::validate::{EffectiveConfig, ServiceConfig};
 use crate::db::Database;
 use crate::db::logs::BatcherHandle;
 use crate::devices::Allocation;
 use crate::observation::ObservationTable;
 use crate::rolling::RollingTable;
+use crate::service_registry::ServiceRegistry;
 use crate::state::{DisableReason, Event as StateEvent, ServiceState, transition};
 use crate::supervise::health::{HealthConfig, HealthOutcome, wait_healthy};
 use crate::supervise::logs::{spawn_pump_stderr, spawn_pump_stdout};
@@ -179,6 +180,8 @@ pub fn spawn_supervisor(
     rolling: RollingTable,
     observation: ObservationTable,
     inflight: Arc<AtomicU64>,
+    registry: ServiceRegistry,
+    effective: Arc<EffectiveConfig>,
 ) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(32);
     let name = svc.name.clone();
@@ -194,6 +197,8 @@ pub fn spawn_supervisor(
         rolling,
         observation,
         inflight,
+        registry,
+        effective,
         rx,
     ));
     SupervisorHandle {
@@ -216,6 +221,8 @@ async fn run(
     rolling: RollingTable,
     observation: ObservationTable,
     inflight: Arc<AtomicU64>,
+    registry: ServiceRegistry,
+    effective: Arc<EffectiveConfig>,
     mut rx: mpsc::Receiver<SupervisorCommand>,
 ) {
     let mut state = ServiceState::Idle;
@@ -329,12 +336,84 @@ async fn run(
                             if let Err(nofit) =
                                 crate::allocator::can_fit(&want, &snap, &table, Some(&svc.name))
                             {
-                                let msg = format!("{nofit}");
-                                // Clear any computed packed args so they are not used on the next
-                                // Ensure attempt after this failure.
-                                let _ = packed_for_spawn.take();
-                                let _ = ack.send(EnsureResponse::Unavailable { reason: msg });
-                                continue;
+                                // Try eviction before giving up.
+                                let candidates: Vec<crate::eviction::EvictionCandidate> = {
+                                    let all_services = registry.all();
+                                    let mut out = Vec::new();
+                                    for (_name, handle) in all_services {
+                                        let Some(service_snap) = handle.snapshot().await else {
+                                            continue;
+                                        };
+                                        let idle =
+                                            matches!(service_snap.state, ServiceState::Idle);
+                                        let alloc_mb = allocations
+                                            .lock()
+                                            .get(&handle.name)
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
+                                        let priority = effective
+                                            .services
+                                            .iter()
+                                            .find(|s| s.name == handle.name)
+                                            .map(|c| c.priority)
+                                            .unwrap_or(50);
+                                        out.push(crate::eviction::EvictionCandidate {
+                                            name: handle.name.clone(),
+                                            priority,
+                                            idle,
+                                            allocation_bytes: bytes,
+                                        });
+                                    }
+                                    out
+                                };
+
+                                let reservations_now = allocations.lock().clone();
+                                let free_on_slot = snap.free_bytes(&nofit.slot).unwrap_or(0);
+                                let to_evict = crate::eviction::select_for_slot(
+                                    nofit.needed_bytes,
+                                    &nofit.slot,
+                                    svc.priority,
+                                    &candidates,
+                                    &reservations_now,
+                                    free_on_slot,
+                                );
+
+                                if to_evict.is_empty() {
+                                    // Clear any computed packed args so they are not used on the
+                                    // next Ensure attempt after this failure.
+                                    let _ = packed_for_spawn.take();
+                                    let _ = ack.send(EnsureResponse::Unavailable {
+                                        reason: format!("{nofit}"),
+                                    });
+                                    continue;
+                                }
+
+                                warn!(service = %svc.name, evict_count = to_evict.len(), "eviction planned to make room");
+                                for victim in &to_evict {
+                                    if let Some(handle) = registry.get(victim) {
+                                        handle
+                                            .begin_drain(crate::drain::DrainReason::Eviction)
+                                            .await;
+                                    }
+                                }
+
+                                // Re-attempt can_fit after evictions.
+                                let snap2 = snapshot.read().clone();
+                                let table2 = allocations.lock().clone();
+                                if let Err(again) = crate::allocator::can_fit(
+                                    &want,
+                                    &snap2,
+                                    &table2,
+                                    Some(&svc.name),
+                                ) {
+                                    let _ = packed_for_spawn.take();
+                                    let _ = ack.send(EnsureResponse::Unavailable {
+                                        reason: format!("eviction insufficient: {again}"),
+                                    });
+                                    continue;
+                                }
+                                // Fall through to the normal reservation path.
                             }
 
                             // Reserve in the allocation table before spawning.

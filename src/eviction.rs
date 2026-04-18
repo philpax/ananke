@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn returns_empty_when_not_enough_evictable() {
-        let cands = vec![cand("small", 30, false, 1 * 1024 * 1024 * 1024)];
+        let cands = vec![cand("small", 30, false, 1024 * 1024 * 1024)];
         let r = res(&[("small", 1024)]);
         // Want 4 GB; evictable only 1 GB; cannot satisfy.
         let sel =

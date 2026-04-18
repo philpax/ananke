@@ -112,6 +112,8 @@ pub async fn run() -> Result<(), ExpectedError> {
             rolling.clone(),
             observation.clone(),
             inflight_counter,
+            registry.clone(),
+            effective.clone(),
         ));
         registry.insert(svc.name.clone(), handle.clone());
 
