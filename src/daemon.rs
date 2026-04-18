@@ -8,6 +8,8 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
+use crate::activity::ActivityTable;
+use crate::allocator::AllocationTable;
 use crate::config::{Migration, load_config};
 use crate::db::Database;
 use crate::db::logs::spawn as spawn_batcher;
@@ -56,6 +58,9 @@ pub async fn run() -> Result<(), ExpectedError> {
     }
 
     let batcher = spawn_batcher(db.clone());
+    let activity = ActivityTable::new();
+    let allocations = std::sync::Arc::new(parking_lot::Mutex::new(AllocationTable::new()));
+    let shared_snapshot = crate::snapshotter::new_shared();
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -72,12 +77,16 @@ pub async fn run() -> Result<(), ExpectedError> {
     for svc in ordered {
         let service_id = db.upsert_service(&svc.name, now_ms())?;
         let allocation = Allocation::from_override(&svc.placement_override);
+        let last_activity = activity.get_or_init(&svc.name);
         let handle = spawn_supervisor(
             svc.clone(),
             allocation,
             db.clone(),
             batcher.clone(),
             service_id,
+            last_activity,
+            shared_snapshot.clone(),
+            allocations.clone(),
         );
         let listen: SocketAddr =
             format!("127.0.0.1:{}", svc.port)

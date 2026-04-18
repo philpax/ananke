@@ -130,6 +130,15 @@ pub struct RawService {
     pub drain_timeout: Option<String>,
     pub extended_stream_drain: Option<String>,
     pub max_request_duration: Option<String>,
+    #[serde(default)]
+    pub start_queue_depth: Option<usize>,
+}
+
+impl RawService {
+    /// Return the start queue depth, falling back to 10 when unset.
+    pub fn start_queue_depth(&self) -> usize {
+        self.start_queue_depth.unwrap_or(10)
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]

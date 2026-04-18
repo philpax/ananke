@@ -9,6 +9,7 @@ pub use orphans::{OrphanDisposition, reconcile};
 pub use spawn::{SpawnConfig, render_argv};
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex as SyncMutex;
@@ -34,6 +35,49 @@ pub enum SupervisorCommand {
     Snapshot {
         ack: tokio::sync::oneshot::Sender<SupervisorSnapshot>,
     },
+    /// Ensure the service is started (or starting). Returns a broadcast
+    /// receiver the caller can await for the start outcome. If the
+    /// start queue is full, returns `EnsureResponse::QueueFull` via the
+    /// single-shot `ack`.
+    Ensure {
+        ack: tokio::sync::oneshot::Sender<EnsureResponse>,
+    },
+    /// Record that a request was served; resets the idle timer.
+    ActivityPing,
+}
+
+#[derive(Debug)]
+pub enum EnsureResponse {
+    /// Service is already running; proceed directly.
+    AlreadyRunning,
+    /// Service is idle/starting/warming; subscribe and wait.
+    Waiting {
+        rx: tokio::sync::broadcast::Receiver<StartOutcome>,
+    },
+    /// Start queue is full; reject with 503.
+    QueueFull,
+    /// Service is disabled or stopped; cannot start.
+    Unavailable { reason: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum StartOutcome {
+    Ok,
+    Err(StartFailure),
+}
+
+#[derive(Debug, Clone)]
+pub struct StartFailure {
+    pub kind: StartFailureKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum StartFailureKind {
+    NoFit,
+    LaunchFailed,
+    HealthTimeout,
+    Disabled,
 }
 
 #[derive(Debug, Clone)]
@@ -75,18 +119,45 @@ impl SupervisorHandle {
         }
         ack_rx.await.ok()
     }
+
+    pub async fn ensure(&self) -> Option<EnsureResponse> {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(SupervisorCommand::Ensure { ack: ack_tx })
+            .await
+            .ok()?;
+        ack_rx.await.ok()
+    }
+
+    pub fn ping(&self) {
+        let _ = self.tx.try_send(SupervisorCommand::ActivityPing);
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_supervisor(
     svc: ServiceConfig,
     allocation: Allocation,
     db: Database,
     batcher: BatcherHandle,
     service_id: i64,
+    last_activity: Arc<AtomicU64>,
+    snapshot: crate::snapshotter::SharedSnapshot,
+    allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
 ) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(32);
     let name = svc.name.clone();
-    let join = tokio::spawn(run(svc, allocation, db, batcher, service_id, rx));
+    let join = tokio::spawn(run(
+        svc,
+        allocation,
+        db,
+        batcher,
+        service_id,
+        last_activity,
+        snapshot,
+        allocations,
+        rx,
+    ));
     SupervisorHandle {
         name,
         tx,
@@ -94,24 +165,76 @@ pub fn spawn_supervisor(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     svc: ServiceConfig,
     allocation: Allocation,
     db: Database,
     batcher: BatcherHandle,
     service_id: i64,
+    last_activity: Arc<AtomicU64>,
+    snapshot: crate::snapshotter::SharedSnapshot,
+    allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
     mut rx: mpsc::Receiver<SupervisorCommand>,
 ) {
     let mut state = ServiceState::Idle;
     let state_mirror = Arc::new(SyncMutex::new(state.clone()));
     let (cancel_tx, cancel_rx) = watch::channel(false);
+    // Carries a broadcast sender from Idle through to Starting so waiters can
+    // be notified of the outcome once the child finishes warming.
+    let mut start_bus_carry: Option<tokio::sync::broadcast::Sender<StartOutcome>> = None;
 
     loop {
         match &state {
             ServiceState::Idle => {
-                let next = transition(&state, StateEvent::SpawnRequested).unwrap();
-                state = next;
-                *state_mirror.lock() = state.clone();
+                // For on_demand services we wait here for an Ensure. Persistent
+                // services have the daemon call ensure() synthetically at boot.
+                loop {
+                    let cmd = rx.recv().await;
+                    match cmd {
+                        Some(SupervisorCommand::Shutdown { ack }) => {
+                            let _ = ack.send(());
+                            return;
+                        }
+                        Some(SupervisorCommand::Snapshot { ack }) => {
+                            let _ = ack.send(SupervisorSnapshot {
+                                name: svc.name.clone(),
+                                state: state.clone(),
+                                run_id: None,
+                                pid: None,
+                            });
+                        }
+                        Some(SupervisorCommand::Ensure { ack }) => {
+                            // Allocator feasibility check before committing.
+                            let want = svc.placement_override.clone();
+                            let snap = snapshot.read().clone();
+                            let table = allocations.lock().clone();
+                            if let Err(nofit) =
+                                crate::allocator::can_fit(&want, &snap, &table, Some(&svc.name))
+                            {
+                                let msg = format!("{nofit}");
+                                let _ = ack.send(EnsureResponse::Unavailable { reason: msg });
+                                continue;
+                            }
+
+                            // Reserve in the allocation table before spawning.
+                            allocations.lock().insert(svc.name.clone(), want);
+
+                            // Create broadcast channel and subscribe the caller.
+                            let sender =
+                                tokio::sync::broadcast::channel::<StartOutcome>(16).0;
+                            let bus_rx = sender.subscribe();
+                            let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
+                            start_bus_carry = Some(sender);
+
+                            state = transition(&state, StateEvent::SpawnRequested).unwrap();
+                            *state_mirror.lock() = state.clone();
+                            break;
+                        }
+                        Some(SupervisorCommand::ActivityPing) => {}
+                        None => return,
+                    }
+                }
             }
             ServiceState::Starting => {
                 let spawn_cfg = render_argv(&svc, &allocation);
@@ -170,6 +293,13 @@ async fn run(
                             tokio::select! {
                                 exit = child.wait() => {
                                     warn!(?exit, "child exited during starting/warming");
+                                    if let Some(bus) = start_bus_carry.take() {
+                                        let _ = bus.send(StartOutcome::Err(StartFailure {
+                                            kind: StartFailureKind::LaunchFailed,
+                                            message: "child exited during starting".into(),
+                                        }));
+                                    }
+                                    allocations.lock().remove(&svc.name);
                                     state = ServiceState::Failed { retry_count: 0 };
                                     *state_mirror.lock() = state.clone();
                                     break;
@@ -189,6 +319,13 @@ async fn run(
                                                 }
                                                 _ = child.wait() => {
                                                     warn!("child exited during warming grace");
+                                                    if let Some(bus) = start_bus_carry.take() {
+                                                        let _ = bus.send(StartOutcome::Err(StartFailure {
+                                                            kind: StartFailureKind::LaunchFailed,
+                                                            message: "child exited during warming".into(),
+                                                        }));
+                                                    }
+                                                    allocations.lock().remove(&svc.name);
                                                     state = ServiceState::Failed { retry_count: 0 };
                                                     *state_mirror.lock() = state.clone();
                                                     bail = true;
@@ -202,6 +339,7 @@ async fn run(
                                                             "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
                                                             (service_id, run_id),
                                                         ));
+                                                        allocations.lock().remove(&svc.name);
                                                         let _ = ack.send(());
                                                         return;
                                                     }
@@ -212,37 +350,79 @@ async fn run(
                                             }
                                             if bail { break; }
 
-                                            // Running: wait for child exit or shutdown command.
-                                            tokio::select! {
-                                                exit = child.wait() => {
-                                                    warn!(?exit, "child exited from running");
-                                                    state = ServiceState::Failed { retry_count: 0 };
-                                                    *state_mirror.lock() = state.clone();
-                                                }
-                                                cmd = rx.recv() => {
-                                                    match cmd {
-                                                        Some(SupervisorCommand::Shutdown { ack }) => {
-                                                            info!(service = %svc.name, "draining");
-                                                            state = transition(&state, StateEvent::DrainRequested).unwrap();
-                                                            *state_mirror.lock() = state.clone();
-                                                            let _ = cancel_tx.send(true);
-                                                            send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                            let _ = db.with_conn(|c| c.execute(
-                                                                "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
-                                                                (service_id, run_id),
-                                                            ));
-                                                            let _ = ack.send(());
-                                                            return;
+                                            // Notify waiters that the service is now running.
+                                            if let Some(bus) = start_bus_carry.take() {
+                                                let _ = bus.send(StartOutcome::Ok);
+                                            }
+
+                                            // Running: wait for child exit, idle timeout, or commands.
+                                            loop {
+                                                tokio::select! {
+                                                    exit = child.wait() => {
+                                                        warn!(?exit, "child exited from running");
+                                                        allocations.lock().remove(&svc.name);
+                                                        state = ServiceState::Failed { retry_count: 0 };
+                                                        *state_mirror.lock() = state.clone();
+                                                        break;
+                                                    }
+                                                    _ = tokio::time::sleep_until(idle_deadline_for(&last_activity, svc.idle_timeout_ms)) => {
+                                                        // Re-check the atomic; a recent ping may have extended the deadline.
+                                                        let now = std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_millis() as u64;
+                                                        let last = last_activity.load(Ordering::Relaxed);
+                                                        if now + 100 < last + svc.idle_timeout_ms {
+                                                            // A ping arrived; loop again with a fresh deadline.
+                                                            continue;
                                                         }
-                                                        Some(SupervisorCommand::Snapshot { ack }) => {
-                                                            let _ = ack.send(SupervisorSnapshot {
-                                                                name: svc.name.clone(),
-                                                                state: state.clone(),
-                                                                run_id: Some(run_id),
-                                                                pid: Some(pid),
-                                                            });
+                                                        info!(service = %svc.name, "idle timeout; draining to idle");
+                                                        send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
+                                                        let _ = db.with_conn(|c| c.execute(
+                                                            "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
+                                                            (service_id, run_id),
+                                                        ));
+                                                        allocations.lock().remove(&svc.name);
+                                                        state = ServiceState::Idle;
+                                                        *state_mirror.lock() = state.clone();
+                                                        break;
+                                                    }
+                                                    cmd = rx.recv() => {
+                                                        match cmd {
+                                                            Some(SupervisorCommand::Shutdown { ack }) => {
+                                                                info!(service = %svc.name, "draining");
+                                                                state = transition(&state, StateEvent::DrainRequested).unwrap();
+                                                                *state_mirror.lock() = state.clone();
+                                                                let _ = cancel_tx.send(true);
+                                                                send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
+                                                                let _ = db.with_conn(|c| c.execute(
+                                                                    "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
+                                                                    (service_id, run_id),
+                                                                ));
+                                                                allocations.lock().remove(&svc.name);
+                                                                let _ = ack.send(());
+                                                                return;
+                                                            }
+                                                            Some(SupervisorCommand::Snapshot { ack }) => {
+                                                                let _ = ack.send(SupervisorSnapshot {
+                                                                    name: svc.name.clone(),
+                                                                    state: state.clone(),
+                                                                    run_id: Some(run_id),
+                                                                    pid: Some(pid),
+                                                                });
+                                                            }
+                                                            Some(SupervisorCommand::Ensure { ack }) => {
+                                                                let _ = ack.send(EnsureResponse::AlreadyRunning);
+                                                            }
+                                                            Some(SupervisorCommand::ActivityPing) => {
+                                                                let now = std::time::SystemTime::now()
+                                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                                    .unwrap_or_default()
+                                                                    .as_millis() as u64;
+                                                                last_activity.store(now, Ordering::Relaxed);
+                                                            }
+                                                            None => return,
                                                         }
-                                                        None => return,
                                                     }
                                                 }
                                             }
@@ -250,12 +430,20 @@ async fn run(
                                         }
                                         Ok(HealthOutcome::TimedOut) => {
                                             warn!(service = %svc.name, "health timed out; disabling");
+                                            if let Some(bus) = start_bus_carry.take() {
+                                                let _ = bus.send(StartOutcome::Err(StartFailure {
+                                                    kind: StartFailureKind::HealthTimeout,
+                                                    message: "health check timed out".into(),
+                                                }));
+                                            }
+                                            allocations.lock().remove(&svc.name);
                                             state = ServiceState::Disabled { reason: DisableReason::HealthTimeout };
                                             *state_mirror.lock() = state.clone();
                                             send_sigterm_and_wait(&mut child, Duration::from_secs(5)).await;
                                             break;
                                         }
                                         Ok(HealthOutcome::Cancelled) | Err(_) => {
+                                            allocations.lock().remove(&svc.name);
                                             send_sigterm_and_wait(&mut child, Duration::from_secs(5)).await;
                                             return;
                                         }
@@ -266,6 +454,7 @@ async fn run(
                                         Some(SupervisorCommand::Shutdown { ack }) => {
                                             let _ = cancel_tx.send(true);
                                             send_sigterm_and_wait(&mut child, Duration::from_secs(5)).await;
+                                            allocations.lock().remove(&svc.name);
                                             let _ = ack.send(());
                                             return;
                                         }
@@ -277,6 +466,21 @@ async fn run(
                                                 pid: Some(pid),
                                             });
                                         }
+                                        Some(SupervisorCommand::Ensure { ack }) => {
+                                            // Already in Starting; subscribe to existing bus or report running.
+                                            if let Some(sender) = start_bus_carry.as_ref() {
+                                                if sender.receiver_count() >= svc.raw.start_queue_depth() {
+                                                    let _ = ack.send(EnsureResponse::QueueFull);
+                                                } else {
+                                                    let bus_rx = sender.subscribe();
+                                                    let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
+                                                }
+                                            } else {
+                                                // No bus; best-effort.
+                                                let _ = ack.send(EnsureResponse::AlreadyRunning);
+                                            }
+                                        }
+                                        Some(SupervisorCommand::ActivityPing) => {}
                                         None => return,
                                     }
                                 }
@@ -285,6 +489,13 @@ async fn run(
                     }
                     Err(e) => {
                         error!(error = %e, "spawn failed");
+                        if let Some(bus) = start_bus_carry.take() {
+                            let _ = bus.send(StartOutcome::Err(StartFailure {
+                                kind: StartFailureKind::LaunchFailed,
+                                message: format!("{e}"),
+                            }));
+                        }
+                        allocations.lock().remove(&svc.name);
                         state = ServiceState::Failed { retry_count: 0 };
                         *state_mirror.lock() = state.clone();
                     }
@@ -300,7 +511,7 @@ async fn run(
                     _ = tokio::time::sleep(delay) => {
                         state = transition(&state, StateEvent::RetryAfterBackoff).unwrap_or(ServiceState::Disabled { reason: DisableReason::LaunchFailed });
                         if !matches!(state, ServiceState::Disabled { .. }) {
-                            // Move back to Idle → Starting on next loop iteration.
+                            // Move back to Idle so the next Ensure triggers a fresh start.
                             state = ServiceState::Idle;
                         }
                         *state_mirror.lock() = state.clone();
@@ -315,9 +526,28 @@ async fn run(
             }
             ServiceState::Disabled { .. } => {
                 info!(service = %svc.name, "disabled; awaiting shutdown or enable");
-                if let Some(SupervisorCommand::Shutdown { ack }) = rx.recv().await {
-                    let _ = ack.send(());
-                    return;
+                loop {
+                    match rx.recv().await {
+                        Some(SupervisorCommand::Shutdown { ack }) => {
+                            let _ = ack.send(());
+                            return;
+                        }
+                        Some(SupervisorCommand::Snapshot { ack }) => {
+                            let _ = ack.send(SupervisorSnapshot {
+                                name: svc.name.clone(),
+                                state: state.clone(),
+                                run_id: None,
+                                pid: None,
+                            });
+                        }
+                        Some(SupervisorCommand::Ensure { ack }) => {
+                            let _ = ack.send(EnsureResponse::Unavailable {
+                                reason: "service disabled".into(),
+                            });
+                        }
+                        Some(SupervisorCommand::ActivityPing) => {}
+                        None => return,
+                    }
                 }
             }
             _ => {
@@ -326,6 +556,18 @@ async fn run(
             }
         }
     }
+}
+
+/// Compute the tokio `Instant` at which the idle deadline fires, based on the
+/// last recorded activity timestamp.
+fn idle_deadline_for(last_activity: &Arc<AtomicU64>, timeout_ms: u64) -> tokio::time::Instant {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let last = last_activity.load(Ordering::Relaxed);
+    let deadline_ms_from_now = (last + timeout_ms).saturating_sub(now);
+    tokio::time::Instant::now() + Duration::from_millis(deadline_ms_from_now)
 }
 
 async fn send_sigterm_and_wait(child: &mut tokio::process::Child, grace: Duration) {

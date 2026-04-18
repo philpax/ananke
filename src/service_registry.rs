@@ -52,6 +52,8 @@ mod tests {
     use smol_str::SmolStr;
     use tempfile::tempdir;
 
+    use std::sync::atomic::AtomicU64;
+
     use super::*;
     use crate::config::parse::RawService;
     use crate::config::validate::{
@@ -102,12 +104,20 @@ mod tests {
         let batcher = spawn_batcher(db.clone());
         let svc = minimal_svc("demo");
         let alloc = Allocation::from_override(&svc.placement_override);
+        let last_activity = Arc::new(AtomicU64::new(0));
+        let snapshot = crate::snapshotter::new_shared();
+        let allocations = Arc::new(parking_lot::Mutex::new(
+            crate::allocator::AllocationTable::new(),
+        ));
         let handle = Arc::new(spawn_supervisor(
             svc.clone(),
             alloc,
             db.clone(),
             batcher.clone(),
             1,
+            last_activity,
+            snapshot,
+            allocations,
         ));
 
         let registry = ServiceRegistry::new();
