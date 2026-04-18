@@ -79,6 +79,37 @@ impl Allocation {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DeviceSnapshot {
+    pub gpus: Vec<GpuSnapshot>,
+    pub cpu: Option<CpuSnapshot>,
+    pub taken_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct GpuSnapshot {
+    pub id: u32,
+    pub name: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CpuSnapshot {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
+impl DeviceSnapshot {
+    pub fn free_bytes(&self, slot: &crate::config::validate::DeviceSlot) -> Option<u64> {
+        use crate::config::validate::DeviceSlot;
+        match slot {
+            DeviceSlot::Cpu => self.cpu.as_ref().map(|c| c.available_bytes),
+            DeviceSlot::Gpu(id) => self.gpus.iter().find(|g| g.id == *id).map(|g| g.free_bytes),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
