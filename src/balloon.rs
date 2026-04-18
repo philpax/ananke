@@ -64,10 +64,7 @@ pub fn detect_growth(window: &VecDeque<u64>, floor_bytes: u64) -> bool {
     if total == 0 {
         return false;
     }
-    let non_neg = samples
-        .windows(2)
-        .filter(|pair| pair[1] >= pair[0])
-        .count();
+    let non_neg = samples.windows(2).filter(|pair| pair[1] >= pair[0]).count();
     if non_neg * 2 <= total {
         return false;
     }
@@ -153,7 +150,7 @@ pub fn spawn_resolver(
             // phase can wire real priority through the registry.
             let reservations = allocations.lock().clone();
             let mut candidate_borrower: Option<(SmolStr, u8)> = None;
-            for (name, _) in &reservations {
+            for name in reservations.keys() {
                 if name.as_str() == service_name.as_str() {
                     continue;
                 }

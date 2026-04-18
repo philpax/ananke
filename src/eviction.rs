@@ -122,8 +122,14 @@ mod tests {
             cand("b-live", 30, false, 4 * 1024 * 1024 * 1024),
         ];
         let r = res(&[("a-idle", 4096), ("b-live", 4096)]);
-        let sel =
-            select_for_slot(4 * 1024 * 1024 * 1024, &DeviceSlot::Gpu(0), 70, &cands, &r, 0);
+        let sel = select_for_slot(
+            4 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
         assert_eq!(sel, vec![SmolStr::new("a-idle")]);
     }
 
@@ -134,8 +140,14 @@ mod tests {
             cand("mid", 50, false, 4 * 1024 * 1024 * 1024),
         ];
         let r = res(&[("low", 4096), ("mid", 4096)]);
-        let sel =
-            select_for_slot(4 * 1024 * 1024 * 1024, &DeviceSlot::Gpu(0), 70, &cands, &r, 0);
+        let sel = select_for_slot(
+            4 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
         assert_eq!(sel, vec![SmolStr::new("low")]);
     }
 
@@ -147,8 +159,14 @@ mod tests {
             cand("c", 30, false, 2 * 1024 * 1024 * 1024),
         ];
         let r = res(&[("a", 2048), ("b", 2048), ("c", 2048)]);
-        let sel =
-            select_for_slot(5 * 1024 * 1024 * 1024, &DeviceSlot::Gpu(0), 70, &cands, &r, 0);
+        let sel = select_for_slot(
+            5 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
         assert_eq!(sel.len(), 3);
     }
 
@@ -156,8 +174,14 @@ mod tests {
     fn same_priority_not_evictable() {
         let cands = vec![cand("peer", 70, false, 4 * 1024 * 1024 * 1024)];
         let r = res(&[("peer", 4096)]);
-        let sel =
-            select_for_slot(4 * 1024 * 1024 * 1024, &DeviceSlot::Gpu(0), 70, &cands, &r, 0);
+        let sel = select_for_slot(
+            4 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
         assert!(sel.is_empty());
     }
 
@@ -166,8 +190,14 @@ mod tests {
         let cands = vec![cand("small", 30, false, 1024 * 1024 * 1024)];
         let r = res(&[("small", 1024)]);
         // Want 4 GB; evictable only 1 GB; cannot satisfy.
-        let sel =
-            select_for_slot(4 * 1024 * 1024 * 1024, &DeviceSlot::Gpu(0), 70, &cands, &r, 0);
+        let sel = select_for_slot(
+            4 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
         assert!(sel.is_empty());
     }
 }

@@ -344,8 +344,7 @@ async fn run(
                                         let Some(service_snap) = handle.snapshot().await else {
                                             continue;
                                         };
-                                        let idle =
-                                            matches!(service_snap.state, ServiceState::Idle);
+                                        let idle = matches!(service_snap.state, ServiceState::Idle);
                                         let alloc_mb = allocations
                                             .lock()
                                             .get(&handle.name)

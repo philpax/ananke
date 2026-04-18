@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 use crate::activity::ActivityTable;
 use crate::allocator::AllocationTable;
 use crate::app_state::AppState;
-use crate::config::{Lifecycle, Migration, load_config};
+use crate::config::{AllocationMode, Lifecycle, Migration, load_config};
 use crate::db::Database;
 use crate::db::logs::spawn as spawn_batcher;
 use crate::devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe};
@@ -157,6 +157,36 @@ pub async fn run() -> Result<(), ExpectedError> {
         supervisors.push(handle);
     }
 
+    // Spawn balloon resolvers for dynamic services. Each resolver monitors
+    // observed VRAM usage and fast-kills the lower-priority side when
+    // growth pressure builds under contention.
+    let mut balloon_tasks = Vec::new();
+    for svc in &effective.services {
+        if let AllocationMode::Dynamic {
+            min_mb,
+            max_mb,
+            min_borrower_runtime_ms,
+        } = svc.allocation_mode
+        {
+            let cfg = crate::balloon::BalloonConfig {
+                min_mb,
+                max_mb,
+                min_borrower_runtime: Duration::from_millis(min_borrower_runtime_ms),
+                margin_bytes: 512 * 1024 * 1024,
+            };
+            let join = crate::balloon::spawn_resolver(
+                svc.name.clone(),
+                cfg,
+                svc.priority,
+                observation.clone(),
+                registry.clone(),
+                allocations.clone(),
+                shutdown_rx.clone(),
+            );
+            balloon_tasks.push(join);
+        }
+    }
+
     // Build AppState for the routers.
     let app_state = AppState {
         config: effective.clone(),
@@ -244,6 +274,10 @@ pub async fn run() -> Result<(), ExpectedError> {
     let _ = snapshotter_join.await;
     retention_task.abort();
     let _ = retention_task.await;
+    for t in balloon_tasks {
+        t.abort();
+        let _ = t.await;
+    }
 
     batcher.flush().await;
     Ok(())

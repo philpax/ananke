@@ -2,16 +2,16 @@
 
 pub mod activity;
 pub mod allocator;
-pub mod balloon;
 pub mod app_state;
+pub mod balloon;
 pub mod config;
 pub mod daemon;
-pub mod drain;
-pub mod eviction;
 pub mod db;
 pub mod devices;
+pub mod drain;
 pub mod errors;
 pub mod estimator;
+pub mod eviction;
 pub mod gguf;
 pub mod inflight;
 pub mod management_api;
