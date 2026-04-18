@@ -202,7 +202,7 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::F16 | GgufType::BF16 | GgufType::I16 => elements * 2,
         GgufType::I8 => elements,
         GgufType::I64 | GgufType::F64 => elements * 8,
-        GgufType::Q8_0 => elements * 34 / 32,      // block=32, 34 bytes/block ≈ 1.0625 bpe
+        GgufType::Q8_0 => elements * 34 / 32, // block=32, 34 bytes/block ≈ 1.0625 bpe
         GgufType::Q8_1 => elements * 36 / 32,
         GgufType::Q4_0 | GgufType::IQ4_NL => elements * 18 / 32, // 0.5625 bpe
         GgufType::Q4_1 => elements * 20 / 32,

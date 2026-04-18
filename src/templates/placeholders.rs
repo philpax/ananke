@@ -30,7 +30,10 @@ impl std::fmt::Display for SubstituteError {
                 write!(f, "{{vram_mb}} is invalid with a dynamic allocation")
             }
             SubstituteError::VramMbMultiDevice => {
-                write!(f, "{{vram_mb}} is valid only with a single-GPU static allocation")
+                write!(
+                    f,
+                    "{{vram_mb}} is valid only with a single-GPU static allocation"
+                )
             }
             SubstituteError::UnknownPlaceholder(s) => {
                 write!(f, "unknown placeholder {{{s}}}")

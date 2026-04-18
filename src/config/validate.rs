@@ -10,7 +10,6 @@ use tracing::warn;
 use crate::config::parse::{RawConfig, RawService};
 use crate::errors::ExpectedError;
 
-
 #[derive(Debug, Clone)]
 pub struct EffectiveConfig {
     pub daemon: DaemonSettings,
@@ -59,8 +58,14 @@ pub enum Template {
 pub enum AllocationMode {
     /// Llama-cpp services: placement decided by estimator/override; mode absent.
     None,
-    Static { vram_mb: u64 },
-    Dynamic { min_mb: u64, max_mb: u64, min_borrower_runtime_ms: u64 },
+    Static {
+        vram_mb: u64,
+    },
+    Dynamic {
+        min_mb: u64,
+        max_mb: u64,
+        min_borrower_runtime_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,9 +164,13 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             (Template::LlamaCpp, None) => AllocationMode::None,
             (Template::Command, Some("static")) => {
                 let gb = raw_alloc.vram_gb.ok_or_else(|| {
-                    fail(format!("service {name}: allocation.mode=static requires vram_gb"))
+                    fail(format!(
+                        "service {name}: allocation.mode=static requires vram_gb"
+                    ))
                 })?;
-                AllocationMode::Static { vram_mb: (gb * 1024.0) as u64 }
+                AllocationMode::Static {
+                    vram_mb: (gb * 1024.0) as u64,
+                }
             }
             (Template::Command, Some("dynamic")) => {
                 let min = raw_alloc.min_vram_gb.ok_or_else(|| {
@@ -184,9 +193,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
                     .as_deref()
                     .map(parse_duration_ms)
                     .transpose()
-                    .map_err(|e| {
-                        fail(format!("service {name} min_borrower_runtime: {e}"))
-                    })?
+                    .map_err(|e| fail(format!("service {name} min_borrower_runtime: {e}")))?
                     .unwrap_or(60_000);
                 AllocationMode::Dynamic {
                     min_mb: (min * 1024.0) as u64,
@@ -259,7 +266,9 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             }
             Template::Command => {
                 let cmd = raw.command.as_ref().ok_or_else(|| {
-                    fail(format!("service {name}: command template requires `command`"))
+                    fail(format!(
+                        "service {name}: command template requires `command`"
+                    ))
                 })?;
                 if cmd.is_empty() {
                     return Err(fail(format!("service {name}: command is empty")));
@@ -750,7 +759,10 @@ allocation.vram_gb = 6
         let ec = validate(&cfg).unwrap();
         let svc = &ec.services[0];
         assert_eq!(svc.template, Template::Command);
-        assert!(matches!(svc.allocation_mode, AllocationMode::Static { vram_mb: 6144 }));
+        assert!(matches!(
+            svc.allocation_mode,
+            AllocationMode::Static { vram_mb: 6144 }
+        ));
     }
 
     #[test]
@@ -772,7 +784,11 @@ allocation.max_vram_gb = 20
         let svc = &ec.services[0];
         assert!(matches!(
             svc.allocation_mode,
-            AllocationMode::Dynamic { min_mb: 4096, max_mb: 20480, .. }
+            AllocationMode::Dynamic {
+                min_mb: 4096,
+                max_mb: 20480,
+                ..
+            }
         ));
     }
 

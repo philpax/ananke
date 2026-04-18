@@ -26,7 +26,10 @@ use crate::retention;
 use crate::service_registry::ServiceRegistry;
 use crate::signals::{ShutdownKind, await_shutdown};
 use crate::snapshotter;
-use crate::supervise::{SupervisorHandle, orphans::reconcile, spawn_supervisor};
+use crate::supervise::{
+    EnsureResponse, StartFailureKind, StartOutcome, SupervisorHandle, orphans::reconcile,
+    spawn_supervisor,
+};
 
 pub async fn run() -> Result<(), ExpectedError> {
     init_tracing();
@@ -138,16 +141,67 @@ pub async fn run() -> Result<(), ExpectedError> {
         let name = svc.name.clone();
         let activity_for_proxy = activity.clone();
         let inflight_counter = inflight.counter(&svc.name);
+        let handle_for_proxy = handle.clone();
+        let max_request_duration_ms = svc.max_request_duration_ms;
         proxy_tasks.push(tokio::spawn(async move {
             let name_ping = name.clone();
-            let on_request = std::sync::Arc::new(move || {
-                activity_for_proxy.ping(&name_ping);
-            }) as std::sync::Arc<dyn Fn() + Send + Sync>;
+            let before_request = std::sync::Arc::new(move || {
+                let name_inner = name_ping.clone();
+                let activity_inner = activity_for_proxy.clone();
+                let handle_inner = handle_for_proxy.clone();
+                Box::pin(async move {
+                    activity_inner.ping(&name_inner);
+                    match handle_inner.ensure().await {
+                        Some(EnsureResponse::AlreadyRunning) => None,
+                        Some(EnsureResponse::Waiting { mut rx }) => {
+                            let timeout = Duration::from_millis(max_request_duration_ms);
+                            match tokio::time::timeout(timeout, rx.recv()).await {
+                                Ok(Ok(StartOutcome::Ok)) => None,
+                                Ok(Ok(StartOutcome::Err(f))) => Some(match f.kind {
+                                    StartFailureKind::NoFit | StartFailureKind::Oom => {
+                                        proxy::error_response("insufficient_vram", &f.message)
+                                    }
+                                    StartFailureKind::Disabled => {
+                                        proxy::error_response("service_disabled", &f.message)
+                                    }
+                                    StartFailureKind::HealthTimeout
+                                    | StartFailureKind::LaunchFailed => {
+                                        proxy::error_response("start_failed", &f.message)
+                                    }
+                                }),
+                                Ok(Err(e)) => Some(proxy::error_response(
+                                    "start_failed",
+                                    &format!("start broadcast closed: {e}"),
+                                )),
+                                Err(_) => {
+                                    Some(proxy::error_response("start_failed", "start timed out"))
+                                }
+                            }
+                        }
+                        Some(EnsureResponse::QueueFull) => Some(proxy::error_response(
+                            "start_queue_full",
+                            "start queue full",
+                        )),
+                        Some(EnsureResponse::Unavailable { reason }) => {
+                            if reason.starts_with("no fit") {
+                                Some(proxy::error_response("insufficient_vram", &reason))
+                            } else {
+                                Some(proxy::error_response("service_disabled", &reason))
+                            }
+                        }
+                        None => Some(proxy::error_response(
+                            "start_failed",
+                            "supervisor unreachable",
+                        )),
+                    }
+                }) as futures::future::BoxFuture<'static, _>
+            })
+                as std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, _> + Send + Sync>;
             if let Err(e) = proxy::serve_with_activity(
                 listen,
                 upstream,
                 shutdown_rx2,
-                on_request,
+                before_request,
                 inflight_counter,
             )
             .await

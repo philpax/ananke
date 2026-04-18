@@ -6,4 +6,4 @@
 
 pub mod placeholders;
 
-pub use placeholders::{substitute, substitute_argv, PlaceholderContext, SubstituteError};
+pub use placeholders::{PlaceholderContext, SubstituteError, substitute, substitute_argv};

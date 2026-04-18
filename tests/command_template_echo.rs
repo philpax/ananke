@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use ananke::config::parse::{RawAllocation, RawService};
-use ananke::config::validate::{DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig};
+use ananke::config::validate::{
+    DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+};
 use ananke::config::{AllocationMode, Template};
 use ananke::devices::Allocation;
 use ananke::supervise::render_argv;

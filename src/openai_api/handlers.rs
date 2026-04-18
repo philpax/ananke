@@ -75,6 +75,19 @@ pub fn register(router: Router, state: AppState) -> Router {
 pub async fn list_models(State(state): State<AppState>) -> Response {
     let mut data = Vec::new();
     for (name, handle) in state.registry.all() {
+        // Hide services whose template doesn't produce an OpenAI-compatible
+        // server. llama-cpp defaults to compat; `command` services opt in
+        // via `metadata.openai_compat = true`.
+        let compat = state
+            .config
+            .services
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.openai_compat)
+            .unwrap_or(false);
+        if !compat {
+            continue;
+        }
         let Some(snap) = handle.snapshot().await else {
             continue;
         };

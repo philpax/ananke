@@ -1,13 +1,15 @@
 //! Per-service reverse HTTP proxy.
 
 use std::convert::Infallible;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use bytes::Bytes;
 use futures::TryStreamExt;
-use http_body_util::{BodyExt, StreamBody};
+use futures::future::BoxFuture;
+use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
@@ -69,16 +71,18 @@ pub async fn serve(
     }
 }
 
-/// Like [`serve`] but calls `on_request()` before forwarding each request, so the
-/// caller can record activity timestamps without coupling the proxy to the activity
-/// module directly. Also accepts an `inflight_counter` that is incremented for each
-/// in-flight request and decremented when the response (including streaming body)
-/// completes.
+/// Like [`serve`] but runs `before_request()` before forwarding each request.
+///
+/// The closure returns a future that resolves to `None` (proceed with proxying)
+/// or `Some(response)` (short-circuit with that response — used to trigger
+/// on-demand service start and return 503s when the supervisor cannot start).
+/// Also accepts an `inflight_counter` that is incremented for each in-flight
+/// request and decremented when the response (including streaming body) completes.
 pub async fn serve_with_activity(
     listen: SocketAddr,
     upstream_port: u16,
     mut shutdown: watch::Receiver<bool>,
-    on_request: Arc<dyn Fn() + Send + Sync>,
+    before_request: Arc<dyn Fn() -> BoxFuture<'static, Option<Response<ProxyBody>>> + Send + Sync>,
     inflight_counter: Arc<AtomicU64>,
 ) -> Result<(), ExpectedError> {
     let listener = TcpListener::bind(listen)
@@ -103,14 +107,17 @@ pub async fn serve_with_activity(
                 };
                 let io = TokioIo::new(stream);
                 let client = client.clone();
-                let on_request = on_request.clone();
+                let before_request = before_request.clone();
                 let counter = inflight_counter.clone();
                 tokio::spawn(async move {
                     let svc = service_fn(move |req: Request<Incoming>| {
-                        (on_request)();
+                        let fut = (before_request)();
                         let counter = counter.clone();
                         let client = client.clone();
                         async move {
+                            if let Some(short) = fut.await {
+                                return Ok(short);
+                            }
                             let _guard = InflightGuard::new(counter);
                             handle(req, client, upstream_port, peer).await
                         }
@@ -125,6 +132,22 @@ pub async fn serve_with_activity(
             }
         }
     }
+}
+
+/// Build a 503 Service Unavailable response with an OpenAI-shaped JSON error body.
+pub fn error_response(code: &str, message: &str) -> Response<ProxyBody> {
+    let body_json = serde_json::json!({
+        "error": {"code": code, "message": message, "type": "server_error"}
+    });
+    let body_bytes = serde_json::to_vec(&body_json).unwrap_or_default();
+    let full: ProxyBody = Full::new(Bytes::from(body_bytes))
+        .map_err(|never| -> Box<dyn Error + Send + Sync> { match never {} })
+        .boxed();
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("content-type", "application/json")
+        .body(full)
+        .unwrap()
 }
 
 /// Reverse-proxy a single request to the upstream, returning an infallible result.
