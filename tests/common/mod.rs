@@ -126,6 +126,8 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         allocations,
         snapshot,
         activity,
+        rolling: ananke::rolling::RollingTable::new(),
+        observation: ananke::observation::ObservationTable::new(),
         db,
     };
 

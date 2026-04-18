@@ -8,6 +8,8 @@ use crate::activity::ActivityTable;
 use crate::allocator::AllocationTable;
 use crate::config::EffectiveConfig;
 use crate::db::Database;
+use crate::observation::ObservationTable;
+use crate::rolling::RollingTable;
 use crate::service_registry::ServiceRegistry;
 use crate::snapshotter::SharedSnapshot;
 
@@ -18,5 +20,7 @@ pub struct AppState {
     pub allocations: Arc<Mutex<AllocationTable>>,
     pub snapshot: SharedSnapshot,
     pub activity: ActivityTable,
+    pub rolling: RollingTable,
+    pub observation: ObservationTable,
     pub db: Database,
 }

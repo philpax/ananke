@@ -131,6 +131,9 @@ pub async fn run() -> Result<(), ExpectedError> {
         supervisors.push(handle);
     }
 
+    let rolling = crate::rolling::RollingTable::new();
+    let observation = crate::observation::ObservationTable::new();
+
     // Build AppState for the routers.
     let app_state = AppState {
         config: effective.clone(),
@@ -138,6 +141,8 @@ pub async fn run() -> Result<(), ExpectedError> {
         allocations: allocations.clone(),
         snapshot: shared_snapshot.clone(),
         activity: activity.clone(),
+        rolling: rolling.clone(),
+        observation: observation.clone(),
         db: db.clone(),
     };
 
