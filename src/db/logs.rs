@@ -43,6 +43,7 @@ pub struct LogLine {
 }
 
 /// Cloneable handle to the background batcher task.
+#[derive(Clone)]
 pub struct BatcherHandle {
     tx: mpsc::UnboundedSender<Msg>,
 }
@@ -119,11 +120,7 @@ async fn run(db: Database, mut rx: mpsc::UnboundedReceiver<Msg>) {
 ///
 /// The `seq` counter is per `(service_id, run_id)` and starts at 1, incrementing
 /// monotonically across flush calls so ordering is preserved even across batches.
-fn flush(
-    db: &Database,
-    buffer: &mut Vec<LogLine>,
-    seq: &mut HashMap<(i64, i64), i64>,
-) {
+fn flush(db: &Database, buffer: &mut Vec<LogLine>, seq: &mut HashMap<(i64, i64), i64>) {
     if buffer.is_empty() {
         return;
     }
