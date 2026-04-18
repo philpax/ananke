@@ -178,12 +178,7 @@ pub fn render_argv(
             args.push(svc.private_port.to_string());
         }
         Template::Command => {
-            // Argv rendering for command-template services is handled by
-            // the templates::placeholders module at spawn time; here we
-            // just record the raw command for use by the caller.
-            if let Some(cmd) = &svc.command {
-                args.extend(cmd.iter().cloned());
-            }
+            return render_command_argv(svc, alloc);
         }
     }
 
@@ -195,18 +190,58 @@ pub fn render_argv(
     }
     env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
-    let binary = match svc.template {
-        Template::LlamaCpp => "llama-server".to_string(),
-        Template::Command => {
-            svc.command.as_ref().and_then(|c| c.first()).cloned().unwrap_or_default()
+    let binary = "llama-server".to_string();
+
+    SpawnConfig { binary, args, env }
+}
+
+/// Render argv for a `Command`-template service, including placeholder
+/// substitution for `{port}`, `{gpu_ids}`, `{vram_mb}`, `{model}`, `{name}`.
+fn render_command_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
+    use crate::config::AllocationMode;
+
+    let binary = svc
+        .command
+        .as_ref()
+        .and_then(|c| c.first())
+        .cloned()
+        .unwrap_or_default();
+    let raw_argv: Vec<String> = svc
+        .command
+        .as_ref()
+        .map(|c| c.iter().skip(1).cloned().collect())
+        .unwrap_or_default();
+
+    let static_vram_mb = match svc.allocation_mode {
+        AllocationMode::Static { vram_mb } => Some(vram_mb),
+        _ => None,
+    };
+    let ctx = crate::templates::PlaceholderContext {
+        name: &svc.name,
+        port: svc.private_port,
+        model: svc.raw.model.as_ref().and_then(|p| p.to_str()),
+        allocation: alloc,
+        static_vram_mb,
+    };
+
+    let mut user_env: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(e) = &svc.raw.env {
+        for (k, v) in e {
+            user_env.insert(k.clone(), v.clone());
         }
-    };
-    // For command template, the first element is the binary; remaining args follow.
-    let args = if svc.template == Template::Command {
-        args.into_iter().skip(1).collect()
-    } else {
-        args
-    };
+    }
+
+    let (args, env_substituted) =
+        crate::templates::substitute_argv(&raw_argv, &user_env, &ctx).unwrap_or_else(|e| {
+            tracing::error!(service = %svc.name, error = %e, "placeholder substitution failed; using raw argv");
+            (raw_argv, user_env)
+        });
+
+    let mut env = BTreeMap::new();
+    for (k, v) in env_substituted {
+        env.insert(k, v);
+    }
+    env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
     SpawnConfig { binary, args, env }
 }
@@ -374,5 +409,67 @@ mod tests {
         assert_eq!(cmd.args[ngl_idx + 1], "24");
         let ts_idx = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();
         assert_eq!(cmd.args[ts_idx + 1], "12,12");
+    }
+
+    #[test]
+    fn command_template_renders_placeholders() {
+        let raw = RawService {
+            name: Some(SmolStr::new("comfy")),
+            template: Some(SmolStr::new("command")),
+            command: Some(vec![
+                "python".into(),
+                "main.py".into(),
+                "--port".into(),
+                "{port}".into(),
+            ]),
+            port: Some(8188),
+            ..Default::default()
+        };
+        let mut placement = BTreeMap::new();
+        placement.insert(DeviceSlot::Gpu(0), 6144);
+        let svc = ServiceConfig {
+            name: SmolStr::new("comfy"),
+            template: Template::Command,
+            port: 8188,
+            private_port: 48188,
+            lifecycle: Lifecycle::OnDemand,
+            priority: 50,
+            health: HealthSettings {
+                http_path: "/system_stats".into(),
+                timeout_ms: 60_000,
+                probe_interval_ms: 500,
+            },
+            placement_override: placement.clone(),
+            placement_policy: PlacementPolicy::GpuOnly,
+            idle_timeout_ms: 600_000,
+            warming_grace_ms: 30_000,
+            drain_timeout_ms: 5_000,
+            extended_stream_drain_ms: 5_000,
+            max_request_duration_ms: 60_000,
+            filters: Filters::default(),
+            allocation_mode: AllocationMode::Static { vram_mb: 6144 },
+            command: Some(vec![
+                "python".into(),
+                "main.py".into(),
+                "--port".into(),
+                "{port}".into(),
+            ]),
+            workdir: None,
+            openai_compat: false,
+            raw,
+        };
+        let alloc = Allocation::from_override(&placement);
+        let cfg = render_argv(&svc, &alloc, None);
+        assert_eq!(cfg.binary, "python");
+        assert!(
+            cfg.args.iter().any(|a| a == "48188"),
+            "expected port substituted; got {:?}",
+            cfg.args
+        );
+        assert!(
+            cfg.args.iter().all(|a| a != "{port}"),
+            "raw placeholder leaked into args: {:?}",
+            cfg.args
+        );
     }
 }
