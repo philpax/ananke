@@ -17,7 +17,7 @@ pub fn register(router: Router, state: AppState) -> Router {
     // with_state, then merge into the caller's router.
     let mgmt: Router = Router::new()
         .route("/api/services", get(list_services))
-        .route("/api/services/{name}", get(service_detail))
+        .route("/api/services/:name", get(service_detail))
         .route("/api/devices", get(list_devices))
         .with_state(state);
     router.merge(mgmt)

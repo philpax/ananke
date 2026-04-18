@@ -24,11 +24,11 @@ use std::sync::Arc;
 use ananke::activity::ActivityTable;
 use ananke::allocator::AllocationTable;
 use ananke::app_state::AppState;
+use ananke::config::parse::RawService;
 use ananke::config::{
     DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings, Lifecycle,
     PlacementPolicy, ServiceConfig, Template,
 };
-use ananke::config::parse::RawService;
 use ananke::db::Database;
 use ananke::db::logs::spawn as spawn_batcher;
 use ananke::devices::{Allocation, CpuSnapshot, DeviceSnapshot};

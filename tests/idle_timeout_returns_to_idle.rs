@@ -42,7 +42,11 @@ async fn service_returns_to_idle_after_timeout_and_restarts() {
         .body(Body::from(body))
         .unwrap();
     let resp2 = app.oneshot(req2).await.unwrap();
-    assert_eq!(resp2.status(), StatusCode::OK, "second request must succeed after fresh spawn");
+    assert_eq!(
+        resp2.status(),
+        StatusCode::OK,
+        "second request must succeed after fresh spawn"
+    );
 
     h.cleanup().await;
 }
