@@ -18,6 +18,7 @@ pub struct EffectiveConfig {
 #[derive(Debug, Clone)]
 pub struct DaemonSettings {
     pub management_listen: String,
+    pub openai_listen: String,
     pub data_dir: PathBuf,
     pub shutdown_timeout_ms: u64,
 }
@@ -104,6 +105,11 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .rsplit(':')
         .next()
         .and_then(|p| p.parse::<u16>().ok());
+    let openai_listen = cfg
+        .openai_api
+        .listen
+        .clone()
+        .unwrap_or_else(|| "127.0.0.1:8080".into());
 
     let mut names: BTreeSet<SmolStr> = BTreeSet::new();
     let mut ports: BTreeSet<u16> = BTreeSet::new();
@@ -348,6 +354,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     Ok(EffectiveConfig {
         daemon: DaemonSettings {
             management_listen: management_addr,
+            openai_listen,
             data_dir,
             shutdown_timeout_ms,
         },

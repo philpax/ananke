@@ -66,6 +66,57 @@ pub async fn serve(
     }
 }
 
+/// Like [`serve`] but calls `on_request()` before forwarding each request, so the
+/// caller can record activity timestamps without coupling the proxy to the activity
+/// module directly.
+pub async fn serve_with_activity<F: Fn() + Send + Sync + 'static>(
+    listen: SocketAddr,
+    upstream_port: u16,
+    mut shutdown: watch::Receiver<bool>,
+    on_request: F,
+) -> Result<(), ExpectedError> {
+    let on_request = std::sync::Arc::new(on_request);
+    let listener = TcpListener::bind(listen)
+        .await
+        .map_err(|e| ExpectedError::bind_failed(listen.to_string(), e.to_string()))?;
+    info!(%listen, upstream_port, "proxy listening");
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<ProxyBody>();
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    info!(%listen, "proxy shutting down");
+                    return Ok(());
+                }
+            }
+            accept = listener.accept() => {
+                let (stream, peer) = match accept {
+                    Ok(x) => x,
+                    Err(e) => { warn!(error = %e, "accept failed"); continue; }
+                };
+                let io = TokioIo::new(stream);
+                let client = client.clone();
+                let on_request = on_request.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: Request<Incoming>| {
+                        (on_request)();
+                        let client = client.clone();
+                        async move { handle(req, client, upstream_port, peer).await }
+                    });
+                    if let Err(e) = auto::Builder::new(TokioExecutor::new())
+                        .serve_connection(io, svc)
+                        .await
+                    {
+                        warn!(error = %e, "conn error");
+                    }
+                });
+            }
+        }
+    }
+}
+
 /// Reverse-proxy a single request to the upstream, returning an infallible result.
 ///
 /// All upstream and protocol errors are translated into HTTP error responses so that
