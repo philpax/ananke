@@ -291,6 +291,7 @@ Full field surface:
 name = "llama3-70b"
 template = "llama-cpp"
 model = "/models/llama-3.3-70b-instruct-q4_k_m.gguf"
+mmproj = "/models/llama-3.3-70b-mmproj.gguf"     # optional; vision models only. Rendered as --mmproj.
 port = 11435
 context = 16384
 
@@ -516,6 +517,8 @@ kv_per_token = n_layers × n_kv_heads ×
 **Hybrid** (`jamba` and future): per-layer type read from architecture metadata where available. KV cache only for attention layers.
 
 **Unknown architecture fallback**: `total_tensor_bytes × 1.15 + 512MB`. Log a warning so the user knows estimates are coarse. Rolling correction (below) gradually refines.
+
+**Multimodal projector (`mmproj`).** Vision models carry a separate projector file loaded via `--mmproj`. When the `mmproj` field is set, read the projector's GGUF header the same way as the main model, sum its tensor bytes into the GPU weights budget (projectors live on GPU 0 alongside the output head; they are small — typically 0.5–1.5 GB — and llama.cpp does not offload them to CPU), and render `--mmproj <path>` on the command line automatically. The projector contributes to `weights` in the final estimate; it does not affect KV cache sizing.
 
 **Sharded GGUFs.** llama.cpp supports multi-file models; the user points `--model` at the first shard and llama.cpp discovers the rest. Each shard is a valid GGUF file whose header carries `split.no` (0-indexed shard number), `split.count` (total shards), and `split.tensors.count` (total tensor count across the set). Ananke handles shards as follows:
 
