@@ -1,0 +1,16 @@
+[package]
+name = "ananke-api"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ananke_api"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true

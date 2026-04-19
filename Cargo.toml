@@ -1,58 +1,64 @@
-[package]
-name = "ananke"
-version = "0.1.0"
+[workspace]
+members = ["ananke", "anankectl", "ananke-api"]
+resolver = "2"
+
+[workspace.package]
 edition = "2024"
+version = "0.1.0"
 
-[[bin]]
-name = "ananke"
-path = "src/main.rs"
+[workspace.dependencies]
+# Internal crates
+ananke-api = { path = "ananke-api" }
 
-[lib]
-name = "ananke"
-path = "src/lib.rs"
-
-[dependencies]
+# Async + HTTP
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "process", "time", "fs", "sync"] }
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "client", "client-legacy", "http1"] }
 http = "1"
 http-body-util = "0.1"
 bytes = "1"
-toml_edit = { version = "0.22", features = ["serde"] }
-toml = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-nvml-wrapper = "0.10"
-nix = { version = "0.29", features = ["signal", "fs", "process"] }
-toasty = { version = "=0.4.0", features = ["sqlite"] }
-# rusqlite retained only for the pragma side-channel in `src/db/pragma.rs`
-# (auto_vacuum / incremental_vacuum). No non-db code imports it.
-rusqlite = { version = "0.39", features = ["bundled"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-futures = "0.3"
-smol_str = { version = "0.3", features = ["serde"] }
-parking_lot = "0.12"
-libc = "0.2"
-axum = { version = "0.7", features = ["macros", "json"] }
-utoipa = { version = "5", features = ["axum_extras", "smallvec", "uuid"] }
-utoipa-axum = "0.2"
+axum = { version = "0.7", features = ["macros", "json", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+
+# Serde + formats
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = { version = "0.22", features = ["serde"] }
+
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras", "smallvec", "uuid"] }
+utoipa-axum = "0.2"
+
+# Other shared
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+smol_str = { version = "0.3", features = ["serde"] }
+parking_lot = "0.12"
+arc-swap = "1"
+sha2 = "0.10"
+base64 = "0.22"
+ulid = "1"
+clap = { version = "4", features = ["derive", "env"] }
 async-trait = "0.1"
 pin-project-lite = "0.2"
-ulid = "1"
-regex = "1"
-
-[dev-dependencies]
-proptest = "1"
-pretty_assertions = "1"
-tokio = { version = "1", features = ["full", "test-util"] }
-tokio-stream = "0.1"
-tempfile = "3"
 futures = "0.3"
+regex = "1"
+libc = "0.2"
+notify = "6"
 
-[features]
-default = []
-test-fakes = []
+# Linux-only
+nvml-wrapper = "0.10"
+nix = { version = "0.29", features = ["signal", "fs", "process"] }
+
+# Database
+toasty = { version = "=0.4.0", features = ["sqlite"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+# Dev
+pretty_assertions = "1"
+proptest = "1"
+tempfile = "3"
+tokio-stream = "0.1"
