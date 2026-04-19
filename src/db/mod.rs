@@ -1,6 +1,7 @@
 //! Database bootstrap and migrations.
 
 pub mod logs;
+pub mod models;
 pub mod schema;
 
 use std::path::{Path, PathBuf};
