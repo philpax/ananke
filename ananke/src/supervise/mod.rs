@@ -774,9 +774,20 @@ impl RunLoop {
     /// outer dispatcher; we only return when the child has been cleaned up and
     /// the next outer-loop state is either a terminal variant or Idle.
     async fn handle_active_lifecycle(&mut self) -> Step {
+        // When the placement engine has run (`packed_for_spawn = Some`), use
+        // its computed Allocation for CUDA_VISIBLE_DEVICES rendering —
+        // `self.init.allocation` is built from `placement_override` at
+        // registry-init time and is empty for any estimator-driven service,
+        // which would otherwise leave the child with `CUDA_VISIBLE_DEVICES=`
+        // and silently fall back to CPU.
+        let spawn_alloc = self
+            .packed_for_spawn
+            .as_ref()
+            .map(|p| &p.allocation)
+            .unwrap_or(&self.init.allocation);
         let spawn_cfg = render_argv(
             &self.init.svc,
-            &self.init.allocation,
+            spawn_alloc,
             self.packed_for_spawn.as_ref().map(|p| &p.args),
         );
         let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
