@@ -78,6 +78,18 @@ pub fn read_single(path: &Path) -> Result<GgufSummary, ReadError> {
             shape.push(read_u64(&mut r)?);
         }
         let dtype = GgufType::from_u32(read_u32(&mut r)?);
+        if let GgufType::Unknown(id) = dtype {
+            // Fail loudly rather than fall back to an F16-size guess. An
+            // unknown dtype means the estimator would either over- or
+            // under-reserve by a large factor, and silent fallback hid the
+            // gpt-oss MXFP4 case for weeks. Fix: add the id to
+            // `GgufType::from_u32` + `tensor_byte_size`.
+            return Err(ReadError(format!(
+                "{}: tensor `{name}` uses unsupported GGUF dtype id {id}; \
+                 extend ananke::gguf::types::GgufType to cover it",
+                path.display()
+            )));
+        }
         let offset = read_u64(&mut r)?;
         let byte_size = tensor_byte_size(dtype, &shape);
         total_tensor_bytes += byte_size;
@@ -224,7 +236,15 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::IQ2_S => elements * 82 / 256,
         GgufType::IQ4_XS => elements * 136 / 256,
         GgufType::IQ1_M => elements * 56 / 256,
-        GgufType::Unknown(_) => elements * 2, // fall back to 2 bpe, log elsewhere
+        GgufType::TQ1_0 => elements * 54 / 256, // ternary 1.7 bpe
+        GgufType::TQ2_0 => elements * 66 / 256, // ternary 2.0 bpe
+        GgufType::MXFP4 => elements * 17 / 32,  // 1-byte e8m0 scale + 16 bytes 4-bit / 32 elems
+        GgufType::Unknown(_) => {
+            // The reader rejects unknown dtypes before this point, so
+            // reaching here is a programming error. Render defensively
+            // rather than panicking mid-estimate.
+            elements * 2
+        }
     }
 }
 

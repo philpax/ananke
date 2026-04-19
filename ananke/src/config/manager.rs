@@ -305,11 +305,38 @@ fn diff_services(old: &EffectiveConfig, new: &EffectiveConfig) -> Vec<smol_str::
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
+    use std::path::{Path, PathBuf};
+
+    use tempfile::{TempDir, tempdir};
 
     use super::*;
 
-    const VALID_TOML: &str = r#"
+    /// Write a minimal but structurally valid GGUF v3 file so the config
+    /// preflight (which calls `gguf::read`) accepts the referenced path.
+    fn write_synth_gguf(dir: &Path) -> PathBuf {
+        let path = dir.join("demo.gguf");
+        let mut bytes = Vec::<u8>::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        bytes.extend_from_slice(&1u64.to_le_bytes()); // kv_count
+        let arch_key = "general.architecture";
+        bytes.extend_from_slice(&(arch_key.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(arch_key.as_bytes());
+        bytes.extend_from_slice(&8u32.to_le_bytes()); // string tag
+        let arch_val = "qwen3";
+        bytes.extend_from_slice(&(arch_val.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(arch_val.as_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        path
+    }
+
+    fn fixture() -> (TempDir, String, PathBuf) {
+        let tmp = tempdir().unwrap();
+        let gguf = write_synth_gguf(tmp.path());
+        let path = tmp.path().join("ananke.toml");
+        let toml = format!(
+            r#"
 [daemon]
 management_listen = "127.0.0.1:0"
 
@@ -319,37 +346,32 @@ listen = "127.0.0.1:0"
 [[service]]
 name = "demo"
 template = "llama-cpp"
-model = "/tmp/fake.gguf"
+model = "{model}"
 port = 11435
 devices.placement = "cpu-only"
-devices.placement_override = { cpu = 100 }
+devices.placement_override = {{ cpu = 100 }}
 lifecycle = "on_demand"
-"#;
+"#,
+            model = gguf.display()
+        );
+        std::fs::write(&path, &toml).unwrap();
+        (tmp, toml, path)
+    }
 
     #[tokio::test]
     async fn apply_rejects_stale_if_match() {
-        let tmp = tempdir().unwrap();
-        let path = tmp.path().join("ananke.toml");
-        std::fs::write(&path, VALID_TOML).unwrap();
-        let manager = ConfigManager::open(path.clone(), EventBus::new())
-            .await
-            .unwrap();
-        let result = manager
-            .apply(VALID_TOML.to_string(), "wrong-hash".to_string())
-            .await;
+        let (_tmp, toml, path) = fixture();
+        let manager = ConfigManager::open(path, EventBus::new()).await.unwrap();
+        let result = manager.apply(toml, "wrong-hash".to_string()).await;
         assert!(matches!(result, Err(ApplyError::HashMismatch { .. })));
     }
 
     #[tokio::test]
     async fn apply_writes_and_reloads_on_valid_input() {
-        let tmp = tempdir().unwrap();
-        let path = tmp.path().join("ananke.toml");
-        std::fs::write(&path, VALID_TOML).unwrap();
-        let manager = ConfigManager::open(path.clone(), EventBus::new())
-            .await
-            .unwrap();
+        let (_tmp, toml, path) = fixture();
+        let manager = ConfigManager::open(path, EventBus::new()).await.unwrap();
         let (_current, hash) = manager.raw();
-        let new_toml = VALID_TOML.replace("\"demo\"", "\"demo2\"");
+        let new_toml = toml.replace("\"demo\"", "\"demo2\"");
         let result = manager.apply(new_toml.clone(), hash).await;
         assert!(matches!(result, Ok(())));
         let (raw_after, _) = manager.raw();
@@ -360,12 +382,8 @@ lifecycle = "on_demand"
 
     #[tokio::test]
     async fn apply_rejects_invalid_toml() {
-        let tmp = tempdir().unwrap();
-        let path = tmp.path().join("ananke.toml");
-        std::fs::write(&path, VALID_TOML).unwrap();
-        let manager = ConfigManager::open(path.clone(), EventBus::new())
-            .await
-            .unwrap();
+        let (_tmp, _toml, path) = fixture();
+        let manager = ConfigManager::open(path, EventBus::new()).await.unwrap();
         let (_, hash) = manager.raw();
         let bad = "this is not toml";
         let result = manager.apply(bad.to_string(), hash).await;

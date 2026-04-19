@@ -68,6 +68,12 @@ pub enum GgufType {
     I32,
     I64,
     F64,
+    /// Ternary quant 1.7 bpe (ggml id 34).
+    TQ1_0,
+    /// Ternary quant 2.0 bpe (ggml id 35).
+    TQ2_0,
+    /// OpenAI MXFP4 4-bit, used by gpt-oss experts (ggml id 39).
+    MXFP4,
     Unknown(u32),
 }
 
@@ -103,6 +109,9 @@ impl GgufType {
             28 => Self::F64,
             29 => Self::IQ1_M,
             30 => Self::BF16,
+            34 => Self::TQ1_0,
+            35 => Self::TQ2_0,
+            39 => Self::MXFP4,
             other => Self::Unknown(other),
         }
     }
