@@ -18,6 +18,12 @@ use crate::{config::ServiceConfig, gguf::GgufSummary};
 
 pub const LLAMA_FAMILY: &[&str] = &[
     "llama", "qwen2", "qwen3", "mistral", "gemma", "gemma2", "gemma3", "phi3", "glm4",
+    // NVIDIA Nemotron ("deci") is a Llama derivative with a compressed attention
+    // stack. Same `blk.N.*` tensor naming and same `{arch}.attention.*` metadata
+    // keys so the llama-family estimator works unchanged; added here so
+    // `dispatch` routes it away from the weights-only fallback that leaves
+    // `per_layer_bytes = None` and breaks multi-GPU layer splits.
+    "deci",
 ];
 
 pub fn is_llama_family(arch: &str) -> bool {
@@ -239,5 +245,14 @@ mod tests {
         assert_eq!(layer_index("blk.42.ffn_down.weight"), Some(42));
         assert_eq!(layer_index("output.weight"), None);
         assert_eq!(layer_index("token_embd.weight"), None);
+    }
+
+    #[test]
+    fn deci_is_llama_family() {
+        // Regression: Nemotron-49B (arch = "deci") used to fall through to the
+        // fallback estimator which returns `per_layer_bytes = None`, breaking
+        // multi-GPU layer splits. It must be recognised as llama-family so the
+        // per-layer walk runs.
+        assert!(is_llama_family("deci"));
     }
 }
