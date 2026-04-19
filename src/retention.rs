@@ -6,53 +6,55 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::db::Database;
+use crate::db::models::{Service, ServiceLog};
 
 /// Per-service log retention: 7 days or 50,000 lines, whichever tighter
 /// (spec §12). Runs once when called; call from a daily scheduled task.
-pub fn trim_logs_once(db: &Database, now_ms: i64) -> rusqlite::Result<u64> {
+pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, toasty::Error> {
     let seven_days_ago = now_ms - 7 * 24 * 60 * 60 * 1000;
-    let per_service = 50_000i64;
+    let per_service: usize = 50_000;
 
-    let mut deleted = 0u64;
-    db.with_conn_mut(|conn| {
-        let tx = conn.transaction()?;
-        // 1. Drop rows older than seven days.
-        let n = tx.execute(
-            "DELETE FROM service_logs WHERE timestamp_ms < ?1",
-            [seven_days_ago],
-        )?;
-        deleted += n as u64;
+    let mut handle = db.handle();
+    let mut deleted: u64 = 0;
 
-        // 2. Per-service row count cap.
-        let service_ids: Vec<i64> = {
-            let mut stmt =
-                tx.prepare("SELECT service_id FROM services WHERE deleted_at IS NULL")?;
-            stmt.query_map([], |row| row.get(0))?
-                .collect::<Result<_, _>>()?
-        };
-        for sid in service_ids {
-            let total: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM service_logs WHERE service_id = ?1",
-                [sid],
-                |r| r.get(0),
-            )?;
-            if total > per_service {
-                let excess = total - per_service;
-                let n = tx.execute(
-                    "DELETE FROM service_logs WHERE rowid IN (SELECT rowid FROM service_logs WHERE service_id = ?1 ORDER BY timestamp_ms ASC LIMIT ?2)",
-                    (sid, excess),
-                )?;
-                deleted += n as u64;
+    // 1. Drop rows older than seven days in one pass.
+    let old: Vec<ServiceLog> =
+        ServiceLog::filter(ServiceLog::fields().timestamp_ms().lt(seven_days_ago))
+            .exec(&mut handle)
+            .await?;
+    for row in old {
+        row.delete().exec(&mut handle).await?;
+        deleted += 1;
+    }
+
+    // 2. Per-service row count cap. For each live service, fetch its logs
+    //    ordered by timestamp ASC; if total exceeds the cap, delete the
+    //    oldest `total - cap` rows. Select-then-delete avoids toasty's
+    //    subquery DSL; retention runs hourly so the extra round-trips
+    //    are affordable.
+    let services: Vec<Service> = Service::filter(Service::fields().deleted_at().is_none())
+        .exec(&mut handle)
+        .await?;
+    for svc in services {
+        let mut rows: Vec<ServiceLog> =
+            ServiceLog::filter(ServiceLog::fields().service_id().eq(svc.service_id as i64))
+                .exec(&mut handle)
+                .await?;
+        if rows.len() > per_service {
+            rows.sort_by_key(|r| r.timestamp_ms);
+            let excess = rows.len() - per_service;
+            for row in rows.into_iter().take(excess) {
+                row.delete().exec(&mut handle).await?;
+                deleted += 1;
             }
         }
+    }
 
-        tx.commit()
-    })?;
     Ok(deleted)
 }
 
 pub fn incremental_vacuum(db: &Database, pages: u64) -> rusqlite::Result<()> {
-    db.with_conn(|c| c.execute_batch(&format!("PRAGMA incremental_vacuum({pages})")))
+    crate::db::pragma::incremental_vacuum(db.path(), pages)
 }
 
 pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
@@ -71,7 +73,7 @@ pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as i64;
-                match trim_logs_once(&db, now) {
+                match trim_logs_once(&db, now).await {
                     Ok(n) if n > 0 => info!(deleted = n, "log retention trim"),
                     Ok(_) => {}
                     Err(e) => warn!(error = %e, "log retention trim failed"),
@@ -99,37 +101,47 @@ mod tests {
         let now = 10_000_000_000i64;
         let eight_days_ago = now - 8 * 24 * 60 * 60 * 1000;
 
-        // Insert one old row.
-        db.with_conn(|c| {
-            c.execute(
-                "INSERT INTO service_logs(service_id, run_id, timestamp_ms, seq, stream, line) VALUES (?1, 1, ?2, 1, 'stdout', 'old')",
-                (svc, eight_days_ago),
-            )
+        let mut handle = db.handle();
+
+        // One old row (older than 7 days).
+        toasty::create!(ServiceLog {
+            service_id: svc,
+            run_id: 1,
+            seq: 1,
+            timestamp_ms: eight_days_ago,
+            stream: "stdout".to_string(),
+            line: "old".to_string(),
         })
+        .exec(&mut handle)
+        .await
         .unwrap();
 
-        // Insert 50,010 recent rows to exceed the cap.
-        db.with_conn(|c| {
-            let mut stmt = c.prepare("INSERT INTO service_logs(service_id, run_id, timestamp_ms, seq, stream, line) VALUES (?1, 2, ?2, ?3, 'stdout', 'x')").unwrap();
-            for i in 0..50_010i64 {
-                stmt.execute((svc, now - i, i + 2)).unwrap();
-            }
-            Ok(())
-        })
-        .unwrap();
-
-        let deleted = trim_logs_once(&db, now).unwrap();
-        assert!(deleted >= 11); // 1 old + 10 excess
-
-        let remaining: i64 = db
-            .with_conn(|c| {
-                c.query_row(
-                    "SELECT COUNT(*) FROM service_logs WHERE service_id = ?1",
-                    [svc],
-                    |r| r.get(0),
-                )
+        // 50,010 recent rows. Use a single transaction so the insert loop
+        // doesn't burn ~3 round-trips per row.
+        let mut tx = handle.transaction().await.unwrap();
+        for i in 0..50_010i64 {
+            toasty::create!(ServiceLog {
+                service_id: svc,
+                run_id: 2,
+                seq: i + 2,
+                timestamp_ms: now - i,
+                stream: "stdout".to_string(),
+                line: "x".to_string(),
             })
+            .exec(&mut tx)
+            .await
             .unwrap();
-        assert_eq!(remaining, 50_000);
+        }
+        tx.commit().await.unwrap();
+
+        let deleted = trim_logs_once(&db, now).await.unwrap();
+        assert!(deleted >= 11); // 1 old + at least 10 excess
+
+        let remaining: Vec<ServiceLog> =
+            ServiceLog::filter(ServiceLog::fields().service_id().eq(svc))
+                .exec(&mut handle)
+                .await
+                .unwrap();
+        assert_eq!(remaining.len(), 50_000);
     }
 }
