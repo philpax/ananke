@@ -1,40 +1,28 @@
 #!/usr/bin/env python3
-"""Estimator calibration sweep — one fresh ``ananke`` per (service, context).
+"""Estimator calibration sweep — direct llama-server, no ananke daemon.
 
-For each LLM service in the source config, double the context length until
-the daemon refuses the start or the service never reaches Running. Each
-iteration is a cold-boot ``ananke`` subprocess against a synthetic
-single-service TOML with ephemeral ports and its own ``data_dir``.
+For each target llama-cpp service in the source config and each context
+in the doubling sequence (2k, 4k, 8k, 16k, …), this script:
 
-Why a fresh daemon per iteration rather than reloading context on one
-long-lived daemon: the rolling-correction feedback loop
-(``tracking::rolling``) accumulates observed-vs-estimated-weights
-multipliers per service across runs. Measuring at context N would
-therefore be biased by the correction learned at context N/2, and so
-on. A cold boot resets the correction to 1.0, so each (service, context)
-row captures the raw estimator output unperturbed by earlier iterations.
+1. Invokes ``cargo run --release --example estimate`` against the
+   service's GGUF to get ananke's *predicted* VRAM reservation per
+   device — same estimator + packer the daemon would use, but without
+   DB / supervisor / NVML coupling.
+2. Records a baseline NVML reading.
+3. Spawns ``llama-server`` directly with matching flags (``-m``, ``-c``,
+   ``-ngl 999``, ``-fa on``, ``--cache-type-k/v``, ``--tensor-split``,
+   ``-ot``, ``--mmproj``) on an ephemeral port.
+4. Waits for ``/health`` to return 200 + a stabilisation pause, fires a
+   trivial chat request, captures peak + post-chat NVML, SIGTERMs
+   llama-server, waits for exit.
+5. Appends a row to the output CSV with predicted + actual per-device
+   MiB side-by-side, plus deltas.
 
-Per-iteration flow:
-
-1. Copy the target ``[[service]]`` block from the source config, override
-   its ``context``, mark it persistent so the daemon starts it
-   implicitly.
-2. Write the synthetic TOML under a per-iteration tempdir (unique
-   ``data_dir``, ephemeral management + openai ports).
-3. Spawn ``ananke --config=<toml>`` with its stdout/stderr captured to a
-   per-iteration log file.
-4. Poll ``/api/services`` until the management API answers, then poll
-   ``/api/services/<name>`` until ``state == "running"``.
-5. Collect the daemon's reservation, NVML-observed usage, observed peak,
-   and a trivial chat round-trip.
-6. SIGTERM the daemon; SIGKILL if it won't exit inside
-   ``--stop-timeout`` seconds.
-7. Append the row to ``calibration-<ts>.csv``; checkpoint after each
-   service so a crash mid-sweep doesn't lose earlier data.
-
-Sweep stops for a given service when an iteration reports anything other
-than a healthy chat — unavailable placement, failed cold-start, OOM, or
-``--max-context`` reached.
+Bypassing ananke is deliberate: the daemon's rolling-correction table
+and startup sequencing add noise to pure "what does the estimator
+predict vs what does llama.cpp really allocate" measurements. The
+estimator example runs the same code path the daemon uses for pack,
+so the predicted numbers are authoritative.
 """
 
 from __future__ import annotations
@@ -43,13 +31,13 @@ import argparse
 import asyncio
 import csv
 import dataclasses
+import json
 import os
-import shutil
+import re
 import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -57,32 +45,40 @@ from typing import Any
 import httpx  # type: ignore[import]
 import tomlkit  # type: ignore[import]
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
-DEFAULT_BIN = REPO_ROOT / "target" / "release" / "ananke"
+DEFAULT_ESTIMATE_BIN = REPO_ROOT / "target" / "release" / "examples" / "estimate"
 
 INITIAL_CONTEXT: int = 2048
 
+# Stabilisation pause after /health first returns 200. llama.cpp allocates
+# the attention scratch + KV cache lazily on the first forward pass, so
+# pure post-load readings under-report unless we at least attempt a chat.
+POST_HEALTH_PAUSE_S: float = 5.0
+POST_CHAT_PAUSE_S: float = 3.0
+
 
 @dataclasses.dataclass
-class Measurement:
+class Row:
     service: str
     context: int
-    reserved_total_mb: int
-    reserved_per_device: str
-    nvml_mib_per_gpu: str
-    nvml_free_mib_per_gpu: str
-    observed_peak_bytes: int
-    state: str
+    architecture: str
+    # Predicted breakdown from the estimator, all in MiB.
+    predicted_weights_mib: int
+    predicted_kv_total_mib: int
+    predicted_compute_buffer_mib: int
+    predicted_total_mib: int
+    # Actual VRAM delta measured via nvidia-smi, in MiB.
+    actual_peak_total_mib: int
+    actual_peak_per_gpu: str
+    actual_post_chat_total_mib: int
+    actual_post_chat_per_gpu: str
+    # post-chat minus predicted; positive means the estimator under-reserves.
+    delta_post_chat_total_mib: int
     chat_status: str
     chat_ms: int | None
-    time_to_running_s: float | None
+    time_to_healthy_s: float | None
     error: str
-
-    def to_row(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
 
 
 # --- nvml probes -----------------------------------------------------------
@@ -117,20 +113,18 @@ def nvml_used_mib() -> dict[int, int]:
     return _nvml_query("memory.used")
 
 
-def nvml_free_mib() -> dict[int, int]:
-    return _nvml_query("memory.free")
-
-
-def format_mib_dict(d: dict[int, int]) -> str:
+def format_per_gpu(d: dict[int, int]) -> str:
     return ",".join(f"gpu:{k}={v}" for k, v in sorted(d.items()))
 
 
-# --- synthetic TOML assembly ----------------------------------------------
+def subtract_per_gpu(current: dict[int, int], base: dict[int, int]) -> dict[int, int]:
+    return {k: max(0, v - base.get(k, 0)) for k, v in current.items()}
+
+
+# --- source-config parsing ------------------------------------------------
 
 
 def _unwrap(v: Any) -> Any:
-    """Coerce tomlkit containers into plain Python values so they round-trip
-    through a fresh document cleanly."""
     if isinstance(v, dict):
         return {k: _unwrap(sub) for k, sub in v.items()}
     if isinstance(v, list):
@@ -144,37 +138,57 @@ def _unwrap(v: Any) -> Any:
     return str(v) if v is not None else None
 
 
-def extract_service_block(source_toml: str, service_name: str) -> dict[str, Any]:
-    doc = tomlkit.parse(source_toml)
-    services = doc.get("service")
-    if services is None:
-        raise KeyError("no [[service]] arrays in config")
-    for svc in services:
-        if str(svc.get("name", "")) == service_name:
-            return {k: _unwrap(v) for k, v in svc.items()}
-    raise KeyError(f"no service named {service_name!r} in config")
-
-
-def llm_services(source_toml: str) -> list[str]:
-    """Return the names of every llama-cpp service in the source config.
-
-    Command-template services (ComfyUI-style) have no ``context`` knob and
-    are skipped; the sweep only applies to llama-server workloads.
-    """
+def llm_service_blocks(source_toml: str) -> dict[str, dict[str, Any]]:
     doc = tomlkit.parse(source_toml)
     services = doc.get("service") or []
-    out: list[str] = []
-    for svc in services:
-        if str(svc.get("template", "")) == "llama-cpp":
-            out.append(str(svc["name"]))
-    return out
+    return {
+        str(s["name"]): {k: _unwrap(v) for k, v in s.items()}
+        for s in services
+        if str(s.get("template", "")) == "llama-cpp"
+    }
+
+
+# --- estimate example invocation ------------------------------------------
+
+
+def run_estimator(binary: Path, svc: dict[str, Any], context: int) -> dict[str, Any]:
+    """Invoke the `estimate` example against `svc` at the given context
+    and return its parsed JSON output.
+    """
+    args: list[str] = [
+        str(binary),
+        "--model",
+        str(svc["model"]),
+        "--context",
+        str(context),
+    ]
+    if svc.get("mmproj"):
+        args += ["--mmproj", str(svc["mmproj"])]
+    if svc.get("cache_type_k"):
+        args += ["--cache-type-k", str(svc["cache_type_k"])]
+    if svc.get("cache_type_v"):
+        args += ["--cache-type-v", str(svc["cache_type_v"])]
+    for rule in svc.get("override_tensor", []) or []:
+        args += ["--override-tensor", str(rule)]
+    if svc.get("n_cpu_moe") is not None:
+        args += ["--n-cpu-moe", str(svc["n_cpu_moe"])]
+    estimation = svc.get("estimation") or {}
+    if estimation.get("compute_buffer_mb") is not None:
+        args += ["--compute-buffer-mb", str(estimation["compute_buffer_mb"])]
+
+    result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        return {"estimator_error": f"exit {result.returncode}: {result.stderr.strip()}"}
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        return {"estimator_error": f"bad json: {e}; stdout={result.stdout[:200]}"}
+
+
+# --- llama-server orchestration -------------------------------------------
 
 
 def free_port() -> int:
-    """Ask the kernel for an unused ephemeral port; close the listener
-    before returning. There's a narrow TOCTOU window before the daemon
-    binds, but the calibration tool is the only user of this port so the
-    race is academic."""
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -182,391 +196,241 @@ def free_port() -> int:
     return port
 
 
-def build_synthetic_toml(
-    service_block: dict[str, Any],
-    context: int,
-    *,
-    management_port: int,
-    openai_port: int,
-    data_dir: Path,
-) -> str:
-    svc = dict(service_block)
-    svc["context"] = context
-    svc["lifecycle"] = "persistent"
-    svc.pop("idle_timeout", None)
+def build_llama_server_argv(
+    svc: dict[str, Any], context: int, port: int, ngl: int
+) -> tuple[list[str], dict[str, str]]:
+    """Render the llama-server argv + env for `svc` at `context`.
 
-    out = tomlkit.document()
-    daemon = tomlkit.table()
-    daemon["management_listen"] = f"127.0.0.1:{management_port}"
-    daemon["data_dir"] = str(data_dir)
-    daemon["shutdown_timeout"] = "30s"
-    out["daemon"] = daemon
+    The argv intentionally mirrors what `supervise::spawn::render_argv`
+    produces in the daemon so the calibration result is comparable to
+    what an operator's production daemon would spawn.
+    """
+    args: list[str] = [
+        "llama-server",
+        "-m",
+        str(svc["model"]),
+        "-c",
+        str(context),
+        "-ngl",
+        str(ngl),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
+    if svc.get("mmproj"):
+        args += ["--mmproj", str(svc["mmproj"])]
+    if svc.get("flash_attn"):
+        args += ["-fa", "on"]
+    if svc.get("cache_type_k"):
+        args += ["--cache-type-k", str(svc["cache_type_k"])]
+    if svc.get("cache_type_v"):
+        args += ["--cache-type-v", str(svc["cache_type_v"])]
+    for rule in svc.get("override_tensor", []) or []:
+        args += ["-ot", str(rule)]
 
-    openai = tomlkit.table()
-    openai["listen"] = f"127.0.0.1:{openai_port}"
-    out["openai_api"] = openai
-
-    out.add(tomlkit.nl())
-    svcs = tomlkit.aot()
-    svcs.append(svc)
-    out["service"] = svcs
-    return tomlkit.dumps(out)
+    env: dict[str, str] = os.environ.copy()
+    devices = svc.get("devices", {}) or {}
+    gpu_allow = devices.get("gpu_allow")
+    if gpu_allow:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_allow)
+    return args, env
 
 
-# --- daemon orchestration --------------------------------------------------
-
-
-class Daemon:
-    """Owns a single ``ananke`` subprocess for the duration of one
-    measurement. Context-manages startup/shutdown + temp dir cleanup."""
-
-    def __init__(
-        self,
-        binary: Path,
-        config_path: Path,
-        mgmt_url: str,
-        openai_url: str,
-        log_path: Path,
-        *,
-        startup_timeout_s: float,
-        stop_timeout_s: float,
-    ):
-        self.binary = binary
-        self.config_path = config_path
-        self.mgmt_url = mgmt_url
-        self.openai_url = openai_url
-        self.log_path = log_path
-        self.startup_timeout_s = startup_timeout_s
-        self.stop_timeout_s = stop_timeout_s
-        self._proc: subprocess.Popen[bytes] | None = None
-        self._log_fh: Any = None
-
-    async def __aenter__(self) -> "Daemon":
-        self._log_fh = self.log_path.open("wb")
-        env = os.environ.copy()
-        env["ANANKE_CONFIG"] = str(self.config_path)
-        # LD_LIBRARY_PATH for NVML (and any other runtime deps) is expected
-        # to come from the caller's environment — on NixOS the repo's
-        # `shell.nix` exposes `/run/opengl-driver/lib`. If you're running
-        # calibrate.py outside the dev shell and the daemon logs "NVML init
-        # failed" the snapshot will drop to CPU-only and the packer will
-        # reject every GPU-bound service.
-        self._proc = subprocess.Popen(
-            [str(self.binary)],
-            env=env,
-            stdout=self._log_fh,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            preexec_fn=os.setsid,  # own process group for clean SIGTERM propagation.
-        )
-        await self._wait_ready()
-        return self
-
-    async def __aexit__(self, *exc: Any) -> None:
-        await self.stop()
-
-    async def _wait_ready(self) -> None:
-        deadline = time.monotonic() + self.startup_timeout_s
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            while time.monotonic() < deadline:
-                if self._proc is not None and self._proc.poll() is not None:
-                    raise RuntimeError(
-                        f"daemon exited during startup (rc={self._proc.returncode}); "
-                        f"see {self.log_path}"
-                    )
-                try:
-                    resp = await client.get(f"{self.mgmt_url}/api/services")
-                    if resp.status_code == 200:
-                        return
-                except Exception:
-                    pass
-                await asyncio.sleep(0.2)
-        raise RuntimeError(
-            f"daemon never answered /api/services within {self.startup_timeout_s}s; "
-            f"see {self.log_path}"
-        )
-
-    async def stop(self) -> None:
-        if self._proc is None:
-            return
-        if self._proc.poll() is None:
+async def wait_healthy(base_url: str, timeout_s: float) -> float | None:
+    start = time.monotonic()
+    deadline = start + timeout_s
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        while time.monotonic() < deadline:
             try:
-                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
-            except ProcessLookupError:
+                resp = await client.get(f"{base_url}/health")
+                if resp.status_code == 200:
+                    return time.monotonic() - start
+            except Exception:
                 pass
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self._proc.wait), timeout=self.stop_timeout_s
-                )
-            except asyncio.TimeoutError:
-                try:
-                    os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await asyncio.to_thread(self._proc.wait)
-        if self._log_fh is not None:
-            self._log_fh.close()
-            self._log_fh = None
-        self._proc = None
-
-
-# --- measurement client ----------------------------------------------------
-
-
-class CalibClient:
-    def __init__(self, mgmt_url: str, openai_url: str) -> None:
-        self.mgmt_url = mgmt_url
-        self.openai_url = openai_url
-        self._client = httpx.AsyncClient(timeout=180.0)
-
-    async def aclose(self) -> None:
-        await self._client.aclose()
-
-    async def __aenter__(self) -> "CalibClient":
-        return self
-
-    async def __aexit__(self, *exc: Any) -> None:
-        await self.aclose()
-
-    async def service_detail(self, name: str) -> dict[str, Any]:
-        resp = await self._client.get(
-            f"{self.mgmt_url}/api/services/{name}", timeout=15.0
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def devices(self) -> list[dict[str, Any]]:
-        resp = await self._client.get(f"{self.mgmt_url}/api/devices", timeout=15.0)
-        resp.raise_for_status()
-        return resp.json()
-
-    async def start(self, name: str) -> dict[str, Any]:
-        resp = await self._client.post(
-            f"{self.mgmt_url}/api/services/{name}/start", timeout=180.0
-        )
-        resp.raise_for_status()
-        return resp.json() if resp.headers.get("content-type", "").startswith(
-            "application/json"
-        ) else {"status": "ok"}
-
-    async def chat(self, name: str, prompt: str, *, timeout: float = 120.0) -> httpx.Response:
-        return await self._client.post(
-            f"{self.openai_url}/v1/chat/completions",
-            json={
-                "model": name,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 32,
-            },
-            timeout=timeout,
-        )
-
-
-async def wait_running(client: CalibClient, name: str, timeout_s: float) -> float | None:
-    deadline = time.monotonic() + timeout_s
-    started = time.monotonic()
-    while time.monotonic() < deadline:
-        try:
-            detail = await client.service_detail(name)
-            state = detail.get("state", "")
-            if state == "running":
-                return time.monotonic() - started
-            if state in ("failed", "disabled"):
-                return None
-        except Exception:
-            pass
-        await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
     return None
 
 
-# --- one iteration ---------------------------------------------------------
+async def fire_chat(base_url: str, timeout_s: float = 120.0) -> tuple[str, int | None]:
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            t0 = time.monotonic()
+            resp = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "Reply with: hi."}],
+                    "max_tokens": 16,
+                    "stream": False,
+                },
+            )
+            dt = int((time.monotonic() - t0) * 1000)
+            return ("ok" if resp.status_code == 200 else f"err:{resp.status_code}", dt)
+    except Exception as e:
+        return (f"err:{type(e).__name__}", None)
+
+
+# --- one iteration --------------------------------------------------------
 
 
 async def measure_one(
-    service_name: str,
+    name: str,
+    svc: dict[str, Any],
     context: int,
-    service_block: dict[str, Any],
-    binary: Path,
-    workspace: Path,
+    estimate_bin: Path,
     *,
     startup_timeout_s: float,
-    running_timeout_s: float,
-    stop_timeout_s: float,
-) -> Measurement:
-    iter_dir = workspace / f"{service_name}-{context}"
-    iter_dir.mkdir(parents=True, exist_ok=True)
-    data_dir = iter_dir / "data"
-    data_dir.mkdir(exist_ok=True)
-    config_path = iter_dir / "config.toml"
-    log_path = iter_dir / "daemon.log"
+    log_path: Path,
+) -> Row:
+    estimate = run_estimator(estimate_bin, svc, context)
+    architecture = str(estimate.get("architecture", ""))
+    predicted_weights_mib = int(estimate.get("weights_bytes", 0)) // (1024 * 1024)
+    predicted_kv_total_mib = int(estimate.get("kv_total_mib", 0))
+    predicted_compute_mib = int(estimate.get("compute_buffer_mb", 0))
+    predicted_total_mib = int(estimate.get("total_accounted_mib", 0))
 
-    mgmt_port = free_port()
-    openai_port = free_port()
-    mgmt_url = f"http://127.0.0.1:{mgmt_port}"
-    openai_url = f"http://127.0.0.1:{openai_port}"
-
-    config_path.write_text(
-        build_synthetic_toml(
-            service_block,
-            context,
-            management_port=mgmt_port,
-            openai_port=openai_port,
-            data_dir=data_dir,
+    def _err(reason: str) -> Row:
+        return Row(
+            service=name,
+            context=context,
+            architecture=architecture,
+            predicted_weights_mib=predicted_weights_mib,
+            predicted_kv_total_mib=predicted_kv_total_mib,
+            predicted_compute_buffer_mib=predicted_compute_mib,
+            predicted_total_mib=predicted_total_mib,
+            actual_peak_total_mib=0,
+            actual_peak_per_gpu="",
+            actual_post_chat_total_mib=0,
+            actual_post_chat_per_gpu="",
+            delta_post_chat_total_mib=0,
+            chat_status="skipped",
+            chat_ms=None,
+            time_to_healthy_s=None,
+            error=reason,
         )
+
+    if "estimator_error" in estimate:
+        return _err(str(estimate["estimator_error"]))
+
+    # Baseline NVML before spawning.
+    baseline = nvml_used_mib()
+
+    # `-ngl 999` offloads every layer to GPU; llama.cpp caps at the actual
+    # layer count, so over-shooting is harmless. Using a fixed value keeps
+    # the calibration comparable across services without threading the
+    # packer's per-device decision into the measurement.
+    ngl = 999
+    port = free_port()
+    argv, env = build_llama_server_argv(svc, context, port, ngl)
+    base_url = f"http://127.0.0.1:{port}"
+
+    log_fh = log_path.open("wb")
+    proc = subprocess.Popen(
+        argv,
+        env=env,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        preexec_fn=os.setsid,
     )
 
-    t0 = time.monotonic()
     try:
-        daemon = Daemon(
-            binary,
-            config_path,
-            mgmt_url,
-            openai_url,
-            log_path,
-            startup_timeout_s=startup_timeout_s,
-            stop_timeout_s=stop_timeout_s,
+        time_to_healthy = await wait_healthy(base_url, startup_timeout_s)
+        if time_to_healthy is None:
+            return _err(f"never healthy within {startup_timeout_s}s")
+
+        # Let KV + compute buffers stabilise before reading nvml.
+        await asyncio.sleep(POST_HEALTH_PAUSE_S)
+        peak = subtract_per_gpu(nvml_used_mib(), baseline)
+
+        chat_status, chat_ms = await fire_chat(base_url)
+        await asyncio.sleep(POST_CHAT_PAUSE_S)
+        post_chat = subtract_per_gpu(nvml_used_mib(), baseline)
+
+        actual_peak_total = sum(peak.values())
+        actual_post_total = sum(post_chat.values())
+        return Row(
+            service=name,
+            context=context,
+            architecture=architecture,
+            predicted_weights_mib=predicted_weights_mib,
+            predicted_kv_total_mib=predicted_kv_total_mib,
+            predicted_compute_buffer_mib=predicted_compute_mib,
+            predicted_total_mib=predicted_total_mib,
+            actual_peak_total_mib=actual_peak_total,
+            actual_peak_per_gpu=format_per_gpu(peak),
+            actual_post_chat_total_mib=actual_post_total,
+            actual_post_chat_per_gpu=format_per_gpu(post_chat),
+            delta_post_chat_total_mib=actual_post_total - predicted_total_mib,
+            chat_status=chat_status,
+            chat_ms=chat_ms,
+            time_to_healthy_s=round(time_to_healthy, 2),
+            error="",
         )
-        async with daemon, CalibClient(mgmt_url, openai_url) as client:
-            try:
-                start_resp = await client.start(service_name)
-            except Exception as e:
-                return _failure(
-                    service_name,
-                    context,
-                    state="start-failed",
-                    error=f"start: {e}",
-                    t_start=t0,
-                )
-            status = start_resp.get("status", "?")
-            if status == "unavailable":
-                return _failure(
-                    service_name,
-                    context,
-                    state="unavailable",
-                    error=str(start_resp.get("reason", "unavailable")),
-                    t_start=t0,
-                )
-
-            running_delta = await wait_running(client, service_name, running_timeout_s)
-            if running_delta is None:
-                return _failure(
-                    service_name,
-                    context,
-                    state="timeout",
-                    error=f"never reached Running within {running_timeout_s}s",
-                    t_start=t0,
-                )
-
-            # Let llama-server finish allocating KV + compute buffers and the
-            # supervisor's observer tick pick up peak usage.
-            await asyncio.sleep(8)
-
-            detail = await client.service_detail(service_name)
-            devices = await client.devices()
-            nvml_used = nvml_used_mib()
-            nvml_free = nvml_free_mib()
-
-            reserved: dict[str, int] = {}
-            for g in devices:
-                for r in g.get("reservations", []):
-                    if r["service"] == service_name:
-                        reserved[g["id"]] = r["bytes"] // (1024 * 1024)
-
-            chat_status = "skipped"
-            chat_ms: int | None = None
-            try:
-                chat_t0 = time.monotonic()
-                resp = await client.chat(
-                    service_name, "Reply with the single word: hi.", timeout=120.0
-                )
-                chat_ms = int((time.monotonic() - chat_t0) * 1000)
-                chat_status = "ok" if resp.status_code == 200 else f"err:{resp.status_code}"
-            except Exception as e:
-                chat_status = f"err:{type(e).__name__}"
-
-            return Measurement(
-                service=service_name,
-                context=context,
-                reserved_total_mb=sum(reserved.values()),
-                reserved_per_device=",".join(
-                    f"{k}={v}" for k, v in sorted(reserved.items())
-                ),
-                nvml_mib_per_gpu=format_mib_dict(nvml_used),
-                nvml_free_mib_per_gpu=format_mib_dict(nvml_free),
-                observed_peak_bytes=int(detail.get("observed_peak_bytes") or 0),
-                state=str(detail.get("state", "?")),
-                chat_status=chat_status,
-                chat_ms=chat_ms,
-                time_to_running_s=round(running_delta, 2),
-                error="",
-            )
-    except RuntimeError as e:
-        return _failure(
-            service_name, context, state="daemon-failed", error=str(e), t_start=t0
-        )
+    finally:
+        _terminate(proc)
+        log_fh.close()
+        # Give NVML a moment to reflect the freed VRAM for the next iteration.
+        await asyncio.sleep(2.0)
 
 
-def _failure(
-    service_name: str,
-    context: int,
-    *,
-    state: str,
-    error: str,
-    t_start: float,
-) -> Measurement:
-    return Measurement(
-        service=service_name,
-        context=context,
-        reserved_total_mb=0,
-        reserved_per_device="",
-        nvml_mib_per_gpu=format_mib_dict(nvml_used_mib()),
-        nvml_free_mib_per_gpu=format_mib_dict(nvml_free_mib()),
-        observed_peak_bytes=0,
-        state=state,
-        chat_status="skipped",
-        chat_ms=None,
-        time_to_running_s=round(time.monotonic() - t_start, 2),
-        error=error,
-    )
+def _terminate(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
 
 
-# --- sweep + main ----------------------------------------------------------
+# --- sweep ----------------------------------------------------------------
 
 
 async def sweep_service(
     name: str,
-    service_block: dict[str, Any],
-    binary: Path,
+    svc: dict[str, Any],
+    estimate_bin: Path,
     workspace: Path,
     *,
     max_context: int | None,
     startup_timeout_s: float,
-    running_timeout_s: float,
-    stop_timeout_s: float,
-) -> list[Measurement]:
-    rows: list[Measurement] = []
+) -> list[Row]:
+    rows: list[Row] = []
     ctx = INITIAL_CONTEXT
     while True:
         print(f"\n--- {name} @ context={ctx} ---", flush=True)
-        m = await measure_one(
+        log_path = workspace / f"{name}-{ctx}-llama-server.log"
+        row = await measure_one(
             name,
+            svc,
             ctx,
-            service_block,
-            binary,
-            workspace,
+            estimate_bin,
             startup_timeout_s=startup_timeout_s,
-            running_timeout_s=running_timeout_s,
-            stop_timeout_s=stop_timeout_s,
+            log_path=log_path,
         )
-        rows.append(m)
+        rows.append(row)
         print(
-            f"    state={m.state} reserved={m.reserved_total_mb} MiB "
-            f"chat={m.chat_status} chat_ms={m.chat_ms} "
-            f"nvml_used={m.nvml_mib_per_gpu} nvml_free={m.nvml_free_mib_per_gpu}"
-            + (f" error={m.error}" if m.error else ""),
+            f"    predicted={row.predicted_total_mib} MiB "
+            f"(w={row.predicted_weights_mib}+kv={row.predicted_kv_total_mib}+cb={row.predicted_compute_buffer_mib}) "
+            f"actual_post_chat={row.actual_post_chat_total_mib} MiB ({row.actual_post_chat_per_gpu}) "
+            f"delta={row.delta_post_chat_total_mib:+d} MiB "
+            f"chat={row.chat_status}"
+            + (f" error={row.error}" if row.error else ""),
             flush=True,
         )
-        if m.state != "running" or m.chat_status.startswith("err"):
-            print(f"    stopping sweep for {name}: {m.state}/{m.chat_status}", flush=True)
+        if row.error or row.chat_status.startswith("err"):
+            print(f"    stopping sweep for {name}: {row.error or row.chat_status}", flush=True)
             break
         if max_context is not None and ctx >= max_context:
             print(f"    reached --max-context {max_context}", flush=True)
@@ -575,14 +439,17 @@ async def sweep_service(
     return rows
 
 
-def write_csv(path: Path, rows: list[Measurement]) -> None:
+def write_csv(path: Path, rows: list[Row]) -> None:
     if not rows:
         return
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].to_row().keys()))
+        writer = csv.DictWriter(f, fieldnames=list(dataclasses.asdict(rows[0]).keys()))
         writer.writeheader()
-        for row in rows:
-            writer.writerow(row.to_row())
+        for r in rows:
+            writer.writerow(dataclasses.asdict(r))
+
+
+# --- main -----------------------------------------------------------------
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -590,111 +457,83 @@ async def main_async(args: argparse.Namespace) -> None:
     if not source_path.exists():
         sys.stderr.write(f"source config {source_path} does not exist\n")
         sys.exit(2)
-    binary = Path(args.daemon_binary).expanduser()
-    if not binary.exists() or not os.access(binary, os.X_OK):
-        sys.stderr.write(f"daemon binary {binary} is missing or not executable\n")
+    estimate_bin = Path(args.estimate_binary).expanduser()
+    if not estimate_bin.exists() or not os.access(estimate_bin, os.X_OK):
+        sys.stderr.write(
+            f"estimate binary {estimate_bin} missing — build with:\n"
+            f"  cargo build --release --example estimate\n"
+        )
         sys.exit(2)
 
     source = source_path.read_text()
-    all_services = llm_services(source)
-    targets: list[str]
+    blocks = llm_service_blocks(source)
     if args.services:
-        targets = list(args.services)
-        missing = [s for s in targets if s not in all_services]
+        missing = [s for s in args.services if s not in blocks]
         if missing:
             sys.stderr.write(
                 f"requested services not found in {source_path}: {', '.join(missing)}\n"
             )
             sys.exit(2)
+        targets = list(args.services)
     else:
-        targets = all_services
+        targets = list(blocks.keys())
     if not targets:
         sys.stderr.write("no llama-cpp services to sweep\n")
         return
 
     print(f"source config: {source_path}", flush=True)
-    print(f"daemon binary: {binary}", flush=True)
-    print(f"sweep targets: {targets}", flush=True)
+    print(f"estimate binary: {estimate_bin}", flush=True)
+    print(f"sweep targets ({len(targets)}): {targets}", flush=True)
     print(f"initial context: {INITIAL_CONTEXT}, max: {args.max_context or 'unbounded'}", flush=True)
 
-    workspace = Path(tempfile.mkdtemp(prefix="ananke-calib-"))
+    workspace = Path(args.workspace or f"/tmp/ananke-calib-{int(time.time())}")
+    workspace.mkdir(parents=True, exist_ok=True)
     print(f"workspace: {workspace}", flush=True)
 
-    all_rows: list[Measurement] = []
+    all_rows: list[Row] = []
+    timestamp = int(time.time())
     try:
         for name in targets:
-            block = extract_service_block(source, name)
             rows = await sweep_service(
                 name,
-                block,
-                binary,
+                blocks[name],
+                estimate_bin,
                 workspace,
                 max_context=args.max_context,
                 startup_timeout_s=args.startup_timeout,
-                running_timeout_s=args.running_timeout,
-                stop_timeout_s=args.stop_timeout,
             )
             all_rows.extend(rows)
-            checkpoint = HERE / f"calibration-{int(time.time())}-partial.csv"
+            checkpoint = HERE / f"calibration-{timestamp}-partial.csv"
             write_csv(checkpoint, all_rows)
             print(f"[checkpoint] {len(all_rows)} rows → {checkpoint}", flush=True)
     finally:
-        if not args.keep_workspace:
-            shutil.rmtree(workspace, ignore_errors=True)
-        else:
-            print(f"[keep-workspace] per-iteration logs left at {workspace}", flush=True)
-
-    final = HERE / f"calibration-{int(time.time())}.csv"
-    write_csv(final, all_rows)
-    print(f"\ndone. {len(all_rows)} rows → {final}", flush=True)
+        final = HERE / f"calibration-{timestamp}.csv"
+        write_csv(final, all_rows)
+        print(f"\n{len(all_rows)} rows → {final}", flush=True)
+        print(f"llama-server logs left at {workspace}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
-        "--daemon-binary",
-        default=os.environ.get("ANANKE_BIN", str(DEFAULT_BIN)),
-        help=f"path to the ananke binary (default: $ANANKE_BIN or {DEFAULT_BIN})",
+        "--estimate-binary",
+        default=os.environ.get("ANANKE_ESTIMATE_BIN", str(DEFAULT_ESTIMATE_BIN)),
+        help="path to the `estimate` example binary (build with: cargo build --release --example estimate)",
     )
     p.add_argument(
         "--source-config",
         default=os.environ.get("ANANKE_CONFIG", "/tmp/ananke-redline/config.toml"),
-        help="config file to copy service blocks from (default: $ANANKE_CONFIG or /tmp/ananke-redline/config.toml)",
+        help="config file to read service blocks from",
     )
-    p.add_argument(
-        "--services",
-        nargs="+",
-        help="sweep only the named services (default: every llama-cpp service in the source config)",
-    )
+    p.add_argument("--services", nargs="+", help="subset of llama-cpp service names to sweep")
     p.add_argument(
         "--max-context",
         type=int,
         default=None,
-        help="stop doubling once this context has been measured (default: keep doubling until a step fails)",
+        help="stop doubling once this context has been measured (default: keep doubling until first failure)",
     )
-    p.add_argument(
-        "--startup-timeout",
-        type=float,
-        default=30.0,
-        help="seconds to wait for the daemon's management API to answer (default: 30)",
-    )
-    p.add_argument(
-        "--running-timeout",
-        type=float,
-        default=600.0,
-        help="seconds to wait for the service to reach Running after Start (default: 600)",
-    )
-    p.add_argument(
-        "--stop-timeout",
-        type=float,
-        default=60.0,
-        help="seconds to wait for graceful daemon SIGTERM before SIGKILL (default: 60)",
-    )
-    p.add_argument(
-        "--keep-workspace",
-        action="store_true",
-        help="don't delete the per-iteration tempdir (keeps daemon.log files for post-mortem)",
-    )
+    p.add_argument("--startup-timeout", type=float, default=600.0)
+    p.add_argument("--workspace", type=str, default=None)
     return p.parse_args()
 
 
