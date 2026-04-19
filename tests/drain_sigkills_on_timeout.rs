@@ -1,6 +1,7 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::time::Duration;
+use std::{
+    sync::{Arc, atomic::AtomicU64},
+    time::Duration,
+};
 
 use ananke::drain::{DrainConfig, DrainReason, drain_pipeline};
 

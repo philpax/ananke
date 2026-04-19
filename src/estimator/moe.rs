@@ -6,16 +6,16 @@
 //! `blk.N.ffn_{gate,up,down}_exps.weight`. When `n_cpu_moe > 0`, the
 //! top-N expert-bearing layers move their expert bytes to CPU.
 
-use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::{cmp::Reverse, collections::BTreeMap};
 
 use smol_str::SmolStr;
 
-use super::kv;
-use super::llama::{collect_non_layer, layer_index};
-use super::types::Estimate;
-use crate::config::ServiceConfig;
-use crate::gguf::GgufSummary;
+use super::{
+    kv,
+    llama::{collect_non_layer, layer_index},
+    types::Estimate,
+};
+use crate::{config::ServiceConfig, gguf::GgufSummary};
 
 pub const MOE_FAMILY: &[&str] = &[
     "llama4",
@@ -176,13 +176,18 @@ mod tests {
 
     #[test]
     fn n_cpu_moe_offloads_top_layers() {
-        use crate::config::parse::RawService;
-        use crate::config::validate::{
-            AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-            ServiceConfig, Template,
-        };
-        use crate::gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
         use smol_str::SmolStr;
+
+        use crate::{
+            config::{
+                parse::RawService,
+                validate::{
+                    AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle,
+                    PlacementPolicy, ServiceConfig, Template,
+                },
+            },
+            gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
+        };
 
         let mut tensors = std::collections::BTreeMap::new();
         for layer in 0..3u32 {

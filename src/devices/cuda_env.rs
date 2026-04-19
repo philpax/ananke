@@ -19,9 +19,8 @@ pub fn render(allocation: &Allocation) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::config::validate::DeviceSlot;
-
     use super::*;
+    use crate::config::validate::DeviceSlot;
 
     fn alloc(pairs: &[(DeviceSlot, u64)]) -> Allocation {
         let mut m = BTreeMap::new();

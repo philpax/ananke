@@ -1,19 +1,23 @@
 //! HTTP handlers for the oneshot API: `POST /api/oneshot`, `GET /api/oneshot`,
 //! `GET /api/oneshot/:id`, `DELETE /api/oneshot/:id`.
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{Router, delete, get, post};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{Router, delete, get, post},
+};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use ulid::Ulid;
 use utoipa::ToSchema;
 
-use crate::app_state::AppState;
-use crate::config::validate::parse_duration_ms;
-use crate::oneshot::{OneshotId, OneshotRecord};
+use crate::{
+    app_state::AppState,
+    config::validate::parse_duration_ms,
+    oneshot::{OneshotId, OneshotRecord},
+};
 
 /// Memory allocation strategy for a oneshot request.
 #[derive(Debug, Clone, Deserialize, ToSchema)]

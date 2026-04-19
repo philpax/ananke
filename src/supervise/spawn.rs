@@ -11,10 +11,12 @@ use nix::sys::prctl;
 use nix::sys::signal::Signal;
 use tokio::process::{Child, Command};
 
-use crate::config::validate::{PlacementPolicy, ServiceConfig, Template};
-use crate::devices::{Allocation, cuda_env};
-use crate::errors::ExpectedError;
-use crate::placement::CommandArgs;
+use crate::{
+    config::validate::{PlacementPolicy, ServiceConfig, Template},
+    devices::{Allocation, cuda_env},
+    errors::ExpectedError,
+    placement::CommandArgs,
+};
 
 pub struct SpawnConfig {
     pub binary: String,
@@ -302,16 +304,17 @@ pub async fn spawn_child(_cfg: &SpawnConfig) -> Result<Child, ExpectedError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use smol_str::SmolStr;
 
     use super::*;
-    use crate::config::parse::RawService;
-    use crate::config::validate::{
-        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-        ServiceConfig, Template,
+    use crate::config::{
+        parse::RawService,
+        validate::{
+            AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+            ServiceConfig, Template,
+        },
     };
 
     fn base_service() -> ServiceConfig {

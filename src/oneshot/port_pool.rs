@@ -3,8 +3,7 @@
 //! Maintains a `BTreeSet` of available port numbers. Callers allocate a port
 //! before spawning a oneshot supervisor and release it when the oneshot exits.
 
-use std::collections::BTreeSet;
-use std::ops::Range;
+use std::{collections::BTreeSet, ops::Range};
 
 /// Manages a bounded range of TCP ports for oneshot services.
 pub struct PortPool {

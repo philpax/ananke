@@ -5,10 +5,12 @@
 //! tensor-info entries, then alignment padding, then the tensor data.
 //! This reader walks the header only; it never mmaps or loads tensor data.
 
-use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{BufReader, Read},
+    path::Path,
+};
 
 use smol_str::SmolStr;
 

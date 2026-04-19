@@ -1,7 +1,6 @@
 //! Per-service rolling correction (spec §8.3).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use parking_lot::RwLock;
 use smol_str::SmolStr;

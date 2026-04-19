@@ -5,8 +5,10 @@
 mod common;
 
 use ananke::openai_api;
-use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;
 

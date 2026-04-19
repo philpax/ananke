@@ -15,10 +15,8 @@ use std::collections::BTreeMap;
 use regex::Regex;
 use tracing::warn;
 
-use super::llama::layer_index;
-use super::types::Estimate;
-use crate::config::DeviceSlot;
-use crate::gguf::GgufSummary;
+use super::{llama::layer_index, types::Estimate};
+use crate::{config::DeviceSlot, gguf::GgufSummary};
 
 #[derive(Debug)]
 pub struct OverrideRule {
@@ -146,11 +144,14 @@ pub fn parse_and_apply(estimate: &mut Estimate, summary: &GgufSummary, rules: &[
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::DeviceSlot;
-    use crate::estimator::types::{Estimate, NonLayer};
-    use crate::gguf::types::{GgufSummary, GgufTensor, GgufType};
     use smol_str::SmolStr;
+
+    use super::*;
+    use crate::{
+        config::DeviceSlot,
+        estimator::types::{Estimate, NonLayer},
+        gguf::types::{GgufSummary, GgufTensor, GgufType},
+    };
 
     fn tensor(name: &str, bytes: u64) -> GgufTensor {
         GgufTensor {

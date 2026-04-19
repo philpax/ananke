@@ -1,14 +1,18 @@
 //! Validate a post-merge `RawConfig`, producing an `EffectiveConfig` of
 //! per-service validated configs plus daemon-global settings.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use smol_str::SmolStr;
 use tracing::warn;
 
-use crate::config::parse::{RawConfig, RawService};
-use crate::errors::ExpectedError;
+use crate::{
+    config::parse::{RawConfig, RawService},
+    errors::ExpectedError,
+};
 
 #[derive(Debug, Clone)]
 pub struct EffectiveConfig {
@@ -522,10 +526,10 @@ pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::merge::resolve_inheritance;
-    use crate::config::parse::parse_toml;
     use std::path::Path;
+
+    use super::*;
+    use crate::config::{merge::resolve_inheritance, parse::parse_toml};
 
     fn parse_and_merge(src: &str) -> RawConfig {
         let mut cfg = parse_toml(src, Path::new("/t")).unwrap();

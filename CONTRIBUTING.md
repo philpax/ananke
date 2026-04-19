@@ -113,6 +113,39 @@ Within each module, organize code as follows:
 2. **Private implementation below** - constants, helper functions, and internal types
 3. **Order by use** - private items should appear in the order they're called/used by the public API (topological order)
 
+### File hierarchy
+
+- The file hierarchy is the architecture diagram. A newcomer should be able to intuit what the project does by reading the directory listing.
+- Avoid top-level single-file modules where a natural folder grouping exists. If several files are semantically related — or if file A is only consumed by file B — prefer merging into a folder module or into the consumer.
+- Mirror the public → private structure at the tree level too: subsystems with public entry points (e.g. `api/`, `db/`, `supervise/`) live as folder modules with a `mod.rs` that states the boundary, and their internals are private submodules.
+- Only `lib.rs`, `main.rs`, and genuinely cross-cutting types (e.g. `errors.rs`) should remain as top-level single files.
+
+### Imports
+
+- Prefer a single grouped `use` statement per crate/module rather than several siblings under the same root. Write `use crate::db::{Database, logs::BatcherHandle, models::ServiceLog};`, not three separate lines.
+- Group imports into three blocks separated by blank lines, in this order: `std`, external crates, then `crate`/`super`/`self`.
+- `use` brace expansion should collapse shared prefixes. `use axum::{extract::State, http::StatusCode, routing::get};` is correct; three separate lines under `axum::` is not.
+- `rustfmt.toml` sets `imports_granularity = "Crate"` and `group_imports = "StdExternalCrate"` to enforce this automatically. Both options are nightly-only, so the authoritative formatter is `cargo +nightly fmt --all`. Stable `cargo fmt --all -- --check` prints warnings about the unstable options and otherwise passes — CI runs on stable, and human formatting is the nightly pass.
+
+### Function arguments and state
+
+- If a function takes more than ~5 arguments, that's a signal to group related ones into a struct rather than suppressing `clippy::too_many_arguments`. Suppressing that lint is almost never right.
+- Never use `#[allow(clippy::...)]` to silence a lint without a concrete reason. If clippy is wrong for a case, document why in a comment above the allow. In almost all cases the right move is to restructure the code.
+- Prefer a **functional core, imperative shell**: keep decision logic in pure functions that take data in and return data out, and keep the `tokio::select!` / `tokio::spawn` / I/O at the edges. This makes the core testable without test-fakes and keeps rightward drift out of the core.
+- Avoid rightward drift. If a function is nesting three `tokio::select!` blocks or four levels of `match`/`if let`, extract each arm into a named function that takes a context struct. The control flow at the top level should read like an outline.
+
+### State machines
+
+- Model each state machine as an explicit `enum` with named variants, even if only one field differs between them. Favour an exhaustive `match` + a `transition` helper over scattered `if let` chains.
+- Where a subsystem transitions through phases that own different local state (e.g. `Idle`, `Starting`, `Warming`, `Running`), extract each phase body into its own async function and pass a typed context struct. This is the pragmatic version of the typestate pattern for actor-style loops; it keeps invariants local without requiring full type-parameterised phases.
+- Invalid transitions should be unrepresentable at the boundary where they're consumed. If `transition()` returns `Option<State>`, the caller should never `.unwrap()` it in production — either enumerate the legal inputs ahead of time or make the caller total.
+
+### Platform coupling
+
+- Files that depend on Linux-specific facilities (NVML, `/proc`, `prctl`, `signal`) must say so in their module-level docstring on the first line: `//! Linux-only: reads /proc/{pid}/cmdline.` The convention is explicit enough that a second-platform port knows exactly what to replace.
+- Prefer isolating platform coupling behind a small trait with a Linux impl (as `devices::GpuProbe` does for NVML) rather than threading `#[cfg(linux)]` through business logic.
+- When the second platform lands, gate the Linux impl with `#[cfg(target_os = "linux")]` and add the alternative under a sibling gate; keep the trait definition platform-neutral.
+
 ### Memory and performance
 
 - Use `Arc` or borrows for shared immutable data.

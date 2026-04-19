@@ -14,8 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use smol_str::SmolStr;
 
-use crate::config::parse::{RawConfig, RawService};
-use crate::errors::ExpectedError;
+use crate::{
+    config::parse::{RawConfig, RawService},
+    errors::ExpectedError,
+};
 
 pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ExpectedError> {
     // 1. Fold [[persistent_service]] into [[service]] with lifecycle=persistent default.
@@ -318,9 +320,10 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::config::parse::parse_toml;
-    use std::path::Path;
 
     fn parse(src: &str) -> RawConfig {
         parse_toml(src, Path::new("/t")).unwrap()

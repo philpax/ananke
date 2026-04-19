@@ -5,18 +5,17 @@
 //! action when either the max-VRAM ceiling is breached for too long or
 //! growth pressure is detected while contention with a borrower exists.
 
-use std::collections::VecDeque;
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::allocator::AllocationTable;
-use crate::drain::DrainReason;
-use crate::observation::ObservationTable;
-use crate::service_registry::ServiceRegistry;
+use crate::{
+    allocator::AllocationTable, drain::DrainReason, observation::ObservationTable,
+    service_registry::ServiceRegistry,
+};
 
 const WINDOW_SIZE: usize = 6;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);

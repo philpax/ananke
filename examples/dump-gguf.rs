@@ -2,8 +2,7 @@
 //!
 //! Usage: cargo run --release --example dump-gguf -- /path/to/file.gguf
 
-use std::collections::BTreeMap;
-use std::env;
+use std::{collections::BTreeMap, env};
 
 use ananke::gguf;
 

@@ -1,8 +1,12 @@
 //! Full drain pipeline per spec §10.3.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio::process::Child;
 use tracing::{info, warn};

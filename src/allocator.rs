@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use crate::config::validate::DeviceSlot;
-use crate::devices::DeviceSnapshot;
+use crate::{config::validate::DeviceSlot, devices::DeviceSnapshot};
 
 pub type AllocationTable = BTreeMap<SmolStr, BTreeMap<DeviceSlot, u64>>;
 

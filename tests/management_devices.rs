@@ -3,8 +3,7 @@
 mod common;
 
 use ananke::devices::{CpuSnapshot, DeviceSnapshot, GpuSnapshot};
-use axum::body::to_bytes;
-use axum::http::StatusCode;
+use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;
 

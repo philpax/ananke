@@ -2,11 +2,11 @@
 
 mod common;
 
+use ananke::{
+    db::{Database, models::RunningService},
+    supervise::{OrphanDisposition, reconcile},
+};
 use tempfile::tempdir;
-
-use ananke::db::Database;
-use ananke::db::models::RunningService;
-use ananke::supervise::{OrphanDisposition, reconcile};
 
 #[tokio::test]
 async fn cleans_row_for_dead_pid() {

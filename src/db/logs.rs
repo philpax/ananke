@@ -4,15 +4,15 @@
 //! the SQLite connection and commits every 200 ms or every 100 lines, whichever
 //! first. A shutdown signal triggers a final flush.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::Instant;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::Instant,
+};
 use tracing::warn;
 
-use crate::db::Database;
-use crate::db::models::ServiceLog;
+use crate::db::{Database, models::ServiceLog};
 
 const BATCH_LINES: usize = 100;
 const BATCH_INTERVAL: Duration = Duration::from_millis(200);

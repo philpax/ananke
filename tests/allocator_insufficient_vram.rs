@@ -2,10 +2,11 @@
 
 mod common;
 
-use ananke::config::DeviceSlot;
-use ananke::devices::{CpuSnapshot, DeviceSnapshot};
-use axum::body::to_bytes;
-use axum::http::StatusCode;
+use ananke::{
+    config::DeviceSlot,
+    devices::{CpuSnapshot, DeviceSnapshot},
+};
+use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;
 

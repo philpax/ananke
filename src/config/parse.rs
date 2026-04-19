@@ -1,7 +1,6 @@
 //! Parse a TOML string into a `RawConfig` typed tree (pre-merge, pre-validation).
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::Deserialize;
 use smol_str::SmolStr;
@@ -198,8 +197,9 @@ pub fn parse_toml(source: &str, origin_path: &std::path::Path) -> Result<RawConf
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn parses_minimal() {

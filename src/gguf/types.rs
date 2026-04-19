@@ -1,7 +1,6 @@
 //! Types returned by the GGUF reader.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use smol_str::SmolStr;
 

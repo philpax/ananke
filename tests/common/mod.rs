@@ -17,25 +17,23 @@ pub fn free_port() -> u16 {
     listener.local_addr().expect("local_addr").port()
 }
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use ananke::activity::ActivityTable;
-use ananke::allocator::AllocationTable;
-use ananke::app_state::AppState;
-use ananke::config::parse::RawService;
-use ananke::config::{
-    AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
-    Lifecycle, PlacementPolicy, ServiceConfig, Template,
+use ananke::{
+    activity::ActivityTable,
+    allocator::AllocationTable,
+    app_state::AppState,
+    config::{
+        AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
+        Lifecycle, PlacementPolicy, ServiceConfig, Template, parse::RawService,
+    },
+    db::{Database, logs::spawn as spawn_batcher},
+    devices::{Allocation, CpuSnapshot, DeviceSnapshot},
+    inflight::InflightTable,
+    service_registry::ServiceRegistry,
+    snapshotter,
+    supervise::{SupervisorHandle, spawn_supervisor},
 };
-use ananke::db::Database;
-use ananke::db::logs::spawn as spawn_batcher;
-use ananke::devices::{Allocation, CpuSnapshot, DeviceSnapshot};
-use ananke::inflight::InflightTable;
-use ananke::service_registry::ServiceRegistry;
-use ananke::snapshotter;
-use ananke::supervise::{SupervisorHandle, spawn_supervisor};
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 use tempfile::TempDir;

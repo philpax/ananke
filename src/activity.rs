@@ -6,10 +6,14 @@
 //! required: a stale value only delays idle transitions, which is
 //! harmless for the scheduler.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use parking_lot::RwLock;
 use smol_str::SmolStr;

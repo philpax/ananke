@@ -2,8 +2,7 @@
 
 mod common;
 
-use std::net::SocketAddr;
-use std::time::Instant;
+use std::{net::SocketAddr, time::Instant};
 
 use futures::StreamExt as _;
 use tokio::sync::watch;

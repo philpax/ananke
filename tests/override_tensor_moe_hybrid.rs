@@ -5,14 +5,15 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use ananke::allocator::AllocationTable;
-use ananke::config::parse::RawService;
-use ananke::config::{
-    AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+use ananke::{
+    allocator::AllocationTable,
+    config::{
+        AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+        Template, parse::RawService,
+    },
+    devices::{DeviceSnapshot, GpuSnapshot},
+    estimator, placement,
 };
-use ananke::devices::{DeviceSnapshot, GpuSnapshot};
-use ananke::estimator;
-use ananke::placement;
 use common::synth_gguf;
 use smol_str::SmolStr;
 

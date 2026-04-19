@@ -4,8 +4,7 @@ use std::path::Path;
 
 use tracing::{info, warn};
 
-use crate::db::Database;
-use crate::db::models::RunningService;
+use crate::db::{Database, models::RunningService};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrphanDisposition {

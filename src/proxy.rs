@@ -1,27 +1,29 @@
 //! Per-service reverse HTTP proxy.
 
-use std::convert::Infallible;
-use std::error::Error;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::{
+    convert::Infallible,
+    error::Error,
+    net::SocketAddr,
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use bytes::Bytes;
-use futures::TryStreamExt;
-use futures::future::BoxFuture;
+use futures::{TryStreamExt, future::BoxFuture};
 use http_body_util::{BodyExt, Full, StreamBody};
-use hyper::body::{Frame, Incoming};
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
-use tokio::net::TcpListener;
-use tokio::sync::watch;
+use hyper::{
+    Request, Response, StatusCode,
+    body::{Frame, Incoming},
+    service::service_fn,
+};
+use hyper_util::{
+    client::legacy::Client,
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto,
+};
+use tokio::{net::TcpListener, sync::watch};
 use tracing::{info, warn};
 
-use crate::errors::ExpectedError;
-use crate::inflight::InflightGuard;
+use crate::{errors::ExpectedError, inflight::InflightGuard};
 
 /// Boxed body type used for both upstream requests and downstream responses.
 type ProxyBody =

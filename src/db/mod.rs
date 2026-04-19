@@ -146,8 +146,9 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn opens_and_creates_tables() {

@@ -1,16 +1,20 @@
 //! Read-only management endpoints.
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{Router, get};
-
-use crate::app_state::AppState;
-use crate::management_api::types::{
-    DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary,
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{Router, get},
 };
-use crate::state::ServiceState;
+
+use crate::{
+    app_state::AppState,
+    management_api::types::{
+        DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary,
+    },
+    state::ServiceState,
+};
 
 pub fn register(router: Router, state: AppState) -> Router {
     // Build the typed router against AppState, collapse to Router<()> via

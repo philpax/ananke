@@ -52,17 +52,21 @@ pub async fn wait_healthy(cfg: HealthConfig, mut cancel: watch::Receiver<bool>) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{
+        convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+    };
+
     use bytes::Bytes;
     use http_body_util::Full;
-    use hyper::service::service_fn;
-    use hyper::{Request, Response};
-    use hyper_util::rt::TokioIo;
-    use hyper_util::server::conn::auto;
-    use std::convert::Infallible;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use hyper::{Request, Response, service::service_fn};
+    use hyper_util::{rt::TokioIo, server::conn::auto};
     use tokio::net::TcpListener;
+
+    use super::*;
 
     async fn spawn_server(status: u16) -> (String, Arc<AtomicU32>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

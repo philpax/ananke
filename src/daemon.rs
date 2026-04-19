@@ -1,34 +1,30 @@
 //! Top-level daemon orchestration: wires config, DB, devices, supervisors,
 //! proxies, signals, and retention together.
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
-use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::{net::TcpListener, sync::watch};
 use tracing::{error, info, warn};
 
-use crate::activity::ActivityTable;
-use crate::allocator::AllocationTable;
-use crate::app_state::AppState;
-use crate::config::{AllocationMode, Lifecycle, Migration, load_config};
-use crate::db::Database;
-use crate::db::logs::spawn as spawn_batcher;
-use crate::devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe};
-use crate::errors::ExpectedError;
-use crate::inflight::InflightTable;
-use crate::oneshot::{OneshotRegistry, PortPool};
-use crate::proxy;
-use crate::retention;
-use crate::service_registry::ServiceRegistry;
-use crate::signals::{ShutdownKind, await_shutdown};
-use crate::snapshotter;
-use crate::supervise::{
-    EnsureResponse, StartFailureKind, StartOutcome, SupervisorHandle, orphans::reconcile,
-    spawn_supervisor,
+use crate::{
+    activity::ActivityTable,
+    allocator::AllocationTable,
+    app_state::AppState,
+    config::{AllocationMode, Lifecycle, Migration, load_config},
+    db::{Database, logs::spawn as spawn_batcher},
+    devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe},
+    errors::ExpectedError,
+    inflight::InflightTable,
+    oneshot::{OneshotRegistry, PortPool},
+    proxy, retention,
+    service_registry::ServiceRegistry,
+    signals::{ShutdownKind, await_shutdown},
+    snapshotter,
+    supervise::{
+        EnsureResponse, StartFailureKind, StartOutcome, SupervisorHandle, orphans::reconcile,
+        spawn_supervisor,
+    },
 };
 
 pub async fn run() -> Result<(), ExpectedError> {

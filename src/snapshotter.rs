@@ -8,16 +8,20 @@
 //! Also samples per-service observed memory peaks: for each running service,
 //! sums NVML VRAM + /proc/<pid>/status VmRSS and calls `observation.update_peak`.
 
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use parking_lot::RwLock;
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
-use crate::devices::{CpuSnapshot, DeviceSnapshot, GpuProbe, GpuSnapshot, cpu};
-use crate::observation::{ObservationTable, read_vm_rss};
-use crate::service_registry::ServiceRegistry;
+use crate::{
+    devices::{CpuSnapshot, DeviceSnapshot, GpuProbe, GpuSnapshot, cpu},
+    observation::{ObservationTable, read_vm_rss},
+    service_registry::ServiceRegistry,
+};
 
 pub type SharedSnapshot = Arc<RwLock<DeviceSnapshot>>;
 
@@ -139,10 +143,14 @@ fn sample(probe: &Option<Arc<dyn GpuProbe>>) -> DeviceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::fake::{FakeGpu, FakeProbe};
-    use crate::devices::probe::GpuInfo;
-    use crate::observation::ObservationTable;
-    use crate::service_registry::ServiceRegistry;
+    use crate::{
+        devices::{
+            fake::{FakeGpu, FakeProbe},
+            probe::GpuInfo,
+        },
+        observation::ObservationTable,
+        service_registry::ServiceRegistry,
+    };
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn sampler_populates_snapshot() {

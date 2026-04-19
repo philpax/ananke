@@ -2,18 +2,19 @@
 //! issue a `BeginDrain` on its supervisor and record the final state in the
 //! `oneshots` SQLite table.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 use tokio::sync::watch;
 use tracing::info;
 
-use crate::db::Database;
-use crate::drain::DrainReason;
-use crate::oneshot::{OneshotRegistry, PortPool};
-use crate::service_registry::ServiceRegistry;
+use crate::{
+    db::Database,
+    drain::DrainReason,
+    oneshot::{OneshotRegistry, PortPool},
+    service_registry::ServiceRegistry,
+};
 
 /// Spawn a task that sleeps until `ttl` elapses, then drains the oneshot's
 /// supervisor and cleans up the registry and port pool.

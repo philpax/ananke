@@ -9,14 +9,15 @@ pub mod moe;
 pub mod override_tensor;
 pub mod types;
 
-pub use types::{Estimate, NonLayer};
-
 use std::path::Path;
 
 use tracing::{info, warn};
+pub use types::{Estimate, NonLayer};
 
-use crate::config::ServiceConfig;
-use crate::gguf::{self, GgufSummary};
+use crate::{
+    config::ServiceConfig,
+    gguf::{self, GgufSummary},
+};
 
 /// Produce a base estimate for `svc`. Reads the GGUF (including any
 /// mmproj) and dispatches on `general.architecture`. Pure function;
@@ -87,14 +88,19 @@ pub fn dispatch(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::parse::RawService;
-    use crate::config::validate::{
-        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-        ServiceConfig, Template,
-    };
-    use crate::gguf::types::{GgufSummary, GgufValue};
     use smol_str::SmolStr;
+
+    use super::*;
+    use crate::{
+        config::{
+            parse::RawService,
+            validate::{
+                AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+                ServiceConfig, Template,
+            },
+        },
+        gguf::types::{GgufSummary, GgufValue},
+    };
 
     fn svc_with(mmproj: Option<&str>) -> ServiceConfig {
         let raw = RawService {

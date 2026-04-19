@@ -1,8 +1,10 @@
 //! OpenAI-shaped error responses: `{error: {code, message, type}}`.
 
-use axum::Json;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Serialize;
 use utoipa::ToSchema;
 

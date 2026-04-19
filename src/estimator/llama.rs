@@ -10,10 +10,11 @@ use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use super::kv;
-use super::types::{Estimate, NonLayer};
-use crate::config::ServiceConfig;
-use crate::gguf::GgufSummary;
+use super::{
+    kv,
+    types::{Estimate, NonLayer},
+};
+use crate::{config::ServiceConfig, gguf::GgufSummary};
 
 pub const LLAMA_FAMILY: &[&str] = &[
     "llama", "qwen2", "qwen3", "mistral", "gemma", "gemma2", "gemma3", "phi3", "glm4",
@@ -124,14 +125,19 @@ pub(crate) fn layer_index(name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::parse::RawService;
-    use crate::config::validate::{
-        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-        ServiceConfig, Template,
-    };
-    use crate::gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
     use smol_str::SmolStr;
+
+    use super::*;
+    use crate::{
+        config::{
+            parse::RawService,
+            validate::{
+                AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+                ServiceConfig, Template,
+            },
+        },
+        gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
+    };
 
     fn tensor(name: &str, bytes: u64) -> GgufTensor {
         GgufTensor {

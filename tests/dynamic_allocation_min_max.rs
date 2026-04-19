@@ -1,5 +1,4 @@
-use ananke::config::AllocationMode;
-use ananke::config::{parse_toml, resolve_inheritance, validate};
+use ananke::config::{AllocationMode, parse_toml, resolve_inheritance, validate};
 
 #[test]
 fn dynamic_parses_min_max_and_runtime() {

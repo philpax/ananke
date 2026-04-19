@@ -1,14 +1,15 @@
 //! Handlers for /v1/models and the three POST body-rewriting endpoints.
 
-use std::task::Poll;
-use std::time::Duration;
+use std::{task::Poll, time::Duration};
 
-use axum::Json;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing::{Router, get, post};
+use axum::{
+    Json,
+    body::Body,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{Router, get, post},
+};
 use bytes::Bytes;
 use futures::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
@@ -17,15 +18,19 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 use tracing::warn;
 
-use crate::app_state::AppState;
-use crate::inflight::InflightGuard;
-use crate::openai_api::errors;
-use crate::openai_api::filters;
-use crate::openai_api::schema::{
-    ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing, ModelsResponse,
+use crate::{
+    app_state::AppState,
+    inflight::InflightGuard,
+    openai_api::{
+        errors, filters,
+        schema::{
+            ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing,
+            ModelsResponse,
+        },
+    },
+    state::ServiceState,
+    supervise::{EnsureResponse, StartFailureKind, StartOutcome},
 };
-use crate::state::ServiceState;
-use crate::supervise::{EnsureResponse, StartFailureKind, StartOutcome};
 
 pin_project_lite::pin_project! {
     /// Wraps a body and holds an [`InflightGuard`] so the counter stays elevated

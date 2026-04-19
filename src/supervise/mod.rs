@@ -5,30 +5,38 @@ pub mod logs;
 pub mod orphans;
 pub mod spawn;
 
+use std::{
+    os::unix::process::ExitStatusExt,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
 pub use orphans::{OrphanDisposition, reconcile};
-pub use spawn::{SpawnConfig, render_argv};
-
-use std::os::unix::process::ExitStatusExt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
-
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+pub use spawn::{SpawnConfig, render_argv};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 use tracing::{error, info, warn};
 
-use crate::config::validate::{EffectiveConfig, ServiceConfig};
-use crate::db::Database;
-use crate::db::logs::BatcherHandle;
-use crate::devices::Allocation;
-use crate::observation::ObservationTable;
-use crate::rolling::RollingTable;
-use crate::service_registry::ServiceRegistry;
-use crate::state::{DisableReason, Event as StateEvent, ServiceState, transition};
-use crate::supervise::health::{HealthConfig, HealthOutcome, wait_healthy};
-use crate::supervise::logs::{spawn_pump_stderr, spawn_pump_stdout};
-use crate::supervise::spawn::spawn_child;
+use crate::{
+    config::validate::{EffectiveConfig, ServiceConfig},
+    db::{Database, logs::BatcherHandle},
+    devices::Allocation,
+    observation::ObservationTable,
+    rolling::RollingTable,
+    service_registry::ServiceRegistry,
+    state::{DisableReason, Event as StateEvent, ServiceState, transition},
+    supervise::{
+        health::{HealthConfig, HealthOutcome, wait_healthy},
+        logs::{spawn_pump_stderr, spawn_pump_stdout},
+        spawn::spawn_child,
+    },
+};
 
 #[derive(Debug)]
 pub enum SupervisorCommand {

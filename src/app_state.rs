@@ -5,17 +5,18 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 
-use crate::activity::ActivityTable;
-use crate::allocator::AllocationTable;
-use crate::config::EffectiveConfig;
-use crate::db::Database;
-use crate::db::logs::BatcherHandle;
-use crate::inflight::InflightTable;
-use crate::observation::ObservationTable;
-use crate::oneshot::{OneshotId, OneshotRecord, OneshotRegistry, PortPool};
-use crate::rolling::RollingTable;
-use crate::service_registry::ServiceRegistry;
-use crate::snapshotter::SharedSnapshot;
+use crate::{
+    activity::ActivityTable,
+    allocator::AllocationTable,
+    config::EffectiveConfig,
+    db::{Database, logs::BatcherHandle},
+    inflight::InflightTable,
+    observation::ObservationTable,
+    oneshot::{OneshotId, OneshotRecord, OneshotRegistry, PortPool},
+    rolling::RollingTable,
+    service_registry::ServiceRegistry,
+    snapshotter::SharedSnapshot,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -42,15 +43,18 @@ impl AppState {
         port: u16,
         ttl_ms: u64,
     ) -> Result<(), String> {
-        use std::collections::BTreeMap;
-        use std::path::PathBuf;
+        use std::{collections::BTreeMap, path::PathBuf};
 
-        use crate::config::parse::RawService;
-        use crate::config::validate::{
-            AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-            Template,
+        use crate::{
+            config::{
+                parse::RawService,
+                validate::{
+                    AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+                    ServiceConfig, Template,
+                },
+            },
+            devices::Allocation,
         };
-        use crate::devices::Allocation;
 
         // Resolve template.
         let template = match req.template.as_str() {

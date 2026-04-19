@@ -1,5 +1,4 @@
-use ananke::daemon::run;
-use ananke::errors::ExpectedError;
+use ananke::{daemon::run, errors::ExpectedError};
 
 // Silence unused-import warning until `run` returns a real `ExpectedError`; keeps
 // the type in scope so future signature changes surface here first.

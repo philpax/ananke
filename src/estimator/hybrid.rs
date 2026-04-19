@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use super::llama::{collect_non_layer, collect_per_layer};
-use super::types::Estimate;
-use crate::config::ServiceConfig;
-use crate::gguf::GgufSummary;
+use super::{
+    llama::{collect_non_layer, collect_per_layer},
+    types::Estimate,
+};
+use crate::{config::ServiceConfig, gguf::GgufSummary};
 
 pub fn is_hybrid(arch: &str) -> bool {
     arch == "jamba"

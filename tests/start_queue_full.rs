@@ -8,8 +8,10 @@
 mod common;
 
 use ananke::openai_api;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use common::{build_harness, service_with_queue_depth};
 use tokio::task::JoinSet;
 use tower::util::ServiceExt;

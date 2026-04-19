@@ -44,8 +44,9 @@ pub fn resolve_from_env(cli_config: Option<&Path>) -> Result<PathBuf, ExpectedEr
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn env_wins_over_cli() {

@@ -1,18 +1,19 @@
 //! Aggregated OpenAPI document for the daemon.
 
-use axum::Json;
-use axum::extract::State;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{Router, get};
+use axum::{
+    Json,
+    extract::State,
+    response::{IntoResponse, Response},
+    routing::{Router, get},
+};
 use utoipa::OpenApi;
 
-use crate::app_state::AppState;
-use crate::management_api::handlers as mgmt_handlers;
-use crate::management_api::types as mgmt_types;
-use crate::oneshot::handlers as oneshot_handlers;
-use crate::openai_api::errors as openai_errors;
-use crate::openai_api::handlers as openai_handlers;
-use crate::openai_api::schema as openai_schema;
+use crate::{
+    app_state::AppState,
+    management_api::{handlers as mgmt_handlers, types as mgmt_types},
+    oneshot::handlers as oneshot_handlers,
+    openai_api::{errors as openai_errors, handlers as openai_handlers, schema as openai_schema},
+};
 
 #[derive(OpenApi)]
 #[openapi(

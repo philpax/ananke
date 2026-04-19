@@ -8,9 +8,9 @@ pub mod probe;
 
 use std::collections::BTreeMap;
 
-use crate::config::validate::DeviceSlot;
-
 pub use probe::{GpuInfo, GpuMemory, GpuProbe, GpuProcess};
+
+use crate::config::validate::DeviceSlot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {

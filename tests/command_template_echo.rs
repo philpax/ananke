@@ -1,12 +1,16 @@
 use std::collections::BTreeMap;
 
-use ananke::config::parse::{RawAllocation, RawService};
-use ananke::config::validate::{
-    DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+use ananke::{
+    config::{
+        AllocationMode, Template,
+        parse::{RawAllocation, RawService},
+        validate::{
+            DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+        },
+    },
+    devices::Allocation,
+    supervise::render_argv,
 };
-use ananke::config::{AllocationMode, Template};
-use ananke::devices::Allocation;
-use ananke::supervise::render_argv;
 use smol_str::SmolStr;
 
 #[test]

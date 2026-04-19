@@ -4,8 +4,7 @@
 //! `ExpectedError` is reserved for conditions where the daemon exits
 //! non-zero and the user needs a clear message.
 
-use std::fmt;
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 #[derive(Debug)]
 pub struct ExpectedError {

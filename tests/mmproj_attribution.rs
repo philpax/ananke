@@ -3,15 +3,15 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
-use ananke::config::parse::RawService;
-use ananke::config::{
-    AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-    Template,
+use ananke::{
+    config::{
+        AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+        ServiceConfig, Template, parse::RawService,
+    },
+    estimator,
 };
-use ananke::estimator;
 use common::synth_gguf;
 use smol_str::SmolStr;
 

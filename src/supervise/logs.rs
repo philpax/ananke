@@ -2,8 +2,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{ChildStderr, ChildStdout};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::{ChildStderr, ChildStdout},
+};
 
 use crate::db::logs::{BatcherHandle, LogLine, Stream};
 
@@ -77,8 +79,7 @@ mod tests {
     use tokio::process::Command;
 
     use super::*;
-    use crate::db::Database;
-    use crate::db::logs::spawn as spawn_batcher;
+    use crate::db::{Database, logs::spawn as spawn_batcher};
 
     #[tokio::test(flavor = "current_thread")]
     async fn pumps_echoed_lines() {

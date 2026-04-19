@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
-use ananke::config::validate::DeviceSlot;
-use ananke::eviction::{EvictionCandidate, select_for_slot};
+use ananke::{
+    config::validate::DeviceSlot,
+    eviction::{EvictionCandidate, select_for_slot},
+};
 use smol_str::SmolStr;
 
 #[test]

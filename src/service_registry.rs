@@ -4,8 +4,7 @@
 //! the daemon lifecycle code can share visibility without cloning the
 //! whole map per request.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use parking_lot::RwLock;
 use smol_str::SmolStr;
@@ -45,25 +44,28 @@ impl ServiceRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        sync::{Arc, atomic::AtomicU64},
+    };
 
     use smol_str::SmolStr;
     use tempfile::tempdir;
 
-    use std::sync::atomic::AtomicU64;
-
     use super::*;
-    use crate::config::parse::RawService;
-    use crate::config::validate::{
-        AllocationMode, DeviceSlot, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-        Template,
+    use crate::{
+        config::{
+            parse::RawService,
+            validate::{
+                AllocationMode, DeviceSlot, HealthSettings, Lifecycle, PlacementPolicy,
+                ServiceConfig, Template,
+            },
+        },
+        db::{Database, logs::spawn as spawn_batcher},
+        devices::Allocation,
+        supervise::spawn_supervisor,
     };
-    use crate::db::Database;
-    use crate::db::logs::spawn as spawn_batcher;
-    use crate::devices::Allocation;
-    use crate::supervise::spawn_supervisor;
 
     fn minimal_svc(name: &str) -> ServiceConfig {
         let mut override_map = BTreeMap::new();

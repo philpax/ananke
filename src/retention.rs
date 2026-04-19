@@ -5,8 +5,10 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::db::Database;
-use crate::db::models::{Service, ServiceLog};
+use crate::db::{
+    Database,
+    models::{Service, ServiceLog},
+};
 
 /// Per-service log retention: 7 days or 50,000 lines, whichever tighter
 /// (spec §12). Runs once when called; call from a daily scheduled task.
@@ -90,8 +92,9 @@ pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[tokio::test]
     async fn trims_old_rows_and_excess_per_service() {

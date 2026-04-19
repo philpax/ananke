@@ -15,8 +15,10 @@ lint-frontend:
     cd frontend && npm run lint
 
 # Format Rust and TypeScript sources in place.
+# Uses nightly rustfmt because rustfmt.toml sets nightly-only options
+# (imports_granularity, group_imports) that enforce import style.
 fmt:
-    cargo fmt --all
+    cargo +nightly fmt --all
     cd frontend && npm run format
 
 # Regenerate the toasty migration SQL from the models.

@@ -1,7 +1,6 @@
 //! Per-service observed memory peaks (GPU VRAM via NVML + CPU VmRSS from /proc).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use parking_lot::RwLock;
 use smol_str::SmolStr;

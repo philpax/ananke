@@ -7,12 +7,10 @@ pub mod handlers;
 pub mod port_pool;
 pub mod ttl;
 
-pub use port_pool::PortPool;
-
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use parking_lot::RwLock;
+pub use port_pool::PortPool;
 use smol_str::SmolStr;
 
 /// Stable identifier for a oneshot. Auto-generated as a ULID when the

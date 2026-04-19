@@ -3,22 +3,25 @@
 // Not every integration test binary uses every symbol in this module.
 #![allow(dead_code)]
 
-use std::convert::Infallible;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
-use hyper::body::Frame;
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
+use hyper::{Request, Response, StatusCode, body::Frame, service::service_fn};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto,
+};
 use parking_lot::Mutex;
-use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::{net::TcpListener, sync::watch};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// State shared across all connections to track spawns and collect request bodies.

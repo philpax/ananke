@@ -5,9 +5,13 @@
 //! drain state waits for the counter to reach zero, bounded by
 //! `max_request_duration`.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use parking_lot::RwLock;
 use smol_str::SmolStr;

@@ -4,17 +4,20 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
-use ananke::config::parse::RawService;
-use ananke::config::{
-    AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+use ananke::{
+    config::{
+        AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+        Template, parse::RawService,
+    },
+    devices::{CpuSnapshot, DeviceSnapshot},
+    openai_api,
 };
-use ananke::devices::{CpuSnapshot, DeviceSnapshot};
-use ananke::openai_api;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use common::{build_harness_with_snapshot, synth_gguf};
 use smol_str::SmolStr;
 use tower::util::ServiceExt;

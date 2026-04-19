@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use crate::allocator::AllocationTable;
-use crate::config::{DeviceSlot, PlacementPolicy, ServiceConfig};
-use crate::devices::{Allocation, DeviceId, DeviceSnapshot};
-use crate::estimator::Estimate;
+use crate::{
+    allocator::AllocationTable,
+    config::{DeviceSlot, PlacementPolicy, ServiceConfig},
+    devices::{Allocation, DeviceId, DeviceSnapshot},
+    estimator::Estimate,
+};
 
 const ONE_LAYER_FUDGE_MULTIPLIER: u64 = 1;
 
@@ -307,12 +309,17 @@ fn sum_reserved(table: &AllocationTable, slot: &DeviceSlot, exclude: &SmolStr) -
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::parse::RawService;
-    use crate::config::validate::{AllocationMode, Filters, HealthSettings, Lifecycle, Template};
-    use crate::devices::{CpuSnapshot, GpuSnapshot};
-    use crate::estimator::NonLayer;
     use smol_str::SmolStr;
+
+    use super::*;
+    use crate::{
+        config::{
+            parse::RawService,
+            validate::{AllocationMode, Filters, HealthSettings, Lifecycle, Template},
+        },
+        devices::{CpuSnapshot, GpuSnapshot},
+        estimator::NonLayer,
+    };
 
     fn svc(policy: PlacementPolicy, gpu_allow: Option<Vec<u32>>) -> ServiceConfig {
         let mut placement = BTreeMap::new();

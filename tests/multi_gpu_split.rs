@@ -9,14 +9,16 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use ananke::allocator::AllocationTable;
-use ananke::config::parse::RawService;
-use ananke::config::{
-    AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+use ananke::{
+    allocator::AllocationTable,
+    config::{
+        AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
+        Template, parse::RawService,
+    },
+    devices::{DeviceId, DeviceSnapshot, GpuSnapshot},
+    estimator::{Estimate, NonLayer},
+    placement,
 };
-use ananke::devices::{DeviceId, DeviceSnapshot, GpuSnapshot};
-use ananke::estimator::{Estimate, NonLayer};
-use ananke::placement;
 use smol_str::SmolStr;
 
 fn two_gpu_svc() -> ServiceConfig {
