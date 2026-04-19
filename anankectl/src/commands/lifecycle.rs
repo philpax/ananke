@@ -71,10 +71,19 @@ pub async fn disable(client: &ApiClient, json: bool, name: &str) -> Result<(), A
 }
 
 pub async fn retry(client: &ApiClient, json: bool, name: &str) -> Result<(), ApiClientError> {
-    // Best-effort enable (idempotent if not disabled), then start.
-    let _ = client
+    // Best-effort enable: idempotent if the service is not disabled.
+    // HTTP errors (e.g. 409 "not in disabled state") are harmless and ignored.
+    // Connection errors are fatal — abort before attempting start.
+    match client
         .post_empty::<EnableResponse>(&format!("/api/services/{name}/enable"))
-        .await;
+        .await
+    {
+        Ok(_) => {}
+        Err(ApiClientError::Http { .. }) => {
+            // Expected when the service is not in the Disabled state — proceed to start.
+        }
+        Err(e) => return Err(e),
+    }
     start(client, json, name).await
 }
 

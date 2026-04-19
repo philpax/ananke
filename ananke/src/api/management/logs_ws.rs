@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ananke_api::{ApiError, LogLine};
+use ananke_api::{ApiError, LogLine, LogStreamMessage};
 use axum::{
     Json,
     extract::{Path, State, WebSocketUpgrade, ws::Message},
@@ -46,7 +46,8 @@ async fn serve_logs(
         select! {
             recv = rx.recv() => match recv {
                 Ok((sid, line)) if sid == service_id => {
-                    let json = match serde_json::to_string(&line) {
+                    let msg = LogStreamMessage::Line(line);
+                    let json = match serde_json::to_string(&msg) {
                         Ok(s) => s,
                         Err(e) => { warn!(error = %e, "log line serialise failed"); continue; }
                     };
@@ -54,14 +55,8 @@ async fn serve_logs(
                 }
                 Ok(_) => continue,
                 Err(RecvError::Lagged(n)) => {
-                    // Build an overflow sentinel that the client can detect.
-                    // We reuse the LogLine shape with a special stream value and
-                    // the drop count embedded in the line text.
-                    let overflow = serde_json::json!({
-                        "type": "overflow",
-                        "dropped": n,
-                    });
-                    if let Ok(s) = serde_json::to_string(&overflow)
+                    let msg = LogStreamMessage::Overflow { dropped: n };
+                    if let Ok(s) = serde_json::to_string(&msg)
                         && socket.send(Message::Text(s)).await.is_err()
                     {
                         return;

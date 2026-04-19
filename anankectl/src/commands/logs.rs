@@ -1,6 +1,6 @@
 //! `anankectl logs` command — paginated historical fetch with optional live tail.
 
-use ananke_api::{LogLine, LogsResponse};
+use ananke_api::{LogLine, LogStreamMessage, LogsResponse};
 use futures::StreamExt;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
@@ -69,17 +69,24 @@ pub async fn run(
         .map_err(|e| ApiClientError::WebSocket(e.to_string()))?;
 
     while let Some(Ok(Message::Text(s))) = ws.next().await {
-        let Ok(line) = serde_json::from_str::<LogLine>(&s) else {
+        let Ok(msg) = serde_json::from_str::<LogStreamMessage>(&s) else {
             continue;
         };
-        // Skip lines we already printed from the historical fetch.
-        if let Some(prev) = max_seen
-            && (line.run_id, line.seq) <= prev
-        {
-            continue;
+        match msg {
+            LogStreamMessage::Line(line) => {
+                // Skip lines we already printed from the historical fetch.
+                if let Some(prev) = max_seen
+                    && (line.run_id, line.seq) <= prev
+                {
+                    continue;
+                }
+                max_seen = Some((line.run_id, line.seq));
+                print_line(&line);
+            }
+            LogStreamMessage::Overflow { dropped } => {
+                eprintln!("[{dropped} frames dropped]");
+            }
         }
-        max_seen = Some((line.run_id, line.seq));
-        print_line(&line);
     }
 
     Ok(())

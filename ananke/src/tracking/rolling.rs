@@ -6,6 +6,8 @@ use parking_lot::RwLock;
 use smol_str::SmolStr;
 use tracing::{info, warn};
 
+use crate::daemon::events::EventBus;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RollingCorrection {
     pub rolling_mean: f64,
@@ -27,11 +29,21 @@ impl Default for RollingCorrection {
 #[derive(Clone, Default)]
 pub struct RollingTable {
     inner: Arc<RwLock<BTreeMap<SmolStr, RollingCorrection>>>,
+    events: Option<EventBus>,
 }
 
 impl RollingTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a `RollingTable` that publishes [`ananke_api::Event::EstimatorDrift`]
+    /// whenever an update moves the rolling mean by more than 5%.
+    pub fn with_events(events: EventBus) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(BTreeMap::new())),
+            events: Some(events),
+        }
     }
 
     pub fn get(&self, name: &SmolStr) -> RollingCorrection {
@@ -53,6 +65,7 @@ impl RollingTable {
         let ratio = observed_peak_bytes as f64 / base_estimate_bytes as f64;
         let mut guard = self.inner.write();
         let entry = guard.entry(name.clone()).or_default();
+        let prev_mean = entry.rolling_mean;
         let n = entry.sample_count as f64 + 1.0;
         let new_mean = (entry.rolling_mean * (n - 1.0) + ratio) / n;
         entry.rolling_mean = new_mean.clamp(0.8, 1.5);
@@ -90,6 +103,21 @@ impl RollingTable {
                 sample = entry.sample_count,
                 "rolling correction updated"
             );
+        }
+
+        // Capture values needed for event publishing before releasing the lock.
+        let final_mean = entry.rolling_mean;
+        // > 5% shift in the rolling mean warrants an EstimatorDrift event.
+        let significant_shift =
+            prev_mean == 0.0 || ((final_mean - prev_mean) / prev_mean).abs() > 0.05;
+        drop(guard);
+
+        if significant_shift && let Some(events) = &self.events {
+            events.publish(ananke_api::Event::EstimatorDrift {
+                service: name.clone(),
+                rolling_mean: final_mean as f32,
+                at_ms: crate::tracking::now_unix_ms(),
+            });
         }
     }
 }

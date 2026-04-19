@@ -73,7 +73,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     let batcher = spawn_batcher(db.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let rolling = crate::tracking::rolling::RollingTable::new();
+    let rolling = crate::tracking::rolling::RollingTable::with_events(events.clone());
     let observation = crate::tracking::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
 

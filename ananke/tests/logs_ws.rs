@@ -3,7 +3,7 @@
 mod common;
 
 use ananke::db::logs::{LogLine, Stream};
-use ananke_api::LogLine as ApiLogLine;
+use ananke_api::LogStreamMessage;
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
@@ -29,18 +29,21 @@ async fn log_line_arrives_over_websocket() {
 
     // Expect the log line to arrive on the WebSocket within a reasonable window.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut received: Option<ApiLogLine> = None;
+    let mut received: Option<LogStreamMessage> = None;
     while std::time::Instant::now() < deadline {
         let recv = tokio::time::timeout(std::time::Duration::from_millis(500), ws.next()).await;
         if let Ok(Some(Ok(Message::Text(s)))) = recv
-            && let Ok(line) = serde_json::from_str::<ApiLogLine>(&s)
+            && let Ok(msg) = serde_json::from_str::<LogStreamMessage>(&s)
         {
-            received = Some(line);
+            received = Some(msg);
             break;
         }
     }
 
-    let line = received.expect("expected a LogLine on the WebSocket");
+    let msg = received.expect("expected a LogStreamMessage on the WebSocket");
+    let LogStreamMessage::Line(line) = msg else {
+        panic!("expected LogStreamMessage::Line, got overflow");
+    };
     assert_eq!(line.timestamp_ms, 12345);
     assert_eq!(line.stream, "stdout");
     assert_eq!(line.line, "hello from test");
@@ -109,13 +112,13 @@ async fn lines_for_other_services_are_filtered() {
     harness.state.batcher.flush().await;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut received_lines: Vec<ApiLogLine> = Vec::new();
+    let mut received_lines: Vec<LogStreamMessage> = Vec::new();
     while std::time::Instant::now() < deadline {
         let recv = tokio::time::timeout(std::time::Duration::from_millis(500), ws.next()).await;
         if let Ok(Some(Ok(Message::Text(s)))) = recv
-            && let Ok(line) = serde_json::from_str::<ApiLogLine>(&s)
+            && let Ok(msg) = serde_json::from_str::<LogStreamMessage>(&s)
         {
-            received_lines.push(line);
+            received_lines.push(msg);
             // We only expect one line (alpha's); stop once we have it.
             break;
         }
@@ -126,7 +129,11 @@ async fn lines_for_other_services_are_filtered() {
         1,
         "should receive exactly one line (alpha's)"
     );
-    assert_eq!(received_lines[0].line, "alpha line");
+    assert!(
+        matches!(&received_lines[0], LogStreamMessage::Line(l) if l.line == "alpha line"),
+        "expected alpha line, got: {:?}",
+        received_lines[0]
+    );
 
     let _ = ws.send(Message::Close(None)).await;
     harness.shutdown().await;
