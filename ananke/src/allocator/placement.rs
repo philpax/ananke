@@ -551,4 +551,64 @@ mod tests {
         assert_eq!(packed.args.ngl, Some(0));
         assert!(packed.args.tensor_split.is_none());
     }
+
+    /// Regression for scenario-02 nemotron-49B overcommit: first-fit filled
+    /// GPU 0 until it nearly brimmed, then post-layer compute_buffer + KV +
+    /// one-layer fudge tails pushed it past physical capacity. Best-fit
+    /// spreads the layers across GPUs so the tails land inside each GPU's
+    /// budget. With two equal-free GPUs and two layers, the expected outcome
+    /// is a 1/1 split — first-fit would produce [2, 0].
+    #[test]
+    fn best_fit_balances_layers_across_equal_gpus() {
+        let e = trivial_estimate(2, 1024); // 2 layers, 1 GiB each
+        let snap = snapshot(&[20, 20]); // 20 GB free on each of two GPUs
+        let alloc = AllocationTable::new();
+        let packed = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc).unwrap();
+        let split = packed.args.tensor_split.as_ref().unwrap();
+        assert_eq!(split.len(), 2);
+        assert_eq!(split, &vec![1u32, 1u32], "layers should split 1/1 across GPUs");
+        assert_eq!(packed.args.ngl, Some(2));
+    }
+
+    /// When GPU 1 starts with more free capacity, best-fit should bias
+    /// placements toward it until the two are even. First-fit would ignore
+    /// the imbalance and stuff everything onto GPU 0.
+    #[test]
+    fn best_fit_prefers_gpu_with_more_free() {
+        let e = trivial_estimate(4, 1024); // 4 × 1 GiB layers
+        let snap = snapshot(&[10, 16]); // GPU 1 has 6 GB more free
+        let alloc = AllocationTable::new();
+        let packed = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc).unwrap();
+        let split = packed.args.tensor_split.as_ref().unwrap();
+        assert_eq!(split.iter().sum::<u32>(), 4);
+        assert!(
+            split[1] >= split[0],
+            "best-fit should place at least as many layers on GPU 1 (more free) as on GPU 0; got {split:?}"
+        );
+    }
+
+    /// `pack_optimistic` ignores nvml's view of free bytes and trusts the
+    /// pledge book (`total - reserved`) alone. Used on the retry-after-
+    /// eviction path: the victims have been drained from `reserved`, but
+    /// nvml still reports their realized usage until the drain actually
+    /// lands. `pack` would reject the placement here; `pack_optimistic`
+    /// should succeed.
+    #[test]
+    fn pack_optimistic_ignores_stale_nvml_free() {
+        let e = trivial_estimate(4, 1024); // 4 GiB of layers
+        let snap = snapshot(&[0]); // nvml says 0 free, but total = 24 GB
+        let alloc = AllocationTable::new();
+
+        // Conservative pack: `min(0, 24-0) = 0` per GPU, no spill allowed.
+        let err = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc);
+        assert!(
+            err.is_err(),
+            "pack must reject placement when nvml reports 0 free and spill is off"
+        );
+
+        // Optimistic pack: trust `total - reserved = 24 GB`, layers fit.
+        let packed = pack_optimistic(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc)
+            .expect("pack_optimistic must succeed when the pledge book allows it");
+        assert_eq!(packed.args.ngl, Some(4));
+    }
 }

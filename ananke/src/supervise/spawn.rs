@@ -374,6 +374,35 @@ mod tests {
         assert_eq!(cmd.args[ts_idx + 1], "12,12");
     }
 
+    /// Regression for the scenario-01 `CUDA_VISIBLE_DEVICES=` empty-env bug:
+    /// `SupervisorInit::allocation` is built from `placement_override` when the
+    /// registry is constructed. For any estimator-driven service (no override),
+    /// that bundle is empty, so rendering `render_argv` against it would emit
+    /// `CUDA_VISIBLE_DEVICES=` and the child would silently fall back to CPU.
+    /// The supervisor must thread the *packed* allocation into `render_argv`.
+    /// This test demonstrates the discriminator: the two allocations produce
+    /// different env values, so a regression that swaps back to `init.allocation`
+    /// would be caught by the supervisor-level smoke path.
+    #[test]
+    fn render_uses_supplied_allocation_for_cuda_env() {
+        let svc = base_service();
+        // Empty override (estimator-driven) → `init.allocation` is empty.
+        let empty_alloc = Allocation::from_override(&BTreeMap::new());
+        let empty_cmd = render_argv(&svc, &empty_alloc, None);
+        assert_eq!(
+            empty_cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(),
+            "",
+            "init.allocation with no GPU entries must render as empty (CPU fallback)"
+        );
+
+        // A packed allocation that placed layers on GPU 1 → env should list it.
+        let mut placed = BTreeMap::new();
+        placed.insert(DeviceSlot::Gpu(1), 4096);
+        let packed_alloc = Allocation::from_override(&placed);
+        let packed_cmd = render_argv(&svc, &packed_alloc, None);
+        assert_eq!(packed_cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(), "1");
+    }
+
     #[test]
     fn command_template_renders_placeholders() {
         let command_argv = vec![

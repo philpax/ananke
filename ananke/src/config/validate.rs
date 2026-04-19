@@ -1326,6 +1326,111 @@ lifecycle = "persistent"
     }
 
     #[test]
+    fn private_port_range_is_configurable_and_exhausts_cleanly() {
+        // A two-port window must fit exactly two services; the third triggers
+        // the exhausted-range error with the requested bounds echoed back so
+        // the operator knows which knobs to widen. The default 40_000–59_999
+        // window is deliberately large, so this guard only matters on hosts
+        // that shrink it to dodge a port collision.
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+private_port_start = 50000
+private_port_end = 50001
+
+[[service]]
+name = "a"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+
+[[service]]
+name = "b"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11001
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+
+[[service]]
+name = "c"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11002
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exhausted") && msg.contains("50000") && msg.contains("50001"),
+            "expected range-exhausted error naming [50000, 50001]; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn private_port_range_assigns_in_order_from_start() {
+        // Two services in a custom window should get start, start+1 — not the
+        // 40000-base default, and not duplicates. Regression: an earlier
+        // formulation derived the private port from the public port via
+        // `40_000 + (port - 11_000)` and wrapped to 65535 for every service.
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+private_port_start = 45000
+private_port_end = 45099
+
+[[service]]
+name = "a"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+
+[[service]]
+name = "b"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11001
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let ports: Vec<u16> = ec.services.iter().map(|s| s.private_port).collect();
+        assert_eq!(ports, vec![45000, 45001]);
+    }
+
+    #[test]
+    fn private_port_range_rejects_inverted_bounds() {
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+private_port_start = 50000
+private_port_end = 49999
+
+[[service]]
+name = "a"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+lifecycle = "persistent"
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("private_port_end") && msg.contains("must exceed"),
+            "expected inverted-bounds error; got: {msg}"
+        );
+    }
+
+    #[test]
     fn non_loopback_with_flag_is_accepted() {
         let cfg = parse_and_merge(
             r#"

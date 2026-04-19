@@ -303,4 +303,32 @@ mod tests {
         let err = read_single(&fs, Path::new("/bad.gguf")).unwrap_err();
         assert!(err.0.contains("bad magic"));
     }
+
+    /// Unknown dtype ids must be rejected at read time. gpt-oss ships MXFP4
+    /// experts (id 39) which were silently counted as F16 before this guard,
+    /// producing ~4× over-reservations. Any dtype that doesn't fall through
+    /// `GgufType::from_u32` is treated as a config-load failure so unsupported
+    /// quants can't slip past preflight.
+    #[test]
+    fn rejects_unknown_dtype() {
+        let mut v = Vec::<u8>::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes()); // version
+        v.extend_from_slice(&1u64.to_le_bytes()); // 1 tensor
+        v.extend_from_slice(&0u64.to_le_bytes()); // 0 kv entries
+        // Tensor: name "w", 1 dim [32], dtype = 9999 (unknown), offset 0.
+        write_string(&mut v, "w");
+        v.extend_from_slice(&1u32.to_le_bytes());
+        v.extend_from_slice(&32u64.to_le_bytes());
+        v.extend_from_slice(&9999u32.to_le_bytes());
+        v.extend_from_slice(&0u64.to_le_bytes());
+
+        let fs = crate::system::InMemoryFs::new().with("/u.gguf", v);
+        let err = read_single(&fs, Path::new("/u.gguf")).unwrap_err();
+        assert!(
+            err.0.contains("unsupported GGUF dtype id 9999"),
+            "expected unsupported-dtype error, got: {}",
+            err.0
+        );
+    }
 }
