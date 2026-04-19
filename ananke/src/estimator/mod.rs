@@ -45,14 +45,18 @@ pub fn estimate_from_path(path: &Path, svc: &ServiceConfig) -> Result<Estimate, 
         "post-dispatch estimate",
     );
 
+    let lc = svc
+        .llama_cpp()
+        .expect("estimator called on non-llama-cpp service");
+
     // Apply user-declared override_tensor rules BEFORE mmproj so matched
     // tensors leave the layer/non-layer budget cleanly (spec §8.2.4).
-    if let Some(rules) = svc.raw.override_tensor.as_ref() {
-        override_tensor::parse_and_apply(&mut est, &summary, rules);
+    if !lc.override_tensor.is_empty() {
+        override_tensor::parse_and_apply(&mut est, &summary, &lc.override_tensor);
     }
 
     // Add mmproj bytes to GPU 0 weights (per spec §8.3).
-    if let Some(mmproj) = svc.raw.mmproj.as_ref() {
+    if let Some(mmproj) = lc.mmproj.as_ref() {
         match gguf::read(mmproj.as_path()) {
             Ok(proj) => {
                 est.weights_bytes = est.weights_bytes.saturating_add(proj.total_tensor_bytes);
@@ -82,7 +86,7 @@ pub fn dispatch(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     if hybrid::is_hybrid(arch) {
         return hybrid::estimate(summary, svc);
     }
-    let context = svc.raw.context.unwrap_or(4096);
+    let context = svc.llama_cpp().and_then(|lc| lc.context).unwrap_or(4096);
     fallback::estimate_fallback(summary, context)
 }
 
@@ -103,12 +107,13 @@ mod tests {
         svc.placement_policy = PlacementPolicy::GpuOnly;
         svc.placement_override.clear();
         svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
-        svc.raw.model = Some("/fake".into());
-        svc.raw.context = Some(4096);
-        svc.raw.mmproj = mmproj.map(|p| p.into());
-        svc.raw.cache_type_k = Some(SmolStr::new("f16"));
-        svc.raw.cache_type_v = Some(SmolStr::new("f16"));
-        svc.raw.flash_attn = Some(true);
+        let lc = crate::config::validate::test_fixtures::expect_llama_cpp(&mut svc);
+        lc.model = "/fake".into();
+        lc.context = Some(4096);
+        lc.mmproj = mmproj.map(|p| p.into());
+        lc.cache_type_k = Some(SmolStr::new("f16"));
+        lc.cache_type_v = Some(SmolStr::new("f16"));
+        lc.flash_attn = Some(true);
         svc
     }
 

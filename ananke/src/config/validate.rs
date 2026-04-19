@@ -10,7 +10,10 @@ use smol_str::SmolStr;
 use tracing::warn;
 
 use crate::{
-    config::parse::{RawConfig, RawService},
+    config::parse::{
+        EstimationConfig, RawCommandService, RawConfig, RawLlamaCppService, RawService,
+        RawServiceCommon, SamplingConfig,
+    },
     errors::ExpectedError,
 };
 
@@ -70,7 +73,6 @@ pub struct DaemonSettings {
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     pub name: SmolStr,
-    pub template: Template,
     pub port: u16,
     pub private_port: u16,
     pub lifecycle: Lifecycle,
@@ -78,6 +80,7 @@ pub struct ServiceConfig {
     pub health: HealthSettings,
     pub placement_override: BTreeMap<DeviceSlot, u64>,
     pub placement_policy: PlacementPolicy,
+    pub gpu_allow: Vec<u32>,
     pub filters: Filters,
     pub idle_timeout_ms: u64,
     pub warming_grace_ms: u64,
@@ -85,10 +88,85 @@ pub struct ServiceConfig {
     pub extended_stream_drain_ms: u64,
     pub max_request_duration_ms: u64,
     pub allocation_mode: AllocationMode,
-    pub command: Option<Vec<String>>,
-    pub workdir: Option<PathBuf>,
     pub openai_compat: bool,
-    pub raw: RawService,
+    pub description: Option<String>,
+    pub start_queue_depth: usize,
+    pub extra_args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub template_config: TemplateConfig,
+}
+
+impl ServiceConfig {
+    pub fn template(&self) -> Template {
+        self.template_config.template()
+    }
+
+    /// Borrow the llama-cpp configuration, or `None` if this is a command
+    /// service. Intended for code paths that are only reachable for
+    /// llama-cpp services (estimator, llama-server argv rendering).
+    pub fn llama_cpp(&self) -> Option<&LlamaCppConfig> {
+        match &self.template_config {
+            TemplateConfig::LlamaCpp(lc) => Some(lc.as_ref()),
+            TemplateConfig::Command(_) => None,
+        }
+    }
+
+    /// Borrow the command configuration, or `None` if this is a llama-cpp
+    /// service.
+    pub fn command(&self) -> Option<&CommandConfig> {
+        match &self.template_config {
+            TemplateConfig::LlamaCpp(_) => None,
+            TemplateConfig::Command(cmd) => Some(cmd),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TemplateConfig {
+    /// Boxed so the llama-cpp variant (~272 bytes) doesn't dominate the size of
+    /// every `ServiceConfig`. Command services are ~48 bytes; boxing keeps the
+    /// enum small for both.
+    LlamaCpp(Box<LlamaCppConfig>),
+    Command(CommandConfig),
+}
+
+impl TemplateConfig {
+    pub fn template(&self) -> Template {
+        match self {
+            TemplateConfig::LlamaCpp(_) => Template::LlamaCpp,
+            TemplateConfig::Command(_) => Template::Command,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LlamaCppConfig {
+    pub model: PathBuf,
+    pub mmproj: Option<PathBuf>,
+    pub context: Option<u32>,
+    pub n_gpu_layers: Option<i32>,
+    pub n_cpu_moe: Option<u32>,
+    pub flash_attn: Option<bool>,
+    pub cache_type_k: Option<SmolStr>,
+    pub cache_type_v: Option<SmolStr>,
+    pub mmap: Option<bool>,
+    pub mlock: Option<bool>,
+    pub parallel: Option<u32>,
+    pub batch_size: Option<u32>,
+    pub ubatch_size: Option<u32>,
+    pub threads: Option<u32>,
+    pub threads_batch: Option<u32>,
+    pub jinja: Option<bool>,
+    pub chat_template_file: Option<PathBuf>,
+    pub override_tensor: Vec<String>,
+    pub sampling: SamplingConfig,
+    pub estimation: EstimationConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandConfig {
+    pub command: Vec<String>,
+    pub workdir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,283 +338,15 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     let mut out = Vec::new();
 
     for (i, raw) in cfg.services.iter().enumerate() {
-        let name = raw
-            .name
-            .clone()
-            .ok_or_else(|| fail(format!("service[{i}] missing name")))?;
-        let port = raw
-            .port
-            .ok_or_else(|| fail(format!("service {name} missing port")))?;
-        let template_str = raw
-            .template
-            .clone()
-            .ok_or_else(|| fail(format!("service {name} missing template")))?;
-        let template = match template_str.as_str() {
-            "llama-cpp" => Template::LlamaCpp,
-            "command" => Template::Command,
-            other => return Err(fail(format!("service {name}: unknown template `{other}`"))),
-        };
-
-        let raw_alloc = raw.allocation.clone().unwrap_or_default();
-        let runtime_ms = raw_alloc
-            .min_borrower_runtime
-            .as_deref()
-            .map(parse_duration_ms)
-            .transpose()
-            .map_err(|e| fail(format!("service {name} min_borrower_runtime: {e}")))?
-            .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
-        let allocation_mode = AllocationMode::from_parts(
-            template,
-            raw_alloc.mode.as_deref(),
-            raw_alloc.vram_gb,
-            raw_alloc.min_vram_gb,
-            raw_alloc.max_vram_gb,
-            runtime_ms,
-        )
-        .map_err(|e| fail(format!("service {name}: {e}")))?;
-
-        if !names.insert(name.clone()) {
-            return Err(fail(format!("duplicate service name `{name}`")));
-        }
-        if !ports.insert(port) {
-            return Err(fail(format!("duplicate service port {port}")));
-        }
-        if Some(port) == management_port {
-            return Err(fail(format!(
-                "service {name} port {port} collides with daemon.management_listen"
-            )));
-        }
-
-        let lifecycle_str = raw
-            .lifecycle
-            .clone()
-            .unwrap_or_else(|| SmolStr::new("on_demand"));
-        let lifecycle = match lifecycle_str.as_str() {
-            "persistent" => Lifecycle::Persistent,
-            "on_demand" => Lifecycle::OnDemand,
-            "oneshot" => {
-                return Err(fail(format!(
-                    "service {name}: lifecycle `oneshot` is invalid in a [[service]] block (API-only)"
-                )));
-            }
-            other => return Err(fail(format!("service {name}: unknown lifecycle `{other}`"))),
-        };
-
-        // Template-specific requirements.
-        match template {
-            Template::LlamaCpp => {
-                if raw.model.is_none() {
-                    return Err(fail(format!(
-                        "service {name}: template llama-cpp requires `model`"
-                    )));
-                }
-                let flash = raw.flash_attn.unwrap_or(false);
-                for (key, val) in [
-                    ("cache_type_k", raw.cache_type_k.as_deref()),
-                    ("cache_type_v", raw.cache_type_v.as_deref()),
-                ] {
-                    if let Some(v) = val
-                        && v != "f16"
-                        && !flash
-                    {
-                        return Err(fail(format!(
-                            "service {name}: {key}={v} requires flash_attn=true \
-                             (llama.cpp requires FA for quantised KV)"
-                        )));
-                    }
-                }
-            }
-            Template::Command => {
-                let cmd = raw.command.as_ref().ok_or_else(|| {
-                    fail(format!(
-                        "service {name}: command template requires `command`"
-                    ))
-                })?;
-                if cmd.is_empty() {
-                    return Err(fail(format!("service {name}: command is empty")));
-                }
-            }
-        }
-
-        let openai_compat = raw
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("openai_compat"))
-            .and_then(|v| match v {
-                toml::Value::Boolean(b) => Some(*b),
-                _ => None,
-            })
-            // llama-cpp defaults to true; command defaults to false.
-            .unwrap_or(template == Template::LlamaCpp);
-
-        let dev = raw.devices.clone().unwrap_or_default();
-        let placement_policy = match dev.placement.as_deref().unwrap_or("gpu-only") {
-            "gpu-only" => PlacementPolicy::GpuOnly,
-            "cpu-only" => {
-                if raw.n_gpu_layers.unwrap_or(0) != 0 {
-                    return Err(fail(format!(
-                        "service {name}: devices.placement=cpu-only with n_gpu_layers={} is invalid",
-                        raw.n_gpu_layers.unwrap()
-                    )));
-                }
-                PlacementPolicy::CpuOnly
-            }
-            "hybrid" => PlacementPolicy::Hybrid,
-            other => return Err(fail(format!("service {name}: unknown placement `{other}`"))),
-        };
-
-        if raw.context.is_none() {
-            warn!(
-                service = %name,
-                "no context set; the estimator will default to 4096 tokens"
-            );
-        }
-
-        let raw_override = dev.placement_override.clone().unwrap_or_default();
-        if dev.placement_override.is_some() && raw_override.is_empty() {
-            return Err(fail(format!(
-                "service {name}: devices.placement_override is empty"
-            )));
-        }
-        let mut placement_override = BTreeMap::new();
-        for (k, v) in raw_override {
-            let slot = match k.as_str() {
-                "cpu" => DeviceSlot::Cpu,
-                s if s.starts_with("gpu:") => {
-                    let n: u32 = s[4..].parse().map_err(|_| {
-                        fail(format!(
-                            "service {name}: invalid placement_override key `{s}`"
-                        ))
-                    })?;
-                    DeviceSlot::Gpu(n)
-                }
-                other => {
-                    return Err(fail(format!(
-                        "service {name}: invalid placement_override key `{other}`"
-                    )));
-                }
-            };
-            if v == 0 {
-                return Err(fail(format!(
-                    "service {name}: placement_override for {k} is zero"
-                )));
-            }
-            placement_override.insert(slot, v);
-        }
-
-        // Placement/override consistency check.
-        if placement_policy == PlacementPolicy::GpuOnly
-            && placement_override.contains_key(&DeviceSlot::Cpu)
-        {
-            return Err(fail(format!(
-                "service {name}: placement=gpu-only but placement_override includes cpu"
-            )));
-        }
-
-        let health_raw = raw.health.clone().unwrap_or_default();
-        let health = HealthSettings {
-            http_path: health_raw.http.unwrap_or_else(|| "/v1/models".into()),
-            timeout_ms: health_raw
-                .timeout
-                .map(|s| {
-                    parse_duration_ms(&s)
-                        .map_err(|e| fail(format!("service {name} health.timeout: {e}")))
-                })
-                .transpose()?
-                .unwrap_or(DEFAULT_HEALTH_TIMEOUT_MS),
-            probe_interval_ms: health_raw
-                .probe_interval
-                .map(|s| {
-                    parse_duration_ms(&s)
-                        .map_err(|e| fail(format!("service {name} health.probe_interval: {e}")))
-                })
-                .transpose()?
-                .unwrap_or(DEFAULT_HEALTH_PROBE_INTERVAL_MS),
-        };
-
-        let priority = raw
-            .priority
-            .or(cfg.defaults.priority)
-            .unwrap_or(DEFAULT_SERVICE_PRIORITY);
-        let idle_timeout_ms = raw
-            .idle_timeout
-            .as_deref()
-            .or(cfg.defaults.idle_timeout.as_deref())
-            .map(parse_duration_ms)
-            .transpose()
-            .map_err(|e| fail(format!("service {name} idle_timeout: {e}")))?
-            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
-        let warming_grace_ms = raw
-            .warming_grace
-            .as_deref()
-            .or(cfg.defaults.warming_grace.as_deref())
-            .map(parse_duration_ms)
-            .transpose()
-            .map_err(|e| fail(format!("service {name} warming_grace: {e}")))?
-            .unwrap_or(DEFAULT_WARMING_GRACE_MS);
-        let drain_timeout_ms = raw
-            .drain_timeout
-            .as_deref()
-            .map(parse_duration_ms)
-            .transpose()
-            .map_err(|e| fail(format!("service {name} drain_timeout: {e}")))?
-            .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
-        let extended_stream_drain_ms = raw
-            .extended_stream_drain
-            .as_deref()
-            .map(parse_duration_ms)
-            .transpose()
-            .map_err(|e| fail(format!("service {name} extended_stream_drain: {e}")))?
-            .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
-        let max_request_duration_ms = raw
-            .max_request_duration
-            .as_deref()
-            .map(parse_duration_ms)
-            .transpose()
-            .map_err(|e| fail(format!("service {name} max_request_duration: {e}")))?
-            .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);
-
-        let mut filters = Filters::default();
-        if let Some(raw_filters) = &raw.filters {
-            if let Some(strip) = &raw_filters.strip_params {
-                filters.strip_params = strip.clone();
-            }
-            if let Some(set) = &raw_filters.set_params {
-                for (k, v) in set {
-                    let json_val = toml_value_to_json(v.clone()).map_err(|e| {
-                        fail(format!("service {name} filters.set_params[{k}]: {e}"))
-                    })?;
-                    filters.set_params.insert(k.clone(), json_val);
-                }
-            }
-        }
-
-        // Allocate a private loopback port deterministically based on the external port plus a large
-        // offset so two services with adjacent external ports don't collide on private ports.
-        let private_port = 40_000u16.saturating_add(port.wrapping_sub(11_000));
-
-        out.push(ServiceConfig {
-            name,
-            template,
-            port,
-            private_port,
-            lifecycle,
-            priority,
-            health,
-            placement_override,
-            placement_policy,
-            filters,
-            idle_timeout_ms,
-            warming_grace_ms,
-            drain_timeout_ms,
-            extended_stream_drain_ms,
-            max_request_duration_ms,
-            allocation_mode,
-            command: raw.command.clone(),
-            workdir: raw.workdir.clone(),
-            openai_compat,
-            raw: raw.clone(),
-        });
+        let svc = validate_service(
+            i,
+            raw,
+            &cfg.defaults,
+            management_port,
+            &mut names,
+            &mut ports,
+        )?;
+        out.push(svc);
     }
 
     Ok(EffectiveConfig {
@@ -548,6 +358,365 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             allow_external_management: cfg.daemon.allow_external_management,
         },
         services: out,
+    })
+}
+
+fn validate_service(
+    index: usize,
+    raw: &RawService,
+    defaults: &crate::config::parse::DefaultsConfig,
+    management_port: Option<u16>,
+    names: &mut BTreeSet<SmolStr>,
+    ports: &mut BTreeSet<u16>,
+) -> Result<ServiceConfig, ExpectedError> {
+    let common = raw.common();
+    let name = common
+        .name
+        .clone()
+        .ok_or_else(|| fail(format!("service[{index}] missing name")))?;
+    let port = common
+        .port
+        .ok_or_else(|| fail(format!("service {name} missing port")))?;
+
+    if !names.insert(name.clone()) {
+        return Err(fail(format!("duplicate service name `{name}`")));
+    }
+    if !ports.insert(port) {
+        return Err(fail(format!("duplicate service port {port}")));
+    }
+    if Some(port) == management_port {
+        return Err(fail(format!(
+            "service {name} port {port} collides with daemon.management_listen"
+        )));
+    }
+
+    let template = match raw {
+        RawService::LlamaCpp(_) => Template::LlamaCpp,
+        RawService::Command(_) => Template::Command,
+    };
+
+    let (allocation_mode, template_config) = match raw {
+        RawService::LlamaCpp(lc) => {
+            let tc = validate_llama_cpp(&name, lc)?;
+            // llama-cpp never takes an allocation.mode; none of the dynamic
+            // knobs apply here.
+            let alloc = AllocationMode::from_parts(
+                Template::LlamaCpp,
+                None,
+                None,
+                None,
+                None,
+                DEFAULT_MIN_BORROWER_RUNTIME_MS,
+            )
+            .map_err(|e| fail(format!("service {name}: {e}")))?;
+            (alloc, TemplateConfig::LlamaCpp(Box::new(tc)))
+        }
+        RawService::Command(cmd) => {
+            let raw_alloc = cmd.allocation.clone().unwrap_or_default();
+            let runtime_ms = raw_alloc
+                .min_borrower_runtime
+                .as_deref()
+                .map(parse_duration_ms)
+                .transpose()
+                .map_err(|e| fail(format!("service {name} min_borrower_runtime: {e}")))?
+                .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
+            let alloc = AllocationMode::from_parts(
+                Template::Command,
+                raw_alloc.mode.as_deref(),
+                raw_alloc.vram_gb,
+                raw_alloc.min_vram_gb,
+                raw_alloc.max_vram_gb,
+                runtime_ms,
+            )
+            .map_err(|e| fail(format!("service {name}: {e}")))?;
+            let tc = validate_command(&name, cmd)?;
+            (alloc, TemplateConfig::Command(tc))
+        }
+    };
+
+    let lifecycle_str = common
+        .lifecycle
+        .clone()
+        .unwrap_or_else(|| SmolStr::new("on_demand"));
+    let lifecycle = match lifecycle_str.as_str() {
+        "persistent" => Lifecycle::Persistent,
+        "on_demand" => Lifecycle::OnDemand,
+        "oneshot" => {
+            return Err(fail(format!(
+                "service {name}: lifecycle `oneshot` is invalid in a [[service]] block (API-only)"
+            )));
+        }
+        other => return Err(fail(format!("service {name}: unknown lifecycle `{other}`"))),
+    };
+
+    let openai_compat = common
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("openai_compat"))
+        .and_then(|v| match v {
+            toml::Value::Boolean(b) => Some(*b),
+            _ => None,
+        })
+        // llama-cpp defaults to true; command defaults to false.
+        .unwrap_or(template == Template::LlamaCpp);
+
+    let dev = common.devices.clone().unwrap_or_default();
+    let n_gpu_layers = match &template_config {
+        TemplateConfig::LlamaCpp(lc) => lc.n_gpu_layers,
+        TemplateConfig::Command(_) => None,
+    };
+    let placement_policy = match dev.placement.as_deref().unwrap_or("gpu-only") {
+        "gpu-only" => PlacementPolicy::GpuOnly,
+        "cpu-only" => {
+            if n_gpu_layers.unwrap_or(0) != 0 {
+                return Err(fail(format!(
+                    "service {name}: devices.placement=cpu-only with n_gpu_layers={} is invalid",
+                    n_gpu_layers.unwrap()
+                )));
+            }
+            PlacementPolicy::CpuOnly
+        }
+        "hybrid" => PlacementPolicy::Hybrid,
+        other => return Err(fail(format!("service {name}: unknown placement `{other}`"))),
+    };
+
+    if let TemplateConfig::LlamaCpp(lc) = &template_config
+        && lc.context.is_none()
+    {
+        warn!(
+            service = %name,
+            "no context set; the estimator will default to 4096 tokens"
+        );
+    }
+
+    let raw_override = dev.placement_override.clone().unwrap_or_default();
+    if dev.placement_override.is_some() && raw_override.is_empty() {
+        return Err(fail(format!(
+            "service {name}: devices.placement_override is empty"
+        )));
+    }
+    let mut placement_override = BTreeMap::new();
+    for (k, v) in raw_override {
+        let slot = match k.as_str() {
+            "cpu" => DeviceSlot::Cpu,
+            s if s.starts_with("gpu:") => {
+                let n: u32 = s[4..].parse().map_err(|_| {
+                    fail(format!(
+                        "service {name}: invalid placement_override key `{s}`"
+                    ))
+                })?;
+                DeviceSlot::Gpu(n)
+            }
+            other => {
+                return Err(fail(format!(
+                    "service {name}: invalid placement_override key `{other}`"
+                )));
+            }
+        };
+        if v == 0 {
+            return Err(fail(format!(
+                "service {name}: placement_override for {k} is zero"
+            )));
+        }
+        placement_override.insert(slot, v);
+    }
+
+    if placement_policy == PlacementPolicy::GpuOnly
+        && placement_override.contains_key(&DeviceSlot::Cpu)
+    {
+        return Err(fail(format!(
+            "service {name}: placement=gpu-only but placement_override includes cpu"
+        )));
+    }
+
+    let gpu_allow = dev.gpu_allow.clone().unwrap_or_default();
+
+    let health_raw = common.health.clone().unwrap_or_default();
+    let health = HealthSettings {
+        http_path: health_raw.http.unwrap_or_else(|| "/v1/models".into()),
+        timeout_ms: health_raw
+            .timeout
+            .map(|s| {
+                parse_duration_ms(&s)
+                    .map_err(|e| fail(format!("service {name} health.timeout: {e}")))
+            })
+            .transpose()?
+            .unwrap_or(DEFAULT_HEALTH_TIMEOUT_MS),
+        probe_interval_ms: health_raw
+            .probe_interval
+            .map(|s| {
+                parse_duration_ms(&s)
+                    .map_err(|e| fail(format!("service {name} health.probe_interval: {e}")))
+            })
+            .transpose()?
+            .unwrap_or(DEFAULT_HEALTH_PROBE_INTERVAL_MS),
+    };
+
+    let priority = common
+        .priority
+        .or(defaults.priority)
+        .unwrap_or(DEFAULT_SERVICE_PRIORITY);
+    let idle_timeout_ms = common
+        .idle_timeout
+        .as_deref()
+        .or(defaults.idle_timeout.as_deref())
+        .map(parse_duration_ms)
+        .transpose()
+        .map_err(|e| fail(format!("service {name} idle_timeout: {e}")))?
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
+    let warming_grace_ms = common
+        .warming_grace
+        .as_deref()
+        .or(defaults.warming_grace.as_deref())
+        .map(parse_duration_ms)
+        .transpose()
+        .map_err(|e| fail(format!("service {name} warming_grace: {e}")))?
+        .unwrap_or(DEFAULT_WARMING_GRACE_MS);
+    let drain_timeout_ms = common
+        .drain_timeout
+        .as_deref()
+        .map(parse_duration_ms)
+        .transpose()
+        .map_err(|e| fail(format!("service {name} drain_timeout: {e}")))?
+        .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
+    let extended_stream_drain_ms = common
+        .extended_stream_drain
+        .as_deref()
+        .map(parse_duration_ms)
+        .transpose()
+        .map_err(|e| fail(format!("service {name} extended_stream_drain: {e}")))?
+        .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
+    let max_request_duration_ms = common
+        .max_request_duration
+        .as_deref()
+        .map(parse_duration_ms)
+        .transpose()
+        .map_err(|e| fail(format!("service {name} max_request_duration: {e}")))?
+        .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);
+
+    let mut filters = Filters::default();
+    if let Some(raw_filters) = &common.filters {
+        if let Some(strip) = &raw_filters.strip_params {
+            filters.strip_params = strip.clone();
+        }
+        if let Some(set) = &raw_filters.set_params {
+            for (k, v) in set {
+                let json_val = toml_value_to_json(v.clone())
+                    .map_err(|e| fail(format!("service {name} filters.set_params[{k}]: {e}")))?;
+                filters.set_params.insert(k.clone(), json_val);
+            }
+        }
+    }
+
+    let start_queue_depth = common
+        .start_queue_depth
+        .unwrap_or(crate::config::parse::DEFAULT_START_QUEUE_DEPTH);
+
+    let extra_args = common.extra_args.clone().unwrap_or_default();
+    // extra_args_append is consumed into extra_args during merge for extending
+    // services, but for non-extending services it's still present here. Fold it
+    // in so downstream sees a single list.
+    let mut all_extra = extra_args;
+    if let Some(append) = &common.extra_args_append {
+        all_extra.extend(append.iter().cloned());
+    }
+    let env = common.env.clone().unwrap_or_default();
+
+    // Allocate a private loopback port deterministically based on the external
+    // port plus a large offset so two services with adjacent external ports
+    // don't collide on private ports.
+    let private_port = 40_000u16.saturating_add(port.wrapping_sub(11_000));
+
+    Ok(ServiceConfig {
+        name,
+        port,
+        private_port,
+        lifecycle,
+        priority,
+        health,
+        placement_override,
+        placement_policy,
+        gpu_allow,
+        filters,
+        idle_timeout_ms,
+        warming_grace_ms,
+        drain_timeout_ms,
+        extended_stream_drain_ms,
+        max_request_duration_ms,
+        allocation_mode,
+        openai_compat,
+        description: common.description.clone(),
+        start_queue_depth,
+        extra_args: all_extra,
+        env,
+        template_config,
+    })
+}
+
+fn validate_llama_cpp(
+    name: &SmolStr,
+    lc: &RawLlamaCppService,
+) -> Result<LlamaCppConfig, ExpectedError> {
+    let model = lc.model.clone().ok_or_else(|| {
+        fail(format!(
+            "service {name}: template llama-cpp requires `model`"
+        ))
+    })?;
+    let flash = lc.flash_attn.unwrap_or(false);
+    for (key, val) in [
+        ("cache_type_k", lc.cache_type_k.as_deref()),
+        ("cache_type_v", lc.cache_type_v.as_deref()),
+    ] {
+        if let Some(v) = val
+            && v != "f16"
+            && !flash
+        {
+            return Err(fail(format!(
+                "service {name}: {key}={v} requires flash_attn=true \
+                 (llama.cpp requires FA for quantised KV)"
+            )));
+        }
+    }
+
+    Ok(LlamaCppConfig {
+        model,
+        mmproj: lc.mmproj.clone(),
+        context: lc.context,
+        n_gpu_layers: lc.n_gpu_layers,
+        n_cpu_moe: lc.n_cpu_moe,
+        flash_attn: lc.flash_attn,
+        cache_type_k: lc.cache_type_k.clone(),
+        cache_type_v: lc.cache_type_v.clone(),
+        mmap: lc.mmap,
+        mlock: lc.mlock,
+        parallel: lc.parallel,
+        batch_size: lc.batch_size,
+        ubatch_size: lc.ubatch_size,
+        threads: lc.threads,
+        threads_batch: lc.threads_batch,
+        jinja: lc.jinja,
+        chat_template_file: lc.chat_template_file.clone(),
+        override_tensor: lc.override_tensor.clone().unwrap_or_default(),
+        sampling: lc.sampling.clone().unwrap_or_default(),
+        estimation: lc.estimation.clone().unwrap_or_default(),
+    })
+}
+
+fn validate_command(
+    name: &SmolStr,
+    cmd: &RawCommandService,
+) -> Result<CommandConfig, ExpectedError> {
+    let command = cmd.command.clone().ok_or_else(|| {
+        fail(format!(
+            "service {name}: command template requires `command`"
+        ))
+    })?;
+    if command.is_empty() {
+        return Err(fail(format!("service {name}: command is empty")));
+    }
+    Ok(CommandConfig {
+        command,
+        workdir: cmd.workdir.clone(),
     })
 }
 
@@ -606,6 +775,11 @@ pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
     Err(format!("unrecognised duration: {s}"))
 }
 
+// Silence the unused-import warning when the `test_fixtures` module is not
+// compiled (i.e. outside of tests).
+#[allow(dead_code)]
+const _: () = ();
+
 #[cfg(test)]
 pub mod test_fixtures {
     //! Shared `ServiceConfig` factory for unit tests.
@@ -619,21 +793,25 @@ pub mod test_fixtures {
     use smol_str::SmolStr;
 
     use super::{
-        AllocationMode, DEFAULT_SERVICE_PRIORITY, DeviceSlot, Filters, HealthSettings, Lifecycle,
-        PlacementPolicy, ServiceConfig, Template,
+        AllocationMode, CommandConfig, DEFAULT_SERVICE_PRIORITY, DeviceSlot, Filters,
+        HealthSettings, Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, Template,
+        TemplateConfig,
     };
-    use crate::config::parse::RawService;
+    use crate::config::parse::{EstimationConfig, SamplingConfig};
 
     /// Build a minimal `ServiceConfig` with CPU-only placement, suitable for
     /// unit tests that need a well-formed config but don't care about its
     /// specific field values. The caller is free to mutate the returned
     /// struct to customise individual fields.
     pub fn minimal_service(name: &str) -> ServiceConfig {
+        minimal_llama_cpp_service(name)
+    }
+
+    pub fn minimal_llama_cpp_service(name: &str) -> ServiceConfig {
         let mut placement = BTreeMap::new();
         placement.insert(DeviceSlot::Cpu, 100);
         ServiceConfig {
             name: SmolStr::new(name),
-            template: Template::LlamaCpp,
             port: 0,
             private_port: 0,
             lifecycle: Lifecycle::OnDemand,
@@ -645,6 +823,7 @@ pub mod test_fixtures {
             },
             placement_override: placement,
             placement_policy: PlacementPolicy::CpuOnly,
+            gpu_allow: Vec::new(),
             idle_timeout_ms: 60_000,
             warming_grace_ms: 100,
             drain_timeout_ms: 1_000,
@@ -652,17 +831,71 @@ pub mod test_fixtures {
             max_request_duration_ms: 5_000,
             filters: Filters::default(),
             allocation_mode: AllocationMode::None,
-            command: None,
-            workdir: None,
             openai_compat: true,
-            raw: RawService {
-                name: Some(SmolStr::new(name)),
-                template: Some(SmolStr::new("llama-cpp")),
-                model: Some(PathBuf::from("/fake/model.gguf")),
-                port: Some(0),
-                ..Default::default()
-            },
+            description: None,
+            start_queue_depth: 10,
+            extra_args: Vec::new(),
+            env: BTreeMap::new(),
+            template_config: TemplateConfig::LlamaCpp(Box::new(llama_cpp_fixture())),
         }
+    }
+
+    pub fn minimal_command_service(name: &str, argv: Vec<String>) -> ServiceConfig {
+        let mut svc = minimal_llama_cpp_service(name);
+        svc.template_config = TemplateConfig::Command(CommandConfig {
+            command: argv,
+            workdir: None,
+        });
+        svc.openai_compat = false;
+        svc
+    }
+
+    /// Borrow the LlamaCpp variant or panic. Convenience for tests that set
+    /// up a service via `minimal_service` and need to tweak llama-cpp fields.
+    pub fn expect_llama_cpp(svc: &mut ServiceConfig) -> &mut LlamaCppConfig {
+        match &mut svc.template_config {
+            TemplateConfig::LlamaCpp(lc) => lc.as_mut(),
+            TemplateConfig::Command(_) => panic!("expected LlamaCpp template_config"),
+        }
+    }
+
+    /// Borrow the Command variant or panic.
+    pub fn expect_command(svc: &mut ServiceConfig) -> &mut CommandConfig {
+        match &mut svc.template_config {
+            TemplateConfig::LlamaCpp(_) => panic!("expected Command template_config"),
+            TemplateConfig::Command(cmd) => cmd,
+        }
+    }
+
+    fn llama_cpp_fixture() -> LlamaCppConfig {
+        LlamaCppConfig {
+            model: PathBuf::from("/fake/model.gguf"),
+            mmproj: None,
+            context: None,
+            n_gpu_layers: None,
+            n_cpu_moe: None,
+            flash_attn: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            mmap: None,
+            mlock: None,
+            parallel: None,
+            batch_size: None,
+            ubatch_size: None,
+            threads: None,
+            threads_batch: None,
+            jinja: None,
+            chat_template_file: None,
+            override_tensor: Vec::new(),
+            sampling: SamplingConfig::default(),
+            estimation: EstimationConfig::default(),
+        }
+    }
+
+    // Silence unused warnings on types that only specific tests use.
+    #[allow(dead_code)]
+    fn _coerce_template_used() {
+        let _ = Template::LlamaCpp;
     }
 }
 
@@ -706,6 +939,10 @@ lifecycle = "persistent"
             ec.services[0].placement_override[&DeviceSlot::Gpu(0)],
             18944
         );
+        assert!(matches!(
+            ec.services[0].template_config,
+            TemplateConfig::LlamaCpp(_)
+        ));
     }
 
     #[test]
@@ -723,7 +960,6 @@ lifecycle = "persistent"
 "#,
         );
         let ec = validate(&cfg).unwrap();
-        // placement_override is empty — the estimator will handle placement at runtime.
         assert!(ec.services[0].placement_override.is_empty());
     }
 
@@ -904,7 +1140,7 @@ allocation.vram_gb = 6
         );
         let ec = validate(&cfg).unwrap();
         let svc = &ec.services[0];
-        assert_eq!(svc.template, Template::Command);
+        assert_eq!(svc.template(), Template::Command);
         assert!(matches!(
             svc.allocation_mode,
             AllocationMode::Static { vram_mb: 6144 }
@@ -939,8 +1175,10 @@ allocation.max_vram_gb = 20
     }
 
     #[test]
-    fn llama_cpp_rejects_allocation_mode() {
-        let cfg = parse_and_merge(
+    fn llama_cpp_allocation_mode_rejected_at_parse() {
+        // With a tagged enum, `allocation` isn't a field on the llama-cpp
+        // variant; serde rejects it before the validator runs.
+        let res = parse_toml(
             r#"
 [[service]]
 name = "llama"
@@ -950,9 +1188,13 @@ port = 11000
 allocation.mode = "static"
 allocation.vram_gb = 4
 "#,
+            Path::new("/t"),
         );
-        let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("allocation.mode"));
+        assert!(
+            res.is_err(),
+            "expected parse error for allocation on llama-cpp; got {:?}",
+            res.ok()
+        );
     }
 
     #[test]
@@ -1029,4 +1271,11 @@ lifecycle = "persistent"
         );
         assert!(validate(&cfg).is_ok());
     }
+}
+
+// The `_: RawServiceCommon` usage below keeps the import live even if
+// downstream test modules don't touch the type directly.
+#[allow(dead_code)]
+fn _use_common(c: &RawServiceCommon) -> bool {
+    c.name.is_some()
 }

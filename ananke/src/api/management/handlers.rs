@@ -135,7 +135,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         priority: svc_cfg.priority,
         port: svc_cfg.port,
         private_port: svc_cfg.private_port,
-        template: svc_cfg.template.as_str().to_string(),
+        template: svc_cfg.template().as_str().to_string(),
         placement_override,
         idle_timeout_ms: svc_cfg.idle_timeout_ms,
         run_id: snap.as_ref().and_then(|s| s.run_id),

@@ -1,4 +1,11 @@
 //! Parse a TOML string into a `RawConfig` typed tree (pre-merge, pre-validation).
+//!
+//! `RawService` is a `#[serde(tag = "template")]` enum with one variant per
+//! template kind. Template-specific fields live on the corresponding variant's
+//! struct; fields shared across templates live on `RawServiceCommon` and are
+//! flattened into each variant. This makes wrong-template fields a parse error
+//! rather than a runtime surprise, and lets downstream code pattern-match on a
+//! typed variant instead of reaching through a bag of `Option`s.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -106,22 +113,55 @@ pub struct DefaultsConfig {
     pub start_queue_depth: Option<u32>,
 }
 
+/// Template-tagged service: the `template = "llama-cpp" | "command"` field
+/// selects a variant. Each variant flattens `RawServiceCommon` so all shared
+/// fields appear at the top level of the service table in TOML.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "template", rename_all = "kebab-case")]
+pub enum RawService {
+    LlamaCpp(RawLlamaCppService),
+    Command(RawCommandService),
+}
+
+impl RawService {
+    pub fn common(&self) -> &RawServiceCommon {
+        match self {
+            RawService::LlamaCpp(s) => &s.common,
+            RawService::Command(s) => &s.common,
+        }
+    }
+
+    pub fn common_mut(&mut self) -> &mut RawServiceCommon {
+        match self {
+            RawService::LlamaCpp(s) => &mut s.common,
+            RawService::Command(s) => &mut s.common,
+        }
+    }
+
+    pub fn template_label(&self) -> &'static str {
+        match self {
+            RawService::LlamaCpp(_) => "llama-cpp",
+            RawService::Command(_) => "command",
+        }
+    }
+
+    /// Return the start queue depth, falling back to `DEFAULT_START_QUEUE_DEPTH`
+    /// when unset.
+    pub fn start_queue_depth(&self) -> usize {
+        self.common()
+            .start_queue_depth
+            .unwrap_or(DEFAULT_START_QUEUE_DEPTH)
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Clone)]
-#[serde(default)]
-pub struct RawService {
-    pub name: Option<SmolStr>,
-    pub template: Option<SmolStr>,
-    pub extends: Option<SmolStr>,
-    pub migrate_from: Option<SmolStr>,
-    pub port: Option<u16>,
+#[serde(deny_unknown_fields, default)]
+pub struct RawLlamaCppService {
+    #[serde(flatten)]
+    pub common: RawServiceCommon,
     pub model: Option<PathBuf>,
     pub mmproj: Option<PathBuf>,
     pub context: Option<u32>,
-    pub lifecycle: Option<SmolStr>,
-    pub priority: Option<u8>,
-    pub idle_timeout: Option<String>,
-    pub warming_grace: Option<String>,
-    pub description: Option<String>,
     pub n_gpu_layers: Option<i32>,
     pub n_cpu_moe: Option<u32>,
     pub flash_attn: Option<bool>,
@@ -137,11 +177,39 @@ pub struct RawService {
     pub jinja: Option<bool>,
     pub chat_template_file: Option<PathBuf>,
     pub override_tensor: Option<Vec<String>>,
-    pub sampling: Option<BTreeMap<String, toml::Value>>,
+    pub sampling: Option<SamplingConfig>,
+    pub estimation: Option<EstimationConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawCommandService {
+    #[serde(flatten)]
+    pub common: RawServiceCommon,
+    /// argv to execute. Required; emptiness is caught by the validator.
+    pub command: Option<Vec<String>>,
+    pub workdir: Option<PathBuf>,
+    pub allocation: Option<RawAllocation>,
+}
+
+/// Fields shared by every template variant. Flattened into each variant so
+/// users write `name = "x"` at the top level of `[[service]]` rather than
+/// under a nested table.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawServiceCommon {
+    pub name: Option<SmolStr>,
+    pub extends: Option<SmolStr>,
+    pub migrate_from: Option<SmolStr>,
+    pub port: Option<u16>,
+    pub lifecycle: Option<SmolStr>,
+    pub priority: Option<u8>,
+    pub idle_timeout: Option<String>,
+    pub warming_grace: Option<String>,
+    pub description: Option<String>,
     pub filters: Option<RawFilters>,
     pub metadata: Option<BTreeMap<String, toml::Value>>,
     pub devices: Option<RawServiceDevices>,
-    pub estimation: Option<RawEstimation>,
     pub extra_args: Option<Vec<String>>,
     pub extra_args_append: Option<Vec<String>>,
     pub env: Option<BTreeMap<String, String>>,
@@ -149,22 +217,7 @@ pub struct RawService {
     pub drain_timeout: Option<String>,
     pub extended_stream_drain: Option<String>,
     pub max_request_duration: Option<String>,
-    #[serde(default)]
     pub start_queue_depth: Option<usize>,
-    /// Command template: the argv to execute.
-    pub command: Option<Vec<String>>,
-    /// Command template: working directory for the spawned process.
-    pub workdir: Option<PathBuf>,
-    /// Allocation mode for command-template services.
-    pub allocation: Option<RawAllocation>,
-}
-
-impl RawService {
-    /// Return the start queue depth, falling back to `DEFAULT_START_QUEUE_DEPTH`
-    /// when unset.
-    pub fn start_queue_depth(&self) -> usize {
-        self.start_queue_depth.unwrap_or(DEFAULT_START_QUEUE_DEPTH)
-    }
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -182,11 +235,27 @@ pub struct RawServiceDevices {
     pub placement_override: Option<BTreeMap<String, u64>>,
 }
 
+/// Estimator overrides. No transformation between parse and validate layers —
+/// this type serves both.
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
-pub struct RawEstimation {
+pub struct EstimationConfig {
     pub compute_buffer_mb: Option<u32>,
     pub safety_factor: Option<f32>,
+}
+
+/// Sampling parameters that map to `llama-server` CLI flags. Only the knobs
+/// we actually forward are accepted; unknown keys surface as parse errors
+/// rather than silently being dropped. Shared between parse and validate
+/// layers — validation is a no-op for this type.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct SamplingConfig {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<u32>,
+    pub min_p: Option<f32>,
+    pub repeat_penalty: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -209,7 +278,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_minimal() {
+    fn parses_minimal_llama_cpp() {
         let toml = r#"
 [[service]]
 name = "demo"
@@ -219,8 +288,30 @@ port = 11435
 "#;
         let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
         assert_eq!(cfg.services.len(), 1);
-        assert_eq!(cfg.services[0].name.as_deref(), Some("demo"));
-        assert_eq!(cfg.services[0].port, Some(11435));
+        let svc = &cfg.services[0];
+        assert_eq!(svc.common().name.as_deref(), Some("demo"));
+        assert_eq!(svc.common().port, Some(11435));
+        let RawService::LlamaCpp(lc) = svc else {
+            panic!("expected LlamaCpp variant");
+        };
+        assert_eq!(lc.model.as_ref().unwrap().to_str(), Some("/m/x.gguf"));
+    }
+
+    #[test]
+    fn parses_minimal_command() {
+        let toml = r#"
+[[service]]
+name = "svc"
+template = "command"
+port = 11500
+command = ["/bin/true"]
+"#;
+        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let svc = &cfg.services[0];
+        let RawService::Command(cmd) = svc else {
+            panic!("expected Command variant");
+        };
+        assert_eq!(cmd.command.as_ref().unwrap().as_slice(), ["/bin/true"]);
     }
 
     #[test]
@@ -234,7 +325,10 @@ port = 11500
 "#;
         let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
         assert_eq!(cfg.persistent_services.len(), 1);
-        assert_eq!(cfg.persistent_services[0].name.as_deref(), Some("big"));
+        assert_eq!(
+            cfg.persistent_services[0].common().name.as_deref(),
+            Some("big")
+        );
     }
 
     #[test]
@@ -250,13 +344,16 @@ devices.placement = "gpu-only"
 devices.placement_override = { "gpu:0" = 18944 }
 "#;
         let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
-        let s = &cfg.services[0];
+        let RawService::LlamaCpp(lc) = &cfg.services[0] else {
+            panic!("expected LlamaCpp");
+        };
         assert_eq!(
-            s.devices.as_ref().unwrap().placement.as_deref(),
+            lc.common.devices.as_ref().unwrap().placement.as_deref(),
             Some("gpu-only")
         );
         assert_eq!(
-            s.devices
+            lc.common
+                .devices
                 .as_ref()
                 .unwrap()
                 .placement_override
@@ -271,5 +368,49 @@ devices.placement_override = { "gpu:0" = 18944 }
         let toml = "this is not valid toml [[[";
         let err = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap_err();
         assert!(format!("{err}").contains("parse"));
+    }
+
+    #[test]
+    fn rejects_llama_cpp_field_on_command_template() {
+        // `model` belongs to the llama-cpp variant; with a tagged enum it is
+        // not a known field of the command variant, so serde rejects at parse.
+        let toml = r#"
+[[service]]
+name = "svc"
+template = "command"
+port = 11500
+command = ["/bin/true"]
+model = "/m/x.gguf"
+"#;
+        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        assert!(
+            err.is_err(),
+            "expected parse error for llama-cpp field on command template, got {:?}",
+            err.ok()
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_template() {
+        let toml = r#"
+[[service]]
+name = "svc"
+template = "does-not-exist"
+port = 11500
+"#;
+        let err = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap_err();
+        assert!(format!("{err}").contains("does-not-exist"));
+    }
+
+    #[test]
+    fn rejects_missing_template() {
+        // Tagged enum requires the discriminator; missing template is a parse error.
+        let toml = r#"
+[[service]]
+name = "svc"
+port = 11500
+"#;
+        let err = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap_err();
+        assert!(format!("{err}").contains("template"));
     }
 }

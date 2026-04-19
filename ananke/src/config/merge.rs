@@ -9,29 +9,34 @@
 //! - `extends` is transitive; cycles are errors.
 //! - `name` and `port` must be overridden; inheriting either is an error.
 //! - `extends` and `migrate_from` are not themselves inherited.
+//! - Parent and child must have the same template (same `RawService` variant).
+//!   Cross-template `extends` is an error — inheriting e.g. llama-cpp fields
+//!   into a command service is always a misconfiguration.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use smol_str::SmolStr;
 
 use crate::{
-    config::parse::{RawConfig, RawService},
+    config::parse::{
+        RawCommandService, RawConfig, RawLlamaCppService, RawService, RawServiceCommon,
+    },
     errors::ExpectedError,
 };
 
 pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ExpectedError> {
-    // 1. Fold [[persistent_service]] into [[service]] with lifecycle=persistent default.
+    // Fold [[persistent_service]] into [[service]] with lifecycle=persistent default.
     for mut ps in std::mem::take(&mut cfg.persistent_services) {
-        if ps.lifecycle.is_none() {
-            ps.lifecycle = Some(SmolStr::new("persistent"));
+        if ps.common().lifecycle.is_none() {
+            ps.common_mut().lifecycle = Some(SmolStr::new("persistent"));
         }
         cfg.services.push(ps);
     }
 
-    // 2. Index services by name; require names and disallow duplicates.
+    // Index services by name; require names and disallow duplicates.
     let mut by_name: BTreeMap<SmolStr, RawService> = BTreeMap::new();
     for s in std::mem::take(&mut cfg.services) {
-        let name = s.name.clone().ok_or_else(|| {
+        let name = s.common().name.clone().ok_or_else(|| {
             ExpectedError::config_unparseable(
                 std::path::PathBuf::from("<config>"),
                 "service block missing name".into(),
@@ -45,7 +50,7 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ExpectedError> {
         }
     }
 
-    // 3. Topologically resolve each service's extends chain.
+    // Topologically resolve each service's extends chain.
     let mut resolved: BTreeMap<SmolStr, RawService> = BTreeMap::new();
     let names: Vec<SmolStr> = by_name.keys().cloned().collect();
     for name in &names {
@@ -79,7 +84,7 @@ fn resolve_one(
         )
     })?;
 
-    let merged = match raw.extends.clone() {
+    let merged = match raw.common().extends.clone() {
         None => raw,
         Some(parent_name) => {
             if !source.contains_key(&parent_name) {
@@ -104,6 +109,110 @@ fn merge_service(
     child: &RawService,
     child_name: &SmolStr,
 ) -> Result<RawService, ExpectedError> {
+    match (parent, child) {
+        (RawService::LlamaCpp(p), RawService::LlamaCpp(c)) => {
+            Ok(RawService::LlamaCpp(merge_llama_cpp(p, c, child_name)?))
+        }
+        (RawService::Command(p), RawService::Command(c)) => {
+            Ok(RawService::Command(merge_command(p, c, child_name)?))
+        }
+        _ => Err(ExpectedError::config_unparseable(
+            std::path::PathBuf::from("<config>"),
+            format!(
+                "service {child_name}: template `{}` does not match parent's template `{}`; \
+                 cross-template extends is not allowed",
+                child.template_label(),
+                parent.template_label(),
+            ),
+        )),
+    }
+}
+
+fn merge_llama_cpp(
+    parent: &RawLlamaCppService,
+    child: &RawLlamaCppService,
+    child_name: &SmolStr,
+) -> Result<RawLlamaCppService, ExpectedError> {
+    let common = merge_common(&parent.common, &child.common, child_name)?;
+
+    macro_rules! inherit {
+        ($field:ident) => {
+            child.$field.clone().or_else(|| parent.$field.clone())
+        };
+    }
+
+    Ok(RawLlamaCppService {
+        common,
+        model: inherit!(model),
+        mmproj: inherit!(mmproj),
+        context: inherit!(context),
+        n_gpu_layers: inherit!(n_gpu_layers),
+        n_cpu_moe: inherit!(n_cpu_moe),
+        flash_attn: inherit!(flash_attn),
+        cache_type_k: inherit!(cache_type_k),
+        cache_type_v: inherit!(cache_type_v),
+        mmap: inherit!(mmap),
+        mlock: inherit!(mlock),
+        parallel: inherit!(parallel),
+        batch_size: inherit!(batch_size),
+        ubatch_size: inherit!(ubatch_size),
+        threads: inherit!(threads),
+        threads_batch: inherit!(threads_batch),
+        jinja: inherit!(jinja),
+        chat_template_file: inherit!(chat_template_file),
+        override_tensor: inherit!(override_tensor),
+        sampling: match (parent.sampling.clone(), child.sampling.clone()) {
+            (None, x) => x,
+            (x, None) => x,
+            (Some(p), Some(c)) => Some(crate::config::parse::SamplingConfig {
+                temperature: c.temperature.or(p.temperature),
+                top_p: c.top_p.or(p.top_p),
+                top_k: c.top_k.or(p.top_k),
+                min_p: c.min_p.or(p.min_p),
+                repeat_penalty: c.repeat_penalty.or(p.repeat_penalty),
+            }),
+        },
+        estimation: match (parent.estimation.clone(), child.estimation.clone()) {
+            (None, x) => x,
+            (x, None) => x,
+            (Some(p), Some(c)) => Some(crate::config::parse::EstimationConfig {
+                compute_buffer_mb: c.compute_buffer_mb.or(p.compute_buffer_mb),
+                safety_factor: c.safety_factor.or(p.safety_factor),
+            }),
+        },
+    })
+}
+
+fn merge_command(
+    parent: &RawCommandService,
+    child: &RawCommandService,
+    child_name: &SmolStr,
+) -> Result<RawCommandService, ExpectedError> {
+    let common = merge_common(&parent.common, &child.common, child_name)?;
+
+    Ok(RawCommandService {
+        common,
+        command: child.command.clone().or_else(|| parent.command.clone()),
+        workdir: child.workdir.clone().or_else(|| parent.workdir.clone()),
+        allocation: match (parent.allocation.clone(), child.allocation.clone()) {
+            (None, x) => x,
+            (x, None) => x,
+            (Some(p), Some(c)) => Some(crate::config::parse::RawAllocation {
+                mode: c.mode.or(p.mode),
+                vram_gb: c.vram_gb.or(p.vram_gb),
+                min_vram_gb: c.min_vram_gb.or(p.min_vram_gb),
+                max_vram_gb: c.max_vram_gb.or(p.max_vram_gb),
+                min_borrower_runtime: c.min_borrower_runtime.or(p.min_borrower_runtime),
+            }),
+        },
+    })
+}
+
+fn merge_common(
+    parent: &RawServiceCommon,
+    child: &RawServiceCommon,
+    child_name: &SmolStr,
+) -> Result<RawServiceCommon, ExpectedError> {
     // Child must supply its own port; inheriting silently from a parent leads to
     // port conflicts that are hard to diagnose, so we make it an explicit error.
     if child.port.is_none() {
@@ -115,7 +224,6 @@ fn merge_service(
 
     let mut merged = parent.clone();
 
-    // Scalars and paths: child overrides if present.
     macro_rules! take {
         ($field:ident) => {
             if child.$field.is_some() {
@@ -130,37 +238,16 @@ fn merge_service(
     merged.extends = None;
     merged.migrate_from = None;
 
-    take!(template);
-    take!(model);
-    take!(mmproj);
-    take!(context);
     take!(lifecycle);
     take!(priority);
     take!(idle_timeout);
     take!(warming_grace);
     take!(description);
-    take!(n_gpu_layers);
-    take!(n_cpu_moe);
-    take!(flash_attn);
-    take!(cache_type_k);
-    take!(cache_type_v);
-    take!(mmap);
-    take!(mlock);
-    take!(parallel);
-    take!(batch_size);
-    take!(ubatch_size);
-    take!(threads);
-    take!(threads_batch);
-    take!(jinja);
-    take!(chat_template_file);
-    take!(override_tensor);
     take!(drain_timeout);
     take!(extended_stream_drain);
     take!(max_request_duration);
     take!(start_queue_depth);
 
-    // Nested tables deep-merge field-by-field so that child overrides only what it sets.
-    merged.sampling = deep_merge_map(parent.sampling.clone(), child.sampling.clone());
     merged.metadata = deep_merge_map(parent.metadata.clone(), child.metadata.clone());
     merged.env = deep_merge_strs(parent.env.clone(), child.env.clone());
 
@@ -180,15 +267,6 @@ fn merge_service(
             placement: c.placement.or(p.placement),
             gpu_allow: c.gpu_allow.or(p.gpu_allow),
             placement_override: c.placement_override.or(p.placement_override),
-        }),
-    };
-
-    merged.estimation = match (parent.estimation.clone(), child.estimation.clone()) {
-        (None, x) => x,
-        (x, None) => x,
-        (Some(p), Some(c)) => Some(crate::config::parse::RawEstimation {
-            compute_buffer_mb: c.compute_buffer_mb.or(p.compute_buffer_mb),
-            safety_factor: c.safety_factor.or(p.safety_factor),
         }),
     };
 
@@ -222,8 +300,6 @@ fn merge_service(
     } else {
         Some(accumulated)
     };
-    // The *_append sibling is consumed into extra_args during merge; clear it so that
-    // the resolved service does not re-apply the appended values at a later stage.
     merged.extra_args_append = None;
 
     Ok(merged)
@@ -267,7 +343,7 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
     let by_name: BTreeMap<SmolStr, &RawService> = cfg
         .services
         .iter()
-        .map(|s| (s.name.clone().unwrap(), s))
+        .map(|s| (s.common().name.clone().unwrap(), s))
         .collect();
 
     let mut visiting: BTreeSet<SmolStr> = BTreeSet::new();
@@ -290,7 +366,7 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
             ));
         }
         if let Some(svc) = by_name.get(name)
-            && let Some(old) = &svc.migrate_from
+            && let Some(old) = &svc.common().migrate_from
         {
             if by_name.contains_key(old) {
                 visit(old, by_name, visiting, visited, out)?;
@@ -312,7 +388,7 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
 
     // Clear the migrate_from field on services so downstream code doesn't re-process.
     for svc in cfg.services.iter_mut() {
-        svc.migrate_from = None;
+        svc.common_mut().migrate_from = None;
     }
 
     Ok(out)
@@ -329,6 +405,18 @@ mod tests {
         parse_toml(src, Path::new("/t")).unwrap()
     }
 
+    fn find_llama<'a>(cfg: &'a RawConfig, name: &str) -> &'a RawLlamaCppService {
+        let svc = cfg
+            .services
+            .iter()
+            .find(|s| s.common().name.as_deref() == Some(name))
+            .unwrap();
+        match svc {
+            RawService::LlamaCpp(lc) => lc,
+            _ => panic!("expected llama-cpp service"),
+        }
+    }
+
     #[test]
     fn child_scalar_overrides_parent() {
         let mut cfg = parse(
@@ -342,17 +430,14 @@ context = 8192
 
 [[service]]
 name = "child"
+template = "llama-cpp"
 extends = "base"
 port = 11001
 context = 16384
 "#,
         );
         resolve_inheritance(&mut cfg).unwrap();
-        let c = cfg
-            .services
-            .iter()
-            .find(|s| s.name.as_deref() == Some("child"))
-            .unwrap();
+        let c = find_llama(&cfg, "child");
         assert_eq!(c.context, Some(16384));
         assert_eq!(c.model.as_ref().unwrap().to_str(), Some("/m/a.gguf"));
     }
@@ -371,21 +456,15 @@ extra_args_append = ["--flash"]
 
 [[service]]
 name = "child"
+template = "llama-cpp"
 extends = "base"
 port = 11001
 extra_args_append = ["--verbose"]
 "#,
         );
         resolve_inheritance(&mut cfg).unwrap();
-        let c = cfg
-            .services
-            .iter()
-            .find(|s| s.name.as_deref() == Some("child"))
-            .unwrap();
-        // Effective: parent.extra_args_append ++ child.extra_args_append.
-        // child.extra_args falls back to parent.extra_args since not specified.
-        // Test the invariant: result contains both "--flash" and "--verbose" in order.
-        let args = c.extra_args.clone().unwrap_or_default();
+        let c = find_llama(&cfg, "child");
+        let args = c.common.extra_args.clone().unwrap_or_default();
         let idx_flash = args.iter().position(|a| a == "--flash");
         let idx_verbose = args.iter().position(|a| a == "--verbose");
         assert!(idx_flash.is_some(), "missing --flash in {args:?}");
@@ -406,22 +485,20 @@ context = 4096
 
 [[service]]
 name = "b"
+template = "llama-cpp"
 extends = "a"
 port = 11001
 
 [[service]]
 name = "c"
+template = "llama-cpp"
 extends = "b"
 port = 11002
 context = 32768
 "#,
         );
         resolve_inheritance(&mut cfg).unwrap();
-        let c = cfg
-            .services
-            .iter()
-            .find(|s| s.name.as_deref() == Some("c"))
-            .unwrap();
+        let c = find_llama(&cfg, "c");
         assert_eq!(c.context, Some(32768));
         assert_eq!(c.model.as_ref().unwrap().to_str(), Some("/m/a.gguf"));
     }
@@ -461,6 +538,7 @@ port = 11000
 
 [[service]]
 name = "b"
+template = "llama-cpp"
 extends = "a"
 "#,
         );
@@ -485,6 +563,32 @@ extends = "does-not-exist"
     }
 
     #[test]
+    fn cross_template_extends_is_error() {
+        let mut cfg = parse(
+            r#"
+[[service]]
+name = "base"
+template = "command"
+port = 11000
+command = ["/bin/true"]
+
+[[service]]
+name = "child"
+template = "llama-cpp"
+extends = "base"
+port = 11001
+model = "/m/a.gguf"
+"#,
+        );
+        let err = resolve_inheritance(&mut cfg).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("template") && msg.contains("cross-template"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
     fn migrate_from_chain_resolved_in_order() {
         let mut cfg = parse(
             r#"
@@ -505,7 +609,6 @@ migrate_from = "a"
         );
         resolve_inheritance(&mut cfg).unwrap();
         let migrations = resolve_migrations(&mut cfg).unwrap();
-        // b must be resolved before c since c depends on b.
         let b_idx = migrations.iter().position(|m| m.new_name == "b").unwrap();
         let c_idx = migrations.iter().position(|m| m.new_name == "c").unwrap();
         assert!(b_idx < c_idx);
@@ -527,8 +630,6 @@ migrate_from = "does-not-exist"
         );
         resolve_inheritance(&mut cfg).unwrap();
         let migrations = resolve_migrations(&mut cfg).unwrap();
-        // Missing source is a warning; the migration is recorded anyway for the DB
-        // layer to treat as a no-op (see spec §6.4).
         assert_eq!(migrations.len(), 1);
         assert_eq!(migrations[0].old_name, "does-not-exist");
     }

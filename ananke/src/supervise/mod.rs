@@ -614,7 +614,7 @@ impl RunLoop {
         table: &crate::allocator::AllocationTable,
     ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
         let svc = &self.init.svc;
-        if matches!(svc.template, crate::config::Template::Command) {
+        if matches!(svc.template(), crate::config::Template::Command) {
             self.packed_for_spawn = None;
             let bytes_mb = match svc.allocation_mode {
                 crate::config::AllocationMode::Static { vram_mb } => vram_mb,
@@ -622,11 +622,9 @@ impl RunLoop {
                 crate::config::AllocationMode::None => 0,
             };
             let target_gpu: Option<u32> = svc
-                .raw
-                .devices
-                .as_ref()
-                .and_then(|d| d.gpu_allow.as_ref())
-                .and_then(|list| list.first().copied())
+                .gpu_allow
+                .first()
+                .copied()
                 .or_else(|| snap.gpus.first().map(|g| g.id));
             let mut map = std::collections::BTreeMap::new();
             if bytes_mb > 0 {
@@ -648,10 +646,9 @@ impl RunLoop {
 
         // Estimator + placement path.
         let model_path = svc
-            .raw
-            .model
-            .as_ref()
+            .llama_cpp()
             .ok_or_else(|| "no model path configured".to_string())?
+            .model
             .clone();
         let mut est = crate::estimator::estimate_from_path(&model_path, svc)
             .map_err(|e| format!("estimator: {e}"))?;
@@ -1201,7 +1198,7 @@ impl RunLoop {
             Some(SupervisorCommand::Ensure { ack }) => {
                 // Already in Starting; subscribe to existing bus or report running.
                 if let Some(sender) = self.start_bus_carry.as_ref() {
-                    if sender.receiver_count() >= self.init.svc.raw.start_queue_depth() {
+                    if sender.receiver_count() >= self.init.svc.start_queue_depth {
                         let _ = ack.send(EnsureResponse::QueueFull);
                     } else {
                         let bus_rx = sender.subscribe();

@@ -14,7 +14,7 @@ use tokio::process::{Child, Command};
 
 use crate::{
     allocator::placement::CommandArgs,
-    config::validate::{PlacementPolicy, ServiceConfig, Template},
+    config::validate::{LlamaCppConfig, PlacementPolicy, ServiceConfig, TemplateConfig},
     devices::{Allocation, cuda_env},
     errors::ExpectedError,
 };
@@ -36,166 +36,161 @@ pub fn render_argv(
     alloc: &Allocation,
     cmd_args: Option<&CommandArgs>,
 ) -> SpawnConfig {
+    match &svc.template_config {
+        TemplateConfig::LlamaCpp(lc) => render_llama_cpp_argv(svc, lc, alloc, cmd_args),
+        TemplateConfig::Command(_) => render_command_argv(svc, alloc),
+    }
+}
+
+fn render_llama_cpp_argv(
+    svc: &ServiceConfig,
+    lc: &LlamaCppConfig,
+    alloc: &Allocation,
+    cmd_args: Option<&CommandArgs>,
+) -> SpawnConfig {
     let mut args: Vec<String> = Vec::new();
 
-    match svc.template {
-        Template::LlamaCpp => {
-            let raw = &svc.raw;
-            args.push("-m".into());
-            args.push(raw.model.as_ref().unwrap().to_string_lossy().into_owned());
-            if let Some(mmproj) = &raw.mmproj {
-                args.push("--mmproj".into());
-                args.push(mmproj.to_string_lossy().into_owned());
-            }
-            if let Some(ctx) = raw.context {
-                args.push("-c".into());
-                args.push(ctx.to_string());
-            }
+    args.push("-m".into());
+    args.push(lc.model.to_string_lossy().into_owned());
+    if let Some(mmproj) = &lc.mmproj {
+        args.push("--mmproj".into());
+        args.push(mmproj.to_string_lossy().into_owned());
+    }
+    if let Some(ctx) = lc.context {
+        args.push("-c".into());
+        args.push(ctx.to_string());
+    }
 
-            if let Some(ca) = cmd_args {
-                // Placement engine provided -ngl; ignore the static config path.
-                if let Some(ngl) = ca.ngl {
+    if let Some(ca) = cmd_args {
+        // Placement engine provided -ngl; ignore the static config path.
+        if let Some(ngl) = ca.ngl {
+            args.push("-ngl".into());
+            args.push(ngl.to_string());
+        }
+    } else {
+        match svc.placement_policy {
+            PlacementPolicy::CpuOnly => {
+                args.push("-ngl".into());
+                args.push("0".into());
+            }
+            PlacementPolicy::GpuOnly | PlacementPolicy::Hybrid => {
+                if let Some(ngl) = lc.n_gpu_layers {
                     args.push("-ngl".into());
                     args.push(ngl.to_string());
-                }
-            } else {
-                match svc.placement_policy {
-                    PlacementPolicy::CpuOnly => {
-                        args.push("-ngl".into());
-                        args.push("0".into());
-                    }
-                    PlacementPolicy::GpuOnly | PlacementPolicy::Hybrid => {
-                        if let Some(ngl) = raw.n_gpu_layers {
-                            args.push("-ngl".into());
-                            args.push(ngl.to_string());
-                        } else {
-                            args.push("-ngl".into());
-                            args.push("999".into());
-                        }
-                    }
+                } else {
+                    args.push("-ngl".into());
+                    args.push("999".into());
                 }
             }
-
-            if raw.flash_attn == Some(true) {
-                args.push("-fa".into());
-                args.push("on".into());
-            }
-            if let Some(k) = &raw.cache_type_k {
-                args.push("--cache-type-k".into());
-                args.push(k.to_string());
-            }
-            if let Some(v) = &raw.cache_type_v {
-                args.push("--cache-type-v".into());
-                args.push(v.to_string());
-            }
-            if raw.jinja.unwrap_or(false) {
-                args.push("--jinja".into());
-            }
-            if let Some(p) = &raw.chat_template_file {
-                args.push("--chat-template-file".into());
-                args.push(p.to_string_lossy().into_owned());
-            }
-            if let Some(t) = raw.threads {
-                args.push("--threads".into());
-                args.push(t.to_string());
-            }
-            if let Some(t) = raw.threads_batch {
-                args.push("--threads-batch".into());
-                args.push(t.to_string());
-            }
-            if let Some(b) = raw.batch_size {
-                args.push("-b".into());
-                args.push(b.to_string());
-            }
-            if let Some(b) = raw.ubatch_size {
-                args.push("-ub".into());
-                args.push(b.to_string());
-            }
-            if raw.mmap == Some(false) {
-                args.push("--no-mmap".into());
-            }
-            if raw.mlock == Some(true) {
-                args.push("--mlock".into());
-            }
-            if let Some(p) = raw.parallel {
-                args.push("-np".into());
-                args.push(p.to_string());
-            }
-
-            if let Some(ca) = cmd_args {
-                // Placement-derived tensor-split and override-tensor rules take
-                // precedence; raw.override_tensor is subsumed into CommandArgs by
-                // the placement engine already.
-                if let Some(ref split) = ca.tensor_split {
-                    let split_str = split
-                        .iter()
-                        .map(|n| n.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    args.push("--tensor-split".into());
-                    args.push(split_str);
-                }
-                for rule in &ca.override_tensor {
-                    args.push("-ot".into());
-                    args.push(rule.clone());
-                }
-            } else if let Some(rules) = &raw.override_tensor {
-                for rule in rules {
-                    args.push("-ot".into());
-                    args.push(rule.clone());
-                }
-            }
-
-            // Sampling params are passed as extra flags when set.
-            if let Some(s) = &raw.sampling {
-                if let Some(t) = s.get("temperature") {
-                    args.push("--temp".into());
-                    args.push(t.to_string());
-                }
-                if let Some(p) = s.get("top_p") {
-                    args.push("--top-p".into());
-                    args.push(p.to_string());
-                }
-                if let Some(k) = s.get("top_k") {
-                    args.push("--top-k".into());
-                    args.push(k.to_string());
-                }
-                if let Some(m) = s.get("min_p") {
-                    args.push("--min-p".into());
-                    args.push(m.to_string());
-                }
-                if let Some(r) = s.get("repeat_penalty") {
-                    args.push("--repeat-penalty".into());
-                    args.push(r.to_string());
-                }
-            }
-            if let Some(extra) = &raw.extra_args {
-                args.extend(extra.iter().cloned());
-            }
-            if let Some(extra) = &raw.extra_args_append {
-                args.extend(extra.iter().cloned());
-            }
-            args.push("--host".into());
-            args.push("127.0.0.1".into());
-            args.push("--port".into());
-            args.push(svc.private_port.to_string());
-        }
-        Template::Command => {
-            return render_command_argv(svc, alloc);
         }
     }
 
-    let mut env = BTreeMap::new();
-    if let Some(user_env) = &svc.raw.env {
-        for (k, v) in user_env {
-            env.insert(k.clone(), v.clone());
+    if lc.flash_attn == Some(true) {
+        args.push("-fa".into());
+        args.push("on".into());
+    }
+    if let Some(k) = &lc.cache_type_k {
+        args.push("--cache-type-k".into());
+        args.push(k.to_string());
+    }
+    if let Some(v) = &lc.cache_type_v {
+        args.push("--cache-type-v".into());
+        args.push(v.to_string());
+    }
+    if lc.jinja.unwrap_or(false) {
+        args.push("--jinja".into());
+    }
+    if let Some(p) = &lc.chat_template_file {
+        args.push("--chat-template-file".into());
+        args.push(p.to_string_lossy().into_owned());
+    }
+    if let Some(t) = lc.threads {
+        args.push("--threads".into());
+        args.push(t.to_string());
+    }
+    if let Some(t) = lc.threads_batch {
+        args.push("--threads-batch".into());
+        args.push(t.to_string());
+    }
+    if let Some(b) = lc.batch_size {
+        args.push("-b".into());
+        args.push(b.to_string());
+    }
+    if let Some(b) = lc.ubatch_size {
+        args.push("-ub".into());
+        args.push(b.to_string());
+    }
+    if lc.mmap == Some(false) {
+        args.push("--no-mmap".into());
+    }
+    if lc.mlock == Some(true) {
+        args.push("--mlock".into());
+    }
+    if let Some(p) = lc.parallel {
+        args.push("-np".into());
+        args.push(p.to_string());
+    }
+
+    if let Some(ca) = cmd_args {
+        // Placement-derived tensor-split and override-tensor rules take
+        // precedence; lc.override_tensor is subsumed into CommandArgs by
+        // the placement engine already.
+        if let Some(ref split) = ca.tensor_split {
+            let split_str = split
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            args.push("--tensor-split".into());
+            args.push(split_str);
+        }
+        for rule in &ca.override_tensor {
+            args.push("-ot".into());
+            args.push(rule.clone());
+        }
+    } else {
+        for rule in &lc.override_tensor {
+            args.push("-ot".into());
+            args.push(rule.clone());
         }
     }
+
+    // Sampling params are passed as extra flags when set.
+    let s = &lc.sampling;
+    if let Some(t) = s.temperature {
+        args.push("--temp".into());
+        args.push(t.to_string());
+    }
+    if let Some(p) = s.top_p {
+        args.push("--top-p".into());
+        args.push(p.to_string());
+    }
+    if let Some(k) = s.top_k {
+        args.push("--top-k".into());
+        args.push(k.to_string());
+    }
+    if let Some(m) = s.min_p {
+        args.push("--min-p".into());
+        args.push(m.to_string());
+    }
+    if let Some(r) = s.repeat_penalty {
+        args.push("--repeat-penalty".into());
+        args.push(r.to_string());
+    }
+    args.extend(svc.extra_args.iter().cloned());
+    args.push("--host".into());
+    args.push("127.0.0.1".into());
+    args.push("--port".into());
+    args.push(svc.private_port.to_string());
+
+    let mut env: BTreeMap<String, String> = svc.env.clone();
     env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
-    let binary = "llama-server".to_string();
-
-    SpawnConfig { binary, args, env }
+    SpawnConfig {
+        binary: "llama-server".into(),
+        args,
+        env,
+    }
 }
 
 /// Render argv for a `Command`-template service, including placeholder
@@ -203,17 +198,12 @@ pub fn render_argv(
 fn render_command_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
     use crate::config::AllocationMode;
 
-    let binary = svc
-        .command
-        .as_ref()
-        .and_then(|c| c.first())
-        .cloned()
-        .unwrap_or_default();
-    let raw_argv: Vec<String> = svc
-        .command
-        .as_ref()
-        .map(|c| c.iter().skip(1).cloned().collect())
-        .unwrap_or_default();
+    let TemplateConfig::Command(cmd_cfg) = &svc.template_config else {
+        unreachable!("render_command_argv called on non-command service")
+    };
+
+    let binary = cmd_cfg.command.first().cloned().unwrap_or_default();
+    let raw_argv: Vec<String> = cmd_cfg.command.iter().skip(1).cloned().collect();
 
     let static_vram_mb = match svc.allocation_mode {
         AllocationMode::Static { vram_mb } => Some(vram_mb),
@@ -222,17 +212,13 @@ fn render_command_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
     let ctx = crate::templates::PlaceholderContext {
         name: &svc.name,
         port: svc.private_port,
-        model: svc.raw.model.as_ref().and_then(|p| p.to_str()),
+        // Command template has no model path; {model} placeholder resolves to empty.
+        model: None,
         allocation: alloc,
         static_vram_mb,
     };
 
-    let mut user_env: BTreeMap<String, String> = BTreeMap::new();
-    if let Some(e) = &svc.raw.env {
-        for (k, v) in e {
-            user_env.insert(k.clone(), v.clone());
-        }
-    }
+    let user_env: BTreeMap<String, String> = svc.env.clone();
 
     let (args, env_substituted) =
         crate::templates::substitute_argv(&raw_argv, &user_env, &ctx).unwrap_or_else(|e| {
@@ -311,8 +297,8 @@ mod tests {
 
     use super::*;
     use crate::config::validate::{
-        AllocationMode, DeviceSlot, Lifecycle, PlacementPolicy, ServiceConfig, Template,
-        test_fixtures::minimal_service,
+        AllocationMode, DeviceSlot, Lifecycle, PlacementPolicy, ServiceConfig,
+        test_fixtures::{expect_llama_cpp, minimal_command_service, minimal_service},
     };
 
     fn base_service() -> ServiceConfig {
@@ -324,12 +310,12 @@ mod tests {
         svc.lifecycle = Lifecycle::Persistent;
         svc.placement_override = placement;
         svc.placement_policy = PlacementPolicy::GpuOnly;
-        svc.raw.model = Some(PathBuf::from("/m/x.gguf"));
-        svc.raw.port = Some(11435);
-        svc.raw.context = Some(8192);
-        svc.raw.flash_attn = Some(true);
-        svc.raw.cache_type_k = Some(SmolStr::new("q8_0"));
-        svc.raw.cache_type_v = Some(SmolStr::new("q8_0"));
+        let lc = expect_llama_cpp(&mut svc);
+        lc.model = PathBuf::from("/m/x.gguf");
+        lc.context = Some(8192);
+        lc.flash_attn = Some(true);
+        lc.cache_type_k = Some(SmolStr::new("q8_0"));
+        lc.cache_type_v = Some(SmolStr::new("q8_0"));
         svc
     }
 
@@ -352,7 +338,7 @@ mod tests {
     #[test]
     fn renders_mmproj_when_present() {
         let mut svc = base_service();
-        svc.raw.mmproj = Some(PathBuf::from("/m/x-mmproj.gguf"));
+        expect_llama_cpp(&mut svc).mmproj = Some(PathBuf::from("/m/x-mmproj.gguf"));
         let alloc = Allocation::from_override(&svc.placement_override);
         let cmd = render_argv(&svc, &alloc, None);
         let idx = cmd.args.iter().position(|a| a == "--mmproj").unwrap();
@@ -398,19 +384,12 @@ mod tests {
         ];
         let mut placement = BTreeMap::new();
         placement.insert(DeviceSlot::Gpu(0), 6144);
-        let mut svc = minimal_service("comfy");
-        svc.template = Template::Command;
+        let mut svc = minimal_command_service("comfy", command_argv);
         svc.port = 8188;
         svc.private_port = 48188;
         svc.placement_override = placement.clone();
         svc.placement_policy = PlacementPolicy::GpuOnly;
         svc.allocation_mode = AllocationMode::Static { vram_mb: 6144 };
-        svc.command = Some(command_argv.clone());
-        svc.openai_compat = false;
-        svc.raw.template = Some(SmolStr::new("command"));
-        svc.raw.command = Some(command_argv);
-        svc.raw.port = Some(8188);
-        svc.raw.model = None;
         let alloc = Allocation::from_override(&placement);
         let cfg = render_argv(&svc, &alloc, None);
         assert_eq!(cfg.binary, "python");

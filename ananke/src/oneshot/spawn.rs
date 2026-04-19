@@ -5,17 +5,17 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use ananke_api::oneshot::OneshotRequest;
-use smol_str::SmolStr;
 
 use crate::{
     config::{
-        parse::RawService,
+        parse::DEFAULT_START_QUEUE_DEPTH,
         validate::{
-            AllocationMode, DEFAULT_DRAIN_TIMEOUT_MS, DEFAULT_EXTENDED_STREAM_DRAIN_MS,
-            DEFAULT_HEALTH_PROBE_INTERVAL_MS, DEFAULT_HEALTH_TIMEOUT_MS,
-            DEFAULT_MAX_REQUEST_DURATION_MS, DEFAULT_MIN_BORROWER_RUNTIME_MS,
-            DEFAULT_SERVICE_PRIORITY, DEFAULT_WARMING_GRACE_MS, Filters, HealthSettings, Lifecycle,
-            PlacementPolicy, ServiceConfig, Template,
+            AllocationMode, CommandConfig, DEFAULT_DRAIN_TIMEOUT_MS,
+            DEFAULT_EXTENDED_STREAM_DRAIN_MS, DEFAULT_HEALTH_PROBE_INTERVAL_MS,
+            DEFAULT_HEALTH_TIMEOUT_MS, DEFAULT_MAX_REQUEST_DURATION_MS,
+            DEFAULT_MIN_BORROWER_RUNTIME_MS, DEFAULT_SERVICE_PRIORITY, DEFAULT_WARMING_GRACE_MS,
+            Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+            TemplateConfig,
         },
     },
     daemon::app_state::AppState,
@@ -49,6 +49,29 @@ pub async fn spawn_oneshot(
         DEFAULT_MIN_BORROWER_RUNTIME_MS,
     )?;
 
+    // OneshotRequest doesn't carry a model path, so llama-cpp oneshots are
+    // structurally ill-defined at the request level. Reject them explicitly
+    // rather than constructing a ServiceConfig with bogus fields.
+    let template_config = match template {
+        Template::LlamaCpp => {
+            return Err(
+                "llama-cpp oneshots are not supported (request has no model path)".to_string(),
+            );
+        }
+        Template::Command => {
+            let command = req
+                .command
+                .ok_or_else(|| "command template requires `command`".to_string())?;
+            if command.is_empty() {
+                return Err("command is empty".to_string());
+            }
+            TemplateConfig::Command(CommandConfig {
+                command,
+                workdir: req.workdir.map(PathBuf::from),
+            })
+        }
+    };
+
     // Oneshots use the same port for public and private since they are
     // directly spawned without a wrapping proxy.
     let private_port = port;
@@ -57,7 +80,6 @@ pub async fn spawn_oneshot(
     // port-uniqueness checks which would conflict with the running config.
     let svc = ServiceConfig {
         name: id.clone(),
-        template,
         port,
         private_port,
         lifecycle: Lifecycle::OnDemand,
@@ -69,6 +91,7 @@ pub async fn spawn_oneshot(
         },
         placement_override: BTreeMap::new(),
         placement_policy: PlacementPolicy::GpuOnly,
+        gpu_allow: Vec::new(),
         filters: Filters::default(),
         idle_timeout_ms: ttl_ms + DEFAULT_WARMING_GRACE_MS,
         warming_grace_ms: DEFAULT_WARMING_GRACE_MS,
@@ -76,15 +99,12 @@ pub async fn spawn_oneshot(
         extended_stream_drain_ms: DEFAULT_EXTENDED_STREAM_DRAIN_MS,
         max_request_duration_ms: DEFAULT_MAX_REQUEST_DURATION_MS,
         allocation_mode,
-        command: req.command,
-        workdir: req.workdir.map(PathBuf::from),
         openai_compat: false,
-        raw: RawService {
-            name: Some(id.clone()),
-            template: Some(SmolStr::new(&req.template)),
-            port: Some(port),
-            ..Default::default()
-        },
+        description: None,
+        start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
+        extra_args: Vec::new(),
+        env: BTreeMap::new(),
+        template_config,
     };
 
     let now_ms = crate::tracking::now_unix_ms();

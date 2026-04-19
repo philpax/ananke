@@ -8,10 +8,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use ananke::{
     api::openai,
-    config::{
-        AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-        Template, parse::RawService,
-    },
+    config::{PlacementPolicy, ServiceConfig, TemplateConfig},
     devices::{CpuSnapshot, DeviceSnapshot},
 };
 use axum::{
@@ -19,44 +16,19 @@ use axum::{
     http::{Request, StatusCode},
 };
 use common::{build_harness_with_snapshot, synth_gguf};
-use smol_str::SmolStr;
 use tower::util::ServiceExt;
 
 fn service_without_override(model_path: PathBuf) -> ServiceConfig {
     // No placement_override — the estimator + placer will be invoked.
     // CpuOnly so the placer maps everything to the CPU snapshot.
-    ServiceConfig {
-        name: SmolStr::new("no-override"),
-        template: Template::LlamaCpp,
-        port: 0,
-        private_port: 0,
-        lifecycle: Lifecycle::OnDemand,
-        priority: 50,
-        health: HealthSettings {
-            http_path: "/health".into(),
-            timeout_ms: 5_000,
-            probe_interval_ms: 200,
-        },
-        placement_override: BTreeMap::new(),
-        placement_policy: PlacementPolicy::CpuOnly,
-        idle_timeout_ms: 60_000,
-        warming_grace_ms: 100,
-        drain_timeout_ms: 1_000,
-        extended_stream_drain_ms: 1_000,
-        max_request_duration_ms: 5_000,
-        filters: Filters::default(),
-        allocation_mode: AllocationMode::None,
-        command: None,
-        workdir: None,
-        openai_compat: true,
-        raw: RawService {
-            name: Some(SmolStr::new("no-override")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some(model_path),
-            port: Some(0),
-            ..Default::default()
-        },
-    }
+    let mut svc = common::minimal_llama_service("no-override", 0);
+    svc.placement_override = BTreeMap::new();
+    svc.placement_policy = PlacementPolicy::CpuOnly;
+    let TemplateConfig::LlamaCpp(lc) = &mut svc.template_config else {
+        unreachable!();
+    };
+    lc.model = model_path;
+    svc
 }
 
 #[tokio::test(flavor = "current_thread")]

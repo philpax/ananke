@@ -25,8 +25,11 @@ pub fn is_llama_family(arch: &str) -> bool {
 }
 
 pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
+    let lc = svc
+        .llama_cpp()
+        .expect("llama::estimate on non-llama-cpp service");
     let arch = summary.architecture.as_str();
-    let context = svc.raw.context.unwrap_or(4096);
+    let context = lc.context.unwrap_or(4096);
 
     let n_layers = summary.block_count.unwrap_or(0);
 
@@ -38,7 +41,6 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         + non_layer.token_embd_bytes
         + non_layer.other_bytes;
 
-    // KV per token.
     let n_kv_heads = summary
         .metadata
         .get(&*format!("{arch}.attention.head_count_kv"))
@@ -55,8 +57,8 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         .and_then(|v| v.as_u32())
         .unwrap_or(128) as u64;
 
-    let cache_k = svc.raw.cache_type_k.as_deref().unwrap_or("f16");
-    let cache_v = svc.raw.cache_type_v.as_deref().unwrap_or("f16");
+    let cache_k = lc.cache_type_k.as_deref().unwrap_or("f16");
+    let cache_v = lc.cache_type_v.as_deref().unwrap_or("f16");
 
     let bytes_k = kv::kv_bytes_per_element(cache_k);
     let bytes_v = kv::kv_bytes_per_element(cache_v);
@@ -72,12 +74,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: svc
-            .raw
-            .estimation
-            .as_ref()
-            .and_then(|e| e.compute_buffer_mb)
-            .unwrap_or(400),
+        compute_buffer_mb: lc.estimation.compute_buffer_mb.unwrap_or(400),
         per_layer_bytes: Some(per_layer_bytes),
         attention_layers: None,
         non_layer,
@@ -199,11 +196,12 @@ mod tests {
         svc.placement_policy = PlacementPolicy::GpuOnly;
         svc.placement_override.clear();
         svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
-        svc.raw.model = Some("/fake".into());
-        svc.raw.context = Some(context);
-        svc.raw.cache_type_k = Some(SmolStr::new(cache_k));
-        svc.raw.cache_type_v = Some(SmolStr::new(cache_v));
-        svc.raw.flash_attn = Some(true);
+        let lc = crate::config::validate::test_fixtures::expect_llama_cpp(&mut svc);
+        lc.model = "/fake".into();
+        lc.context = Some(context);
+        lc.cache_type_k = Some(SmolStr::new(cache_k));
+        lc.cache_type_v = Some(SmolStr::new(cache_v));
+        lc.flash_attn = Some(true);
         svc
     }
 

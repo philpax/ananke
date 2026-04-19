@@ -7,53 +7,25 @@ use std::collections::BTreeMap;
 
 use ananke::{
     allocator::{AllocationTable, placement},
-    config::{
-        AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-        Template, parse::RawService,
-    },
+    config::{PlacementPolicy, ServiceConfig, TemplateConfig},
     devices::{DeviceSnapshot, GpuSnapshot},
     estimator,
 };
 use common::synth_gguf;
-use smol_str::SmolStr;
 
 fn moe_svc_with_override_tensor(model_path: std::path::PathBuf) -> ServiceConfig {
-    ServiceConfig {
-        name: SmolStr::new("moe-ot-svc"),
-        template: Template::LlamaCpp,
-        port: 0,
-        private_port: 0,
-        lifecycle: Lifecycle::OnDemand,
-        priority: 50,
-        health: HealthSettings {
-            http_path: "/health".into(),
-            timeout_ms: 5_000,
-            probe_interval_ms: 200,
-        },
-        placement_override: BTreeMap::new(),
-        placement_policy: PlacementPolicy::GpuOnly,
-        idle_timeout_ms: 60_000,
-        warming_grace_ms: 100,
-        drain_timeout_ms: 1_000,
-        extended_stream_drain_ms: 1_000,
-        max_request_duration_ms: 5_000,
-        filters: Filters::default(),
-        allocation_mode: AllocationMode::None,
-        command: None,
-        workdir: None,
-        openai_compat: true,
-        raw: RawService {
-            name: Some(SmolStr::new("moe-ot-svc")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some(model_path),
-            port: Some(0),
-            override_tensor: Some(vec![
-                r"\.ffn_up_exps\.=CPU".to_string(),
-                r"\.ffn_down_exps\.=CPU".to_string(),
-            ]),
-            ..Default::default()
-        },
-    }
+    let mut svc = common::minimal_llama_service("moe-ot-svc", 0);
+    svc.placement_override = BTreeMap::new();
+    svc.placement_policy = PlacementPolicy::GpuOnly;
+    let TemplateConfig::LlamaCpp(lc) = &mut svc.template_config else {
+        unreachable!();
+    };
+    lc.model = model_path;
+    lc.override_tensor = vec![
+        r"\.ffn_up_exps\.=CPU".to_string(),
+        r"\.ffn_down_exps\.=CPU".to_string(),
+    ];
+    svc
 }
 
 #[test]

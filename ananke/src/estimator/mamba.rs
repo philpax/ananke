@@ -35,8 +35,11 @@ pub fn is_mamba(arch: &str) -> bool {
 }
 
 pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
+    let lc = svc
+        .llama_cpp()
+        .expect("mamba::estimate on non-llama-cpp service");
     let arch = summary.architecture.as_str();
-    let context = svc.raw.context.unwrap_or(DEFAULT_CONTEXT);
+    let context = lc.context.unwrap_or(DEFAULT_CONTEXT);
     let n_layers = summary.block_count.unwrap_or(0);
 
     let per_layer = super::llama::collect_per_layer(summary, n_layers);
@@ -70,11 +73,9 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: svc
-            .raw
+        compute_buffer_mb: lc
             .estimation
-            .as_ref()
-            .and_then(|e| e.compute_buffer_mb)
+            .compute_buffer_mb
             .unwrap_or(DEFAULT_COMPUTE_BUFFER_MB),
         per_layer_bytes: Some(per_layer),
         attention_layers: None,

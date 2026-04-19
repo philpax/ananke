@@ -345,7 +345,11 @@ impl<'a> Packer<'a> {
             None
         };
 
-        let override_tensor = self.svc.raw.override_tensor.clone().unwrap_or_default();
+        let override_tensor = self
+            .svc
+            .llama_cpp()
+            .map(|lc| lc.override_tensor.clone())
+            .unwrap_or_default();
 
         let allocation = Allocation {
             bytes: self
@@ -376,12 +380,15 @@ fn allowed_gpu_list(svc: &ServiceConfig, snapshot: &DeviceSnapshot) -> Vec<u32> 
     if svc.placement_policy == PlacementPolicy::CpuOnly {
         return Vec::new();
     }
-    let declared_allow: Option<Vec<u32>> =
-        svc.raw.devices.as_ref().and_then(|d| d.gpu_allow.clone());
     let all: Vec<u32> = snapshot.gpus.iter().map(|g| g.id).collect();
-    match declared_allow {
-        Some(list) if !list.is_empty() => list.into_iter().filter(|id| all.contains(id)).collect(),
-        _ => all,
+    if svc.gpu_allow.is_empty() {
+        all
+    } else {
+        svc.gpu_allow
+            .iter()
+            .copied()
+            .filter(|id| all.contains(id))
+            .collect()
     }
 }
 
@@ -413,12 +420,8 @@ mod tests {
         svc.placement_override = placement;
         svc.placement_policy = policy;
         if let Some(a) = gpu_allow {
-            svc.raw.devices = Some(crate::config::parse::RawServiceDevices {
-                gpu_allow: Some(a),
-                ..Default::default()
-            });
+            svc.gpu_allow = a;
         }
-        svc.raw.model = Some("/fake".into());
         svc
     }
 

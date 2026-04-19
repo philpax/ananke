@@ -11,10 +11,7 @@ use std::collections::BTreeMap;
 
 use ananke::{
     allocator::{AllocationTable, placement},
-    config::{
-        AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-        Template, parse::RawService,
-    },
+    config::{PlacementPolicy, ServiceConfig},
     devices::{DeviceId, DeviceSnapshot, GpuSnapshot},
     estimator::{Estimate, NonLayer},
 };
@@ -22,38 +19,10 @@ use smol_str::SmolStr;
 
 fn two_gpu_svc() -> ServiceConfig {
     // No placement_override — the test drives pack() directly.
-    ServiceConfig {
-        name: SmolStr::new("split-svc"),
-        template: Template::LlamaCpp,
-        port: 0,
-        private_port: 0,
-        lifecycle: Lifecycle::OnDemand,
-        priority: 50,
-        health: HealthSettings {
-            http_path: "/health".into(),
-            timeout_ms: 5_000,
-            probe_interval_ms: 200,
-        },
-        placement_override: BTreeMap::new(),
-        placement_policy: PlacementPolicy::GpuOnly,
-        idle_timeout_ms: 60_000,
-        warming_grace_ms: 100,
-        drain_timeout_ms: 1_000,
-        extended_stream_drain_ms: 1_000,
-        max_request_duration_ms: 5_000,
-        filters: Filters::default(),
-        allocation_mode: AllocationMode::None,
-        command: None,
-        workdir: None,
-        openai_compat: true,
-        raw: RawService {
-            name: Some(SmolStr::new("split-svc")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some("/fake/model.gguf".into()),
-            port: Some(0),
-            ..Default::default()
-        },
-    }
+    let mut svc = common::minimal_llama_service("split-svc", 0);
+    svc.placement_override = BTreeMap::new();
+    svc.placement_policy = PlacementPolicy::GpuOnly;
+    svc
 }
 
 fn two_gpu_snapshot() -> DeviceSnapshot {

@@ -23,8 +23,9 @@ use ananke::{
     allocator::AllocationTable,
     config::{
         AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
-        Lifecycle, PlacementPolicy, ServiceConfig, Template, manager::ConfigManager,
-        parse::RawService,
+        Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, TemplateConfig,
+        manager::ConfigManager,
+        parse::{DEFAULT_START_QUEUE_DEPTH, EstimationConfig, SamplingConfig},
     },
     daemon::app_state::AppState,
     db::{Database, logs::spawn as spawn_batcher},
@@ -172,7 +173,6 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
     placement.insert(DeviceSlot::Cpu, 100);
     ServiceConfig {
         name: SmolStr::new(name),
-        template: Template::LlamaCpp,
         port,
         private_port: 0,
         lifecycle: Lifecycle::OnDemand,
@@ -184,6 +184,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         },
         placement_override: placement,
         placement_policy: PlacementPolicy::CpuOnly,
+        gpu_allow: Vec::new(),
         idle_timeout_ms: 60_000,
         warming_grace_ms: 100,
         drain_timeout_ms: 1_000,
@@ -191,16 +192,33 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         max_request_duration_ms: 5_000,
         filters: Filters::default(),
         allocation_mode: AllocationMode::None,
-        command: None,
-        workdir: None,
         openai_compat: true,
-        raw: RawService {
-            name: Some(SmolStr::new(name)),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some(PathBuf::from("/fake/model.gguf")),
-            port: Some(port),
-            ..Default::default()
-        },
+        description: None,
+        start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
+        extra_args: Vec::new(),
+        env: BTreeMap::new(),
+        template_config: TemplateConfig::LlamaCpp(Box::new(LlamaCppConfig {
+            model: PathBuf::from("/fake/model.gguf"),
+            mmproj: None,
+            context: None,
+            n_gpu_layers: None,
+            n_cpu_moe: None,
+            flash_attn: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            mmap: None,
+            mlock: None,
+            parallel: None,
+            batch_size: None,
+            ubatch_size: None,
+            threads: None,
+            threads_batch: None,
+            jinja: None,
+            chat_template_file: None,
+            override_tensor: Vec::new(),
+            sampling: SamplingConfig::default(),
+            estimation: EstimationConfig::default(),
+        })),
     }
 }
 
@@ -211,7 +229,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
 /// in-flight start before the supervisor returns `QueueFull`.
 pub fn service_with_queue_depth(name: &str, port: u16, depth: usize) -> ServiceConfig {
     let mut s = minimal_llama_service(name, port);
-    s.raw.start_queue_depth = Some(depth);
+    s.start_queue_depth = depth;
     s
 }
 

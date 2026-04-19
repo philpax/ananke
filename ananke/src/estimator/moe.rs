@@ -31,8 +31,11 @@ pub fn is_moe(arch: &str) -> bool {
 }
 
 pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
+    let lc = svc
+        .llama_cpp()
+        .expect("moe::estimate on non-llama-cpp service");
     let arch = summary.architecture.as_str();
-    let context = svc.raw.context.unwrap_or(4096);
+    let context = lc.context.unwrap_or(4096);
 
     let n_layers = summary.block_count.unwrap_or(0);
 
@@ -56,7 +59,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
 
     let non_layer = collect_non_layer(summary);
 
-    let n_cpu_moe = svc.raw.n_cpu_moe.unwrap_or(0) as usize;
+    let n_cpu_moe = lc.n_cpu_moe.unwrap_or(0) as usize;
 
     // Pick the top-N layers by expert byte count for offload.
     let mut layer_scores: Vec<(u32, u64)> = per_layer_exp
@@ -107,8 +110,8 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         .and_then(|v| v.as_u32())
         .unwrap_or(128) as u64;
 
-    let cache_k = svc.raw.cache_type_k.as_deref().unwrap_or("f16");
-    let cache_v = svc.raw.cache_type_v.as_deref().unwrap_or("f16");
+    let cache_k = lc.cache_type_k.as_deref().unwrap_or("f16");
+    let cache_v = lc.cache_type_v.as_deref().unwrap_or("f16");
 
     let kv_per_token = if n_layers > 0 && n_kv_heads > 0 {
         let per_layer_bytes_kv = n_kv_heads
@@ -128,12 +131,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: svc
-            .raw
-            .estimation
-            .as_ref()
-            .and_then(|e| e.compute_buffer_mb)
-            .unwrap_or(400),
+        compute_buffer_mb: lc.estimation.compute_buffer_mb.unwrap_or(400),
         per_layer_bytes: Some(per_layer_total),
         attention_layers: None,
         non_layer,
@@ -241,10 +239,11 @@ mod tests {
         svc.placement_override.clear();
         svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
         svc.placement_policy = PlacementPolicy::Hybrid;
-        svc.raw.model = Some("/fake".into());
-        svc.raw.context = Some(4096);
-        svc.raw.n_cpu_moe = Some(1);
-        svc.raw.flash_attn = Some(true);
+        let lc = crate::config::validate::test_fixtures::expect_llama_cpp(&mut svc);
+        lc.model = "/fake".into();
+        lc.context = Some(4096);
+        lc.n_cpu_moe = Some(1);
+        lc.flash_attn = Some(true);
 
         let e = estimate(&summary, &svc);
         // The layer with the largest expert bytes is layer 1 (10 MiB).

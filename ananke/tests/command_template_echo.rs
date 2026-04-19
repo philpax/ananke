@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use ananke::{
     config::{
-        AllocationMode, Template,
-        parse::{RawAllocation, RawService},
+        AllocationMode, CommandConfig, TemplateConfig,
+        parse::DEFAULT_START_QUEUE_DEPTH,
         validate::{
             DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
         },
@@ -18,27 +18,15 @@ fn command_argv_substitutes_port() {
     let mut placement = BTreeMap::new();
     placement.insert(DeviceSlot::Gpu(0), 6144);
 
-    let raw = RawService {
-        name: Some(SmolStr::new("comfy")),
-        template: Some(SmolStr::new("command")),
-        command: Some(vec![
-            "python".into(),
-            "main.py".into(),
-            "--port".into(),
-            "{port}".into(),
-        ]),
-        port: Some(8188),
-        allocation: Some(RawAllocation {
-            mode: Some(SmolStr::new("static")),
-            vram_gb: Some(6.0),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let argv = vec![
+        "python".into(),
+        "main.py".into(),
+        "--port".into(),
+        "{port}".into(),
+    ];
 
     let svc = ServiceConfig {
         name: SmolStr::new("comfy"),
-        template: Template::Command,
         port: 8188,
         private_port: 48188,
         lifecycle: Lifecycle::OnDemand,
@@ -50,6 +38,7 @@ fn command_argv_substitutes_port() {
         },
         placement_override: placement.clone(),
         placement_policy: PlacementPolicy::GpuOnly,
+        gpu_allow: Vec::new(),
         idle_timeout_ms: 600_000,
         warming_grace_ms: 30_000,
         drain_timeout_ms: 5_000,
@@ -57,15 +46,15 @@ fn command_argv_substitutes_port() {
         max_request_duration_ms: 60_000,
         filters: Filters::default(),
         allocation_mode: AllocationMode::Static { vram_mb: 6144 },
-        command: Some(vec![
-            "python".into(),
-            "main.py".into(),
-            "--port".into(),
-            "{port}".into(),
-        ]),
-        workdir: None,
         openai_compat: false,
-        raw,
+        description: None,
+        start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
+        extra_args: Vec::new(),
+        env: BTreeMap::new(),
+        template_config: TemplateConfig::Command(CommandConfig {
+            command: argv,
+            workdir: None,
+        }),
     };
 
     let alloc = Allocation::from_override(&placement);

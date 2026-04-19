@@ -14,8 +14,9 @@ pub use file::{PathSources, resolve_config_path, resolve_from_env};
 pub use merge::{Migration, resolve_inheritance, resolve_migrations};
 pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
-    AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
-    Lifecycle, PlacementPolicy, ServiceConfig, Template, validate,
+    AllocationMode, CommandConfig, DaemonSettings, DeviceSlot, EffectiveConfig, Filters,
+    HealthSettings, Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, Template,
+    TemplateConfig, validate,
 };
 
 pub fn load_config(path: &Path) -> Result<(EffectiveConfig, Vec<Migration>), ExpectedError> {
