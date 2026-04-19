@@ -10,18 +10,30 @@ use crate::db::{
     models::{Service, ServiceLog},
 };
 
+/// Drop log rows older than this before the cap check (spec §12).
+const RETENTION_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Per-service row cap; oldest rows beyond this are deleted (spec §12).
+const MAX_ROWS_PER_SERVICE: usize = 50_000;
+
+/// Cadence for both the retention trim and the incremental vacuum.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Pages reclaimed per incremental vacuum pass. At the default 4 KiB page
+/// size this releases up to ~4 MiB per tick.
+const INCREMENTAL_VACUUM_PAGES: u64 = 1000;
+
 /// Per-service log retention: 7 days or 50,000 lines, whichever tighter
 /// (spec §12). Runs once when called; call from a daily scheduled task.
 pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, toasty::Error> {
-    let seven_days_ago = now_ms - 7 * 24 * 60 * 60 * 1000;
-    let per_service: usize = 50_000;
+    let cutoff_ms = now_ms - RETENTION_WINDOW.as_millis() as i64;
 
     let mut handle = db.handle();
     let mut deleted: u64 = 0;
 
-    // 1. Drop rows older than seven days in one pass.
+    // 1. Drop rows older than the retention window in one pass.
     let old: Vec<ServiceLog> =
-        ServiceLog::filter(ServiceLog::fields().timestamp_ms().lt(seven_days_ago))
+        ServiceLog::filter(ServiceLog::fields().timestamp_ms().lt(cutoff_ms))
             .exec(&mut handle)
             .await?;
     for row in old {
@@ -42,9 +54,9 @@ pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, toasty::E
             ServiceLog::filter(ServiceLog::fields().service_id().eq(svc.service_id as i64))
                 .exec(&mut handle)
                 .await?;
-        if rows.len() > per_service {
+        if rows.len() > MAX_ROWS_PER_SERVICE {
             rows.sort_by_key(|r| r.timestamp_ms);
-            let excess = rows.len() - per_service;
+            let excess = rows.len() - MAX_ROWS_PER_SERVICE;
             for row in rows.into_iter().take(excess) {
                 row.delete().exec(&mut handle).await?;
                 deleted += 1;
@@ -60,10 +72,8 @@ pub fn incremental_vacuum(db: &Database, pages: u64) -> rusqlite::Result<()> {
 }
 
 pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
-    let trim_interval = Duration::from_secs(60 * 60);
-    let vacuum_interval = Duration::from_secs(60 * 60);
-    let mut trim_tick = tokio::time::interval(trim_interval);
-    let mut vacuum_tick = tokio::time::interval(vacuum_interval);
+    let mut trim_tick = tokio::time::interval(MAINTENANCE_INTERVAL);
+    let mut vacuum_tick = tokio::time::interval(MAINTENANCE_INTERVAL);
     trim_tick.tick().await;
     vacuum_tick.tick().await;
 
@@ -82,7 +92,7 @@ pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
                 }
             }
             _ = vacuum_tick.tick() => {
-                if let Err(e) = incremental_vacuum(&db, 1000) {
+                if let Err(e) = incremental_vacuum(&db, INCREMENTAL_VACUUM_PAGES) {
                     warn!(error = %e, "incremental_vacuum failed");
                 }
             }

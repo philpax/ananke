@@ -224,11 +224,13 @@ pub async fn run() -> Result<(), ExpectedError> {
             min_borrower_runtime_ms,
         } = svc.allocation_mode
         {
+            // 512 MiB headroom above `min_mb` before balloon triggers growth detection.
+            const BALLOON_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
             let cfg = crate::allocator::balloon::BalloonConfig {
                 min_mb,
                 max_mb,
                 min_borrower_runtime: Duration::from_millis(min_borrower_runtime_ms),
-                margin_bytes: 512 * 1024 * 1024,
+                margin_bytes: BALLOON_MARGIN_BYTES,
             };
             let join = crate::allocator::balloon::spawn_resolver(
                 svc.name.clone(),
@@ -315,7 +317,7 @@ pub async fn run() -> Result<(), ExpectedError> {
 
     let drain_bound = match shutdown_kind {
         ShutdownKind::Graceful => Duration::from_millis(effective.daemon.shutdown_timeout_ms),
-        ShutdownKind::Emergency => Duration::from_secs(5),
+        ShutdownKind::Emergency => crate::daemon::signals::grace_for(shutdown_kind),
     };
     let _ = tokio::time::timeout(drain_bound, async {
         for sup in &supervisors {

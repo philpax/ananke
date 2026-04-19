@@ -24,10 +24,16 @@ pub async fn await_shutdown() -> ShutdownKind {
     }
 }
 
+/// Grace given to in-flight work on SIGTERM/SIGINT before child kill.
+const GRACEFUL_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Grace given on SIGQUIT before we escalate to SIGKILL for every child.
+const EMERGENCY_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
 pub fn grace_for(kind: ShutdownKind) -> Duration {
     match kind {
-        ShutdownKind::Graceful => Duration::from_secs(10),
-        ShutdownKind::Emergency => Duration::from_secs(5),
+        ShutdownKind::Graceful => GRACEFUL_SHUTDOWN_GRACE,
+        ShutdownKind::Emergency => EMERGENCY_SHUTDOWN_GRACE,
     }
 }
 

@@ -25,6 +25,9 @@ use crate::{
 
 pub type SharedSnapshot = Arc<RwLock<DeviceSnapshot>>;
 
+/// Cadence at which NVML / `/proc/meminfo` / per-service RSS are re-sampled.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+
 pub fn new_shared() -> SharedSnapshot {
     Arc::new(RwLock::new(DeviceSnapshot::default()))
 }
@@ -37,7 +40,7 @@ pub fn spawn(
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {

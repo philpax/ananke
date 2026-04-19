@@ -220,6 +220,27 @@ pub fn spawn_supervisor(init: SupervisorInit, deps: SupervisorDeps) -> Superviso
 /// Mailbox depth for per-supervisor command channels.
 const SUPERVISOR_COMMAND_MAILBOX: usize = 32;
 
+/// If a child dies with SIGKILL within this window from spawn, we treat it
+/// as an OOM kill and bump the rolling safety factor for the next attempt.
+const OOM_KILL_WINDOW: Duration = Duration::from_secs(30);
+
+/// SIGTERM grace during Starting/Warming where the child may not yet be ready
+/// to drain gracefully. Short so we do not block shutdown on a half-loaded
+/// child.
+const STARTING_SIGTERM_GRACE: Duration = Duration::from_secs(5);
+
+/// SIGTERM grace during Running or during command-initiated drain. Longer
+/// because the child is healthy and may be mid-request.
+const RUNNING_SIGTERM_GRACE: Duration = Duration::from_secs(10);
+
+/// Backoff schedule for consecutive start failures before transitioning to
+/// Disabled. Indexed by `retry_count` (0-based).
+const FAILED_RETRY_BACKOFFS: [Duration; 3] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+];
+
 async fn run(init: SupervisorInit, deps: SupervisorDeps, rx: mpsc::Receiver<SupervisorCommand>) {
     let mut loop_state = RunLoop::new(init, deps, rx);
     loop {
@@ -694,7 +715,7 @@ impl RunLoop {
             .and_then(|s| s.signal())
             .map(|sig| sig == libc::SIGKILL)
             .unwrap_or(false);
-        if runtime < Duration::from_secs(30) && was_sigkill {
+        if runtime < OOM_KILL_WINDOW && was_sigkill {
             self.oom_attempts += 1;
             if self.oom_attempts >= 2 {
                 warn!(service = %self.init.svc.name, attempts = self.oom_attempts, "OOM retry limit reached; disabling");
@@ -771,12 +792,12 @@ impl RunLoop {
                 self.set_state(ServiceState::Disabled {
                     reason: DisableReason::HealthTimeout,
                 });
-                send_sigterm_and_wait(child, Duration::from_secs(5)).await;
+                send_sigterm_and_wait(child, STARTING_SIGTERM_GRACE).await;
                 StartingOutcome::Break
             }
             Ok(HealthOutcome::Cancelled) | Err(_) => {
                 self.deps.allocations.lock().remove(&self.init.svc.name);
-                send_sigterm_and_wait(child, Duration::from_secs(5)).await;
+                send_sigterm_and_wait(child, STARTING_SIGTERM_GRACE).await;
                 StartingOutcome::Exit
             }
         }
@@ -808,7 +829,7 @@ impl RunLoop {
                 if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
                     info!(service = %self.init.svc.name, "draining during warming");
                     let _ = self.cancel_tx.send(true);
-                    send_sigterm_and_wait(child, Duration::from_secs(10)).await;
+                    send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.deps.allocations.lock().remove(&self.init.svc.name);
                     let _ = ack.send(());
@@ -845,7 +866,7 @@ impl RunLoop {
                         continue;
                     }
                     info!(service = %self.init.svc.name, "idle timeout; draining to idle");
-                    send_sigterm_and_wait(child, Duration::from_secs(10)).await;
+                    send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.record_drain_complete();
                     self.set_state(ServiceState::Idle);
@@ -876,7 +897,7 @@ impl RunLoop {
                 let next = transition(&self.state, StateEvent::DrainRequested).unwrap();
                 self.set_state(next);
                 let _ = self.cancel_tx.send(true);
-                send_sigterm_and_wait(child, Duration::from_secs(10)).await;
+                send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                 self.record_drain_complete();
                 let _ = ack.send(());
@@ -915,7 +936,7 @@ impl RunLoop {
                     extended_stream_drain: Duration::from_millis(
                         self.init.svc.extended_stream_drain_ms,
                     ),
-                    sigterm_grace: Duration::from_secs(10),
+                    sigterm_grace: RUNNING_SIGTERM_GRACE,
                 };
                 drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
 
@@ -954,7 +975,7 @@ impl RunLoop {
         match cmd {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 let _ = self.cancel_tx.send(true);
-                send_sigterm_and_wait(child, Duration::from_secs(5)).await;
+                send_sigterm_and_wait(child, STARTING_SIGTERM_GRACE).await;
                 self.deps.allocations.lock().remove(&self.init.svc.name);
                 let _ = ack.send(());
                 StartingOutcome::Exit
@@ -998,11 +1019,8 @@ impl RunLoop {
     }
 
     async fn handle_failed(&mut self, retry_count: u8) -> Step {
-        let delay = match retry_count {
-            0 => Duration::from_secs(2),
-            1 => Duration::from_secs(5),
-            _ => Duration::from_secs(15),
-        };
+        let idx = (retry_count as usize).min(FAILED_RETRY_BACKOFFS.len() - 1);
+        let delay = FAILED_RETRY_BACKOFFS[idx];
         tokio::select! {
             _ = tokio::time::sleep(delay) => {
                 let next = transition(&self.state, StateEvent::RetryAfterBackoff)

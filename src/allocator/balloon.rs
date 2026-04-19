@@ -21,6 +21,14 @@ use crate::{
 const WINDOW_SIZE: usize = 6;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
+/// If the dynamic service exceeds `max_mb * 110 %` for this long, fast-kill it
+/// (spec §8.4).
+const OVER_CEILING_GRACE: Duration = Duration::from_secs(30);
+
+/// Headroom above `max_mb` tolerated before `OVER_CEILING_GRACE` applies, as
+/// permille (110 ‰ = +10 %, i.e. 1.10 ×).
+const OVER_CEILING_PERMILLE: u64 = 1100;
+
 /// Detect growth in a sample window using linear-regression slope and a
 /// majority-non-decreasing jitter check.
 ///
@@ -123,10 +131,10 @@ pub fn spawn_resolver(
             window.push_back(observed);
 
             // Spec §8.4: if observed > max_mb by >10% for >30 s, fast-kill self.
-            let ceiling = cfg.max_mb * 1024 * 1024 * 110 / 100;
+            let ceiling = cfg.max_mb * 1024 * 1024 * OVER_CEILING_PERMILLE / 1000;
             if observed > ceiling {
                 if let Some(since) = exceeded_since {
-                    if since.elapsed() > Duration::from_secs(30) {
+                    if since.elapsed() > OVER_CEILING_GRACE {
                         warn!(
                             service = %service_name,
                             observed,
