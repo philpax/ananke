@@ -21,16 +21,19 @@ pub use orphans::{OrphanDisposition, reconcile};
 use parking_lot::Mutex as SyncMutex;
 pub use spawn::{SpawnConfig, render_argv};
 use tokio::{
-    sync::{mpsc, watch},
+    process::Child,
+    sync::{broadcast, mpsc, watch},
     task::JoinHandle,
 };
 use tracing::{error, info, warn};
 
 use crate::{
+    allocator::placement::Packed,
     config::validate::{EffectiveConfig, ServiceConfig},
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
     supervise::{
+        drain::{DrainConfig, drain_pipeline, fast_kill},
         health::{HealthConfig, HealthOutcome, wait_healthy},
         logs::{spawn_pump_stderr, spawn_pump_stdout},
         registry::ServiceRegistry,
@@ -214,700 +217,872 @@ pub fn spawn_supervisor(init: SupervisorInit, deps: SupervisorDeps) -> Superviso
 /// Mailbox depth for per-supervisor command channels.
 const SUPERVISOR_COMMAND_MAILBOX: usize = 32;
 
-async fn run(
+async fn run(init: SupervisorInit, deps: SupervisorDeps, rx: mpsc::Receiver<SupervisorCommand>) {
+    let mut loop_state = RunLoop::new(init, deps, rx);
+    loop {
+        let step = match loop_state.state.clone() {
+            ServiceState::Idle => loop_state.handle_idle().await,
+            ServiceState::Starting => loop_state.handle_active_lifecycle().await,
+            ServiceState::Failed { retry_count } => loop_state.handle_failed(retry_count).await,
+            ServiceState::Disabled { .. } => loop_state.handle_disabled().await,
+            other => {
+                warn!(state = ?other, "unexpected state in supervisor loop");
+                return;
+            }
+        };
+        if matches!(step, Step::Exit) {
+            return;
+        }
+    }
+}
+
+/// Result of a `handle_*` method: either continue the outer dispatcher loop
+/// (consulting the updated `state`) or exit the supervisor task entirely.
+enum Step {
+    Continue,
+    Exit,
+}
+
+/// Mutable context threaded through every `handle_*` method. Owns every
+/// binding that outlives a single state's body and is read or mutated across
+/// transitions.
+struct RunLoop {
     init: SupervisorInit,
     deps: SupervisorDeps,
-    mut rx: mpsc::Receiver<SupervisorCommand>,
-) {
-    // Destructure into local bindings so the existing body reads unchanged.
-    // These are captured by the inner `tokio::select!` arms and helper
-    // closures, and shadowing the struct fields keeps that code terse.
-    let SupervisorInit {
-        svc,
-        allocation,
-        service_id,
-        last_activity,
-        inflight,
-    } = init;
-    let SupervisorDeps {
-        db,
-        batcher,
-        snapshot,
-        allocations,
-        rolling,
-        observation,
-        registry,
-        effective,
-    } = deps;
-    let mut state = ServiceState::Idle;
-    let state_mirror = Arc::new(SyncMutex::new(state.clone()));
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    // Carries a broadcast sender from Idle through to Starting so waiters can
-    // be notified of the outcome once the child finishes warming.
-    let mut start_bus_carry: Option<tokio::sync::broadcast::Sender<StartOutcome>> = None;
-    // Carries the placement-derived CommandArgs from Idle (where they are
-    // computed) into Starting (where render_argv consumes them).
-    let mut packed_for_spawn: Option<crate::allocator::placement::Packed> = None;
-    // OOM retry state: counts consecutive OOM kills for the current service.
-    let mut oom_attempts: u32 = 0;
-    // Stash the total reserved bytes (in bytes) from the Ensure path so the
-    // rolling update on drain can use the original estimate as the base.
-    let mut base_total_bytes_for_rolling: u64 = 0;
+    rx: mpsc::Receiver<SupervisorCommand>,
+    state: ServiceState,
+    state_mirror: Arc<SyncMutex<ServiceState>>,
+    cancel_tx: watch::Sender<bool>,
+    cancel_rx: watch::Receiver<bool>,
+    /// Carries a broadcast sender from Idle through to Starting so waiters can
+    /// be notified of the outcome once the child finishes warming.
+    start_bus_carry: Option<broadcast::Sender<StartOutcome>>,
+    /// Carries the placement-derived `CommandArgs` from Idle (where they are
+    /// computed) into Starting (where `render_argv` consumes them).
+    packed_for_spawn: Option<Packed>,
+    /// Counts consecutive OOM kills for the current service.
+    oom_attempts: u32,
+    /// Total reserved bytes captured at Ensure time, used as the base for the
+    /// rolling update that fires when the service later drains back to Idle.
+    base_total_bytes_for_rolling: u64,
+}
 
-    loop {
-        match &state {
-            ServiceState::Idle => {
-                // For on_demand services we wait here for an Ensure. Persistent
-                // services have the daemon call ensure() synthetically at boot.
-                loop {
-                    let cmd = rx.recv().await;
-                    match cmd {
-                        Some(SupervisorCommand::Shutdown { ack }) => {
-                            let _ = ack.send(());
-                            return;
-                        }
-                        Some(SupervisorCommand::Snapshot { ack }) => {
-                            let _ = ack.send(SupervisorSnapshot {
-                                name: svc.name.clone(),
-                                state: state.clone(),
-                                run_id: None,
-                                pid: None,
-                            });
-                        }
-                        Some(SupervisorCommand::Ensure { ack }) => {
-                            let snap = snapshot.read().clone();
-                            let table = allocations.lock().clone();
+impl RunLoop {
+    fn new(
+        init: SupervisorInit,
+        deps: SupervisorDeps,
+        rx: mpsc::Receiver<SupervisorCommand>,
+    ) -> Self {
+        let state = ServiceState::Idle;
+        let state_mirror = Arc::new(SyncMutex::new(state.clone()));
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        Self {
+            init,
+            deps,
+            rx,
+            state,
+            state_mirror,
+            cancel_tx,
+            cancel_rx,
+            start_bus_carry: None,
+            packed_for_spawn: None,
+            oom_attempts: 0,
+            base_total_bytes_for_rolling: 0,
+        }
+    }
 
-                            // Determine the allocation to reserve. Command-template
-                            // services use their declared `allocation.{static|dynamic}`
-                            // sizing; llama-cpp services use `placement_override` as
-                            // the escape hatch or fall back to the GGUF estimator +
-                            // layer-aware packer.
-                            let want = if matches!(svc.template, crate::config::Template::Command) {
-                                packed_for_spawn = None;
-                                let bytes_mb = match svc.allocation_mode {
-                                    crate::config::AllocationMode::Static { vram_mb } => vram_mb,
-                                    crate::config::AllocationMode::Dynamic { min_mb, .. } => min_mb,
-                                    crate::config::AllocationMode::None => 0,
-                                };
-                                let target_gpu: Option<u32> = svc
-                                    .raw
-                                    .devices
-                                    .as_ref()
-                                    .and_then(|d| d.gpu_allow.as_ref())
-                                    .and_then(|list| list.first().copied())
-                                    .or_else(|| snap.gpus.first().map(|g| g.id));
-                                let mut map = std::collections::BTreeMap::new();
-                                if bytes_mb > 0 {
-                                    let slot = match svc.placement_policy {
-                                        crate::config::PlacementPolicy::CpuOnly => {
-                                            crate::config::DeviceSlot::Cpu
-                                        }
-                                        _ => match target_gpu {
-                                            Some(id) => crate::config::DeviceSlot::Gpu(id),
-                                            None => crate::config::DeviceSlot::Cpu,
-                                        },
-                                    };
-                                    map.insert(slot, bytes_mb);
-                                }
-                                map
-                            } else if !svc.placement_override.is_empty() {
-                                packed_for_spawn = None;
-                                svc.placement_override.clone()
-                            } else {
-                                // Attempt estimator + placement; fall back to unavailable on error.
-                                let model_path = match svc.raw.model.as_ref() {
-                                    Some(p) => p.clone(),
-                                    None => {
-                                        let _ = ack.send(EnsureResponse::Unavailable {
-                                            reason: "no model path configured".into(),
-                                        });
-                                        continue;
-                                    }
-                                };
-                                let mut est =
-                                    match crate::estimator::estimate_from_path(&model_path, &svc) {
-                                        Ok(e) => e,
-                                        Err(e) => {
-                                            let _ = ack.send(EnsureResponse::Unavailable {
-                                                reason: format!("estimator: {e}"),
-                                            });
-                                            continue;
-                                        }
-                                    };
-                                // Apply rolling correction to weights_bytes.
-                                let rc = rolling.get(&svc.name);
-                                est.weights_bytes =
-                                    (est.weights_bytes as f64 * rc.rolling_mean) as u64;
+    fn set_state(&mut self, new_state: ServiceState) {
+        self.state = new_state;
+        *self.state_mirror.lock() = self.state.clone();
+    }
 
-                                let packed = match crate::allocator::placement::pack(
-                                    &est, &svc, &snap, &table,
-                                ) {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        let _ = ack.send(EnsureResponse::Unavailable {
-                                            reason: format!("placement: {e}"),
-                                        });
-                                        continue;
-                                    }
-                                };
-                                // Convert Allocation bytes (per-DeviceId, in bytes) to the
-                                // BTreeMap<DeviceSlot, u64> in MB that can_fit + insert expects.
-                                let want_mb: std::collections::BTreeMap<
-                                    crate::config::DeviceSlot,
-                                    u64,
-                                > = packed
-                                    .allocation
-                                    .bytes
-                                    .iter()
-                                    .map(|(id, bytes)| {
-                                        let slot = match id {
-                                            crate::devices::DeviceId::Cpu => {
-                                                crate::config::DeviceSlot::Cpu
-                                            }
-                                            crate::devices::DeviceId::Gpu(n) => {
-                                                crate::config::DeviceSlot::Gpu(*n)
-                                            }
-                                        };
-                                        // Convert bytes → MB, rounding up so we never under-reserve.
-                                        let mb = bytes.div_ceil(1024 * 1024);
-                                        (slot, mb)
-                                    })
-                                    .collect();
-                                packed_for_spawn = Some(packed);
-                                want_mb
-                            };
+    /// Remove this service's reservation, clear observation, and finalise the
+    /// rolling correction. Used when the child exits or is drained back to
+    /// Idle. Logs nothing itself; callers emit the tracing event that fits
+    /// their context.
+    fn record_drain_complete(&mut self) {
+        self.deps.rolling.update(
+            &self.init.svc.name,
+            self.deps.observation.read_peak(&self.init.svc.name),
+            self.base_total_bytes_for_rolling,
+        );
+        self.deps.observation.clear(&self.init.svc.name);
+        self.deps.allocations.lock().remove(&self.init.svc.name);
+    }
 
-                            if let Err(nofit) =
-                                crate::allocator::can_fit(&want, &snap, &table, Some(&svc.name))
-                            {
-                                // Try eviction before giving up.
-                                let candidates: Vec<crate::allocator::eviction::EvictionCandidate> = {
-                                    let all_services = registry.all();
-                                    let mut out = Vec::new();
-                                    for (_name, handle) in all_services {
-                                        // Skip self: we're currently inside this supervisor's
-                                        // own run loop, so awaiting our own Snapshot would
-                                        // deadlock.
-                                        if handle.name.as_str() == svc.name.as_str() {
-                                            continue;
-                                        }
-                                        let Some(service_snap) = handle.snapshot().await else {
-                                            continue;
-                                        };
-                                        let idle = matches!(service_snap.state, ServiceState::Idle);
-                                        let alloc_mb = allocations
-                                            .lock()
-                                            .get(&handle.name)
-                                            .cloned()
-                                            .unwrap_or_default();
-                                        let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
-                                        let priority = effective
-                                            .services
-                                            .iter()
-                                            .find(|s| s.name == handle.name)
-                                            .map(|c| c.priority)
-                                            .unwrap_or(50);
-                                        out.push(crate::allocator::eviction::EvictionCandidate {
-                                            name: handle.name.clone(),
-                                            priority,
-                                            idle,
-                                            allocation_bytes: bytes,
-                                        });
-                                    }
-                                    out
-                                };
-
-                                let reservations_now = allocations.lock().clone();
-                                let free_on_slot = snap.free_bytes(&nofit.slot).unwrap_or(0);
-                                let to_evict = crate::allocator::eviction::select_for_slot(
-                                    nofit.needed_bytes,
-                                    &nofit.slot,
-                                    svc.priority,
-                                    &candidates,
-                                    &reservations_now,
-                                    free_on_slot,
-                                );
-
-                                if to_evict.is_empty() {
-                                    // Clear any computed packed args so they are not used on the
-                                    // next Ensure attempt after this failure.
-                                    let _ = packed_for_spawn.take();
-                                    let _ = ack.send(EnsureResponse::Unavailable {
-                                        reason: format!("{nofit}"),
-                                    });
-                                    continue;
-                                }
-
-                                warn!(service = %svc.name, evict_count = to_evict.len(), "eviction planned to make room");
-                                for victim in &to_evict {
-                                    if let Some(handle) = registry.get(victim) {
-                                        handle
-                                            .begin_drain(
-                                                crate::supervise::drain::DrainReason::Eviction,
-                                            )
-                                            .await;
-                                    }
-                                }
-
-                                // Re-attempt can_fit after evictions.
-                                let snap2 = snapshot.read().clone();
-                                let table2 = allocations.lock().clone();
-                                if let Err(again) = crate::allocator::can_fit(
-                                    &want,
-                                    &snap2,
-                                    &table2,
-                                    Some(&svc.name),
-                                ) {
-                                    let _ = packed_for_spawn.take();
-                                    let _ = ack.send(EnsureResponse::Unavailable {
-                                        reason: format!("eviction insufficient: {again}"),
-                                    });
-                                    continue;
-                                }
-                                // Fall through to the normal reservation path.
-                            }
-
-                            // Reserve in the allocation table before spawning.
-                            // Capture the total reserved bytes (MB → bytes) for the rolling
-                            // update that fires when the service later drains back to Idle.
-                            base_total_bytes_for_rolling = want.values().sum::<u64>() * 1024 * 1024;
-                            allocations.lock().insert(svc.name.clone(), want);
-
-                            // Create broadcast channel and subscribe the caller.
-                            let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
-                            let bus_rx = sender.subscribe();
-                            let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
-                            start_bus_carry = Some(sender);
-
-                            state = transition(&state, StateEvent::SpawnRequested).unwrap();
-                            *state_mirror.lock() = state.clone();
-                            break;
-                        }
-                        Some(SupervisorCommand::ActivityPing) => {}
-                        // Service is not running; drain/kill commands are no-ops.
-                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
-                            let _ = ack.send(());
-                        }
-                        Some(SupervisorCommand::FastKill { ack, .. }) => {
-                            let _ = ack.send(());
-                        }
-                        None => return,
+    /// For on_demand services we wait here for an Ensure. Persistent services
+    /// have the daemon call ensure() synthetically at boot.
+    async fn handle_idle(&mut self) -> Step {
+        loop {
+            match self.rx.recv().await {
+                Some(SupervisorCommand::Shutdown { ack }) => {
+                    let _ = ack.send(());
+                    return Step::Exit;
+                }
+                Some(SupervisorCommand::Snapshot { ack }) => {
+                    let _ = ack.send(SupervisorSnapshot {
+                        name: self.init.svc.name.clone(),
+                        state: self.state.clone(),
+                        run_id: None,
+                        pid: None,
+                    });
+                }
+                Some(SupervisorCommand::Ensure { ack }) => {
+                    if self.handle_idle_ensure(ack).await {
+                        return Step::Continue;
                     }
                 }
-            }
-            ServiceState::Starting => {
-                let spawn_cfg = render_argv(
-                    &svc,
-                    &allocation,
-                    packed_for_spawn.as_ref().map(|p| &p.args),
-                );
-                let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
-                match spawn_child(&spawn_cfg).await {
-                    Ok(mut child) => {
-                        let pid = child.id().unwrap_or(0) as i32;
-                        observation.register(&svc.name, pid as u32);
-                        let spawn_time = Instant::now();
-                        let run_id = ((std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis())
-                            & 0x7FFFFFFF) as i64;
-                        let allocation_json = serde_json::to_string(
-                            &allocation
-                                .bytes
-                                .iter()
-                                .map(|(k, v)| (k.as_display(), *v))
-                                .collect::<std::collections::BTreeMap<_, _>>(),
-                        )
-                        .unwrap_or_default();
-                        insert_running_row(
-                            &db,
-                            service_id,
-                            run_id,
-                            pid as i64,
-                            cmdline.clone(),
-                            allocation_json,
-                        )
-                        .await;
-
-                        if let Some(stdout) = child.stdout.take() {
-                            spawn_pump_stdout(stdout, service_id, run_id, batcher.clone());
-                        }
-                        if let Some(stderr) = child.stderr.take() {
-                            spawn_pump_stderr(stderr, service_id, run_id, batcher.clone());
-                        }
-
-                        let health_cfg = HealthConfig {
-                            url: format!(
-                                "http://127.0.0.1:{}{}",
-                                svc.private_port, svc.health.http_path
-                            ),
-                            probe_interval: Duration::from_millis(svc.health.probe_interval_ms),
-                            timeout: Duration::from_millis(svc.health.timeout_ms),
-                        };
-
-                        let cancel_rx_h = cancel_rx.clone();
-                        let health_task = tokio::spawn(wait_healthy(health_cfg, cancel_rx_h));
-
-                        tokio::pin!(health_task);
-
-                        loop {
-                            tokio::select! {
-                                exit = child.wait() => {
-                                    warn!(?exit, "child exited during starting/warming");
-                                    allocations.lock().remove(&svc.name);
-                                    observation.clear(&svc.name);
-
-                                    // Detect OOM kill: process died within 30 s and was
-                                    // killed by SIGKILL (kernel OOM killer or cgroup limit).
-                                    let runtime = spawn_time.elapsed();
-                                    let was_sigkill = exit
-                                        .as_ref()
-                                        .ok()
-                                        .and_then(|s| s.signal())
-                                        .map(|sig| sig == libc::SIGKILL)
-                                        .unwrap_or(false);
-                                    if runtime < Duration::from_secs(30) && was_sigkill {
-                                        oom_attempts += 1;
-                                        if oom_attempts >= 2 {
-                                            warn!(service = %svc.name, attempts = oom_attempts, "OOM retry limit reached; disabling");
-                                            if let Some(bus) = start_bus_carry.take() {
-                                                let _ = bus.send(StartOutcome::Err(StartFailure {
-                                                    kind: StartFailureKind::Oom,
-                                                    message: "disabled after repeated OOM kills".into(),
-                                                }));
-                                            }
-                                            state = ServiceState::Disabled { reason: DisableReason::Oom };
-                                            *state_mirror.lock() = state.clone();
-                                        } else {
-                                            warn!(service = %svc.name, "OOM kill detected; bumping rolling factor for retry");
-                                            rolling.bump_for_oom_retry(&svc.name);
-                                            // Return to Idle so the next Ensure triggers a
-                                            // re-estimated start with the bumped safety factor.
-                                            if let Some(bus) = start_bus_carry.take() {
-                                                let _ = bus.send(StartOutcome::Err(StartFailure {
-                                                    kind: StartFailureKind::Oom,
-                                                    message: "OOM kill; retrying with larger reservation".into(),
-                                                }));
-                                            }
-                                            state = ServiceState::Idle;
-                                            *state_mirror.lock() = state.clone();
-                                        }
-                                        break;
-                                    }
-
-                                    if let Some(bus) = start_bus_carry.take() {
-                                        let _ = bus.send(StartOutcome::Err(StartFailure {
-                                            kind: StartFailureKind::LaunchFailed,
-                                            message: "child exited during starting".into(),
-                                        }));
-                                    }
-                                    state = ServiceState::Failed { retry_count: 0 };
-                                    *state_mirror.lock() = state.clone();
-                                    break;
-                                }
-                                outcome = &mut health_task => {
-                                    match outcome {
-                                        Ok(HealthOutcome::Healthy) => {
-                                            state = transition(&state, StateEvent::HealthPassed).unwrap();
-                                            *state_mirror.lock() = state.clone();
-                                            // Warming grace — also listen for shutdown and child exit.
-                                            let grace = Duration::from_millis(svc.warming_grace_ms);
-                                            let mut bail = false;
-                                            tokio::select! {
-                                                _ = tokio::time::sleep(grace) => {
-                                                    state = transition(&state, StateEvent::WarmingComplete).unwrap();
-                                                    *state_mirror.lock() = state.clone();
-                                                }
-                                                _ = child.wait() => {
-                                                    warn!("child exited during warming grace");
-                                                    if let Some(bus) = start_bus_carry.take() {
-                                                        let _ = bus.send(StartOutcome::Err(StartFailure {
-                                                            kind: StartFailureKind::LaunchFailed,
-                                                            message: "child exited during warming".into(),
-                                                        }));
-                                                    }
-                                                    allocations.lock().remove(&svc.name);
-                                                    state = ServiceState::Failed { retry_count: 0 };
-                                                    *state_mirror.lock() = state.clone();
-                                                    bail = true;
-                                                }
-                                                cmd = rx.recv() => {
-                                                    if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
-                                                        info!(service = %svc.name, "draining during warming");
-                                                        let _ = cancel_tx.send(true);
-                                                        send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                        delete_running_row(&db, service_id, run_id).await;
-                                                        allocations.lock().remove(&svc.name);
-                                                        let _ = ack.send(());
-                                                        return;
-                                                    }
-                                                    // Snapshot or channel-closed: fall through to warming complete.
-                                                    state = transition(&state, StateEvent::WarmingComplete).unwrap();
-                                                    *state_mirror.lock() = state.clone();
-                                                }
-                                            }
-                                            if bail { break; }
-
-                                            // Notify waiters that the service is now running.
-                                            if let Some(bus) = start_bus_carry.take() {
-                                                let _ = bus.send(StartOutcome::Ok);
-                                            }
-
-                                            // Running: wait for child exit, idle timeout, or commands.
-                                            loop {
-                                                tokio::select! {
-                                                    exit = child.wait() => {
-                                                        warn!(?exit, "child exited from running");
-                                                        rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
-                                                        observation.clear(&svc.name);
-                                                        allocations.lock().remove(&svc.name);
-                                                        state = ServiceState::Failed { retry_count: 0 };
-                                                        *state_mirror.lock() = state.clone();
-                                                        break;
-                                                    }
-                                                    _ = tokio::time::sleep_until(idle_deadline_for(&last_activity, svc.idle_timeout_ms)) => {
-                                                        // Re-check the atomic; a recent ping may have extended the deadline.
-                                                        let now = std::time::SystemTime::now()
-                                                            .duration_since(std::time::UNIX_EPOCH)
-                                                            .unwrap_or_default()
-                                                            .as_millis() as u64;
-                                                        let last = last_activity.load(Ordering::Relaxed);
-                                                        if now + 100 < last + svc.idle_timeout_ms {
-                                                            // A ping arrived; loop again with a fresh deadline.
-                                                            continue;
-                                                        }
-                                                        info!(service = %svc.name, "idle timeout; draining to idle");
-                                                        send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                        delete_running_row(&db, service_id, run_id).await;
-                                                        rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
-                                                        observation.clear(&svc.name);
-                                                        allocations.lock().remove(&svc.name);
-                                                        state = ServiceState::Idle;
-                                                        *state_mirror.lock() = state.clone();
-                                                        break;
-                                                    }
-                                                    cmd = rx.recv() => {
-                                                        match cmd {
-                                                            Some(SupervisorCommand::Shutdown { ack }) => {
-                                                                info!(service = %svc.name, "draining");
-                                                                state = transition(&state, StateEvent::DrainRequested).unwrap();
-                                                                *state_mirror.lock() = state.clone();
-                                                                let _ = cancel_tx.send(true);
-                                                                send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                                delete_running_row(&db, service_id, run_id).await;
-                                                                rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
-                                                                observation.clear(&svc.name);
-                                                                allocations.lock().remove(&svc.name);
-                                                                let _ = ack.send(());
-                                                                return;
-                                                            }
-                                                            Some(SupervisorCommand::Snapshot { ack }) => {
-                                                                let _ = ack.send(SupervisorSnapshot {
-                                                                    name: svc.name.clone(),
-                                                                    state: state.clone(),
-                                                                    run_id: Some(run_id),
-                                                                    pid: Some(pid),
-                                                                });
-                                                            }
-                                                            Some(SupervisorCommand::Ensure { ack }) => {
-                                                                let _ = ack.send(EnsureResponse::AlreadyRunning);
-                                                            }
-                                                            Some(SupervisorCommand::ActivityPing) => {
-                                                                let now = std::time::SystemTime::now()
-                                                                    .duration_since(std::time::UNIX_EPOCH)
-                                                                    .unwrap_or_default()
-                                                                    .as_millis() as u64;
-                                                                last_activity.store(now, Ordering::Relaxed);
-                                                            }
-                                                            Some(SupervisorCommand::BeginDrain { reason, ack }) => {
-                                                                info!(service = %svc.name, ?reason, "BeginDrain received; draining");
-                                                                state = crate::supervise::state::ServiceState::Draining;
-                                                                *state_mirror.lock() = state.clone();
-
-                                                                let cfg = crate::supervise::drain::DrainConfig {
-                                                                    max_request_duration: Duration::from_millis(svc.max_request_duration_ms),
-                                                                    drain_timeout: Duration::from_millis(svc.drain_timeout_ms),
-                                                                    extended_stream_drain: Duration::from_millis(svc.extended_stream_drain_ms),
-                                                                    sigterm_grace: Duration::from_secs(10),
-                                                                };
-                                                                crate::supervise::drain::drain_pipeline(&mut child, &cfg, inflight.clone(), reason).await;
-
-                                                                delete_running_row(&db, service_id, run_id).await;
-                                                                rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
-                                                                observation.clear(&svc.name);
-                                                                allocations.lock().remove(&svc.name);
-
-                                                                let _ = ack.send(());
-                                                                state = ServiceState::Idle;
-                                                                *state_mirror.lock() = state.clone();
-                                                                break;
-                                                            }
-                                                            Some(SupervisorCommand::FastKill { reason, ack }) => {
-                                                                info!(service = %svc.name, ?reason, "FastKill received");
-                                                                state = crate::supervise::state::ServiceState::Draining;
-                                                                *state_mirror.lock() = state.clone();
-
-                                                                crate::supervise::drain::fast_kill(&mut child, reason).await;
-
-                                                                delete_running_row(&db, service_id, run_id).await;
-                                                                allocations.lock().remove(&svc.name);
-                                                                observation.clear(&svc.name);
-                                                                let _ = ack.send(());
-                                                                state = ServiceState::Idle;
-                                                                *state_mirror.lock() = state.clone();
-                                                                break;
-                                                            }
-                                                            None => return,
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            break;
-                                        }
-                                        Ok(HealthOutcome::TimedOut) => {
-                                            warn!(service = %svc.name, "health timed out; disabling");
-                                            if let Some(bus) = start_bus_carry.take() {
-                                                let _ = bus.send(StartOutcome::Err(StartFailure {
-                                                    kind: StartFailureKind::HealthTimeout,
-                                                    message: "health check timed out".into(),
-                                                }));
-                                            }
-                                            allocations.lock().remove(&svc.name);
-                                            state = ServiceState::Disabled { reason: DisableReason::HealthTimeout };
-                                            *state_mirror.lock() = state.clone();
-                                            send_sigterm_and_wait(&mut child, Duration::from_secs(5)).await;
-                                            break;
-                                        }
-                                        Ok(HealthOutcome::Cancelled) | Err(_) => {
-                                            allocations.lock().remove(&svc.name);
-                                            send_sigterm_and_wait(&mut child, Duration::from_secs(5)).await;
-                                            return;
-                                        }
-                                    }
-                                }
-                                cmd = rx.recv() => {
-                                    match cmd {
-                                        Some(SupervisorCommand::Shutdown { ack }) => {
-                                            let _ = cancel_tx.send(true);
-                                            send_sigterm_and_wait(&mut child, Duration::from_secs(5)).await;
-                                            allocations.lock().remove(&svc.name);
-                                            let _ = ack.send(());
-                                            return;
-                                        }
-                                        Some(SupervisorCommand::Snapshot { ack }) => {
-                                            let _ = ack.send(SupervisorSnapshot {
-                                                name: svc.name.clone(),
-                                                state: state.clone(),
-                                                run_id: None,
-                                                pid: Some(pid),
-                                            });
-                                        }
-                                        Some(SupervisorCommand::Ensure { ack }) => {
-                                            // Already in Starting; subscribe to existing bus or report running.
-                                            if let Some(sender) = start_bus_carry.as_ref() {
-                                                if sender.receiver_count() >= svc.raw.start_queue_depth() {
-                                                    let _ = ack.send(EnsureResponse::QueueFull);
-                                                } else {
-                                                    let bus_rx = sender.subscribe();
-                                                    let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
-                                                }
-                                            } else {
-                                                // No bus; best-effort.
-                                                let _ = ack.send(EnsureResponse::AlreadyRunning);
-                                            }
-                                        }
-                                        Some(SupervisorCommand::ActivityPing) => {}
-                                        // Service is not yet running; drain/kill are no-ops during starting.
-                                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
-                                            let _ = ack.send(());
-                                        }
-                                        Some(SupervisorCommand::FastKill { ack, .. }) => {
-                                            let _ = ack.send(());
-                                        }
-                                        None => return,
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, "spawn failed");
-                        if let Some(bus) = start_bus_carry.take() {
-                            let _ = bus.send(StartOutcome::Err(StartFailure {
-                                kind: StartFailureKind::LaunchFailed,
-                                message: format!("{e}"),
-                            }));
-                        }
-                        allocations.lock().remove(&svc.name);
-                        state = ServiceState::Failed { retry_count: 0 };
-                        *state_mirror.lock() = state.clone();
-                    }
+                Some(SupervisorCommand::ActivityPing) => {}
+                // Service is not running; drain/kill commands are no-ops.
+                Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                    let _ = ack.send(());
                 }
-            }
-            ServiceState::Failed { retry_count } => {
-                let delay = match *retry_count {
-                    0 => Duration::from_secs(2),
-                    1 => Duration::from_secs(5),
-                    _ => Duration::from_secs(15),
-                };
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {
-                        state = transition(&state, StateEvent::RetryAfterBackoff).unwrap_or(ServiceState::Disabled { reason: DisableReason::LaunchFailed });
-                        if !matches!(state, ServiceState::Disabled { .. }) {
-                            // Move back to Idle so the next Ensure triggers a fresh start.
-                            state = ServiceState::Idle;
-                        }
-                        *state_mirror.lock() = state.clone();
-                    }
-                    cmd = rx.recv() => {
-                        if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
-                            let _ = ack.send(());
-                            return;
-                        }
-                    }
+                Some(SupervisorCommand::FastKill { ack, .. }) => {
+                    let _ = ack.send(());
                 }
-            }
-            ServiceState::Disabled { .. } => {
-                info!(service = %svc.name, "disabled; awaiting shutdown or enable");
-                loop {
-                    match rx.recv().await {
-                        Some(SupervisorCommand::Shutdown { ack }) => {
-                            let _ = ack.send(());
-                            return;
-                        }
-                        Some(SupervisorCommand::Snapshot { ack }) => {
-                            let _ = ack.send(SupervisorSnapshot {
-                                name: svc.name.clone(),
-                                state: state.clone(),
-                                run_id: None,
-                                pid: None,
-                            });
-                        }
-                        Some(SupervisorCommand::Ensure { ack }) => {
-                            let _ = ack.send(EnsureResponse::Unavailable {
-                                reason: "service disabled".into(),
-                            });
-                        }
-                        Some(SupervisorCommand::ActivityPing) => {}
-                        // Service is disabled; drain/kill are no-ops.
-                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
-                            let _ = ack.send(());
-                        }
-                        Some(SupervisorCommand::FastKill { ack, .. }) => {
-                            let _ = ack.send(());
-                        }
-                        None => return,
-                    }
-                }
-            }
-            _ => {
-                warn!(?state, "unexpected state in supervisor loop");
-                return;
+                None => return Step::Exit,
             }
         }
     }
+
+    /// Body of an `Ensure` received while Idle. Returns `true` if the
+    /// reservation succeeded and the state has transitioned to Starting (so
+    /// the Idle loop should break); `false` if the ensure was rejected and
+    /// the loop should keep waiting for the next command.
+    async fn handle_idle_ensure(
+        &mut self,
+        ack: tokio::sync::oneshot::Sender<EnsureResponse>,
+    ) -> bool {
+        let snap = self.deps.snapshot.read().clone();
+        let table = self.deps.allocations.lock().clone();
+
+        let want = match self.compute_reservation_map(&snap, &table) {
+            Ok(w) => w,
+            Err(reason) => {
+                let _ = ack.send(EnsureResponse::Unavailable { reason });
+                return false;
+            }
+        };
+
+        if let Err(nofit) =
+            crate::allocator::can_fit(&want, &snap, &table, Some(&self.init.svc.name))
+            && let Err(reason) = self.try_eviction_to_fit(&want, &nofit).await
+        {
+            let _ = ack.send(EnsureResponse::Unavailable { reason });
+            return false;
+        }
+
+        // Reserve in the allocation table before spawning. Capture the total
+        // reserved bytes (MB → bytes) for the rolling update that fires when
+        // the service later drains back to Idle.
+        self.base_total_bytes_for_rolling = want.values().sum::<u64>() * 1024 * 1024;
+        self.deps
+            .allocations
+            .lock()
+            .insert(self.init.svc.name.clone(), want);
+
+        // Create broadcast channel and subscribe the caller.
+        let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
+        let bus_rx = sender.subscribe();
+        let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
+        self.start_bus_carry = Some(sender);
+
+        let next = transition(&self.state, StateEvent::SpawnRequested).unwrap();
+        self.set_state(next);
+        true
+    }
+
+    /// Determine the reservation map for an Ensure. On the llama-cpp path this
+    /// runs the estimator + packer and caches `Packed` on `self` for the
+    /// eventual `render_argv` call. The returned `Err(String)` is the reason
+    /// an `EnsureResponse::Unavailable` should carry.
+    fn compute_reservation_map(
+        &mut self,
+        snap: &crate::devices::DeviceSnapshot,
+        table: &crate::allocator::AllocationTable,
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
+        let svc = &self.init.svc;
+        if matches!(svc.template, crate::config::Template::Command) {
+            self.packed_for_spawn = None;
+            let bytes_mb = match svc.allocation_mode {
+                crate::config::AllocationMode::Static { vram_mb } => vram_mb,
+                crate::config::AllocationMode::Dynamic { min_mb, .. } => min_mb,
+                crate::config::AllocationMode::None => 0,
+            };
+            let target_gpu: Option<u32> = svc
+                .raw
+                .devices
+                .as_ref()
+                .and_then(|d| d.gpu_allow.as_ref())
+                .and_then(|list| list.first().copied())
+                .or_else(|| snap.gpus.first().map(|g| g.id));
+            let mut map = std::collections::BTreeMap::new();
+            if bytes_mb > 0 {
+                let slot = match svc.placement_policy {
+                    crate::config::PlacementPolicy::CpuOnly => crate::config::DeviceSlot::Cpu,
+                    _ => match target_gpu {
+                        Some(id) => crate::config::DeviceSlot::Gpu(id),
+                        None => crate::config::DeviceSlot::Cpu,
+                    },
+                };
+                map.insert(slot, bytes_mb);
+            }
+            return Ok(map);
+        }
+        if !svc.placement_override.is_empty() {
+            self.packed_for_spawn = None;
+            return Ok(svc.placement_override.clone());
+        }
+
+        // Estimator + placement path.
+        let model_path = svc
+            .raw
+            .model
+            .as_ref()
+            .ok_or_else(|| "no model path configured".to_string())?
+            .clone();
+        let mut est = crate::estimator::estimate_from_path(&model_path, svc)
+            .map_err(|e| format!("estimator: {e}"))?;
+        // Apply rolling correction to weights_bytes.
+        let rc = self.deps.rolling.get(&svc.name);
+        est.weights_bytes = (est.weights_bytes as f64 * rc.rolling_mean) as u64;
+
+        let packed = crate::allocator::placement::pack(&est, svc, snap, table)
+            .map_err(|e| format!("placement: {e}"))?;
+        // Convert Allocation bytes (per-DeviceId, in bytes) to the
+        // BTreeMap<DeviceSlot, u64> in MB that can_fit + insert expects.
+        let want_mb: std::collections::BTreeMap<crate::config::DeviceSlot, u64> = packed
+            .allocation
+            .bytes
+            .iter()
+            .map(|(id, bytes)| {
+                let slot = match id {
+                    crate::devices::DeviceId::Cpu => crate::config::DeviceSlot::Cpu,
+                    crate::devices::DeviceId::Gpu(n) => crate::config::DeviceSlot::Gpu(*n),
+                };
+                // Convert bytes → MB, rounding up so we never under-reserve.
+                let mb = bytes.div_ceil(1024 * 1024);
+                (slot, mb)
+            })
+            .collect();
+        self.packed_for_spawn = Some(packed);
+        Ok(want_mb)
+    }
+
+    /// Try to make room by draining lower-priority services, then re-check
+    /// `can_fit`. Returns `Ok(())` on success (caller proceeds to reserve),
+    /// `Err(reason)` if eviction can't help (caller should unavailable-reply).
+    async fn try_eviction_to_fit(
+        &mut self,
+        want: &std::collections::BTreeMap<crate::config::DeviceSlot, u64>,
+        nofit: &crate::allocator::NoFit,
+    ) -> Result<(), String> {
+        let candidates = self.collect_eviction_candidates().await;
+
+        let reservations_now = self.deps.allocations.lock().clone();
+        let snap = self.deps.snapshot.read().clone();
+        let free_on_slot = snap.free_bytes(&nofit.slot).unwrap_or(0);
+        let to_evict = crate::allocator::eviction::select_for_slot(
+            nofit.needed_bytes,
+            &nofit.slot,
+            self.init.svc.priority,
+            &candidates,
+            &reservations_now,
+            free_on_slot,
+        );
+
+        if to_evict.is_empty() {
+            // Clear any computed packed args so they are not used on the next
+            // Ensure attempt after this failure.
+            let _ = self.packed_for_spawn.take();
+            return Err(format!("{nofit}"));
+        }
+
+        warn!(service = %self.init.svc.name, evict_count = to_evict.len(), "eviction planned to make room");
+        for victim in &to_evict {
+            if let Some(handle) = self.deps.registry.get(victim) {
+                handle
+                    .begin_drain(crate::supervise::drain::DrainReason::Eviction)
+                    .await;
+            }
+        }
+
+        // Re-attempt can_fit after evictions.
+        let snap2 = self.deps.snapshot.read().clone();
+        let table2 = self.deps.allocations.lock().clone();
+        if let Err(again) =
+            crate::allocator::can_fit(want, &snap2, &table2, Some(&self.init.svc.name))
+        {
+            let _ = self.packed_for_spawn.take();
+            return Err(format!("eviction insufficient: {again}"));
+        }
+        Ok(())
+    }
+
+    /// Enumerate every other service as an eviction candidate. Skips self so
+    /// we don't deadlock snapshotting our own supervisor.
+    async fn collect_eviction_candidates(
+        &self,
+    ) -> Vec<crate::allocator::eviction::EvictionCandidate> {
+        let all_services = self.deps.registry.all();
+        let mut out = Vec::new();
+        for (_name, handle) in all_services {
+            if handle.name.as_str() == self.init.svc.name.as_str() {
+                continue;
+            }
+            let Some(service_snap) = handle.snapshot().await else {
+                continue;
+            };
+            let idle = matches!(service_snap.state, ServiceState::Idle);
+            let alloc_mb = self
+                .deps
+                .allocations
+                .lock()
+                .get(&handle.name)
+                .cloned()
+                .unwrap_or_default();
+            let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
+            let priority = self
+                .deps
+                .effective
+                .services
+                .iter()
+                .find(|s| s.name == handle.name)
+                .map(|c| c.priority)
+                .unwrap_or(50);
+            out.push(crate::allocator::eviction::EvictionCandidate {
+                name: handle.name.clone(),
+                priority,
+                idle,
+                allocation_bytes: bytes,
+            });
+        }
+        out
+    }
+
+    /// The whole Starting → Warming → Running → (Draining|Idle|Failed|Disabled)
+    /// pipeline. State transitions within this body never escape back to the
+    /// outer dispatcher; we only return when the child has been cleaned up and
+    /// the next outer-loop state is either a terminal variant or Idle.
+    async fn handle_active_lifecycle(&mut self) -> Step {
+        let spawn_cfg = render_argv(
+            &self.init.svc,
+            &self.init.allocation,
+            self.packed_for_spawn.as_ref().map(|p| &p.args),
+        );
+        let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
+        let mut child = match spawn_child(&spawn_cfg).await {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "spawn failed");
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::LaunchFailed,
+                        message: format!("{e}"),
+                    }));
+                }
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.set_state(ServiceState::Failed { retry_count: 0 });
+                return Step::Continue;
+            }
+        };
+
+        let pid = child.id().unwrap_or(0) as i32;
+        self.deps
+            .observation
+            .register(&self.init.svc.name, pid as u32);
+        let spawn_time = Instant::now();
+        let run_id = ((std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis())
+            & 0x7FFFFFFF) as i64;
+        let allocation_json = serde_json::to_string(
+            &self
+                .init
+                .allocation
+                .bytes
+                .iter()
+                .map(|(k, v)| (k.as_display(), *v))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        )
+        .unwrap_or_default();
+        insert_running_row(
+            &self.deps.db,
+            self.init.service_id,
+            run_id,
+            pid as i64,
+            cmdline.clone(),
+            allocation_json,
+        )
+        .await;
+
+        if let Some(stdout) = child.stdout.take() {
+            spawn_pump_stdout(
+                stdout,
+                self.init.service_id,
+                run_id,
+                self.deps.batcher.clone(),
+            );
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_pump_stderr(
+                stderr,
+                self.init.service_id,
+                run_id,
+                self.deps.batcher.clone(),
+            );
+        }
+
+        let health_cfg = HealthConfig {
+            url: format!(
+                "http://127.0.0.1:{}{}",
+                self.init.svc.private_port, self.init.svc.health.http_path
+            ),
+            probe_interval: Duration::from_millis(self.init.svc.health.probe_interval_ms),
+            timeout: Duration::from_millis(self.init.svc.health.timeout_ms),
+        };
+
+        let cancel_rx_h = self.cancel_rx.clone();
+        let health_task = tokio::spawn(wait_healthy(health_cfg, cancel_rx_h));
+        tokio::pin!(health_task);
+
+        loop {
+            tokio::select! {
+                exit = child.wait() => {
+                    return self.on_child_exit_during_start(exit, spawn_time);
+                }
+                outcome = &mut health_task => {
+                    match self.on_health_outcome(outcome, &mut child, run_id).await {
+                        StartingOutcome::Continue => {}
+                        StartingOutcome::Break => break,
+                        StartingOutcome::Exit => return Step::Exit,
+                    }
+                }
+                cmd = self.rx.recv() => {
+                    match self.on_starting_command(cmd, &mut child).await {
+                        StartingOutcome::Continue => {}
+                        StartingOutcome::Break => break,
+                        StartingOutcome::Exit => return Step::Exit,
+                    }
+                }
+            }
+        }
+        Step::Continue
+    }
+
+    /// Child exited while we were still in Starting or Warming (before the
+    /// health probe passed). Detects OOM, updates state, and notifies waiters.
+    fn on_child_exit_during_start(
+        &mut self,
+        exit: std::io::Result<std::process::ExitStatus>,
+        spawn_time: Instant,
+    ) -> Step {
+        warn!(?exit, "child exited during starting/warming");
+        self.deps.allocations.lock().remove(&self.init.svc.name);
+        self.deps.observation.clear(&self.init.svc.name);
+
+        // Detect OOM kill: process died within 30 s and was killed by
+        // SIGKILL (kernel OOM killer or cgroup limit).
+        let runtime = spawn_time.elapsed();
+        let was_sigkill = exit
+            .as_ref()
+            .ok()
+            .and_then(|s| s.signal())
+            .map(|sig| sig == libc::SIGKILL)
+            .unwrap_or(false);
+        if runtime < Duration::from_secs(30) && was_sigkill {
+            self.oom_attempts += 1;
+            if self.oom_attempts >= 2 {
+                warn!(service = %self.init.svc.name, attempts = self.oom_attempts, "OOM retry limit reached; disabling");
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::Oom,
+                        message: "disabled after repeated OOM kills".into(),
+                    }));
+                }
+                self.set_state(ServiceState::Disabled {
+                    reason: DisableReason::Oom,
+                });
+            } else {
+                warn!(service = %self.init.svc.name, "OOM kill detected; bumping rolling factor for retry");
+                self.deps.rolling.bump_for_oom_retry(&self.init.svc.name);
+                // Return to Idle so the next Ensure triggers a re-estimated
+                // start with the bumped safety factor.
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::Oom,
+                        message: "OOM kill; retrying with larger reservation".into(),
+                    }));
+                }
+                self.set_state(ServiceState::Idle);
+            }
+            return Step::Continue;
+        }
+
+        if let Some(bus) = self.start_bus_carry.take() {
+            let _ = bus.send(StartOutcome::Err(StartFailure {
+                kind: StartFailureKind::LaunchFailed,
+                message: "child exited during starting".into(),
+            }));
+        }
+        self.set_state(ServiceState::Failed { retry_count: 0 });
+        Step::Continue
+    }
+
+    /// Handle the result of the health probe task. On Healthy we run the
+    /// warming grace and fall through to the Running loop; on other outcomes
+    /// we tear the child down and update state.
+    async fn on_health_outcome(
+        &mut self,
+        outcome: Result<HealthOutcome, tokio::task::JoinError>,
+        child: &mut Child,
+        run_id: i64,
+    ) -> StartingOutcome {
+        match outcome {
+            Ok(HealthOutcome::Healthy) => {
+                let next = transition(&self.state, StateEvent::HealthPassed).unwrap();
+                self.set_state(next);
+                match self.run_warming_grace(child, run_id).await {
+                    WarmingOutcome::Complete => {}
+                    WarmingOutcome::ChildExited => return StartingOutcome::Break,
+                    WarmingOutcome::Shutdown => return StartingOutcome::Exit,
+                }
+
+                // Notify waiters that the service is now running.
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Ok);
+                }
+
+                self.run_running_loop(child, run_id).await
+            }
+            Ok(HealthOutcome::TimedOut) => {
+                warn!(service = %self.init.svc.name, "health timed out; disabling");
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::HealthTimeout,
+                        message: "health check timed out".into(),
+                    }));
+                }
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.set_state(ServiceState::Disabled {
+                    reason: DisableReason::HealthTimeout,
+                });
+                send_sigterm_and_wait(child, Duration::from_secs(5)).await;
+                StartingOutcome::Break
+            }
+            Ok(HealthOutcome::Cancelled) | Err(_) => {
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                send_sigterm_and_wait(child, Duration::from_secs(5)).await;
+                StartingOutcome::Exit
+            }
+        }
+    }
+
+    /// Warming grace: sleep `warming_grace_ms` while also watching for child
+    /// exit and Shutdown.
+    async fn run_warming_grace(&mut self, child: &mut Child, run_id: i64) -> WarmingOutcome {
+        let grace = Duration::from_millis(self.init.svc.warming_grace_ms);
+        tokio::select! {
+            _ = tokio::time::sleep(grace) => {
+                let next = transition(&self.state, StateEvent::WarmingComplete).unwrap();
+                self.set_state(next);
+                WarmingOutcome::Complete
+            }
+            _ = child.wait() => {
+                warn!("child exited during warming grace");
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::LaunchFailed,
+                        message: "child exited during warming".into(),
+                    }));
+                }
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.set_state(ServiceState::Failed { retry_count: 0 });
+                WarmingOutcome::ChildExited
+            }
+            cmd = self.rx.recv() => {
+                if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
+                    info!(service = %self.init.svc.name, "draining during warming");
+                    let _ = self.cancel_tx.send(true);
+                    send_sigterm_and_wait(child, Duration::from_secs(10)).await;
+                    delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                    self.deps.allocations.lock().remove(&self.init.svc.name);
+                    let _ = ack.send(());
+                    return WarmingOutcome::Shutdown;
+                }
+                // Snapshot or channel-closed: fall through to warming complete.
+                let next = transition(&self.state, StateEvent::WarmingComplete).unwrap();
+                self.set_state(next);
+                WarmingOutcome::Complete
+            }
+        }
+    }
+
+    /// The Running inner loop: wait for child exit, idle timeout, or commands.
+    async fn run_running_loop(&mut self, child: &mut Child, run_id: i64) -> StartingOutcome {
+        let pid = child.id().unwrap_or(0) as i32;
+        loop {
+            tokio::select! {
+                exit = child.wait() => {
+                    warn!(?exit, "child exited from running");
+                    self.record_drain_complete();
+                    self.set_state(ServiceState::Failed { retry_count: 0 });
+                    return StartingOutcome::Break;
+                }
+                _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.init.svc.idle_timeout_ms)) => {
+                    // Re-check the atomic; a recent ping may have extended the deadline.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let last = self.init.last_activity.load(Ordering::Relaxed);
+                    if now + 100 < last + self.init.svc.idle_timeout_ms {
+                        // A ping arrived; loop again with a fresh deadline.
+                        continue;
+                    }
+                    info!(service = %self.init.svc.name, "idle timeout; draining to idle");
+                    send_sigterm_and_wait(child, Duration::from_secs(10)).await;
+                    delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                    self.record_drain_complete();
+                    self.set_state(ServiceState::Idle);
+                    return StartingOutcome::Break;
+                }
+                cmd = self.rx.recv() => {
+                    match self.on_running_command(cmd, child, run_id, pid).await {
+                        RunningOutcome::Continue => {}
+                        RunningOutcome::Break => return StartingOutcome::Break,
+                        RunningOutcome::Exit => return StartingOutcome::Exit,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch a command received while the service is Running.
+    async fn on_running_command(
+        &mut self,
+        cmd: Option<SupervisorCommand>,
+        child: &mut Child,
+        run_id: i64,
+        pid: i32,
+    ) -> RunningOutcome {
+        match cmd {
+            Some(SupervisorCommand::Shutdown { ack }) => {
+                info!(service = %self.init.svc.name, "draining");
+                let next = transition(&self.state, StateEvent::DrainRequested).unwrap();
+                self.set_state(next);
+                let _ = self.cancel_tx.send(true);
+                send_sigterm_and_wait(child, Duration::from_secs(10)).await;
+                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.record_drain_complete();
+                let _ = ack.send(());
+                RunningOutcome::Exit
+            }
+            Some(SupervisorCommand::Snapshot { ack }) => {
+                let _ = ack.send(SupervisorSnapshot {
+                    name: self.init.svc.name.clone(),
+                    state: self.state.clone(),
+                    run_id: Some(run_id),
+                    pid: Some(pid),
+                });
+                RunningOutcome::Continue
+            }
+            Some(SupervisorCommand::Ensure { ack }) => {
+                let _ = ack.send(EnsureResponse::AlreadyRunning);
+                RunningOutcome::Continue
+            }
+            Some(SupervisorCommand::ActivityPing) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                self.init.last_activity.store(now, Ordering::Relaxed);
+                RunningOutcome::Continue
+            }
+            Some(SupervisorCommand::BeginDrain { reason, ack }) => {
+                info!(service = %self.init.svc.name, ?reason, "BeginDrain received; draining");
+                self.set_state(ServiceState::Draining);
+
+                let cfg = DrainConfig {
+                    max_request_duration: Duration::from_millis(
+                        self.init.svc.max_request_duration_ms,
+                    ),
+                    drain_timeout: Duration::from_millis(self.init.svc.drain_timeout_ms),
+                    extended_stream_drain: Duration::from_millis(
+                        self.init.svc.extended_stream_drain_ms,
+                    ),
+                    sigterm_grace: Duration::from_secs(10),
+                };
+                drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
+
+                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.record_drain_complete();
+
+                let _ = ack.send(());
+                self.set_state(ServiceState::Idle);
+                RunningOutcome::Break
+            }
+            Some(SupervisorCommand::FastKill { reason, ack }) => {
+                info!(service = %self.init.svc.name, ?reason, "FastKill received");
+                self.set_state(ServiceState::Draining);
+
+                fast_kill(child, reason).await;
+
+                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps.observation.clear(&self.init.svc.name);
+                let _ = ack.send(());
+                self.set_state(ServiceState::Idle);
+                RunningOutcome::Break
+            }
+            None => RunningOutcome::Exit,
+        }
+    }
+
+    /// Dispatch a command received while the service is Starting (before the
+    /// health probe has resolved). Drain/kill commands are no-ops here.
+    async fn on_starting_command(
+        &mut self,
+        cmd: Option<SupervisorCommand>,
+        child: &mut Child,
+    ) -> StartingOutcome {
+        let pid = child.id().unwrap_or(0) as i32;
+        match cmd {
+            Some(SupervisorCommand::Shutdown { ack }) => {
+                let _ = self.cancel_tx.send(true);
+                send_sigterm_and_wait(child, Duration::from_secs(5)).await;
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                let _ = ack.send(());
+                StartingOutcome::Exit
+            }
+            Some(SupervisorCommand::Snapshot { ack }) => {
+                let _ = ack.send(SupervisorSnapshot {
+                    name: self.init.svc.name.clone(),
+                    state: self.state.clone(),
+                    run_id: None,
+                    pid: Some(pid),
+                });
+                StartingOutcome::Continue
+            }
+            Some(SupervisorCommand::Ensure { ack }) => {
+                // Already in Starting; subscribe to existing bus or report running.
+                if let Some(sender) = self.start_bus_carry.as_ref() {
+                    if sender.receiver_count() >= self.init.svc.raw.start_queue_depth() {
+                        let _ = ack.send(EnsureResponse::QueueFull);
+                    } else {
+                        let bus_rx = sender.subscribe();
+                        let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
+                    }
+                } else {
+                    // No bus; best-effort.
+                    let _ = ack.send(EnsureResponse::AlreadyRunning);
+                }
+                StartingOutcome::Continue
+            }
+            Some(SupervisorCommand::ActivityPing) => StartingOutcome::Continue,
+            // Service is not yet running; drain/kill are no-ops during starting.
+            Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                let _ = ack.send(());
+                StartingOutcome::Continue
+            }
+            Some(SupervisorCommand::FastKill { ack, .. }) => {
+                let _ = ack.send(());
+                StartingOutcome::Continue
+            }
+            None => StartingOutcome::Exit,
+        }
+    }
+
+    async fn handle_failed(&mut self, retry_count: u8) -> Step {
+        let delay = match retry_count {
+            0 => Duration::from_secs(2),
+            1 => Duration::from_secs(5),
+            _ => Duration::from_secs(15),
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {
+                let next = transition(&self.state, StateEvent::RetryAfterBackoff)
+                    .unwrap_or(ServiceState::Disabled { reason: DisableReason::LaunchFailed });
+                let next = if !matches!(next, ServiceState::Disabled { .. }) {
+                    // Move back to Idle so the next Ensure triggers a fresh start.
+                    ServiceState::Idle
+                } else {
+                    next
+                };
+                self.set_state(next);
+                Step::Continue
+            }
+            cmd = self.rx.recv() => {
+                if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
+                    let _ = ack.send(());
+                    return Step::Exit;
+                }
+                Step::Continue
+            }
+        }
+    }
+
+    async fn handle_disabled(&mut self) -> Step {
+        info!(service = %self.init.svc.name, "disabled; awaiting shutdown or enable");
+        loop {
+            match self.rx.recv().await {
+                Some(SupervisorCommand::Shutdown { ack }) => {
+                    let _ = ack.send(());
+                    return Step::Exit;
+                }
+                Some(SupervisorCommand::Snapshot { ack }) => {
+                    let _ = ack.send(SupervisorSnapshot {
+                        name: self.init.svc.name.clone(),
+                        state: self.state.clone(),
+                        run_id: None,
+                        pid: None,
+                    });
+                }
+                Some(SupervisorCommand::Ensure { ack }) => {
+                    let _ = ack.send(EnsureResponse::Unavailable {
+                        reason: "service disabled".into(),
+                    });
+                }
+                Some(SupervisorCommand::ActivityPing) => {}
+                // Service is disabled; drain/kill are no-ops.
+                Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                    let _ = ack.send(());
+                }
+                Some(SupervisorCommand::FastKill { ack, .. }) => {
+                    let _ = ack.send(());
+                }
+                None => return Step::Exit,
+            }
+        }
+    }
+}
+
+/// Outcome of a sub-step inside the Starting-through-Draining pipeline.
+enum StartingOutcome {
+    /// Keep spinning the current inner select.
+    Continue,
+    /// Fall out of the Starting outer select (back to the dispatcher).
+    Break,
+    /// Exit the supervisor task entirely.
+    Exit,
+}
+
+/// Outcome of the warming-grace select.
+enum WarmingOutcome {
+    /// Warming finished normally; proceed into Running.
+    Complete,
+    /// Child exited during the grace window.
+    ChildExited,
+    /// Shutdown received during the grace window.
+    Shutdown,
+}
+
+/// Outcome of a single command dispatch inside the Running inner loop.
+enum RunningOutcome {
+    Continue,
+    Break,
+    Exit,
 }
 
 /// Compute the tokio `Instant` at which the idle deadline fires, based on the
