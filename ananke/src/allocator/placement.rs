@@ -66,7 +66,31 @@ pub fn pack(
     snapshot: &DeviceSnapshot,
     reserved: &AllocationTable,
 ) -> Result<Packed, PackError> {
-    let mut packer = Packer::new(estimate, svc, snapshot, reserved);
+    pack_inner(estimate, svc, snapshot, reserved, false)
+}
+
+/// Pack variant that trusts the pledge book (`total - reserved`) exclusively
+/// rather than taking `min(nvml_free, total - reserved)`. Intended for the
+/// retry-after-eviction path, where victims have been removed from `reserved`
+/// to model "if they were gone" — nvml still shows their realized usage
+/// until drains actually land.
+pub fn pack_optimistic(
+    estimate: &Estimate,
+    svc: &ServiceConfig,
+    snapshot: &DeviceSnapshot,
+    reserved: &AllocationTable,
+) -> Result<Packed, PackError> {
+    pack_inner(estimate, svc, snapshot, reserved, true)
+}
+
+fn pack_inner(
+    estimate: &Estimate,
+    svc: &ServiceConfig,
+    snapshot: &DeviceSnapshot,
+    reserved: &AllocationTable,
+    optimistic_remaining: bool,
+) -> Result<Packed, PackError> {
+    let mut packer = Packer::new(estimate, svc, snapshot, reserved, optimistic_remaining);
     packer.seed_non_layer();
     packer.walk_layers()?;
     packer.place_fallback_weights()?;
@@ -101,6 +125,9 @@ struct Packer<'a> {
     /// space on a GPU. `-ngl 999` is emitted in that case so llama.cpp
     /// offloads everything for us.
     fallback_on_gpu: bool,
+    /// See `pack_optimistic` — controls whether we clamp per-GPU remaining
+    /// against nvml-reported free bytes or trust the pledge book only.
+    optimistic_remaining: bool,
 }
 
 impl<'a> Packer<'a> {
@@ -109,6 +136,7 @@ impl<'a> Packer<'a> {
         svc: &'a ServiceConfig,
         snapshot: &'a DeviceSnapshot,
         reserved: &'a AllocationTable,
+        optimistic_remaining: bool,
     ) -> Self {
         // Step 0: determine the allowed GPUs and CPU permissibility.
         let allowed_gpus = allowed_gpu_list(svc, snapshot);
@@ -130,6 +158,7 @@ impl<'a> Packer<'a> {
             layers_per_gpu: BTreeMap::new(),
             layers_on_cpu: 0,
             fallback_on_gpu: false,
+            optimistic_remaining,
         }
     }
 
@@ -171,14 +200,19 @@ impl<'a> Packer<'a> {
             if bytes == 0 {
                 continue;
             }
-            // First-fit: walk allowed GPUs in ascending-id order; pack onto
-            // the first with room (spec §8.2). Single-GPU models stay on
-            // GPU 0; multi-GPU models produce the natural unequal split.
+            // Best-fit: pick the allowed GPU with the most remaining
+            // capacity that still fits this layer. First-fit (walk by
+            // ascending id) fills GPU 0 until nearly full, then the
+            // post-layer compute_buffer / non-layer tails push it past
+            // physical capacity for models that only just fit across two
+            // GPUs (nemotron-49B at Q4 on 2×24 GB). Best-fit naturally
+            // balances layers so tails land inside each GPU's budget.
             let placed = self
                 .allowed_gpus
                 .iter()
                 .copied()
-                .find(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0) >= bytes);
+                .filter(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0) >= bytes)
+                .max_by_key(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0));
             match placed {
                 Some(gpu) => {
                     *self.gpu_remaining.entry(gpu).or_default() -= bytes;
@@ -222,14 +256,28 @@ impl<'a> Packer<'a> {
             compute_headroom + kv_total_pre + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
 
         for gpu in &self.allowed_gpus {
-            let free = self
-                .snapshot
-                .free_bytes(&DeviceSlot::Gpu(*gpu))
-                .unwrap_or(0);
-            let reserved_here = sum_reserved(self.reserved, &DeviceSlot::Gpu(*gpu), &self.svc.name);
-            let raw = free
-                .saturating_sub(reserved_here)
-                .saturating_sub(*self.per_device.get(&DeviceSlot::Gpu(*gpu)).unwrap_or(&0));
+            let slot = DeviceSlot::Gpu(*gpu);
+            let free = self.snapshot.free_bytes(&slot).unwrap_or(0);
+            let total = self.snapshot.total_bytes(&slot).unwrap_or(free);
+            let reserved_here = sum_reserved(self.reserved, &slot, &self.svc.name);
+            // Two views compete here:
+            //   - `min(free, total - reserved)` (conservative): respects
+            //     external VRAM pressure that nvml surfaces but our pledge
+            //     book can't see.
+            //   - `total - reserved` (optimistic): trusts the pledge book
+            //     exclusively. Needed for retry-after-eviction, where we've
+            //     removed victims from `reserved` to model "if they were
+            //     gone" — nvml_free would still show their realized usage
+            //     until the drain actually lands.
+            // `optimistic_remaining` picks the right one.
+            let via_pledge = total.saturating_sub(reserved_here);
+            let available = if self.optimistic_remaining {
+                via_pledge
+            } else {
+                free.min(via_pledge)
+            };
+            let raw = available
+                .saturating_sub(*self.per_device.get(&slot).unwrap_or(&0));
             self.gpu_remaining
                 .insert(*gpu, raw.saturating_sub(gpu_headroom_each));
         }
