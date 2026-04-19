@@ -140,13 +140,18 @@ impl AppState {
             .upsert_service(&svc.name, now_ms)
             .await
             .map_err(|e| e.to_string())?;
-        let _ = self.db.with_conn(|c| {
-            c.execute(
-                "INSERT OR IGNORE INTO oneshots(id, service_id, submitted_at, ttl_ms) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                (id.as_str(), service_id, now_ms, ttl_ms as i64),
-            )
-        });
+        {
+            use crate::db::models::Oneshot;
+            let mut handle = self.db.handle();
+            let _ = toasty::create!(Oneshot {
+                id: id.to_string(),
+                service_id,
+                submitted_at: now_ms,
+                ttl_ms: ttl_ms as i64,
+            })
+            .exec(&mut handle)
+            .await;
+        }
 
         // Spawn supervisor.
         let allocation = Allocation::from_override(&svc.placement_override);

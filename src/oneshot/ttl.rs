@@ -44,12 +44,17 @@ pub fn spawn_watcher(
             handle.begin_drain(DrainReason::TtlExpired).await;
         }
         let now_ms = now_ms();
-        let _ = db.with_conn(|c| {
-            c.execute(
-                "UPDATE oneshots SET ended_at = ?1 WHERE id = ?2",
-                (now_ms, id.as_str()),
-            )
-        });
+        {
+            use crate::db::models::Oneshot;
+            let mut handle = db.handle();
+            if let Ok(Some(mut row)) = Oneshot::filter_by_id(id.to_string())
+                .first()
+                .exec(&mut handle)
+                .await
+            {
+                let _ = row.update().ended_at(Some(now_ms)).exec(&mut handle).await;
+            }
+        }
         oneshots.remove(&id);
         port_pool.lock().release(port);
     })
