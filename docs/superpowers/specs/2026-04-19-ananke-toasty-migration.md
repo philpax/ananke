@@ -144,3 +144,52 @@ Revert = restore the rusqlite path and **amend `docs/spec.md` §12 to record tha
 - `cargo clippy --all-targets --features test-fakes -- -D warnings` clean.
 - No code outside `src/db/pragma.rs` imports `rusqlite`.
 - `toasty/migrations/0000_initial.sql` + `Toasty.toml` committed; `just db-migrate` recipe works.
+
+## 8. Implementation notes (2026-04-19)
+
+Deviations made during execution, documented for future archaeology:
+
+- **Schema creation uses `Db::push_schema()`** rather than committed
+  migration SQL. Toasty 0.4 doesn't require the CLI-generated migration
+  directory for runtime bootstrap; push_schema derives CREATE TABLE /
+  CREATE INDEX from the model derives. The CLI-based path can be
+  adopted later if formal migration tracking is needed. `Toasty.toml`
+  and the `just db-migrate` recipe are in place for that day, but no
+  `toasty/migrations/*.sql` is committed yet.
+- **Database holds `toasty::Db` directly**, not `Arc<Mutex<Db>>`.
+  `Db` is cheaply cloneable (Arc internally), so each caller clones
+  its own local handle and takes `&mut db` on it; no cross-task lock.
+- **Auto-PK fields use `u64`** rather than `i64`. Toasty 0.4 emits
+  `BIGINT PRIMARY KEY AUTOINCREMENT` for `i64` under SQLite, which
+  SQLite rejects (it only accepts `INTEGER PRIMARY KEY AUTOINCREMENT`).
+  `u64` serializes as `INTEGER`. `Database::upsert_service` exposes
+  `i64` at the API boundary for caller ergonomics; internal storage
+  is `u64`.
+- **rusqlite 0.32 → 0.39.** Toasty-driver-sqlite pins rusqlite 0.39
+  transitively; co-linking two different `libsqlite3-sys` versions is
+  forbidden by the cargo resolver, so we bumped ours to match.
+- **rusqlite stays** as a direct dep. Toasty 0.4 has no public
+  raw-SQL escape hatch (the driver trait expects toasty's typed
+  statement AST). The 26-line `src/db/pragma.rs` issues `auto_vacuum`,
+  `journal_mode`, and `incremental_vacuum` via short-lived rusqlite
+  connections. rusqlite is already transitive via toasty-driver-sqlite,
+  so this adds no binary weight.
+- **Retention uses select-then-delete** rather than toasty's
+  `in_query` subquery primitive. Simpler, runs hourly, extra
+  round-trips are acceptable.
+- **Management API `service_detail`** sorts the fetched
+  `Vec<ServiceLog>` in memory on `(timestamp_ms DESC, seq DESC)` and
+  truncates to 200. Toasty 0.4's multi-column `order_by` chaining
+  isn't exercised; the single-column `timestamp_ms` index keeps the
+  candidate set cheap to fetch.
+
+Extended-smoke verification against redline (2× RTX 3090): Qwen3-4B
+Q5_K_XL with `placement_override = { gpu:0 = 4500 }` reached Running
+state, responded 200 to `POST /v1/chat/completions` with valid
+completion text, and management endpoints (`/api/services`,
+`/api/services/smoke`, `/api/devices`) served toasty-backed responses
+including `recent_logs` pulled from the new ServiceLog table. The
+wider 5-scenario replay (Gemma 27B / Qwen3-VL-30B / 70B / 235B
+hybrid / 70B+4B concurrent) is deferred to a separate pass —
+nothing in the migration is scenario-specific, and the scenarios
+are time-consuming to replay.
