@@ -41,9 +41,65 @@ impl std::fmt::Display for NoFit {
 
 impl std::error::Error for NoFit {}
 
+/// Check whether `want` fits after treating `evicting` as already freed.
+///
+/// Unlike [`can_fit`], this uses the optimistic availability view
+/// (`total - reserved_filtered`) rather than `min(nvml_free, …)`. Callers
+/// that have issued `begin_drain` on a set of victims have committed to
+/// those evictions — nvml hasn't caught up yet (the drains are in-flight),
+/// so the pledge book is the right reference.
+pub fn can_fit_after_eviction(
+    want: &BTreeMap<DeviceSlot, u64>,
+    snapshot: &DeviceSnapshot,
+    reserved: &AllocationTable,
+    exclude: Option<&SmolStr>,
+    evicting: &[SmolStr],
+) -> Result<(), NoFit> {
+    let mut filtered = reserved.clone();
+    for victim in evicting {
+        filtered.remove(victim);
+    }
+    for (slot, want_mb) in want {
+        let need = want_mb * 1024 * 1024;
+        let free = snapshot.free_bytes(slot).unwrap_or(0);
+        let total = snapshot.total_bytes(slot).unwrap_or(free);
+        let reserved_bytes: u64 = filtered
+            .iter()
+            .filter(|(k, _)| exclude.is_none_or(|x| *k != x))
+            .filter_map(|(_, alloc)| alloc.get(slot))
+            .sum::<u64>()
+            * 1024
+            * 1024;
+        let available = total.saturating_sub(reserved_bytes);
+        if available < need {
+            return Err(NoFit {
+                slot: slot.clone(),
+                needed_bytes: need,
+                available_bytes: available,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Check whether `want` (per-slot MB from `placement_override`) fits in
-/// the device snapshot after subtracting the bytes already reserved by
-/// other services.
+/// the device snapshot given our pledge book.
+///
+/// Availability on a slot is `min(nvml_free, total - reserved)`:
+///
+/// - `nvml_free` is what the device actually reports unused. For services
+///   that are **already running with weights loaded**, this already
+///   excludes their usage.
+/// - `total - reserved` is what our pledge book says *should* be free if
+///   everyone played by the rules (including services still warming that
+///   haven't loaded weights yet).
+///
+/// Taking the min is conservative: it prevents over-committing to pending
+/// pledges while also respecting physical pressure from external processes
+/// or in-service growth beyond the pledge. An earlier formulation
+/// (`free - reserved`) double-counted realized pledges — with a 20 GB
+/// model already loaded on a 24 GB GPU, nvml reported 4 GB free and we
+/// subtracted the same 20 GB pledge again to get 0.
 pub fn can_fit(
     want: &BTreeMap<DeviceSlot, u64>,
     snapshot: &DeviceSnapshot,
@@ -53,14 +109,16 @@ pub fn can_fit(
     for (slot, want_mb) in want {
         let need = want_mb * 1024 * 1024;
         let free = snapshot.free_bytes(slot).unwrap_or(0);
-        let already: u64 = reserved
+        let total = snapshot.total_bytes(slot).unwrap_or(free);
+        let reserved_bytes: u64 = reserved
             .iter()
             .filter(|(k, _)| exclude.is_none_or(|x| *k != x))
             .filter_map(|(_, alloc)| alloc.get(slot))
             .sum::<u64>()
             * 1024
             * 1024;
-        let available = free.saturating_sub(already);
+        let optimistic = total.saturating_sub(reserved_bytes);
+        let available = free.min(optimistic);
         if available < need {
             return Err(NoFit {
                 slot: slot.clone(),
@@ -158,5 +216,71 @@ mod tests {
         let err = can_fit(&want, &snapshot_with(20, 100), &BTreeMap::new(), None).unwrap_err();
         assert_eq!(err.slot, DeviceSlot::Gpu(7));
         assert_eq!(err.available_bytes, 0);
+    }
+
+    #[test]
+    fn realized_pledges_are_not_double_counted() {
+        // Regression: before the min(free, total-reserved) fix, a service
+        // already running on a 24 GB GPU with 20 GB of loaded weights hit
+        // `available = 0` for any new start — nvml reported 4 GB free and we
+        // subtracted the 20 GB pledge again. A 1 GB request should fit.
+        let mut want = BTreeMap::new();
+        want.insert(DeviceSlot::Gpu(0), mb(1024));
+
+        let mut realized = BTreeMap::new();
+        realized.insert(DeviceSlot::Gpu(0), mb(20 * 1024));
+        let mut reserved = BTreeMap::new();
+        reserved.insert(SmolStr::new("vl"), realized);
+
+        // 24 GB GPU, nvml reports 4 GB free (vl's weights are loaded).
+        let snap = snapshot_with(4, 100);
+        assert!(can_fit(&want, &snap, &reserved, None).is_ok());
+    }
+
+    #[test]
+    fn pending_pledges_still_limit_fit() {
+        // A service has pledged 20 GB but is still warming (nvml doesn't yet
+        // show the usage). A new start that would blow the physical limit
+        // must still be rejected.
+        let mut want = BTreeMap::new();
+        want.insert(DeviceSlot::Gpu(0), mb(6 * 1024));
+
+        let mut pending = BTreeMap::new();
+        pending.insert(DeviceSlot::Gpu(0), mb(20 * 1024));
+        let mut reserved = BTreeMap::new();
+        reserved.insert(SmolStr::new("warming"), pending);
+
+        // Nothing loaded yet → nvml reports 24 GB free. 20 GB pledged means
+        // only 4 GB *should* be free. Want 6 GB → no fit.
+        let snap = snapshot_with(24, 100);
+        assert!(can_fit(&want, &snap, &reserved, None).is_err());
+    }
+
+    #[test]
+    fn can_fit_after_eviction_treats_victims_as_freed() {
+        // Regression for the scenario-03 "eviction insufficient" bug: the
+        // supervisor's retry was re-running `can_fit` against the unmodified
+        // AllocationTable, which still contained the in-flight drainee. With
+        // that victim present, the retry always reported no-fit even when
+        // the eviction plan would actually satisfy the placement.
+        let mut want = BTreeMap::new();
+        want.insert(DeviceSlot::Gpu(0), mb(18 * 1024)); // want 18 GB
+
+        let mut victim_alloc = BTreeMap::new();
+        victim_alloc.insert(DeviceSlot::Gpu(0), mb(15 * 1024));
+        let mut reserved = BTreeMap::new();
+        reserved.insert(SmolStr::new("victim"), victim_alloc);
+
+        // Snapshot has 20 GB free but 15 GB is held by `victim`.
+        let snap = snapshot_with(20, 100);
+
+        // Without eviction: 20 - 15 = 5 GB available, want 18 → no fit.
+        assert!(can_fit(&want, &snap, &reserved, None).is_err());
+
+        // Treating `victim` as evicted: 20 GB available, want 18 → fit.
+        assert!(
+            can_fit_after_eviction(&want, &snap, &reserved, None, &[SmolStr::new("victim")])
+                .is_ok()
+        );
     }
 }
