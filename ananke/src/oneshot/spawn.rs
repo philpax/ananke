@@ -145,6 +145,8 @@ pub async fn spawn_oneshot(
         port,
         ttl_ms,
         started_at_ms: now_ms as u64,
+        ended_at_ms: None,
+        exit_code: None,
     };
     state.oneshots.insert(record);
 

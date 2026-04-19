@@ -143,30 +143,36 @@ pub async fn delete_oneshot(State(state): State<AppState>, Path(id): Path<String
             .into_response();
     };
 
-    // Signal the supervisor to drain.
-    if let Some(handle) = state.registry.get(&record.service_name) {
-        handle
-            .begin_drain(crate::supervise::drain::DrainReason::UserKilled)
-            .await;
+    // If the TTL watcher has already drained and released the port, skip both
+    // steps — the record was kept as a tombstone purely so callers could poll
+    // the terminal state. Removing it here is the only side effect.
+    if record.ended_at_ms.is_none() {
+        if let Some(handle) = state.registry.get(&record.service_name) {
+            handle
+                .begin_drain(crate::supervise::drain::DrainReason::UserKilled)
+                .await;
+        }
+        state.port_pool.lock().release(record.port);
     }
-
-    // Return the port to the pool.
-    state.port_pool.lock().release(record.port);
 
     StatusCode::NO_CONTENT.into_response()
 }
 
 fn record_to_status(r: &OneshotRecord) -> OneshotStatus {
+    let state = if r.ended_at_ms.is_some() {
+        "ended"
+    } else {
+        "running"
+    };
     OneshotStatus {
         id: r.id.to_string(),
         name: r.service_name.to_string(),
-        // State tracking is deferred; all live records are "running".
-        state: "running".to_string(),
+        state: state.to_string(),
         port: r.port,
         submitted_at_ms: r.started_at_ms as i64,
         started_at_ms: Some(r.started_at_ms as i64),
-        ended_at_ms: None,
-        exit_code: None,
+        ended_at_ms: r.ended_at_ms.map(|v| v as i64),
+        exit_code: r.exit_code,
         logs_url: format!("/api/services/{}/logs", r.id),
     }
 }

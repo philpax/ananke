@@ -18,7 +18,10 @@ use smol_str::SmolStr;
 /// caller does not supply a name.
 pub type OneshotId = SmolStr;
 
-/// Snapshot of a live oneshot entry.
+/// Snapshot of a oneshot entry. The registry keeps records after TTL
+/// expiry so callers can still poll `GET /api/oneshot/:id` and observe the
+/// terminal state; `ended_at_ms` is populated by the TTL watcher in that
+/// case. Explicit `DELETE` evicts the record entirely.
 #[derive(Debug, Clone)]
 pub struct OneshotRecord {
     pub id: OneshotId,
@@ -30,6 +33,12 @@ pub struct OneshotRecord {
     pub ttl_ms: u64,
     /// Unix epoch milliseconds at which the oneshot was submitted.
     pub started_at_ms: u64,
+    /// Set by the TTL watcher (or delete handler) once the supervisor has
+    /// been asked to drain. `None` while the oneshot is still running.
+    pub ended_at_ms: Option<u64>,
+    /// Exit code, once the child process has terminated. Always `None`
+    /// today because the TTL watcher doesn't yet collect child exit codes.
+    pub exit_code: Option<i32>,
 }
 
 /// Shared in-memory registry of all live oneshot records.
@@ -56,6 +65,23 @@ impl OneshotRegistry {
     /// Remove and return a record. Returns `None` if not found.
     pub fn remove(&self, id: &str) -> Option<OneshotRecord> {
         self.inner.write().remove(id)
+    }
+
+    /// Mark the record as ended in-place, returning the updated record if it
+    /// was present. Used by the TTL watcher: callers still need to see the
+    /// terminal state via `GET /api/oneshot/:id`, so the record stays in the
+    /// registry with `ended_at_ms` set rather than being removed outright.
+    pub fn mark_ended(
+        &self,
+        id: &str,
+        ended_at_ms: u64,
+        exit_code: Option<i32>,
+    ) -> Option<OneshotRecord> {
+        let mut inner = self.inner.write();
+        let rec = inner.get_mut(id)?;
+        rec.ended_at_ms = Some(ended_at_ms);
+        rec.exit_code = exit_code;
+        Some(rec.clone())
     }
 
     /// Snapshot all live records, sorted by id for deterministic output.
