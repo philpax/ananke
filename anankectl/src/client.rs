@@ -19,6 +19,8 @@ pub enum ApiClientError {
     // Unused today but reserved for commands that validate locally before hitting the API.
     #[expect(dead_code)]
     Usage(String),
+    /// WebSocket connection failure (e.g. from `--follow`).
+    WebSocket(String),
 }
 
 impl std::fmt::Display for ApiClientError {
@@ -28,6 +30,7 @@ impl std::fmt::Display for ApiClientError {
             Self::Http { status, body } => write!(f, "HTTP {status}: {body}"),
             Self::Parse(e) => write!(f, "parse error: {e}"),
             Self::Usage(e) => write!(f, "usage error: {e}"),
+            Self::WebSocket(e) => write!(f, "WebSocket error: {e}"),
         }
     }
 }
@@ -38,7 +41,7 @@ impl ApiClientError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Usage(_) => ExitCode::from(2),
-            Self::Connect(_) => ExitCode::from(3),
+            Self::Connect(_) | Self::WebSocket(_) => ExitCode::from(3),
             _ => ExitCode::from(1),
         }
     }

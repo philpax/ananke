@@ -20,7 +20,7 @@ smol_str.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 futures.workspace = true
-tokio-tungstenite = { version = "0.26", default-features = false, features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true

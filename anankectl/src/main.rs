@@ -71,6 +71,29 @@ enum Command {
         /// Service name.
         name: String,
     },
+    /// Tail logs for a service.
+    Logs {
+        /// Service name.
+        name: String,
+        /// Follow new lines as they arrive.
+        #[arg(long)]
+        follow: bool,
+        /// Filter to a specific run id.
+        #[arg(long)]
+        run: Option<i64>,
+        /// Minimum timestamp (ms since epoch).
+        #[arg(long)]
+        since: Option<i64>,
+        /// Maximum timestamp (ms since epoch).
+        #[arg(long)]
+        until: Option<i64>,
+        /// Cap on number of historical lines returned.
+        #[arg(long, default_value_t = 200)]
+        limit: u32,
+        /// Filter to stdout or stderr.
+        #[arg(long)]
+        stream: Option<String>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -87,6 +110,20 @@ async fn main() -> ExitCode {
         Command::Enable { name } => commands::lifecycle::enable(&client, cli.json, &name).await,
         Command::Disable { name } => commands::lifecycle::disable(&client, cli.json, &name).await,
         Command::Retry { name } => commands::lifecycle::retry(&client, cli.json, &name).await,
+        Command::Logs {
+            name,
+            follow,
+            run,
+            since,
+            until,
+            limit,
+            stream,
+        } => {
+            commands::logs::run(
+                &client, cli.json, &name, follow, run, since, until, limit, stream,
+            )
+            .await
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
