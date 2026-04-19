@@ -57,7 +57,7 @@ fn main() {
             .filter(|(name, _)| name.starts_with(&prefix))
             .map(|(name, t)| (name.as_str(), t.byte_size))
             .collect();
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1));
         for (name, bytes) in entries {
             let mib = bytes as f64 / 1024.0_f64.powi(2);
             println!("    {name:<48} {mib:>10.1} MiB");

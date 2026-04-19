@@ -5,6 +5,7 @@ mod common;
 use tempfile::tempdir;
 
 use ananke::db::Database;
+use ananke::db::models::RunningService;
 use ananke::supervise::{OrphanDisposition, reconcile};
 
 #[tokio::test]
@@ -23,19 +24,25 @@ async fn cleans_row_for_dead_pid() {
     // Insert a running_services row pointing at PID 99999, which is extremely
     // unlikely to exist and, even if it did, /proc/99999 won't exist under our
     // fake procfs root.
-    db.with_conn(|c| {
-        c.execute(
-            "INSERT INTO running_services(service_id, run_id, pid, spawned_at, command_line, allocation, state) VALUES (?1, 1, 99999, 0, 'fake-server', '{}', 'running')",
-            [service_id],
-        )
+    let mut handle = db.handle();
+    toasty::create!(RunningService {
+        service_id,
+        run_id: 1,
+        pid: 99999,
+        spawned_at: 0,
+        command_line: "fake-server".to_string(),
+        allocation: "{}".to_string(),
+        state: "running".to_string(),
     })
+    .exec(&mut handle)
+    .await
     .expect("insert row");
 
     // Use a tempdir as the procfs root — /proc/99999 does not exist there.
     let fake_proc = tmp.path().join("proc");
     std::fs::create_dir_all(&fake_proc).expect("create fake proc");
 
-    let dispositions = reconcile(&db, &fake_proc);
+    let dispositions = reconcile(&db, &fake_proc).await;
 
     assert_eq!(dispositions.len(), 1);
     assert!(
@@ -48,8 +55,9 @@ async fn cleans_row_for_dead_pid() {
     );
 
     // Confirm the row was actually removed.
-    let count: i64 = db
-        .with_conn(|c| c.query_row("SELECT COUNT(*) FROM running_services", [], |r| r.get(0)))
-        .expect("count rows");
-    assert_eq!(count, 0, "stale row should have been deleted");
+    let remaining: Vec<RunningService> = RunningService::all()
+        .exec(&mut handle)
+        .await
+        .expect("query running_services");
+    assert!(remaining.is_empty(), "stale row should have been deleted");
 }

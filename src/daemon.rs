@@ -64,7 +64,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     }
 
     let procfs = PathBuf::from("/proc");
-    for disposition in reconcile(&db, &procfs) {
+    for disposition in reconcile(&db, &procfs).await {
         info!(?disposition, "orphan reconcile");
     }
 

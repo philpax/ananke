@@ -496,26 +496,23 @@ async fn run(
                             .unwrap_or_default()
                             .as_millis())
                             & 0x7FFFFFFF) as i64;
-                        let _ = db.with_conn(|c| {
-                            c.execute(
-                                "INSERT INTO running_services(service_id, run_id, pid, spawned_at, command_line, allocation, state) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'starting')",
-                                (
-                                    service_id,
-                                    run_id,
-                                    pid as i64,
-                                    chrono_like_now_ms(),
-                                    cmdline.clone(),
-                                    serde_json::to_string(
-                                        &allocation
-                                            .bytes
-                                            .iter()
-                                            .map(|(k, v)| (k.as_display(), *v))
-                                            .collect::<std::collections::BTreeMap<_, _>>(),
-                                    )
-                                    .unwrap_or_default(),
-                                ),
-                            )
-                        });
+                        let allocation_json = serde_json::to_string(
+                            &allocation
+                                .bytes
+                                .iter()
+                                .map(|(k, v)| (k.as_display(), *v))
+                                .collect::<std::collections::BTreeMap<_, _>>(),
+                        )
+                        .unwrap_or_default();
+                        insert_running_row(
+                            &db,
+                            service_id,
+                            run_id,
+                            pid as i64,
+                            cmdline.clone(),
+                            allocation_json,
+                        )
+                        .await;
 
                         if let Some(stdout) = child.stdout.take() {
                             spawn_pump_stdout(stdout, service_id, run_id, batcher.clone());
@@ -624,10 +621,7 @@ async fn run(
                                                         info!(service = %svc.name, "draining during warming");
                                                         let _ = cancel_tx.send(true);
                                                         send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                        let _ = db.with_conn(|c| c.execute(
-                                                            "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
-                                                            (service_id, run_id),
-                                                        ));
+                                                        delete_running_row(&db, service_id, run_id).await;
                                                         allocations.lock().remove(&svc.name);
                                                         let _ = ack.send(());
                                                         return;
@@ -669,10 +663,7 @@ async fn run(
                                                         }
                                                         info!(service = %svc.name, "idle timeout; draining to idle");
                                                         send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                        let _ = db.with_conn(|c| c.execute(
-                                                            "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
-                                                            (service_id, run_id),
-                                                        ));
+                                                        delete_running_row(&db, service_id, run_id).await;
                                                         rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
                                                         observation.clear(&svc.name);
                                                         allocations.lock().remove(&svc.name);
@@ -688,10 +679,7 @@ async fn run(
                                                                 *state_mirror.lock() = state.clone();
                                                                 let _ = cancel_tx.send(true);
                                                                 send_sigterm_and_wait(&mut child, Duration::from_secs(10)).await;
-                                                                let _ = db.with_conn(|c| c.execute(
-                                                                    "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
-                                                                    (service_id, run_id),
-                                                                ));
+                                                                delete_running_row(&db, service_id, run_id).await;
                                                                 rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
                                                                 observation.clear(&svc.name);
                                                                 allocations.lock().remove(&svc.name);
@@ -729,10 +717,7 @@ async fn run(
                                                                 };
                                                                 crate::drain::drain_pipeline(&mut child, &cfg, inflight.clone(), reason).await;
 
-                                                                let _ = db.with_conn(|c| c.execute(
-                                                                    "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
-                                                                    (service_id, run_id),
-                                                                ));
+                                                                delete_running_row(&db, service_id, run_id).await;
                                                                 rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
                                                                 observation.clear(&svc.name);
                                                                 allocations.lock().remove(&svc.name);
@@ -749,10 +734,7 @@ async fn run(
 
                                                                 crate::drain::fast_kill(&mut child, reason).await;
 
-                                                                let _ = db.with_conn(|c| c.execute(
-                                                                    "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",
-                                                                    (service_id, run_id),
-                                                                ));
+                                                                delete_running_row(&db, service_id, run_id).await;
                                                                 allocations.lock().remove(&svc.name);
                                                                 observation.clear(&svc.name);
                                                                 let _ = ack.send(());
@@ -943,4 +925,50 @@ fn chrono_like_now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// Insert a `running_services` row.
+async fn insert_running_row(
+    db: &Database,
+    service_id: i64,
+    run_id: i64,
+    pid: i64,
+    command_line: String,
+    allocation: String,
+) {
+    use crate::db::models::RunningService;
+
+    let mut handle = db.handle();
+    if let Err(e) = toasty::create!(RunningService {
+        service_id,
+        run_id,
+        pid,
+        spawned_at: chrono_like_now_ms(),
+        command_line,
+        allocation,
+        state: "starting".to_string(),
+    })
+    .exec(&mut handle)
+    .await
+    {
+        warn!(error = %e, "running_services insert failed");
+    }
+}
+
+/// Delete the `running_services` row for `(service_id, run_id)` if present.
+async fn delete_running_row(db: &Database, service_id: i64, run_id: i64) {
+    use crate::db::models::RunningService;
+
+    let mut handle = db.handle();
+    let filter = RunningService::fields()
+        .service_id()
+        .eq(service_id)
+        .and(RunningService::fields().run_id().eq(run_id));
+    if let Err(e) = RunningService::filter(filter)
+        .delete()
+        .exec(&mut handle)
+        .await
+    {
+        warn!(error = %e, "running_services delete failed");
+    }
 }
