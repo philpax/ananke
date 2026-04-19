@@ -188,6 +188,12 @@ impl SupervisorHandle {
         ack_rx.await.ok()
     }
 
+    /// Fetch the current `run_id` from the supervisor's snapshot. Returns
+    /// `None` if the supervisor is unreachable or not in a running state.
+    pub async fn run_id(&self) -> Option<i64> {
+        self.snapshot().await?.run_id
+    }
+
     pub fn ping(&self) {
         let _ = self.tx.try_send(SupervisorCommand::ActivityPing);
     }
@@ -269,7 +275,12 @@ const SUPERVISOR_COMMAND_MAILBOX: usize = 32;
 /// own error response from the [`EnsureFailure`] kinds.
 pub enum EnsureOutcome {
     /// Service is Running (or was already).
-    Ready,
+    ///
+    /// `was_already_running` is `true` when the supervisor was already in the
+    /// Running state at the time of the call; `false` when the call triggered
+    /// an Idle → Starting transition and the caller waited for the child to
+    /// become healthy.
+    Ready { was_already_running: bool },
     /// Service cannot serve the request.
     Failed(EnsureFailure),
 }
@@ -296,7 +307,11 @@ pub async fn await_ensure(
     max_request_duration: Duration,
 ) -> EnsureOutcome {
     let rx = match handle.ensure().await {
-        Some(EnsureResponse::AlreadyRunning) => return EnsureOutcome::Ready,
+        Some(EnsureResponse::AlreadyRunning) => {
+            return EnsureOutcome::Ready {
+                was_already_running: true,
+            };
+        }
         Some(EnsureResponse::Waiting { rx }) => rx,
         Some(EnsureResponse::QueueFull) => {
             return EnsureOutcome::Failed(EnsureFailure::StartQueueFull);
@@ -322,7 +337,9 @@ async fn await_start_bus(
     max_request_duration: Duration,
 ) -> EnsureOutcome {
     match tokio::time::timeout(max_request_duration, rx.recv()).await {
-        Ok(Ok(StartOutcome::Ok)) => EnsureOutcome::Ready,
+        Ok(Ok(StartOutcome::Ok)) => EnsureOutcome::Ready {
+            was_already_running: false,
+        },
         Ok(Ok(StartOutcome::Err(f))) => EnsureOutcome::Failed(match f.kind {
             StartFailureKind::NoFit | StartFailureKind::Oom => {
                 EnsureFailure::InsufficientVram(f.message)

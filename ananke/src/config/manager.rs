@@ -155,6 +155,13 @@ impl ConfigManager {
                 return;
             }
         };
+        {
+            let current = self.raw.read();
+            if *current == raw {
+                // File content matches the in-memory buffer (typical after a PUT-triggered notify fire).
+                return;
+            }
+        }
         let (effective, _migs) = match load_config(&self.path) {
             Ok(v) => v,
             Err(e) => {
@@ -243,16 +250,29 @@ fn persist_atomically(path: &std::path::Path, content: &str) -> io::Result<()> {
 
 fn validate_toml(path: &std::path::Path, content: &str) -> Result<(), Vec<ValidationError>> {
     let parent = path.parent().unwrap_or(std::path::Path::new("."));
-    let tmp_path = parent.join(".ananke-config-validate.toml");
-    if let Err(e) = std::fs::write(&tmp_path, content) {
+    let tmp = match tempfile::Builder::new()
+        .prefix(".ananke-config-validate-")
+        .suffix(".toml")
+        .tempfile_in(parent)
+    {
+        Ok(t) => t,
+        Err(e) => {
+            return Err(vec![ValidationError {
+                line: 0,
+                column: 0,
+                message: format!("temp file: {e}"),
+            }]);
+        }
+    };
+    if let Err(e) = std::fs::write(tmp.path(), content) {
         return Err(vec![ValidationError {
             line: 0,
             column: 0,
             message: format!("write temp file: {e}"),
         }]);
     }
-    let result = load_config(&tmp_path);
-    let _ = std::fs::remove_file(&tmp_path);
+    let result = load_config(tmp.path());
+    // `tmp` drops here, which removes the file automatically.
     match result {
         Ok(_) => Ok(()),
         Err(e) => Err(vec![ValidationError {

@@ -24,6 +24,7 @@ async fn start_on_idle_service_returns_accepted() {
     assert!(matches!(
         parsed,
         StartResponse::AlreadyRunning
+            | StartResponse::Started { .. }
             | StartResponse::QueueFull
             | StartResponse::Unavailable { .. }
     ));
@@ -115,6 +116,32 @@ async fn disable_already_disabled_returns_already_disabled() {
     let parsed: DisableResponse = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(parsed, DisableResponse::AlreadyDisabled);
 
+    h.cleanup().await;
+}
+
+/// POST /start on an idle service that successfully starts must return
+/// `StartResponse::Started`, not `AlreadyRunning`. The echo server responds
+/// to `/health` with 200 OK so the supervisor reaches Running within the
+/// test's `max_request_duration_ms` window.
+#[tokio::test(flavor = "current_thread")]
+async fn start_on_idle_service_returns_started_not_already_running() {
+    let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
+    let app = ananke::api::management::router(h.state.clone());
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/services/demo/start")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let parsed: StartResponse = serde_json::from_slice(&bytes).unwrap();
+    // The service was idle, so the call must have triggered a real start and
+    // returned `Started`, not `AlreadyRunning`.
+    assert!(
+        matches!(parsed, StartResponse::Started { .. }),
+        "expected Started, got {parsed:?}"
+    );
     h.cleanup().await;
 }
 

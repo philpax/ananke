@@ -351,7 +351,7 @@ fn make_proxy_before_request(
         Box::pin(async move {
             activity.ping(&name);
             match crate::supervise::await_ensure(&handle, max_request_duration).await {
-                crate::supervise::EnsureOutcome::Ready => None,
+                crate::supervise::EnsureOutcome::Ready { .. } => None,
                 crate::supervise::EnsureOutcome::Failed(f) => {
                     Some(ensure_failure_to_proxy_error(f))
                 }

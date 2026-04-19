@@ -39,8 +39,10 @@ pub async fn run(
 
     // The response is newest-first; print oldest-first by iterating in reverse.
     let response: LogsResponse = client.get_json(&path).await?;
-    // Track the highest seq seen so we can dedup during the live tail.
-    let mut max_seq: Option<i64> = response.logs.first().map(|l| l.seq);
+    // Track the highest (run_id, seq) pair seen so we can dedup during the
+    // live tail. Using the pair means a new run whose seq resets to 1 will
+    // not be incorrectly suppressed by a higher seq from an earlier run.
+    let mut max_seen: Option<(i64, i64)> = response.logs.first().map(|l| (l.run_id, l.seq));
     if json {
         output::print_json(&response);
     } else {
@@ -71,12 +73,12 @@ pub async fn run(
             continue;
         };
         // Skip lines we already printed from the historical fetch.
-        if let Some(prev) = max_seq
-            && line.seq <= prev
+        if let Some(prev) = max_seen
+            && (line.run_id, line.seq) <= prev
         {
             continue;
         }
-        max_seq = Some(line.seq);
+        max_seen = Some((line.run_id, line.seq));
         print_line(&line);
     }
 

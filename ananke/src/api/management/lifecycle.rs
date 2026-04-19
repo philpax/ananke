@@ -24,7 +24,15 @@ pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>)
     };
     let duration = Duration::from_millis(svc.max_request_duration_ms);
     let body = match await_ensure(&handle, duration).await {
-        EnsureOutcome::Ready => StartResponse::AlreadyRunning,
+        EnsureOutcome::Ready {
+            was_already_running: true,
+        } => StartResponse::AlreadyRunning,
+        EnsureOutcome::Ready {
+            was_already_running: false,
+        } => {
+            let run_id = handle.run_id().await.unwrap_or(0);
+            StartResponse::Started { run_id }
+        }
         EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => StartResponse::QueueFull,
         EnsureOutcome::Failed(EnsureFailure::InsufficientVram(reason)) => {
             StartResponse::Unavailable { reason }
@@ -58,7 +66,15 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
     handle.begin_drain(DrainReason::UserKilled).await;
     let duration = Duration::from_millis(svc.max_request_duration_ms);
     let body = match await_ensure(&handle, duration).await {
-        EnsureOutcome::Ready => StartResponse::AlreadyRunning,
+        EnsureOutcome::Ready {
+            was_already_running: true,
+        } => StartResponse::AlreadyRunning,
+        EnsureOutcome::Ready {
+            was_already_running: false,
+        } => {
+            let run_id = handle.run_id().await.unwrap_or(0);
+            StartResponse::Started { run_id }
+        }
         EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => StartResponse::QueueFull,
         EnsureOutcome::Failed(EnsureFailure::InsufficientVram(reason)) => {
             StartResponse::Unavailable { reason }

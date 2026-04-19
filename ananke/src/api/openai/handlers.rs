@@ -188,7 +188,7 @@ async fn forward_json_post(
     // Ensure the service is running (coalescing concurrent first-requests).
     let max_request_duration = Duration::from_millis(svc.max_request_duration_ms);
     match await_ensure(&handle, max_request_duration).await {
-        EnsureOutcome::Ready => {}
+        EnsureOutcome::Ready { .. } => {}
         EnsureOutcome::Failed(EnsureFailure::InsufficientVram(msg)) => {
             return errors::insufficient_vram(&model, &msg);
         }
