@@ -99,27 +99,27 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let rolling = ananke::tracking::rolling::RollingTable::new();
     let observation = ananke::tracking::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
+    let deps = ananke::supervise::SupervisorDeps {
+        db: db.clone(),
+        batcher: batcher.clone(),
+        snapshot: snapshot.clone(),
+        allocations: allocations.clone(),
+        rolling: rolling.clone(),
+        observation: observation.clone(),
+        registry: registry.clone(),
+        effective: effective.clone(),
+    };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
         let service_id = db.upsert_service(&svc.name, 0).await.unwrap();
-        let alloc = Allocation::from_override(&svc.placement_override);
-        let last_activity = activity.get_or_init(&svc.name);
-        let inflight_counter = ananke::tracking::inflight::InflightTable::new().counter(&svc.name);
-        let handle = Arc::new(spawn_supervisor(
-            svc.clone(),
-            alloc,
-            db.clone(),
-            batcher.clone(),
+        let init = ananke::supervise::SupervisorInit {
+            svc: svc.clone(),
+            allocation: Allocation::from_override(&svc.placement_override),
             service_id,
-            last_activity,
-            snapshot.clone(),
-            allocations.clone(),
-            rolling.clone(),
-            observation.clone(),
-            inflight_counter,
-            registry.clone(),
-            effective.clone(),
-        ));
+            last_activity: activity.get_or_init(&svc.name),
+            inflight: ananke::tracking::inflight::InflightTable::new().counter(&svc.name),
+        };
+        let handle = Arc::new(spawn_supervisor(init, deps.clone()));
         registry.insert(svc.name.clone(), handle.clone());
         supervisors.push(handle);
     }

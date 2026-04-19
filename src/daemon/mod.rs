@@ -95,28 +95,29 @@ pub async fn run() -> Result<(), ExpectedError> {
             .then_with(|| a.name.cmp(&b.name))
     });
 
+    let supervisor_deps = crate::supervise::SupervisorDeps {
+        db: db.clone(),
+        batcher: batcher.clone(),
+        snapshot: shared_snapshot.clone(),
+        allocations: allocations.clone(),
+        rolling: rolling.clone(),
+        observation: observation.clone(),
+        registry: registry.clone(),
+        effective: effective.clone(),
+    };
+
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
     let mut proxy_tasks = Vec::new();
     for svc in ordered {
         let service_id = db.upsert_service(&svc.name, now_ms()).await?;
-        let allocation = Allocation::from_override(&svc.placement_override);
-        let last_activity = activity.get_or_init(&svc.name);
-        let inflight_counter = inflight.counter(&svc.name);
-        let handle = Arc::new(spawn_supervisor(
-            svc.clone(),
-            allocation,
-            db.clone(),
-            batcher.clone(),
+        let init = crate::supervise::SupervisorInit {
+            svc: svc.clone(),
+            allocation: Allocation::from_override(&svc.placement_override),
             service_id,
-            last_activity,
-            shared_snapshot.clone(),
-            allocations.clone(),
-            rolling.clone(),
-            observation.clone(),
-            inflight_counter,
-            registry.clone(),
-            effective.clone(),
-        ));
+            last_activity: activity.get_or_init(&svc.name),
+            inflight: inflight.counter(&svc.name),
+        };
+        let handle = Arc::new(spawn_supervisor(init, supervisor_deps.clone()));
         registry.insert(svc.name.clone(), handle.clone());
 
         // Persistent services kick-start via an implicit Ensure so they begin

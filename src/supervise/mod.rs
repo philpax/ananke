@@ -177,40 +177,33 @@ impl SupervisorHandle {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_supervisor(
-    svc: ServiceConfig,
-    allocation: Allocation,
-    db: Database,
-    batcher: BatcherHandle,
-    service_id: i64,
-    last_activity: Arc<AtomicU64>,
-    snapshot: crate::devices::snapshotter::SharedSnapshot,
-    allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
-    rolling: RollingTable,
-    observation: ObservationTable,
-    inflight: Arc<AtomicU64>,
-    registry: ServiceRegistry,
-    effective: Arc<EffectiveConfig>,
-) -> SupervisorHandle {
-    let (tx, rx) = mpsc::channel(32);
-    let name = svc.name.clone();
-    let join = tokio::spawn(run(
-        svc,
-        allocation,
-        db,
-        batcher,
-        service_id,
-        last_activity,
-        snapshot,
-        allocations,
-        rolling,
-        observation,
-        inflight,
-        registry,
-        effective,
-        rx,
-    ));
+/// Daemon-wide shared state every supervisor borrows. Cloning it is cheap
+/// (every field is `Arc`-backed).
+#[derive(Clone)]
+pub struct SupervisorDeps {
+    pub db: Database,
+    pub batcher: BatcherHandle,
+    pub snapshot: crate::devices::snapshotter::SharedSnapshot,
+    pub allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
+    pub rolling: RollingTable,
+    pub observation: ObservationTable,
+    pub registry: ServiceRegistry,
+    pub effective: Arc<EffectiveConfig>,
+}
+
+/// Per-service initialisation for a single supervisor task.
+pub struct SupervisorInit {
+    pub svc: ServiceConfig,
+    pub allocation: Allocation,
+    pub service_id: i64,
+    pub last_activity: Arc<AtomicU64>,
+    pub inflight: Arc<AtomicU64>,
+}
+
+pub fn spawn_supervisor(init: SupervisorInit, deps: SupervisorDeps) -> SupervisorHandle {
+    let (tx, rx) = mpsc::channel(SUPERVISOR_COMMAND_MAILBOX);
+    let name = init.svc.name.clone();
+    let join = tokio::spawn(run(init, deps, rx));
     SupervisorHandle {
         name,
         tx,
@@ -218,23 +211,34 @@ pub fn spawn_supervisor(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Mailbox depth for per-supervisor command channels.
+const SUPERVISOR_COMMAND_MAILBOX: usize = 32;
+
 async fn run(
-    svc: ServiceConfig,
-    allocation: Allocation,
-    db: Database,
-    batcher: BatcherHandle,
-    service_id: i64,
-    last_activity: Arc<AtomicU64>,
-    snapshot: crate::devices::snapshotter::SharedSnapshot,
-    allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
-    rolling: RollingTable,
-    observation: ObservationTable,
-    inflight: Arc<AtomicU64>,
-    registry: ServiceRegistry,
-    effective: Arc<EffectiveConfig>,
+    init: SupervisorInit,
+    deps: SupervisorDeps,
     mut rx: mpsc::Receiver<SupervisorCommand>,
 ) {
+    // Destructure into local bindings so the existing body reads unchanged.
+    // These are captured by the inner `tokio::select!` arms and helper
+    // closures, and shadowing the struct fields keeps that code terse.
+    let SupervisorInit {
+        svc,
+        allocation,
+        service_id,
+        last_activity,
+        inflight,
+    } = init;
+    let SupervisorDeps {
+        db,
+        batcher,
+        snapshot,
+        allocations,
+        rolling,
+        observation,
+        registry,
+        effective,
+    } = deps;
     let mut state = ServiceState::Idle;
     let state_mirror = Arc::new(SyncMutex::new(state.clone()));
     let (cancel_tx, cancel_rx) = watch::channel(false);

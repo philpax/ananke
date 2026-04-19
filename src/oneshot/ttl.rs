@@ -15,20 +15,33 @@ use crate::{
     supervise::{drain::DrainReason, registry::ServiceRegistry},
 };
 
-/// Spawn a task that sleeps until `ttl` elapses, then drains the oneshot's
+/// Inputs to [`spawn_watcher`].
+pub struct WatcherConfig {
+    pub id: SmolStr,
+    pub service_name: SmolStr,
+    pub ttl: Duration,
+    pub port: u16,
+    pub registry: ServiceRegistry,
+    pub oneshots: OneshotRegistry,
+    pub db: Database,
+    pub port_pool: Arc<Mutex<PortPool>>,
+    pub shutdown: watch::Receiver<bool>,
+}
+
+/// Spawn a task that sleeps until `cfg.ttl` elapses, then drains the oneshot's
 /// supervisor and cleans up the registry and port pool.
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_watcher(
-    id: SmolStr,
-    service_name: SmolStr,
-    ttl: Duration,
-    registry: ServiceRegistry,
-    oneshots: OneshotRegistry,
-    db: Database,
-    port_pool: Arc<Mutex<PortPool>>,
-    port: u16,
-    mut shutdown: watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
+pub fn spawn_watcher(cfg: WatcherConfig) -> tokio::task::JoinHandle<()> {
+    let WatcherConfig {
+        id,
+        service_name,
+        ttl,
+        port,
+        registry,
+        oneshots,
+        db,
+        port_pool,
+        mut shutdown,
+    } = cfg;
     tokio::spawn(async move {
         tokio::select! {
             _ = tokio::time::sleep(ttl) => {}

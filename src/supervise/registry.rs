@@ -108,16 +108,7 @@ mod tests {
     async fn insert_and_get() {
         let tmp = tempdir().unwrap();
         let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
-        let batcher = spawn_batcher(db.clone());
         let svc = minimal_svc("demo");
-        let alloc = Allocation::from_override(&svc.placement_override);
-        let last_activity = Arc::new(AtomicU64::new(0));
-        let snapshot = crate::devices::snapshotter::new_shared();
-        let allocations = Arc::new(parking_lot::Mutex::new(
-            crate::allocator::AllocationTable::new(),
-        ));
-        let inflight = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let registry = ServiceRegistry::new();
         let effective = Arc::new(crate::config::EffectiveConfig {
             daemon: crate::config::DaemonSettings {
                 management_listen: String::new(),
@@ -127,21 +118,26 @@ mod tests {
             },
             services: vec![svc.clone()],
         });
-        let handle = Arc::new(spawn_supervisor(
-            svc.clone(),
-            alloc,
-            db.clone(),
-            batcher.clone(),
-            1,
-            last_activity,
-            snapshot,
-            allocations,
-            crate::tracking::rolling::RollingTable::new(),
-            crate::tracking::observation::ObservationTable::new(),
-            inflight,
-            registry,
+        let init = crate::supervise::SupervisorInit {
+            svc: svc.clone(),
+            allocation: Allocation::from_override(&svc.placement_override),
+            service_id: 1,
+            last_activity: Arc::new(AtomicU64::new(0)),
+            inflight: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        };
+        let deps = crate::supervise::SupervisorDeps {
+            db: db.clone(),
+            batcher: spawn_batcher(db),
+            snapshot: crate::devices::snapshotter::new_shared(),
+            allocations: Arc::new(parking_lot::Mutex::new(
+                crate::allocator::AllocationTable::new(),
+            )),
+            rolling: crate::tracking::rolling::RollingTable::new(),
+            observation: crate::tracking::observation::ObservationTable::new(),
+            registry: ServiceRegistry::new(),
             effective,
-        ));
+        };
+        let handle = Arc::new(spawn_supervisor(init, deps));
 
         let registry = ServiceRegistry::new();
         registry.insert(SmolStr::new("demo"), handle.clone());

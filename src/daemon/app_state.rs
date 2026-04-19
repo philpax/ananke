@@ -35,6 +35,21 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Bundle the shared-daemon fields a `spawn_supervisor` call needs.
+    /// The returned struct is trivially cloneable.
+    pub fn supervisor_deps(&self) -> crate::supervise::SupervisorDeps {
+        crate::supervise::SupervisorDeps {
+            db: self.db.clone(),
+            batcher: self.batcher.clone(),
+            snapshot: self.snapshot.clone(),
+            allocations: self.allocations.clone(),
+            rolling: self.rolling.clone(),
+            observation: self.observation.clone(),
+            registry: self.registry.clone(),
+            effective: self.config.clone(),
+        }
+    }
+
     /// Spawn a oneshot service from a validated request.
     pub async fn spawn_oneshot(
         &self,
@@ -158,23 +173,16 @@ impl AppState {
         }
 
         // Spawn supervisor.
-        let allocation = Allocation::from_override(&svc.placement_override);
-        let last_activity = self.activity.get_or_init(&svc.name);
-        let inflight_counter = self.inflight.counter(&svc.name);
-        let handle = Arc::new(crate::supervise::spawn_supervisor(
-            svc.clone(),
-            allocation,
-            self.db.clone(),
-            self.batcher.clone(),
+        let init = crate::supervise::SupervisorInit {
+            svc: svc.clone(),
+            allocation: Allocation::from_override(&svc.placement_override),
             service_id,
-            last_activity,
-            self.snapshot.clone(),
-            self.allocations.clone(),
-            self.rolling.clone(),
-            self.observation.clone(),
-            inflight_counter,
-            self.registry.clone(),
-            self.config.clone(),
+            last_activity: self.activity.get_or_init(&svc.name),
+            inflight: self.inflight.counter(&svc.name),
+        };
+        let handle = Arc::new(crate::supervise::spawn_supervisor(
+            init,
+            self.supervisor_deps(),
         ));
         self.registry.insert(svc.name.clone(), handle.clone());
 
@@ -199,28 +207,21 @@ impl AppState {
         // it lives as long as the oneshot is pending. The watcher task owns sh_tx
         // and drops it only when it exits, keeping the receiver alive throughout.
         let (sh_tx, sh_rx) = tokio::sync::watch::channel(false);
-        let id_for_task = id.clone();
-        let svc_name = svc.name.clone();
-        let ttl_dur = std::time::Duration::from_millis(ttl_ms);
-        let registry = self.registry.clone();
-        let oneshots = self.oneshots.clone();
-        let db = self.db.clone();
-        let port_pool = self.port_pool.clone();
+        let watcher_cfg = crate::oneshot::ttl::WatcherConfig {
+            id: id.clone(),
+            service_name: svc.name.clone(),
+            ttl: std::time::Duration::from_millis(ttl_ms),
+            port,
+            registry: self.registry.clone(),
+            oneshots: self.oneshots.clone(),
+            db: self.db.clone(),
+            port_pool: self.port_pool.clone(),
+            shutdown: sh_rx,
+        };
         tokio::spawn(async move {
             // Hold sh_tx so the receiver stays open; drop it when we exit.
             let _sh_tx = sh_tx;
-            let _ = crate::oneshot::ttl::spawn_watcher(
-                id_for_task,
-                svc_name,
-                ttl_dur,
-                registry,
-                oneshots,
-                db,
-                port_pool,
-                port,
-                sh_rx,
-            )
-            .await;
+            let _ = crate::oneshot::ttl::spawn_watcher(watcher_cfg).await;
         });
 
         Ok(())
