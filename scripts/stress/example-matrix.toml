@@ -1,0 +1,77 @@
+# Copy to matrix.toml and map each role to one of your own service names.
+# matrix.toml is gitignored; this example is committed.
+#
+# A role that's not populated will cause any scenario referencing it to skip
+# with a clear message. You don't need to populate every role — just the
+# ones exercised by the scenarios you want to run.
+
+[endpoint]
+management = "http://127.0.0.1:17777"
+openai = "http://127.0.0.1:7070"
+
+[roles]
+# --- LLMs by rough size/fit category ---
+
+# Small model that fits easily on one GPU (~5-10 GB weights).
+# Example: a 4B or 7B at Q5.
+small_gpu = "qwen3-4b-instruct"
+
+# Mid-sized model, single GPU (~15-20 GB weights).
+# Example: a 20B-30B MoE or a 24B dense at Q4.
+mid_gpu = "gpt-oss-20b"
+
+# Large model that still fits on one GPU (~18-22 GB).
+# Example: a 32B Q4 or a 70B IQ2.
+large_single_gpu = "qwen3-32b"
+
+# Large model that requires multi-GPU split (~30 GB weights).
+# Example: a 49B Q4 or similar that needs tensor-split.
+large_multi_gpu = "llama-3.3-nemotron-super-49b"
+
+# Heavy hybrid: expert CPU-offload via override_tensor regex.
+# Example: GLM-4.5-Air-UD-Q3_K_XL with ".ffn_(up|down)_exps.=CPU".
+hybrid_cpu_offload = "glm-4-5-air"
+
+# Flagship hybrid: CPU-heavy, both-GPU split, long context.
+# Example: Qwen3-235B-A22B-Instruct with override_tensor.
+flagship_hybrid = "qwen3-235b-a22b-instruct"
+
+# A vision model with mmproj — exercises mmproj-size accounting.
+vision_with_mmproj = "qwen3-vl-30b-a3b-instruct"
+
+# --- Non-LLM ---
+
+# A command-template service with dynamic (elastic min..max) allocation.
+# Example: ComfyUI, Stable Diffusion WebUI, a batch-inference worker.
+dynamic_elastic = "comfyui"
+
+[scenarios]
+# Per-scenario parameter overrides live here if a scenario needs tuning beyond
+# its defaults. See each scenario's top-of-file docstring for what it reads.
+
+# Scenario 01: which services to probe, how long to allow cold starts.
+"01_estimator_sanity" = { cold_start_timeout_s = 300, services = [
+    "small_gpu", "mid_gpu", "large_single_gpu"
+] }
+
+# Scenario 02: the eviction cascade order.
+"02_eviction_cascade" = { sequence = [
+    "mid_gpu", "large_single_gpu", "large_multi_gpu"
+] }
+
+# Scenario 03: hybrid cohabitation set.
+"03_hybrid_cohabitation" = { services = [
+    "vision_with_mmproj", "hybrid_cpu_offload", "dynamic_elastic"
+] }
+
+# Scenario 04: how many concurrent ensure() requests to fire.
+"04_concurrent_coalescing" = { service = "mid_gpu", concurrent_requests = 12 }
+
+# Scenario 05: oneshot TTL experiment.
+"05_oneshot_lifecycle" = { ttl_seconds = 60 }
+
+# Scenario 06: which service to keep warm during the config reload.
+"06_config_reload_live" = { service = "small_gpu" }
+
+# Scenario 07: which service to log-flood, how long.
+"07_log_flood" = { service = "mid_gpu", duration_s = 60 }
