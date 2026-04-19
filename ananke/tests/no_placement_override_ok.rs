@@ -4,12 +4,16 @@
 
 mod common;
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use ananke::{
     api::openai,
     config::{PlacementPolicy, ServiceConfig, TemplateConfig},
     devices::{CpuSnapshot, DeviceSnapshot},
+    system::Fs,
 };
 use axum::{
     body::Body,
@@ -33,9 +37,8 @@ fn service_without_override(model_path: PathBuf) -> ServiceConfig {
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_placement_override_chat_succeeds() {
-    // Write a synthetic GGUF so `estimate_from_path` has something to read.
-    let file = synth_gguf::tempfile("no-override");
-    synth_gguf::Builder::new()
+    let model_path = Path::new("/fake/no-override.gguf");
+    let gguf_bytes = synth_gguf::Builder::new()
         .kv_string("general.architecture", "qwen3")
         .kv_u32("qwen3.block_count", 2)
         .kv_u32("qwen3.attention.head_count_kv", 4)
@@ -45,10 +48,9 @@ async fn no_placement_override_chat_succeeds() {
         .tensor_f16("blk.1.attn_q.weight", 512 * 1024)
         .tensor_f16("output.weight", 512 * 1024)
         .tensor_f16("token_embd.weight", 512 * 1024)
-        .write_to(file.path());
+        .build();
 
-    let model_path = file.path().to_path_buf();
-    let svc = service_without_override(model_path);
+    let svc = service_without_override(model_path.to_path_buf());
 
     // Seed a CPU-only snapshot with plenty of free bytes so the placer succeeds.
     let snapshot = DeviceSnapshot {
@@ -61,6 +63,9 @@ async fn no_placement_override_chat_succeeds() {
     };
 
     let h = build_harness_with_snapshot(vec![svc], snapshot).await;
+    // Seed the GGUF into the harness's shared in-memory filesystem so the
+    // supervisor's estimator call finds it when the first request comes in.
+    h.fs.write(model_path, &gguf_bytes).unwrap();
     let app = openai::router(h.state.clone());
 
     let body = r#"{"model":"no-override","messages":[{"role":"user","content":"hi"}]}"#;

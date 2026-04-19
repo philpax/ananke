@@ -4,13 +4,14 @@
 
 use std::{collections::BTreeMap, env};
 
-use ananke::gguf;
+use ananke::{gguf, system::LocalFs};
 
 fn main() {
     let path = env::args()
         .nth(1)
         .expect("usage: dump-gguf <path-to-first-shard.gguf>");
-    let summary = gguf::read(std::path::Path::new(&path)).expect("gguf read failed");
+    let summary =
+        gguf::read(&LocalFs, std::path::Path::new(&path)).expect("gguf read failed");
 
     println!(
         "architecture: {}  block_count: {:?}  tensors: {}  shards: {}  total: {:.2} GiB",

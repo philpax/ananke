@@ -1,12 +1,16 @@
 //! Linux-only: startup orphan recovery per spec §9.3. Reads
-//! `/proc/{pid}/cmdline` to decide whether a previously-recorded child
-//! is still alive and still ours.
+//! `/proc/{pid}/cmdline` (through the [`crate::system::Fs`]
+//! abstraction — tests can substitute an in-memory fake) to decide
+//! whether a previously-recorded child is still alive and still ours.
 
 use std::path::Path;
 
 use tracing::{info, warn};
 
-use crate::db::{Database, models::RunningService};
+use crate::{
+    db::{Database, models::RunningService},
+    system::Fs,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrphanDisposition {
@@ -29,8 +33,14 @@ pub enum OrphanDisposition {
 /// Runs orphan recovery against the `running_services` table. Returns a
 /// decision list suitable for logging and test assertion.
 ///
-/// `procfs_root` defaults to "/proc"; tests override it via a temp directory.
-pub async fn reconcile(db: &Database, procfs_root: &Path) -> Vec<OrphanDisposition> {
+/// `procfs_root` defaults to "/proc"; tests can either override it via a
+/// temp directory (with [`crate::system::LocalFs`]) or populate an
+/// in-memory filesystem at a synthetic root.
+pub async fn reconcile(
+    fs: &dyn Fs,
+    db: &Database,
+    procfs_root: &Path,
+) -> Vec<OrphanDisposition> {
     let mut handle = db.handle();
     let rows: Vec<RunningService> = RunningService::all()
         .exec(&mut handle)
@@ -45,7 +55,7 @@ pub async fn reconcile(db: &Database, procfs_root: &Path) -> Vec<OrphanDispositi
         let recorded_cmdline = row.command_line.clone();
         let proc_dir = procfs_root.join(pid.to_string());
         let cmdline_path = proc_dir.join("cmdline");
-        match std::fs::read(&cmdline_path) {
+        match fs.read(&cmdline_path) {
             Ok(raw) => {
                 let live_cmdline = null_sep_to_space(&raw);
                 if live_cmdline == recorded_cmdline {
@@ -103,9 +113,8 @@ async fn cleanup_row(db: &mut toasty::Db, row: RunningService) {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
+    use crate::system::InMemoryFs;
 
     async fn insert_row(db: &Database, service_id: i64, run_id: i64, pid: i32, cmdline: &str) {
         let mut handle = db.handle();
@@ -123,39 +132,38 @@ mod tests {
         .unwrap();
     }
 
-    fn write_cmdline(procfs: &Path, pid: i32, cmdline: &str) {
-        let dir = procfs.join(pid.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
+    fn cmdline_entry(fs: &InMemoryFs, procfs: &Path, pid: i32, cmdline: &str) {
         // /proc/PID/cmdline separates args with NUL.
         let nul_sep = cmdline.replace(' ', "\0");
-        std::fs::write(dir.join("cmdline"), nul_sep).unwrap();
+        fs.insert(
+            procfs.join(pid.to_string()).join("cmdline"),
+            nul_sep.as_bytes().to_vec(),
+        );
     }
 
     #[tokio::test]
     async fn adopts_matching_cmdline() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
-        let procfs = tmp.path().join("proc");
+        let fs = InMemoryFs::new();
+        let procfs = Path::new("/proc");
         insert_row(&db, svc, 1, 1234, "llama-server -m x").await;
-        write_cmdline(&procfs, 1234, "llama-server -m x");
-        let out = reconcile(&db, &procfs).await;
+        cmdline_entry(&fs, procfs, 1234, "llama-server -m x");
+        let out = reconcile(&fs, &db, procfs).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Adopted { .. }));
     }
 
     #[tokio::test]
     async fn cleans_missing_pid() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
-        let procfs = tmp.path().join("proc");
-        std::fs::create_dir_all(&procfs).unwrap();
+        let fs = InMemoryFs::new();
+        let procfs = Path::new("/proc");
         insert_row(&db, svc, 1, 9999, "llama-server -m x").await;
-        let out = reconcile(&db, &procfs).await;
+        let out = reconcile(&fs, &db, procfs).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Cleaned { .. }));
-        // Row should be gone.
         let mut handle = db.handle();
         let rows: Vec<RunningService> = RunningService::all().exec(&mut handle).await.unwrap();
         assert!(rows.is_empty());
@@ -163,13 +171,13 @@ mod tests {
 
     #[tokio::test]
     async fn cleans_mismatched_cmdline() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
-        let procfs = tmp.path().join("proc");
+        let fs = InMemoryFs::new();
+        let procfs = Path::new("/proc");
         insert_row(&db, svc, 1, 4242, "llama-server -m x").await;
-        write_cmdline(&procfs, 4242, "firefox");
-        let out = reconcile(&db, &procfs).await;
+        cmdline_entry(&fs, procfs, 4242, "firefox");
+        let out = reconcile(&fs, &db, procfs).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Cleaned { .. }));
     }

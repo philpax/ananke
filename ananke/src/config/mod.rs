@@ -22,16 +22,27 @@ pub use validate::{
 /// Load, parse, merge, validate, and preflight a config file from disk.
 ///
 /// Unlike [`load_config_from_str`], this also walks each llama-cpp service's
-/// GGUF model to surface unsupported dtypes (e.g. a new quant format that
-/// ananke's `GgufType` table hasn't been taught about) at config-load time
-/// rather than at first-request time. The alternative — silent dtype
-/// fallback — produced 4× over-reservations for MXFP4 experts before being
-/// caught.
+/// GGUF model to surface unsupported dtypes at config-load time rather
+/// than at first-request time. The alternative — silent dtype fallback —
+/// produced 4× over-reservations for MXFP4 experts before being caught.
 pub fn load_config(path: &Path) -> Result<(EffectiveConfig, Vec<Migration>), ExpectedError> {
-    let source = std::fs::read_to_string(path)
+    let fs = crate::system::LocalFs;
+    let source = crate::system::Fs::read_to_string(&fs, path)
         .map_err(|_| ExpectedError::config_file_missing(path.to_path_buf()))?;
-    let (effective, migrations) = load_config_from_str(&source, path)?;
-    preflight_ggufs(&effective)?;
+    load_config_with_fs(path, &fs, &source)
+}
+
+/// Variant of [`load_config`] that uses an explicit filesystem for the
+/// GGUF preflight (but takes the TOML source directly rather than reading
+/// it through the fs). Used by `ConfigManager`'s validation path so tests
+/// can preflight against a synthetic filesystem.
+pub fn load_config_with_fs(
+    origin: &Path,
+    fs: &dyn crate::system::Fs,
+    source: &str,
+) -> Result<(EffectiveConfig, Vec<Migration>), ExpectedError> {
+    let (effective, migrations) = load_config_from_str(source, origin)?;
+    preflight_ggufs(&effective, fs)?;
     Ok((effective, migrations))
 }
 
@@ -46,23 +57,30 @@ pub fn load_config_from_str(
     Ok((effective, migrations))
 }
 
-/// Walk every llama-cpp service's GGUF and ensure the reader can enumerate
-/// its tensor table. Errors here surface at daemon boot or config reload —
-/// unknown dtypes, unreadable shards, bad magic — before traffic touches
-/// the estimator or placement engine.
-pub fn preflight_ggufs(cfg: &EffectiveConfig) -> Result<(), ExpectedError> {
+/// Walk every llama-cpp service's GGUF through `fs` and ensure the reader
+/// can enumerate each tensor table. Errors here surface at daemon boot or
+/// config reload — unknown dtypes, unreadable shards, bad magic — before
+/// traffic touches the estimator or placement engine.
+///
+/// Takes an explicit [`crate::system::Fs`] so tests can swap in
+/// [`crate::system::InMemoryFs`] preloaded with synthetic bytes and avoid
+/// touching a tempdir.
+pub fn preflight_ggufs(
+    cfg: &EffectiveConfig,
+    fs: &dyn crate::system::Fs,
+) -> Result<(), ExpectedError> {
     for svc in &cfg.services {
         let Some(lc) = svc.llama_cpp() else {
             continue;
         };
-        crate::gguf::read(&lc.model).map_err(|e| {
+        crate::gguf::read(fs, &lc.model).map_err(|e| {
             ExpectedError::config_unparseable(
                 std::path::PathBuf::from("<preflight>"),
                 format!("service {}: {}", svc.name, e),
             )
         })?;
         if let Some(mmproj) = &lc.mmproj {
-            crate::gguf::read(mmproj.as_path()).map_err(|e| {
+            crate::gguf::read(fs, mmproj.as_path()).map_err(|e| {
                 ExpectedError::config_unparseable(
                     std::path::PathBuf::from("<preflight>"),
                     format!("service {} mmproj: {}", svc.name, e),

@@ -35,7 +35,6 @@ use ananke::{
 };
 use parking_lot::Mutex;
 use smol_str::SmolStr;
-use tempfile::TempDir;
 
 /// Full test harness with a running echo server and real supervisors.
 pub struct TestHarness {
@@ -44,7 +43,10 @@ pub struct TestHarness {
     pub echo_addr: std::net::SocketAddr,
     pub echo_shutdown: tokio::sync::watch::Sender<bool>,
     pub supervisors: Vec<Arc<SupervisorHandle>>,
-    pub _tmp: TempDir,
+    /// Concrete handle to the in-memory filesystem shared by the supervisors
+    /// and AppState. Tests that need the estimator to find a GGUF at a
+    /// particular path can insert bytes here before issuing a request.
+    pub fs: ananke::system::InMemoryFs,
 }
 
 /// Build a `TestHarness` from a list of service configs.
@@ -54,9 +56,12 @@ pub struct TestHarness {
 /// llama-server. Supervisors are registered in a `ServiceRegistry` and
 /// placed in the returned `AppState`.
 pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
-    let tmp = tempfile::tempdir().unwrap();
-    let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+    // Fully in-memory: DB, filesystem, and the synthetic data_dir path.
+    // Nothing below this line touches the real disk.
+    let db = Database::open_in_memory().await.unwrap();
     let batcher = spawn_batcher(db.clone());
+    let fs_concrete = ananke::system::InMemoryFs::new();
+    let fs: Arc<dyn ananke::system::Fs> = Arc::new(fs_concrete.clone());
 
     let echo_state = echo_server::EchoState::default();
     let echo_port = free_port();
@@ -77,7 +82,8 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         daemon: DaemonSettings {
             management_listen: "127.0.0.1:0".into(),
             openai_listen: "127.0.0.1:0".into(),
-            data_dir: tmp.path().to_path_buf(),
+            // Synthetic path — nothing writes to it because `fs` is in-memory.
+            data_dir: std::path::PathBuf::from("/tmp/ananke-test"),
             shutdown_timeout_ms: 5_000,
             allow_external_management: false,
         },
@@ -121,6 +127,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         registry: registry.clone(),
         effective: effective.clone(),
         events: events.clone(),
+        fs: fs.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -150,6 +157,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         port_pool: Arc::new(Mutex::new(ananke::oneshot::PortPool::new(18000..19000))),
         oneshots: ananke::oneshot::OneshotRegistry::new(),
         batcher,
+        fs: fs.clone(),
         events,
     };
 
@@ -159,7 +167,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         echo_addr,
         echo_shutdown,
         supervisors,
-        _tmp: tmp,
+        fs: fs_concrete,
     }
 }
 
@@ -347,15 +355,23 @@ pub mod synth_gguf {
             self
         }
 
-        /// Serialise and write the complete GGUF file to `path`.
-        pub fn write_to(self, path: &Path) {
+        /// Serialise the complete GGUF header into a byte buffer.
+        pub fn build(self) -> Vec<u8> {
             let mut out = Vec::<u8>::new();
             out.extend_from_slice(b"GGUF");
             out.extend_from_slice(&3u32.to_le_bytes()); // version
             out.extend_from_slice(&self.n_tensors.to_le_bytes());
             out.extend_from_slice(&self.n_kv.to_le_bytes());
             out.extend_from_slice(&self.buf);
-            std::fs::write(path, &out).unwrap();
+            out
+        }
+
+        /// Construct a single-entry [`InMemoryFs`] containing the built
+        /// GGUF bytes at `path`. Convenience for tests that want to pass a
+        /// concrete path to `estimate_from_path` or `gguf::read` without
+        /// touching disk.
+        pub fn into_in_memory_fs(self, path: &Path) -> ananke::system::InMemoryFs {
+            ananke::system::InMemoryFs::new().with(path.to_path_buf(), self.build())
         }
     }
 
@@ -363,16 +379,6 @@ pub mod synth_gguf {
         fn default() -> Self {
             Self::new()
         }
-    }
-
-    /// Create a named temp file with `.gguf` suffix. The caller keeps the
-    /// `NamedTempFile` alive for the duration of the test.
-    pub fn tempfile(prefix: &str) -> tempfile::NamedTempFile {
-        tempfile::Builder::new()
-            .prefix(prefix)
-            .suffix(".gguf")
-            .tempfile()
-            .unwrap()
     }
 
     fn write_string(v: &mut Vec<u8>, s: &str) {

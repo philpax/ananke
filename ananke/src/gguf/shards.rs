@@ -6,12 +6,13 @@ use super::{
     reader::{ReadError, read_single},
     types::GgufSummary,
 };
+use crate::system::Fs;
 
 /// Read a GGUF model. If the file is shard 0 of a multi-shard set
 /// (metadata has `split.count > 1`), walk all shards and return an
 /// aggregated summary. Otherwise return the single-file summary.
-pub fn read(path: &Path) -> Result<GgufSummary, ReadError> {
-    let first = read_single(path)?;
+pub fn read(fs: &dyn Fs, path: &Path) -> Result<GgufSummary, ReadError> {
+    let first = read_single(fs, path)?;
     let split_count = first
         .metadata
         .get("split.count")
@@ -39,7 +40,7 @@ pub fn read(path: &Path) -> Result<GgufSummary, ReadError> {
     };
 
     let zero = if split_no != 0 {
-        read_single(&base_path)?
+        read_single(fs, &base_path)?
     } else {
         first
     };
@@ -55,7 +56,7 @@ pub fn read(path: &Path) -> Result<GgufSummary, ReadError> {
                 base_path.display()
             ))
         })?;
-        let part = read_single(&sp)
+        let part = read_single(fs, &sp)
             .map_err(|e| ReadError(format!("shard {idx}/{split_count}: {}", e.0)))?;
         let part_count = part
             .metadata

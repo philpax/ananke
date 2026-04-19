@@ -30,8 +30,8 @@ fn moe_svc_with_override_tensor(model_path: std::path::PathBuf) -> ServiceConfig
 
 #[test]
 fn override_tensor_rules_propagate_to_command_args() {
-    let file = synth_gguf::tempfile("moe-ot");
-    synth_gguf::Builder::new()
+    let path = std::path::Path::new("/fake/moe-ot.gguf");
+    let fs = synth_gguf::Builder::new()
         .kv_string("general.architecture", "qwen3moe")
         .kv_u32("qwen3moe.block_count", 2)
         .kv_u32("qwen3moe.attention.head_count_kv", 4)
@@ -42,11 +42,11 @@ fn override_tensor_rules_propagate_to_command_args() {
         .tensor_f16("blk.0.ffn_gate_exps.weight", 4 * 512 * 1024)
         .tensor_f16("blk.1.ffn_up_exps.weight", 4 * 512 * 1024)
         .tensor_f16("blk.1.ffn_down_exps.weight", 4 * 512 * 1024)
-        .write_to(file.path());
+        .into_in_memory_fs(path);
 
-    let svc = moe_svc_with_override_tensor(file.path().to_path_buf());
+    let svc = moe_svc_with_override_tensor(path.to_path_buf());
 
-    let est = estimator::estimate_from_path(file.path(), &svc)
+    let est = estimator::estimate_from_path(&fs, path, &svc)
         .expect("estimate must succeed on MoE GGUF");
 
     // Snapshot with one GPU that has ample free memory.

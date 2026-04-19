@@ -98,14 +98,11 @@ pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     #[tokio::test]
     async fn trims_old_rows_and_excess_per_service() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let now = 10_000_000_000i64;
         let eight_days_ago = now - 8 * 24 * 60 * 60 * 1000;

@@ -66,7 +66,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     }
 
     let procfs = PathBuf::from("/proc");
-    for disposition in reconcile(&db, &procfs).await {
+    for disposition in reconcile(&crate::system::LocalFs, &db, &procfs).await {
         info!(?disposition, "orphan reconcile");
     }
 
@@ -99,6 +99,8 @@ pub async fn run() -> Result<(), ExpectedError> {
             .then_with(|| a.name.cmp(&b.name))
     });
 
+    let fs: std::sync::Arc<dyn crate::system::Fs> = std::sync::Arc::new(crate::system::LocalFs);
+
     let supervisor_deps = crate::supervise::SupervisorDeps {
         db: db.clone(),
         batcher: batcher.clone(),
@@ -109,6 +111,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         registry: registry.clone(),
         effective: effective.clone(),
         events: events.clone(),
+        fs: fs.clone(),
     };
 
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
@@ -218,6 +221,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         oneshots,
         batcher: batcher.clone(),
         events: events.clone(),
+        fs: fs.clone(),
     };
 
     // OpenAI listener.

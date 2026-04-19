@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::{
-    config::{EffectiveConfig, Migration, load_config},
+    config::{EffectiveConfig, Migration, load_config_with_fs},
     daemon::events::EventBus,
     errors::ExpectedError,
 };
@@ -28,6 +28,7 @@ pub struct ConfigManager {
     events: EventBus,
     _watcher: RwLock<Option<notify::RecommendedWatcher>>,
     boot_migrations: Mutex<Option<Vec<Migration>>>,
+    fs: Arc<dyn crate::system::Fs>,
 }
 
 /// Failure modes from `ConfigManager::apply`.
@@ -58,11 +59,23 @@ impl std::error::Error for ApplyError {}
 impl ConfigManager {
     /// Load the config from disk, construct the manager, and spawn the
     /// `notify` watcher. The returned `Arc<ConfigManager>` is thread-safe and
-    /// inexpensive to clone.
+    /// inexpensive to clone. Uses [`crate::system::LocalFs`] for all
+    /// filesystem I/O — tests with synthetic configs should use [`Self::open_with_fs`].
     pub async fn open(path: PathBuf, events: EventBus) -> Result<Arc<Self>, ExpectedError> {
-        let raw = std::fs::read_to_string(&path)
+        Self::open_with_fs(path, events, Arc::new(crate::system::LocalFs)).await
+    }
+
+    /// Variant of [`Self::open`] that uses an explicit filesystem. Production
+    /// passes `LocalFs`; tests can pass an `InMemoryFs`.
+    pub async fn open_with_fs(
+        path: PathBuf,
+        events: EventBus,
+        fs: Arc<dyn crate::system::Fs>,
+    ) -> Result<Arc<Self>, ExpectedError> {
+        let raw = fs
+            .read_to_string(&path)
             .map_err(|e| ExpectedError::config_unparseable(path.clone(), e.to_string()))?;
-        let (effective, migrations) = load_config(&path)?;
+        let (effective, migrations) = load_config_with_fs(&path, fs.as_ref(), &raw)?;
         let this = Arc::new(Self {
             raw: RwLock::new(raw),
             effective: ArcSwap::from_pointee(effective),
@@ -70,6 +83,7 @@ impl ConfigManager {
             events,
             _watcher: RwLock::new(None),
             boot_migrations: Mutex::new(Some(migrations)),
+            fs,
         });
         this.spawn_watcher();
         Ok(this)
@@ -86,6 +100,7 @@ impl ConfigManager {
             events,
             _watcher: RwLock::new(None),
             boot_migrations: Mutex::new(Some(Vec::new())),
+            fs: Arc::new(crate::system::InMemoryFs::new()),
         })
     }
 
@@ -111,7 +126,7 @@ impl ConfigManager {
 
     /// Validate the given TOML without touching disk or the in-memory cache.
     pub fn validate(&self, toml: &str) -> Result<(), Vec<ValidationError>> {
-        validate_toml(&self.path, toml)
+        validate_toml(self.fs.as_ref(), &self.path, toml)
     }
 
     /// Take the migrations that were produced at boot. Returns them exactly
@@ -141,14 +156,15 @@ impl ConfigManager {
             }
         }
 
-        validate_toml(&self.path, &new_toml).map_err(ApplyError::Invalid)?;
-        persist_atomically(&self.path, &new_toml).map_err(ApplyError::PersistFailed)?;
+        validate_toml(self.fs.as_ref(), &self.path, &new_toml).map_err(ApplyError::Invalid)?;
+        persist_atomically(self.fs.as_ref(), &self.path, &new_toml)
+            .map_err(ApplyError::PersistFailed)?;
         self.reload_from_disk();
         Ok(())
     }
 
     fn reload_from_disk(self: &Arc<Self>) {
-        let raw = match std::fs::read_to_string(&self.path) {
+        let raw = match self.fs.read_to_string(&self.path) {
             Ok(s) => s,
             Err(e) => {
                 warn!(error = %e, "config reload: read failed");
@@ -162,7 +178,7 @@ impl ConfigManager {
                 return;
             }
         }
-        let (effective, _migs) = match load_config(&self.path) {
+        let (effective, _migs) = match load_config_with_fs(&self.path, self.fs.as_ref(), &raw) {
             Ok(v) => v,
             Err(e) => {
                 warn!(error = %e, "config reload: validate failed; keeping live config");
@@ -232,48 +248,39 @@ fn hash_of(s: &str) -> ConfigHash {
     B64.encode(digest)
 }
 
-fn persist_atomically(path: &std::path::Path, content: &str) -> io::Result<()> {
-    use std::io::Write;
-    let dir = path.parent().unwrap_or(std::path::Path::new("."));
-    let tmp = tempfile::Builder::new()
-        .prefix(".ananke-config-")
-        .suffix(".toml")
-        .tempfile_in(dir)?;
-    {
-        let mut f = tmp.as_file();
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
+fn persist_atomically(
+    fs: &dyn crate::system::Fs,
+    path: &std::path::Path,
+    content: &str,
+) -> io::Result<()> {
+    // Write sibling tempfile then atomic rename onto `path`. On POSIX,
+    // `rename` within a single filesystem is atomic, so a partial write
+    // can never be observed at `path`.
+    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    let basename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.toml");
+    let tmp = parent.join(format!(".{basename}.{}.tmp", std::process::id()));
+    fs.write(&tmp, content.as_bytes())?;
+    match fs.rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs.remove_file(&tmp);
+            Err(e)
+        }
     }
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
 }
 
-fn validate_toml(path: &std::path::Path, content: &str) -> Result<(), Vec<ValidationError>> {
-    let parent = path.parent().unwrap_or(std::path::Path::new("."));
-    let tmp = match tempfile::Builder::new()
-        .prefix(".ananke-config-validate-")
-        .suffix(".toml")
-        .tempfile_in(parent)
-    {
-        Ok(t) => t,
-        Err(e) => {
-            return Err(vec![ValidationError {
-                line: 0,
-                column: 0,
-                message: format!("temp file: {e}"),
-            }]);
-        }
-    };
-    if let Err(e) = std::fs::write(tmp.path(), content) {
-        return Err(vec![ValidationError {
-            line: 0,
-            column: 0,
-            message: format!("write temp file: {e}"),
-        }]);
-    }
-    let result = load_config(tmp.path());
-    // `tmp` drops here, which removes the file automatically.
-    match result {
+fn validate_toml(
+    fs: &dyn crate::system::Fs,
+    path: &std::path::Path,
+    content: &str,
+) -> Result<(), Vec<ValidationError>> {
+    // Parse + validate + preflight against the current filesystem without
+    // touching `path` itself. `load_config_with_fs` takes the raw TOML
+    // directly so we don't need a sibling tempfile.
+    match load_config_with_fs(path, fs, content) {
         Ok(_) => Ok(()),
         Err(e) => Err(vec![ValidationError {
             line: 0,
@@ -305,16 +312,14 @@ fn diff_services(old: &EffectiveConfig, new: &EffectiveConfig) -> Vec<smol_str::
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use tempfile::{TempDir, tempdir};
+    use std::path::PathBuf;
 
     use super::*;
+    use crate::system::{Fs, InMemoryFs};
 
-    /// Write a minimal but structurally valid GGUF v3 file so the config
-    /// preflight (which calls `gguf::read`) accepts the referenced path.
-    fn write_synth_gguf(dir: &Path) -> PathBuf {
-        let path = dir.join("demo.gguf");
+    /// Minimal but structurally valid GGUF v3 bytes so the config preflight
+    /// (which calls `gguf::read`) accepts the referenced path.
+    fn synth_gguf_bytes() -> Vec<u8> {
         let mut bytes = Vec::<u8>::new();
         bytes.extend_from_slice(b"GGUF");
         bytes.extend_from_slice(&3u32.to_le_bytes()); // version
@@ -327,14 +332,14 @@ mod tests {
         let arch_val = "qwen3";
         bytes.extend_from_slice(&(arch_val.len() as u64).to_le_bytes());
         bytes.extend_from_slice(arch_val.as_bytes());
-        std::fs::write(&path, &bytes).unwrap();
-        path
+        bytes
     }
 
-    fn fixture() -> (TempDir, String, PathBuf) {
-        let tmp = tempdir().unwrap();
-        let gguf = write_synth_gguf(tmp.path());
-        let path = tmp.path().join("ananke.toml");
+    fn fixture() -> (Arc<dyn Fs>, String, PathBuf) {
+        let fs = InMemoryFs::new();
+        let gguf_path = PathBuf::from("/cfg/demo.gguf");
+        fs.insert(&gguf_path, synth_gguf_bytes());
+        let path = PathBuf::from("/cfg/ananke.toml");
         let toml = format!(
             r#"
 [daemon]
@@ -352,24 +357,28 @@ devices.placement = "cpu-only"
 devices.placement_override = {{ cpu = 100 }}
 lifecycle = "on_demand"
 "#,
-            model = gguf.display()
+            model = gguf_path.display()
         );
-        std::fs::write(&path, &toml).unwrap();
-        (tmp, toml, path)
+        fs.write(&path, toml.as_bytes()).unwrap();
+        (Arc::new(fs), toml, path)
     }
 
     #[tokio::test]
     async fn apply_rejects_stale_if_match() {
-        let (_tmp, toml, path) = fixture();
-        let manager = ConfigManager::open(path, EventBus::new()).await.unwrap();
+        let (fs, toml, path) = fixture();
+        let manager = ConfigManager::open_with_fs(path, EventBus::new(), fs)
+            .await
+            .unwrap();
         let result = manager.apply(toml, "wrong-hash".to_string()).await;
         assert!(matches!(result, Err(ApplyError::HashMismatch { .. })));
     }
 
     #[tokio::test]
     async fn apply_writes_and_reloads_on_valid_input() {
-        let (_tmp, toml, path) = fixture();
-        let manager = ConfigManager::open(path, EventBus::new()).await.unwrap();
+        let (fs, toml, path) = fixture();
+        let manager = ConfigManager::open_with_fs(path, EventBus::new(), fs)
+            .await
+            .unwrap();
         let (_current, hash) = manager.raw();
         let new_toml = toml.replace("\"demo\"", "\"demo2\"");
         let result = manager.apply(new_toml.clone(), hash).await;
@@ -382,8 +391,10 @@ lifecycle = "on_demand"
 
     #[tokio::test]
     async fn apply_rejects_invalid_toml() {
-        let (_tmp, _toml, path) = fixture();
-        let manager = ConfigManager::open(path, EventBus::new()).await.unwrap();
+        let (fs, _toml, path) = fixture();
+        let manager = ConfigManager::open_with_fs(path, EventBus::new(), fs)
+            .await
+            .unwrap();
         let (_, hash) = manager.raw();
         let bad = "this is not toml";
         let result = manager.apply(bad.to_string(), hash).await;

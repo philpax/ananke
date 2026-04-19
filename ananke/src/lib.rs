@@ -11,5 +11,6 @@ pub mod estimator;
 pub mod gguf;
 pub mod oneshot;
 pub mod supervise;
+pub mod system;
 pub mod templates;
 pub mod tracking;

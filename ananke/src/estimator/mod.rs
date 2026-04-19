@@ -17,13 +17,18 @@ pub use types::{Estimate, NonLayer};
 use crate::{
     config::ServiceConfig,
     gguf::{self, GgufSummary},
+    system::Fs,
 };
 
 /// Produce a base estimate for `svc`. Reads the GGUF (including any
-/// mmproj) and dispatches on `general.architecture`. Pure function;
-/// caller applies rolling correction + safety factor afterward.
-pub fn estimate_from_path(path: &Path, svc: &ServiceConfig) -> Result<Estimate, String> {
-    let summary = gguf::read(path).map_err(|e| e.to_string())?;
+/// mmproj) through `fs` and dispatches on `general.architecture`. Pure
+/// function; caller applies rolling correction + safety factor afterward.
+pub fn estimate_from_path(
+    fs: &dyn Fs,
+    path: &Path,
+    svc: &ServiceConfig,
+) -> Result<Estimate, String> {
+    let summary = gguf::read(fs, path).map_err(|e| e.to_string())?;
 
     info!(
         service = %svc.name,
@@ -57,7 +62,7 @@ pub fn estimate_from_path(path: &Path, svc: &ServiceConfig) -> Result<Estimate, 
 
     // Add mmproj bytes to GPU 0 weights (per spec §8.3).
     if let Some(mmproj) = lc.mmproj.as_ref() {
-        match gguf::read(mmproj.as_path()) {
+        match gguf::read(fs, mmproj.as_path()) {
             Ok(proj) => {
                 est.weights_bytes = est.weights_bytes.saturating_add(proj.total_tensor_bytes);
                 est.non_layer.other_bytes = est

@@ -47,7 +47,6 @@ mod tests {
     use std::sync::Arc;
 
     use smol_str::SmolStr;
-    use tempfile::tempdir;
 
     use super::*;
     use crate::{
@@ -59,8 +58,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn insert_and_get() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let mut svc = minimal_service("demo");
         svc.lifecycle = Lifecycle::Persistent;
         let effective = Arc::new(crate::config::EffectiveConfig {
@@ -92,6 +90,7 @@ mod tests {
             registry: ServiceRegistry::new(),
             effective,
             events: crate::daemon::events::EventBus::new(),
+            fs: Arc::new(crate::system::InMemoryFs::new()),
         };
         let handle = Arc::new(spawn_supervisor(init, deps));
 

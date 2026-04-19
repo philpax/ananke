@@ -41,7 +41,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "smol_str",
- "tempfile",
  "toasty",
  "tokio",
  "tokio-stream",

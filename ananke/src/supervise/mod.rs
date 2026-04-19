@@ -239,6 +239,7 @@ pub struct SupervisorDeps {
     pub registry: ServiceRegistry,
     pub effective: Arc<EffectiveConfig>,
     pub events: EventBus,
+    pub fs: Arc<dyn crate::system::Fs>,
 }
 
 /// Per-service initialisation for a single supervisor task.
@@ -701,7 +702,7 @@ impl RunLoop {
             .ok_or_else(|| "no model path configured".to_string())?
             .model
             .clone();
-        let mut est = crate::estimator::estimate_from_path(&model_path, svc)
+        let mut est = crate::estimator::estimate_from_path(self.deps.fs.as_ref(), &model_path, svc)
             .map_err(|e| format!("estimator: {e}"))?;
         // Apply rolling correction to weights_bytes.
         let rc = self.deps.rolling.get(&svc.name);

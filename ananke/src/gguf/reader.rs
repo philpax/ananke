@@ -7,7 +7,6 @@
 
 use std::{
     collections::BTreeMap,
-    fs::File,
     io::{BufReader, Read},
     path::Path,
 };
@@ -15,6 +14,7 @@ use std::{
 use smol_str::SmolStr;
 
 use super::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
+use crate::system::Fs;
 
 const MAGIC: &[u8; 4] = b"GGUF";
 
@@ -29,8 +29,10 @@ impl std::fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
-pub fn read_single(path: &Path) -> Result<GgufSummary, ReadError> {
-    let file = File::open(path).map_err(|e| ReadError(format!("open {}: {e}", path.display())))?;
+pub fn read_single(fs: &dyn Fs, path: &Path) -> Result<GgufSummary, ReadError> {
+    let file = fs
+        .open(path)
+        .map_err(|e| ReadError(format!("open {}: {e}", path.display())))?;
     let mut r = BufReader::new(file);
 
     let mut magic = [0u8; 4];
@@ -285,10 +287,8 @@ mod tests {
 
     #[test]
     fn parses_synthetic_header() {
-        let bytes = synth_gguf();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), &bytes).unwrap();
-        let summary = read_single(tmp.path()).unwrap();
+        let fs = crate::system::InMemoryFs::new().with("/fake.gguf", synth_gguf());
+        let summary = read_single(&fs, Path::new("/fake.gguf")).unwrap();
         assert_eq!(summary.architecture, "qwen3");
         assert_eq!(summary.block_count, Some(36));
         assert_eq!(summary.tensors.len(), 1);
@@ -299,9 +299,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), b"XXXXdata").unwrap();
-        let err = read_single(tmp.path()).unwrap_err();
+        let fs = crate::system::InMemoryFs::new().with("/bad.gguf", b"XXXXdata".to_vec());
+        let err = read_single(&fs, Path::new("/bad.gguf")).unwrap_err();
         assert!(err.0.contains("bad magic"));
     }
 }

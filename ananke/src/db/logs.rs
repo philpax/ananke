@@ -209,8 +209,6 @@ async fn flush(
 mod tests {
     use std::time::Duration;
 
-    use tempfile::tempdir;
-
     use super::*;
     use crate::db::Database;
 
@@ -221,8 +219,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn flushes_on_threshold() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let h = spawn(db.clone());
 
@@ -242,8 +239,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn flushes_on_interval() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("b.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let h = spawn(db.clone());
 
@@ -263,8 +259,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn seq_is_per_service_run_monotonic() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("c.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let h = spawn(db.clone());
 

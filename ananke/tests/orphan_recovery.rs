@@ -2,18 +2,17 @@
 
 mod common;
 
+use std::path::Path;
+
 use ananke::{
     db::{Database, models::RunningService},
     supervise::{OrphanDisposition, reconcile},
+    system::InMemoryFs,
 };
-use tempfile::tempdir;
 
 #[tokio::test]
 async fn cleans_row_for_dead_pid() {
-    let tmp = tempdir().expect("tempdir");
-    let db = Database::open(&tmp.path().join("ananke.sqlite"))
-        .await
-        .expect("open db");
+    let db = Database::open_in_memory().await.expect("open db");
 
     // Register a service so the foreign key is satisfied.
     let service_id = db
@@ -22,8 +21,8 @@ async fn cleans_row_for_dead_pid() {
         .expect("upsert_service");
 
     // Insert a running_services row pointing at PID 99999, which is extremely
-    // unlikely to exist and, even if it did, /proc/99999 won't exist under our
-    // fake procfs root.
+    // unlikely to exist. Our in-memory fs has no entry under /proc/99999,
+    // so reconcile must clean the row.
     let mut handle = db.handle();
     toasty::create!(RunningService {
         service_id,
@@ -38,11 +37,8 @@ async fn cleans_row_for_dead_pid() {
     .await
     .expect("insert row");
 
-    // Use a tempdir as the procfs root — /proc/99999 does not exist there.
-    let fake_proc = tmp.path().join("proc");
-    std::fs::create_dir_all(&fake_proc).expect("create fake proc");
-
-    let dispositions = reconcile(&db, &fake_proc).await;
+    let fs = InMemoryFs::new();
+    let dispositions = reconcile(&fs, &db, Path::new("/proc")).await;
 
     assert_eq!(dispositions.len(), 1);
     assert!(
@@ -54,7 +50,6 @@ async fn cleans_row_for_dead_pid() {
         dispositions[0]
     );
 
-    // Confirm the row was actually removed.
     let remaining: Vec<RunningService> = RunningService::all()
         .exec(&mut handle)
         .await

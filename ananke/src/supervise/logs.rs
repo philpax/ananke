@@ -69,7 +69,6 @@ async fn pump<R: AsyncBufReadExt + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
     use tokio::process::Command;
 
     use super::*;
@@ -77,8 +76,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn pumps_echoed_lines() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let batcher = spawn_batcher(db.clone());
 

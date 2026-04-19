@@ -33,6 +33,20 @@ impl Database {
             .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
 
         let url = format!("sqlite://{}", path.display());
+        Self::connect(url, path.to_path_buf()).await
+    }
+
+    /// Open a purely in-memory database. Intended for tests that want to
+    /// exercise the full DB surface (schema + queries) without touching
+    /// disk. Skips the file-persistent pragmas (`auto_vacuum`,
+    /// `journal_mode = WAL`) since they're meaningless for an in-memory
+    /// handle.
+    pub async fn open_in_memory() -> Result<Self, ExpectedError> {
+        let synthetic = PathBuf::from(":memory:");
+        Self::connect("sqlite::memory:".to_string(), synthetic).await
+    }
+
+    async fn connect(url: String, path: PathBuf) -> Result<Self, ExpectedError> {
         let db = Db::builder()
             .models(toasty::models!(
                 models::Service,
@@ -44,16 +58,13 @@ impl Database {
             ))
             .connect(&url)
             .await
-            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
+            .map_err(|e| ExpectedError::database_open_failed(path.clone(), e.to_string()))?;
 
         db.push_schema()
             .await
-            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
+            .map_err(|e| ExpectedError::database_open_failed(path.clone(), e.to_string()))?;
 
-        Ok(Self {
-            db,
-            path: path.to_path_buf(),
-        })
+        Ok(Self { db, path })
     }
 
     pub fn path(&self) -> &Path {
@@ -147,25 +158,11 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     #[tokio::test]
-    async fn opens_and_creates_tables() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("ananke.sqlite"))
-            .await
-            .unwrap();
-        // If push_schema succeeded, the services table exists: upsert works.
-        let id = db.upsert_service("probe", 0).await.unwrap();
-        assert!(id > 0);
-    }
-
-    #[tokio::test]
     async fn upsert_service_is_idempotent() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let id1 = db.upsert_service("demo", 1000).await.unwrap();
         let id2 = db.upsert_service("demo", 2000).await.unwrap();
         assert_eq!(id1, id2);
@@ -173,13 +170,12 @@ mod tests {
 
     #[tokio::test]
     async fn reparent_renames_when_only_old_exists() {
-        let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let db = Database::open_in_memory().await.unwrap();
         let original = db.upsert_service("old-name", 1000).await.unwrap();
         db.reparent("old-name", "new-name", 2000).await.unwrap();
 
-        // old-name should resolve to a fresh row (it was renamed, so no row exists
-        // under old-name); new-name should be the renamed row.
+        // old-name should resolve to a fresh row (it was renamed, so no row
+        // exists under old-name); new-name should be the renamed row.
         let new_id = db.upsert_service("new-name", 3000).await.unwrap();
         assert_eq!(new_id, original);
     }

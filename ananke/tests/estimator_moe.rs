@@ -3,13 +3,15 @@
 
 mod common;
 
+use std::path::Path;
+
 use ananke::estimator;
 use common::synth_gguf;
 
 #[test]
 fn moe_estimator_identifies_expert_layers() {
-    let file = synth_gguf::tempfile("moe");
-    synth_gguf::Builder::new()
+    let path = Path::new("/fake/moe.gguf");
+    let fs = synth_gguf::Builder::new()
         .kv_string("general.architecture", "qwen3moe")
         .kv_u32("qwen3moe.block_count", 3)
         .kv_u32("qwen3moe.attention.head_count_kv", 4)
@@ -24,10 +26,10 @@ fn moe_estimator_identifies_expert_layers() {
         .tensor_f16("blk.1.ffn_gate_exps.weight", 8 * 512 * 1024)
         .tensor_f16("blk.2.ffn_up_exps.weight", 2 * 512 * 1024)
         .tensor_f16("output.weight", 512 * 1024)
-        .write_to(file.path());
+        .into_in_memory_fs(path);
 
     let svc = common::minimal_llama_service("demo", 0);
-    let est = estimator::estimate_from_path(file.path(), &svc).unwrap();
+    let est = estimator::estimate_from_path(&fs, path, &svc).unwrap();
     assert!(
         !est.expert_layers.is_empty(),
         "expert_layers must be non-empty"
