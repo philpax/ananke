@@ -24,7 +24,11 @@ async fn sse_chunks_arrive_incrementally() {
     let proxy_addr: SocketAddr = format!("127.0.0.1:{proxy_port}").parse().unwrap();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    tokio::spawn(ananke::proxy::serve(proxy_addr, echo_port, shutdown_rx));
+    tokio::spawn(ananke::api::proxy::serve(
+        proxy_addr,
+        echo_port,
+        shutdown_rx,
+    ));
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

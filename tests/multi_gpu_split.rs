@@ -10,14 +10,13 @@ mod common;
 use std::collections::BTreeMap;
 
 use ananke::{
-    allocator::AllocationTable,
+    allocator::{AllocationTable, placement},
     config::{
         AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
         Template, parse::RawService,
     },
     devices::{DeviceId, DeviceSnapshot, GpuSnapshot},
     estimator::{Estimate, NonLayer},
-    placement,
 };
 use smol_str::SmolStr;
 

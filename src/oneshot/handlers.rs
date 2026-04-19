@@ -14,8 +14,8 @@ use ulid::Ulid;
 use utoipa::ToSchema;
 
 use crate::{
-    app_state::AppState,
     config::validate::parse_duration_ms,
+    daemon::app_state::AppState,
     oneshot::{OneshotId, OneshotRecord},
 };
 
@@ -191,7 +191,7 @@ pub async fn delete_oneshot(State(state): State<AppState>, Path(id): Path<String
     // Signal the supervisor to drain.
     if let Some(handle) = state.registry.get(&record.service_name) {
         handle
-            .begin_drain(crate::drain::DrainReason::UserKilled)
+            .begin_drain(crate::supervise::drain::DrainReason::UserKilled)
             .await;
     }
 

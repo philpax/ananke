@@ -24,7 +24,7 @@ async fn api_devices_reflects_snapshot() {
         }),
         taken_at_ms: 0,
     };
-    let app = ananke::management_api::router(h.state.clone());
+    let app = ananke::api::management::router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/devices")

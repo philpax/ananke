@@ -2,7 +2,7 @@
 
 use axum::{Router, extract::Path, response::Response, routing::any};
 
-use crate::{app_state::AppState, openai_api::errors};
+use crate::{api::openai::errors, daemon::app_state::AppState};
 
 pub fn register(router: Router, _state: AppState) -> Router {
     router

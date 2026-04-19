@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use ananke::balloon::detect_growth;
+use ananke::allocator::balloon::detect_growth;
 
 #[test]
 fn growing_window_with_floor_detected() {

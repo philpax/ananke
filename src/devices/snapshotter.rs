@@ -19,8 +19,8 @@ use tracing::{debug, warn};
 
 use crate::{
     devices::{CpuSnapshot, DeviceSnapshot, GpuProbe, GpuSnapshot, cpu},
-    observation::{ObservationTable, read_vm_rss},
-    service_registry::ServiceRegistry,
+    supervise::registry::ServiceRegistry,
+    tracking::observation::{ObservationTable, read_vm_rss},
 };
 
 pub type SharedSnapshot = Arc<RwLock<DeviceSnapshot>>;
@@ -148,8 +148,8 @@ mod tests {
             fake::{FakeGpu, FakeProbe},
             probe::GpuInfo,
         },
-        observation::ObservationTable,
-        service_registry::ServiceRegistry,
+        supervise::registry::ServiceRegistry,
+        tracking::observation::ObservationTable,
     };
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

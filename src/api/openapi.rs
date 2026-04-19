@@ -9,10 +9,12 @@ use axum::{
 use utoipa::OpenApi;
 
 use crate::{
-    app_state::AppState,
-    management_api::{handlers as mgmt_handlers, types as mgmt_types},
+    api::{
+        management::{handlers as mgmt_handlers, types as mgmt_types},
+        openai::{errors as openai_errors, handlers as openai_handlers, schema as openai_schema},
+    },
+    daemon::app_state::AppState,
     oneshot::handlers as oneshot_handlers,
-    openai_api::{errors as openai_errors, handlers as openai_handlers, schema as openai_schema},
 };
 
 #[derive(OpenApi)]

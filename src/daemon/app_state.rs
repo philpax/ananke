@@ -6,16 +6,16 @@ use parking_lot::Mutex;
 use smol_str::SmolStr;
 
 use crate::{
-    activity::ActivityTable,
     allocator::AllocationTable,
     config::EffectiveConfig,
     db::{Database, logs::BatcherHandle},
-    inflight::InflightTable,
-    observation::ObservationTable,
+    devices::snapshotter::SharedSnapshot,
     oneshot::{OneshotId, OneshotRecord, OneshotRegistry, PortPool},
-    rolling::RollingTable,
-    service_registry::ServiceRegistry,
-    snapshotter::SharedSnapshot,
+    supervise::registry::ServiceRegistry,
+    tracking::{
+        activity::ActivityTable, inflight::InflightTable, observation::ObservationTable,
+        rolling::RollingTable,
+    },
 };
 
 #[derive(Clone)]

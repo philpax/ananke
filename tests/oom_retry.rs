@@ -1,7 +1,7 @@
 //! Integration test: `bump_for_oom_retry` increases the rolling mean so the
 //! next spawn attempt reserves more memory.
 
-use ananke::rolling::RollingTable;
+use ananke::tracking::rolling::RollingTable;
 use smol_str::SmolStr;
 
 #[test]

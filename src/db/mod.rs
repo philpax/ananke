@@ -3,6 +3,7 @@
 pub mod logs;
 pub mod models;
 pub mod pragma;
+pub mod retention;
 
 use std::path::{Path, PathBuf};
 

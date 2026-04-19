@@ -1,31 +1,15 @@
 //! Ananke — GPU/CPU-aware model proxy daemon.
 
-pub mod activity;
 pub mod allocator;
-pub mod app_state;
-pub mod balloon;
+pub mod api;
 pub mod config;
 pub mod daemon;
 pub mod db;
 pub mod devices;
-pub mod drain;
 pub mod errors;
 pub mod estimator;
-pub mod eviction;
 pub mod gguf;
-pub mod inflight;
-pub mod management_api;
-pub mod observation;
 pub mod oneshot;
-pub mod openai_api;
-pub mod openapi;
-pub mod placement;
-pub mod proxy;
-pub mod retention;
-pub mod rolling;
-pub mod service_registry;
-pub mod signals;
-pub mod snapshotter;
-pub mod state;
 pub mod supervise;
 pub mod templates;
+pub mod tracking;

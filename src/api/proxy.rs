@@ -23,7 +23,7 @@ use hyper_util::{
 use tokio::{net::TcpListener, sync::watch};
 use tracing::{info, warn};
 
-use crate::{errors::ExpectedError, inflight::InflightGuard};
+use crate::{errors::ExpectedError, tracking::inflight::InflightGuard};
 
 /// Boxed body type used for both upstream requests and downstream responses.
 type ProxyBody =

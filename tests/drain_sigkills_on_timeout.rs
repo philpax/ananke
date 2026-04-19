@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use ananke::drain::{DrainConfig, DrainReason, drain_pipeline};
+use ananke::supervise::drain::{DrainConfig, DrainReason, drain_pipeline};
 
 #[tokio::test(flavor = "current_thread")]
 async fn sigkill_after_sigterm_grace() {

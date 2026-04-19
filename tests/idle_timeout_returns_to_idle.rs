@@ -3,7 +3,7 @@
 
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -20,7 +20,7 @@ async fn service_returns_to_idle_after_timeout_and_restarts() {
     let h = build_harness(vec![svc]).await;
 
     // First request: the service is idle, so this triggers a spawn and returns 200.
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
     let body = r#"{"model":"alpha","messages":[]}"#;
     let req = Request::builder()
         .method("POST")

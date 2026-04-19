@@ -2,7 +2,7 @@
 
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -13,7 +13,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "current_thread")]
 async fn first_request_triggers_spawn_and_serves() {
     let h = build_harness(vec![minimal_llama_service("alpha", 0)]).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
 
     let body = r#"{"model":"alpha","messages":[]}"#;
     let req = Request::builder()

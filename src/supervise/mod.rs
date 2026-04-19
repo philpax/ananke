@@ -1,9 +1,12 @@
 //! Service supervision: per-service tokio tasks, child lifetimes, health loops.
 
+pub mod drain;
 pub mod health;
 pub mod logs;
 pub mod orphans;
+pub mod registry;
 pub mod spawn;
+pub mod state;
 
 use std::{
     os::unix::process::ExitStatusExt,
@@ -27,15 +30,14 @@ use crate::{
     config::validate::{EffectiveConfig, ServiceConfig},
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
-    observation::ObservationTable,
-    rolling::RollingTable,
-    service_registry::ServiceRegistry,
-    state::{DisableReason, Event as StateEvent, ServiceState, transition},
     supervise::{
         health::{HealthConfig, HealthOutcome, wait_healthy},
         logs::{spawn_pump_stderr, spawn_pump_stdout},
+        registry::ServiceRegistry,
         spawn::spawn_child,
+        state::{DisableReason, Event as StateEvent, ServiceState, transition},
     },
+    tracking::{observation::ObservationTable, rolling::RollingTable},
 };
 
 #[derive(Debug)]
@@ -58,12 +60,12 @@ pub enum SupervisorCommand {
     ActivityPing,
     /// Enter the full drain pipeline for eviction / TTL / user-kill.
     BeginDrain {
-        reason: crate::drain::DrainReason,
+        reason: crate::supervise::drain::DrainReason,
         ack: tokio::sync::oneshot::Sender<()>,
     },
     /// Balloon-resolver fast-path: 5 s SIGTERM grace then SIGKILL.
     FastKill {
-        reason: crate::drain::DrainReason,
+        reason: crate::supervise::drain::DrainReason,
         ack: tokio::sync::oneshot::Sender<()>,
     },
 }
@@ -156,7 +158,7 @@ impl SupervisorHandle {
         let _ = self.tx.try_send(SupervisorCommand::ActivityPing);
     }
 
-    pub async fn begin_drain(&self, reason: crate::drain::DrainReason) {
+    pub async fn begin_drain(&self, reason: crate::supervise::drain::DrainReason) {
         let (ack, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .tx
@@ -165,7 +167,7 @@ impl SupervisorHandle {
         let _ = rx.await;
     }
 
-    pub async fn fast_kill(&self, reason: crate::drain::DrainReason) {
+    pub async fn fast_kill(&self, reason: crate::supervise::drain::DrainReason) {
         let (ack, rx) = tokio::sync::oneshot::channel();
         let _ = self
             .tx
@@ -183,7 +185,7 @@ pub fn spawn_supervisor(
     batcher: BatcherHandle,
     service_id: i64,
     last_activity: Arc<AtomicU64>,
-    snapshot: crate::snapshotter::SharedSnapshot,
+    snapshot: crate::devices::snapshotter::SharedSnapshot,
     allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
     rolling: RollingTable,
     observation: ObservationTable,
@@ -224,7 +226,7 @@ async fn run(
     batcher: BatcherHandle,
     service_id: i64,
     last_activity: Arc<AtomicU64>,
-    snapshot: crate::snapshotter::SharedSnapshot,
+    snapshot: crate::devices::snapshotter::SharedSnapshot,
     allocations: Arc<parking_lot::Mutex<crate::allocator::AllocationTable>>,
     rolling: RollingTable,
     observation: ObservationTable,
@@ -241,7 +243,7 @@ async fn run(
     let mut start_bus_carry: Option<tokio::sync::broadcast::Sender<StartOutcome>> = None;
     // Carries the placement-derived CommandArgs from Idle (where they are
     // computed) into Starting (where render_argv consumes them).
-    let mut packed_for_spawn: Option<crate::placement::Packed> = None;
+    let mut packed_for_spawn: Option<crate::allocator::placement::Packed> = None;
     // OOM retry state: counts consecutive OOM kills for the current service.
     let mut oom_attempts: u32 = 0;
     // Stash the total reserved bytes (in bytes) from the Ensure path so the
@@ -334,8 +336,9 @@ async fn run(
                                 est.weights_bytes =
                                     (est.weights_bytes as f64 * rc.rolling_mean) as u64;
 
-                                let packed = match crate::placement::pack(&est, &svc, &snap, &table)
-                                {
+                                let packed = match crate::allocator::placement::pack(
+                                    &est, &svc, &snap, &table,
+                                ) {
                                     Ok(p) => p,
                                     Err(e) => {
                                         let _ = ack.send(EnsureResponse::Unavailable {
@@ -375,7 +378,7 @@ async fn run(
                                 crate::allocator::can_fit(&want, &snap, &table, Some(&svc.name))
                             {
                                 // Try eviction before giving up.
-                                let candidates: Vec<crate::eviction::EvictionCandidate> = {
+                                let candidates: Vec<crate::allocator::eviction::EvictionCandidate> = {
                                     let all_services = registry.all();
                                     let mut out = Vec::new();
                                     for (_name, handle) in all_services {
@@ -401,7 +404,7 @@ async fn run(
                                             .find(|s| s.name == handle.name)
                                             .map(|c| c.priority)
                                             .unwrap_or(50);
-                                        out.push(crate::eviction::EvictionCandidate {
+                                        out.push(crate::allocator::eviction::EvictionCandidate {
                                             name: handle.name.clone(),
                                             priority,
                                             idle,
@@ -413,7 +416,7 @@ async fn run(
 
                                 let reservations_now = allocations.lock().clone();
                                 let free_on_slot = snap.free_bytes(&nofit.slot).unwrap_or(0);
-                                let to_evict = crate::eviction::select_for_slot(
+                                let to_evict = crate::allocator::eviction::select_for_slot(
                                     nofit.needed_bytes,
                                     &nofit.slot,
                                     svc.priority,
@@ -436,7 +439,9 @@ async fn run(
                                 for victim in &to_evict {
                                     if let Some(handle) = registry.get(victim) {
                                         handle
-                                            .begin_drain(crate::drain::DrainReason::Eviction)
+                                            .begin_drain(
+                                                crate::supervise::drain::DrainReason::Eviction,
+                                            )
                                             .await;
                                     }
                                 }
@@ -714,16 +719,16 @@ async fn run(
                                                             }
                                                             Some(SupervisorCommand::BeginDrain { reason, ack }) => {
                                                                 info!(service = %svc.name, ?reason, "BeginDrain received; draining");
-                                                                state = crate::state::ServiceState::Draining;
+                                                                state = crate::supervise::state::ServiceState::Draining;
                                                                 *state_mirror.lock() = state.clone();
 
-                                                                let cfg = crate::drain::DrainConfig {
+                                                                let cfg = crate::supervise::drain::DrainConfig {
                                                                     max_request_duration: Duration::from_millis(svc.max_request_duration_ms),
                                                                     drain_timeout: Duration::from_millis(svc.drain_timeout_ms),
                                                                     extended_stream_drain: Duration::from_millis(svc.extended_stream_drain_ms),
                                                                     sigterm_grace: Duration::from_secs(10),
                                                                 };
-                                                                crate::drain::drain_pipeline(&mut child, &cfg, inflight.clone(), reason).await;
+                                                                crate::supervise::drain::drain_pipeline(&mut child, &cfg, inflight.clone(), reason).await;
 
                                                                 delete_running_row(&db, service_id, run_id).await;
                                                                 rolling.update(&svc.name, observation.read_peak(&svc.name), base_total_bytes_for_rolling);
@@ -737,10 +742,10 @@ async fn run(
                                                             }
                                                             Some(SupervisorCommand::FastKill { reason, ack }) => {
                                                                 info!(service = %svc.name, ?reason, "FastKill received");
-                                                                state = crate::state::ServiceState::Draining;
+                                                                state = crate::supervise::state::ServiceState::Draining;
                                                                 *state_mirror.lock() = state.clone();
 
-                                                                crate::drain::fast_kill(&mut child, reason).await;
+                                                                crate::supervise::drain::fast_kill(&mut child, reason).await;
 
                                                                 delete_running_row(&db, service_id, run_id).await;
                                                                 allocations.lock().remove(&svc.name);

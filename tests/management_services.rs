@@ -13,7 +13,7 @@ async fn api_services_lists_registered() {
         minimal_llama_service("beta", 0),
     ])
     .await;
-    let app = ananke::management_api::router(h.state.clone());
+    let app = ananke::api::management::router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/services")
@@ -36,7 +36,7 @@ async fn api_services_lists_registered() {
 #[tokio::test(flavor = "current_thread")]
 async fn api_service_detail_by_name() {
     let h = build_harness(vec![minimal_llama_service("alpha", 12345)]).await;
-    let app = ananke::management_api::router(h.state.clone());
+    let app = ananke::api::management::router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/services/alpha")

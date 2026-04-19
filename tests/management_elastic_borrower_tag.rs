@@ -7,7 +7,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "current_thread")]
 async fn api_services_includes_elastic_borrower_field() {
     let h = build_harness(vec![minimal_llama_service("alpha", 0)]).await;
-    let app = ananke::management_api::router(h.state.clone());
+    let app = ananke::api::management::router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/services/alpha")

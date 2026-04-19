@@ -4,7 +4,7 @@
 
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -17,7 +17,7 @@ async fn placement_override_service_responds_200() {
     // `minimal_llama_service` sets a Cpu placement_override, so the supervisor
     // should skip the estimator and use the declared bytes directly.
     let h = build_harness(vec![minimal_llama_service("override-svc", 0)]).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
 
     let body = r#"{"model":"override-svc","messages":[{"role":"user","content":"hi"}]}"#;
     let req = Request::builder()

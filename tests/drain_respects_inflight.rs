@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use ananke::drain::{DrainConfig, DrainReason, drain_pipeline};
+use ananke::supervise::drain::{DrainConfig, DrainReason, drain_pipeline};
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn waits_for_inflight_zero() {

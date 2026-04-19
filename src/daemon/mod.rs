@@ -1,6 +1,9 @@
 //! Top-level daemon orchestration: wires config, DB, devices, supervisors,
 //! proxies, signals, and retention together.
 
+pub mod app_state;
+pub mod signals;
+
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
@@ -8,23 +11,22 @@ use tokio::{net::TcpListener, sync::watch};
 use tracing::{error, info, warn};
 
 use crate::{
-    activity::ActivityTable,
     allocator::AllocationTable,
-    app_state::AppState,
+    api::proxy,
     config::{AllocationMode, Lifecycle, Migration, load_config},
-    db::{Database, logs::spawn as spawn_batcher},
-    devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe},
+    daemon::{
+        app_state::AppState,
+        signals::{ShutdownKind, await_shutdown},
+    },
+    db::{Database, logs::spawn as spawn_batcher, retention},
+    devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe, snapshotter},
     errors::ExpectedError,
-    inflight::InflightTable,
     oneshot::{OneshotRegistry, PortPool},
-    proxy, retention,
-    service_registry::ServiceRegistry,
-    signals::{ShutdownKind, await_shutdown},
-    snapshotter,
     supervise::{
         EnsureResponse, StartFailureKind, StartOutcome, SupervisorHandle, orphans::reconcile,
-        spawn_supervisor,
+        registry::ServiceRegistry, spawn_supervisor,
     },
+    tracking::{activity::ActivityTable, inflight::InflightTable},
 };
 
 pub async fn run() -> Result<(), ExpectedError> {
@@ -67,8 +69,8 @@ pub async fn run() -> Result<(), ExpectedError> {
     let batcher = spawn_batcher(db.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let rolling = crate::rolling::RollingTable::new();
-    let observation = crate::observation::ObservationTable::new();
+    let rolling = crate::tracking::rolling::RollingTable::new();
+    let observation = crate::tracking::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
 
     let shared_snapshot = snapshotter::new_shared();
@@ -219,13 +221,13 @@ pub async fn run() -> Result<(), ExpectedError> {
             min_borrower_runtime_ms,
         } = svc.allocation_mode
         {
-            let cfg = crate::balloon::BalloonConfig {
+            let cfg = crate::allocator::balloon::BalloonConfig {
                 min_mb,
                 max_mb,
                 min_borrower_runtime: Duration::from_millis(min_borrower_runtime_ms),
                 margin_bytes: 512 * 1024 * 1024,
             };
-            let join = crate::balloon::spawn_resolver(
+            let join = crate::allocator::balloon::spawn_resolver(
                 svc.name.clone(),
                 cfg,
                 svc.priority,
@@ -266,7 +268,7 @@ pub async fn run() -> Result<(), ExpectedError> {
             .map_err(|e: std::net::AddrParseError| {
                 ExpectedError::bind_failed(effective.daemon.openai_listen.clone(), e.to_string())
             })?;
-    let openai_router = crate::openai_api::router(app_state.clone());
+    let openai_router = crate::api::openai::router(app_state.clone());
     let openai_listener = TcpListener::bind(openai_listen)
         .await
         .map_err(|e| ExpectedError::bind_failed(openai_listen.to_string(), e.to_string()))?;
@@ -290,7 +292,7 @@ pub async fn run() -> Result<(), ExpectedError> {
                     e.to_string(),
                 )
             })?;
-    let mgmt_router = crate::management_api::router(app_state.clone());
+    let mgmt_router = crate::api::management::router(app_state.clone());
     let mgmt_listener = TcpListener::bind(mgmt_listen)
         .await
         .map_err(|e| ExpectedError::bind_failed(mgmt_listen.to_string(), e.to_string()))?;

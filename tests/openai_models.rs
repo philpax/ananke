@@ -1,6 +1,6 @@
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;
@@ -12,7 +12,7 @@ async fn get_v1_models_lists_registered_services() {
         minimal_llama_service("beta", 0),
     ])
     .await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/v1/models")

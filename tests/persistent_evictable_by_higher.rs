@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use ananke::{
+    allocator::eviction::{EvictionCandidate, select_for_slot},
     config::validate::DeviceSlot,
-    eviction::{EvictionCandidate, select_for_slot},
 };
 use smol_str::SmolStr;
 

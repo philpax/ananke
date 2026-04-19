@@ -20,19 +20,16 @@ pub fn free_port() -> u16 {
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use ananke::{
-    activity::ActivityTable,
     allocator::AllocationTable,
-    app_state::AppState,
     config::{
         AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
         Lifecycle, PlacementPolicy, ServiceConfig, Template, parse::RawService,
     },
+    daemon::app_state::AppState,
     db::{Database, logs::spawn as spawn_batcher},
-    devices::{Allocation, CpuSnapshot, DeviceSnapshot},
-    inflight::InflightTable,
-    service_registry::ServiceRegistry,
-    snapshotter,
-    supervise::{SupervisorHandle, spawn_supervisor},
+    devices::{Allocation, CpuSnapshot, DeviceSnapshot, snapshotter},
+    supervise::{SupervisorHandle, registry::ServiceRegistry, spawn_supervisor},
+    tracking::{activity::ActivityTable, inflight::InflightTable},
 };
 use parking_lot::Mutex;
 use smol_str::SmolStr;
@@ -99,15 +96,15 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         taken_at_ms: 0,
     };
 
-    let rolling = ananke::rolling::RollingTable::new();
-    let observation = ananke::observation::ObservationTable::new();
+    let rolling = ananke::tracking::rolling::RollingTable::new();
+    let observation = ananke::tracking::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
         let service_id = db.upsert_service(&svc.name, 0).await.unwrap();
         let alloc = Allocation::from_override(&svc.placement_override);
         let last_activity = activity.get_or_init(&svc.name);
-        let inflight_counter = ananke::inflight::InflightTable::new().counter(&svc.name);
+        let inflight_counter = ananke::tracking::inflight::InflightTable::new().counter(&svc.name);
         let handle = Arc::new(spawn_supervisor(
             svc.clone(),
             alloc,

@@ -29,7 +29,7 @@ async fn insufficient_vram_returns_503() {
         taken_at_ms: 0,
     };
 
-    let app = ananke::openai_api::router(h.state.clone());
+    let app = ananke::api::openai::router(h.state.clone());
     let body = r#"{"model":"big","messages":[]}"#;
     let req = axum::http::Request::builder()
         .method("POST")

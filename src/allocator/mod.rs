@@ -6,6 +6,10 @@
 //! Future phases replace the in-crate caller with an eviction-capable
 //! one but keep this function as the innermost yes/no.
 
+pub mod balloon;
+pub mod eviction;
+pub mod placement;
+
 use std::collections::BTreeMap;
 
 use smol_str::SmolStr;

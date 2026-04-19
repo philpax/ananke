@@ -1,6 +1,6 @@
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -11,7 +11,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "current_thread")]
 async fn chat_completions_unknown_model_404() {
     let h = build_harness(vec![minimal_llama_service("alpha", 0)]).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
     let body = r#"{"model":"nope","messages":[]}"#;
     let req = Request::builder()
         .method("POST")
@@ -27,7 +27,7 @@ async fn chat_completions_unknown_model_404() {
 #[tokio::test(flavor = "current_thread")]
 async fn chat_completions_routes_through_echo() {
     let h = build_harness(vec![minimal_llama_service("alpha", 0)]).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
     let body = r#"{"model":"alpha","messages":[{"role":"user","content":"hi"}]}"#;
     let req = Request::builder()
         .method("POST")

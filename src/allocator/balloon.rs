@@ -13,8 +13,9 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::{
-    allocator::AllocationTable, drain::DrainReason, observation::ObservationTable,
-    service_registry::ServiceRegistry,
+    allocator::AllocationTable,
+    supervise::{drain::DrainReason, registry::ServiceRegistry},
+    tracking::observation::ObservationTable,
 };
 
 const WINDOW_SIZE: usize = 6;

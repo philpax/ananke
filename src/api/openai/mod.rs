@@ -8,7 +8,7 @@ pub mod unimplemented;
 
 use axum::Router;
 
-use crate::app_state::AppState;
+use crate::daemon::app_state::AppState;
 
 pub fn router(state: AppState) -> Router {
     handlers::register(Router::new(), state)

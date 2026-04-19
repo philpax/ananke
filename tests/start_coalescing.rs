@@ -6,7 +6,7 @@
 
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -18,7 +18,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_first_requests_collapse_into_one_start() {
     let h = build_harness(vec![minimal_llama_service("alpha", 0)]).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
 
     let body = r#"{"model":"alpha","messages":[]}"#;
     let mut join_set = JoinSet::new();

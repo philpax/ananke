@@ -7,12 +7,12 @@ mod common;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use ananke::{
+    api::openai,
     config::{
         AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
         Template, parse::RawService,
     },
     devices::{CpuSnapshot, DeviceSnapshot},
-    openai_api,
 };
 use axum::{
     body::Body,
@@ -89,7 +89,7 @@ async fn no_placement_override_chat_succeeds() {
     };
 
     let h = build_harness_with_snapshot(vec![svc], snapshot).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
 
     let body = r#"{"model":"no-override","messages":[{"role":"user","content":"hi"}]}"#;
     let req = Request::builder()

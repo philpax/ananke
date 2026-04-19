@@ -11,9 +11,8 @@ use tracing::info;
 
 use crate::{
     db::Database,
-    drain::DrainReason,
     oneshot::{OneshotRegistry, PortPool},
-    service_registry::ServiceRegistry,
+    supervise::{drain::DrainReason, registry::ServiceRegistry},
 };
 
 /// Spawn a task that sleeps until `ttl` elapses, then drains the oneshot's

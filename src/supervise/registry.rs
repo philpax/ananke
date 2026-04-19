@@ -112,7 +112,7 @@ mod tests {
         let svc = minimal_svc("demo");
         let alloc = Allocation::from_override(&svc.placement_override);
         let last_activity = Arc::new(AtomicU64::new(0));
-        let snapshot = crate::snapshotter::new_shared();
+        let snapshot = crate::devices::snapshotter::new_shared();
         let allocations = Arc::new(parking_lot::Mutex::new(
             crate::allocator::AllocationTable::new(),
         ));
@@ -136,8 +136,8 @@ mod tests {
             last_activity,
             snapshot,
             allocations,
-            crate::rolling::RollingTable::new(),
-            crate::observation::ObservationTable::new(),
+            crate::tracking::rolling::RollingTable::new(),
+            crate::tracking::observation::ObservationTable::new(),
             inflight,
             registry,
             effective,

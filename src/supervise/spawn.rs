@@ -12,10 +12,10 @@ use nix::sys::signal::Signal;
 use tokio::process::{Child, Command};
 
 use crate::{
+    allocator::placement::CommandArgs,
     config::validate::{PlacementPolicy, ServiceConfig, Template},
     devices::{Allocation, cuda_env},
     errors::ExpectedError,
-    placement::CommandArgs,
 };
 
 pub struct SpawnConfig {

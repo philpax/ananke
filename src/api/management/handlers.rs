@@ -9,11 +9,11 @@ use axum::{
 };
 
 use crate::{
-    app_state::AppState,
-    management_api::types::{
+    api::management::types::{
         DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary,
     },
-    state::ServiceState,
+    daemon::app_state::AppState,
+    supervise::state::ServiceState,
 };
 
 pub fn register(router: Router, state: AppState) -> Router {

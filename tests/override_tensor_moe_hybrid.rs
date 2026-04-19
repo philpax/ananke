@@ -6,13 +6,13 @@ mod common;
 use std::collections::BTreeMap;
 
 use ananke::{
-    allocator::AllocationTable,
+    allocator::{AllocationTable, placement},
     config::{
         AllocationMode, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
         Template, parse::RawService,
     },
     devices::{DeviceSnapshot, GpuSnapshot},
-    estimator, placement,
+    estimator,
 };
 use common::synth_gguf;
 use smol_str::SmolStr;

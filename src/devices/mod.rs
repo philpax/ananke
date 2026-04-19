@@ -5,6 +5,7 @@ pub mod cuda_env;
 pub mod fake;
 pub mod nvml;
 pub mod probe;
+pub mod snapshotter;
 
 use std::collections::BTreeMap;
 

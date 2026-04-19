@@ -1,6 +1,6 @@
 mod common;
 
-use ananke::management_api;
+use ananke::api::management;
 use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;
@@ -8,7 +8,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_json_is_valid() {
     let h = build_harness(vec![minimal_llama_service("alpha", 0)]).await;
-    let app = management_api::router(h.state.clone());
+    let app = management::router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/openapi.json")

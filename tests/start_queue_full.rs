@@ -7,7 +7,7 @@
 
 mod common;
 
-use ananke::openai_api;
+use ananke::api::openai;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -23,7 +23,7 @@ async fn excess_concurrent_requests_get_503_when_queue_full() {
     // fourth concurrent request should overflow and receive 503.
     let svc = service_with_queue_depth("alpha", 0, 2);
     let h = build_harness(vec![svc]).await;
-    let app = openai_api::router(h.state.clone());
+    let app = openai::router(h.state.clone());
 
     let body = r#"{"model":"alpha","messages":[]}"#;
     let mut join_set = JoinSet::new();

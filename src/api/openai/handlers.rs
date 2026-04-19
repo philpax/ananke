@@ -19,17 +19,16 @@ use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::{
-    app_state::AppState,
-    inflight::InflightGuard,
-    openai_api::{
+    api::openai::{
         errors, filters,
         schema::{
             ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing,
             ModelsResponse,
         },
     },
-    state::ServiceState,
-    supervise::{EnsureResponse, StartFailureKind, StartOutcome},
+    daemon::app_state::AppState,
+    supervise::{EnsureResponse, StartFailureKind, StartOutcome, state::ServiceState},
+    tracking::inflight::InflightGuard,
 };
 
 pin_project_lite::pin_project! {
@@ -72,7 +71,7 @@ pub fn register(router: Router, state: AppState) -> Router {
         .route("/v1/completions", post(completions))
         .route("/v1/embeddings", post(embeddings))
         .with_state(state.clone());
-    let stubs: Router = crate::openai_api::unimplemented::register(Router::new(), state);
+    let stubs: Router = crate::api::openai::unimplemented::register(Router::new(), state);
     router.merge(implemented).merge(stubs)
 }
 

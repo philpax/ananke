@@ -1,7 +1,7 @@
 //! Integration test: feeding repeated under-estimate samples to a `RollingTable`
 //! converges the rolling mean above the 1.2 warning threshold.
 
-use ananke::rolling::RollingTable;
+use ananke::tracking::rolling::RollingTable;
 use smol_str::SmolStr;
 
 #[test]

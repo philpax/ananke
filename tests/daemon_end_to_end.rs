@@ -25,7 +25,11 @@ async fn proxy_forwards_plain_request() {
     let proxy_addr: SocketAddr = format!("127.0.0.1:{proxy_port}").parse().unwrap();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    tokio::spawn(ananke::proxy::serve(proxy_addr, echo_port, shutdown_rx));
+    tokio::spawn(ananke::api::proxy::serve(
+        proxy_addr,
+        echo_port,
+        shutdown_rx,
+    ));
 
     // Give both servers a moment to start accepting.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
