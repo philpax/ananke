@@ -313,10 +313,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{
-            parse::RawService,
-            validate::{AllocationMode, Filters, HealthSettings, Lifecycle, Template},
-        },
+        config::validate::test_fixtures::minimal_service,
         devices::{CpuSnapshot, GpuSnapshot},
         estimator::NonLayer,
     };
@@ -324,44 +321,17 @@ mod tests {
     fn svc(policy: PlacementPolicy, gpu_allow: Option<Vec<u32>>) -> ServiceConfig {
         let mut placement = BTreeMap::new();
         placement.insert(DeviceSlot::Gpu(0), 1000);
-        let devices = gpu_allow.map(|a| crate::config::parse::RawServiceDevices {
-            gpu_allow: Some(a),
-            ..Default::default()
-        });
-        let raw = RawService {
-            name: Some(SmolStr::new("demo")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some("/fake".into()),
-            port: Some(0),
-            devices,
-            ..Default::default()
-        };
-        ServiceConfig {
-            name: SmolStr::new("demo"),
-            template: Template::LlamaCpp,
-            port: 0,
-            private_port: 0,
-            lifecycle: Lifecycle::OnDemand,
-            priority: 50,
-            health: HealthSettings {
-                http_path: "/".into(),
-                timeout_ms: 1000,
-                probe_interval_ms: 500,
-            },
-            placement_override: placement,
-            placement_policy: policy,
-            idle_timeout_ms: 60_000,
-            warming_grace_ms: 100,
-            drain_timeout_ms: 1000,
-            extended_stream_drain_ms: 1000,
-            max_request_duration_ms: 1000,
-            filters: Filters::default(),
-            allocation_mode: AllocationMode::None,
-            command: None,
-            workdir: None,
-            openai_compat: true,
-            raw,
+        let mut svc = minimal_service("demo");
+        svc.placement_override = placement;
+        svc.placement_policy = policy;
+        if let Some(a) = gpu_allow {
+            svc.raw.devices = Some(crate::config::parse::RawServiceDevices {
+                gpu_allow: Some(a),
+                ..Default::default()
+            });
         }
+        svc.raw.model = Some("/fake".into());
+        svc
     }
 
     fn snapshot(free_gpu_gb: &[u64]) -> DeviceSnapshot {

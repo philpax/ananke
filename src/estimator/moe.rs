@@ -179,12 +179,8 @@ mod tests {
         use smol_str::SmolStr;
 
         use crate::{
-            config::{
-                parse::RawService,
-                validate::{
-                    AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle,
-                    PlacementPolicy, ServiceConfig, Template,
-                },
+            config::validate::{
+                DeviceSlot, PlacementPolicy, ServiceConfig, test_fixtures::minimal_service,
             },
             gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
         };
@@ -241,44 +237,14 @@ mod tests {
             shards: vec!["/fake".into()],
         };
 
-        let mut placement = std::collections::BTreeMap::new();
-        placement.insert(DeviceSlot::Gpu(0), 1000);
-        let raw = RawService {
-            name: Some(SmolStr::new("demo")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some("/fake".into()),
-            port: Some(0),
-            context: Some(4096),
-            n_cpu_moe: Some(1),
-            flash_attn: Some(true),
-            ..Default::default()
-        };
-        let svc = ServiceConfig {
-            name: SmolStr::new("demo"),
-            template: Template::LlamaCpp,
-            port: 0,
-            private_port: 0,
-            lifecycle: Lifecycle::OnDemand,
-            priority: 50,
-            health: HealthSettings {
-                http_path: "/".into(),
-                timeout_ms: 1000,
-                probe_interval_ms: 500,
-            },
-            placement_override: placement,
-            placement_policy: PlacementPolicy::Hybrid,
-            idle_timeout_ms: 60_000,
-            warming_grace_ms: 100,
-            drain_timeout_ms: 1000,
-            extended_stream_drain_ms: 1000,
-            max_request_duration_ms: 1000,
-            filters: Filters::default(),
-            allocation_mode: AllocationMode::None,
-            command: None,
-            workdir: None,
-            openai_compat: true,
-            raw,
-        };
+        let mut svc: ServiceConfig = minimal_service("demo");
+        svc.placement_override.clear();
+        svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
+        svc.placement_policy = PlacementPolicy::Hybrid;
+        svc.raw.model = Some("/fake".into());
+        svc.raw.context = Some(4096);
+        svc.raw.n_cpu_moe = Some(1);
+        svc.raw.flash_attn = Some(true);
 
         let e = estimate(&summary, &svc);
         // The layer with the largest expert bytes is layer 1 (10 MiB).

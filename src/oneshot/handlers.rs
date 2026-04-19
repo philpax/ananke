@@ -125,7 +125,7 @@ pub async fn post_oneshot(
 
     let name = id.to_string();
 
-    match state.spawn_oneshot(id.clone(), req, port, ttl_ms).await {
+    match crate::oneshot::spawn::spawn_oneshot(&state, id.clone(), req, port, ttl_ms).await {
         Ok(()) => {
             let resp = OneshotResponse {
                 logs_url: format!("/api/services/{}/logs", id),

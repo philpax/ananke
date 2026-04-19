@@ -92,57 +92,24 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{
-            parse::RawService,
-            validate::{
-                AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-                ServiceConfig, Template,
-            },
+        config::validate::{
+            DeviceSlot, PlacementPolicy, ServiceConfig, test_fixtures::minimal_service,
         },
         gguf::types::{GgufSummary, GgufValue},
     };
 
     fn svc_with(mmproj: Option<&str>) -> ServiceConfig {
-        let raw = RawService {
-            name: Some(SmolStr::new("demo")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some("/fake".into()),
-            port: Some(0),
-            context: Some(4096),
-            mmproj: mmproj.map(|p| p.into()),
-            cache_type_k: Some(SmolStr::new("f16")),
-            cache_type_v: Some(SmolStr::new("f16")),
-            flash_attn: Some(true),
-            ..Default::default()
-        };
-        let mut placement = std::collections::BTreeMap::new();
-        placement.insert(DeviceSlot::Gpu(0), 1000);
-        ServiceConfig {
-            name: SmolStr::new("demo"),
-            template: Template::LlamaCpp,
-            port: 0,
-            private_port: 0,
-            lifecycle: Lifecycle::OnDemand,
-            priority: 50,
-            health: HealthSettings {
-                http_path: "/".into(),
-                timeout_ms: 1000,
-                probe_interval_ms: 500,
-            },
-            placement_override: placement,
-            placement_policy: PlacementPolicy::GpuOnly,
-            idle_timeout_ms: 60_000,
-            warming_grace_ms: 100,
-            drain_timeout_ms: 1000,
-            extended_stream_drain_ms: 1000,
-            max_request_duration_ms: 1000,
-            filters: Filters::default(),
-            allocation_mode: AllocationMode::None,
-            command: None,
-            workdir: None,
-            openai_compat: true,
-            raw,
-        }
+        let mut svc = minimal_service("demo");
+        svc.placement_policy = PlacementPolicy::GpuOnly;
+        svc.placement_override.clear();
+        svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
+        svc.raw.model = Some("/fake".into());
+        svc.raw.context = Some(4096);
+        svc.raw.mmproj = mmproj.map(|p| p.into());
+        svc.raw.cache_type_k = Some(SmolStr::new("f16"));
+        svc.raw.cache_type_v = Some(SmolStr::new("f16"));
+        svc.raw.flash_attn = Some(true);
+        svc
     }
 
     #[test]

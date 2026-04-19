@@ -310,54 +310,27 @@ mod tests {
     use smol_str::SmolStr;
 
     use super::*;
-    use crate::config::{
-        parse::RawService,
-        validate::{
-            AllocationMode, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-            ServiceConfig, Template,
-        },
+    use crate::config::validate::{
+        AllocationMode, DeviceSlot, Lifecycle, PlacementPolicy, ServiceConfig, Template,
+        test_fixtures::minimal_service,
     };
 
     fn base_service() -> ServiceConfig {
         let mut placement = BTreeMap::new();
         placement.insert(DeviceSlot::Gpu(0), 10240);
-        let raw = RawService {
-            name: Some(SmolStr::new("demo")),
-            template: Some(SmolStr::new("llama-cpp")),
-            model: Some(PathBuf::from("/m/x.gguf")),
-            port: Some(11435),
-            context: Some(8192),
-            flash_attn: Some(true),
-            cache_type_k: Some(SmolStr::new("q8_0")),
-            cache_type_v: Some(SmolStr::new("q8_0")),
-            ..Default::default()
-        };
-        ServiceConfig {
-            name: SmolStr::new("demo"),
-            template: Template::LlamaCpp,
-            port: 11435,
-            private_port: 41000,
-            lifecycle: Lifecycle::Persistent,
-            priority: 50,
-            health: HealthSettings {
-                http_path: "/v1/models".into(),
-                timeout_ms: 180_000,
-                probe_interval_ms: 5_000,
-            },
-            placement_override: placement,
-            placement_policy: PlacementPolicy::GpuOnly,
-            filters: Filters::default(),
-            idle_timeout_ms: 600_000,
-            warming_grace_ms: 60_000,
-            drain_timeout_ms: 30_000,
-            extended_stream_drain_ms: 30_000,
-            max_request_duration_ms: 600_000,
-            allocation_mode: AllocationMode::None,
-            command: None,
-            workdir: None,
-            openai_compat: true,
-            raw,
-        }
+        let mut svc = minimal_service("demo");
+        svc.port = 11435;
+        svc.private_port = 41000;
+        svc.lifecycle = Lifecycle::Persistent;
+        svc.placement_override = placement;
+        svc.placement_policy = PlacementPolicy::GpuOnly;
+        svc.raw.model = Some(PathBuf::from("/m/x.gguf"));
+        svc.raw.port = Some(11435);
+        svc.raw.context = Some(8192);
+        svc.raw.flash_attn = Some(true);
+        svc.raw.cache_type_k = Some(SmolStr::new("q8_0"));
+        svc.raw.cache_type_v = Some(SmolStr::new("q8_0"));
+        svc
     }
 
     #[test]
@@ -417,51 +390,27 @@ mod tests {
 
     #[test]
     fn command_template_renders_placeholders() {
-        let raw = RawService {
-            name: Some(SmolStr::new("comfy")),
-            template: Some(SmolStr::new("command")),
-            command: Some(vec![
-                "python".into(),
-                "main.py".into(),
-                "--port".into(),
-                "{port}".into(),
-            ]),
-            port: Some(8188),
-            ..Default::default()
-        };
+        let command_argv = vec![
+            "python".into(),
+            "main.py".into(),
+            "--port".into(),
+            "{port}".into(),
+        ];
         let mut placement = BTreeMap::new();
         placement.insert(DeviceSlot::Gpu(0), 6144);
-        let svc = ServiceConfig {
-            name: SmolStr::new("comfy"),
-            template: Template::Command,
-            port: 8188,
-            private_port: 48188,
-            lifecycle: Lifecycle::OnDemand,
-            priority: 50,
-            health: HealthSettings {
-                http_path: "/system_stats".into(),
-                timeout_ms: 60_000,
-                probe_interval_ms: 500,
-            },
-            placement_override: placement.clone(),
-            placement_policy: PlacementPolicy::GpuOnly,
-            idle_timeout_ms: 600_000,
-            warming_grace_ms: 30_000,
-            drain_timeout_ms: 5_000,
-            extended_stream_drain_ms: 5_000,
-            max_request_duration_ms: 60_000,
-            filters: Filters::default(),
-            allocation_mode: AllocationMode::Static { vram_mb: 6144 },
-            command: Some(vec![
-                "python".into(),
-                "main.py".into(),
-                "--port".into(),
-                "{port}".into(),
-            ]),
-            workdir: None,
-            openai_compat: false,
-            raw,
-        };
+        let mut svc = minimal_service("comfy");
+        svc.template = Template::Command;
+        svc.port = 8188;
+        svc.private_port = 48188;
+        svc.placement_override = placement.clone();
+        svc.placement_policy = PlacementPolicy::GpuOnly;
+        svc.allocation_mode = AllocationMode::Static { vram_mb: 6144 };
+        svc.command = Some(command_argv.clone());
+        svc.openai_compat = false;
+        svc.raw.template = Some(SmolStr::new("command"));
+        svc.raw.command = Some(command_argv);
+        svc.raw.port = Some(8188);
+        svc.raw.model = None;
         let alloc = Allocation::from_override(&placement);
         let cfg = render_argv(&svc, &alloc, None);
         assert_eq!(cfg.binary, "python");

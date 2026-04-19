@@ -14,6 +14,44 @@ use crate::{
     errors::ExpectedError,
 };
 
+/// Default idle-before-drain timeout for on-demand services (10 minutes).
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
+
+/// Default cadence for the health-probe loop (5 seconds).
+pub const DEFAULT_HEALTH_PROBE_INTERVAL_MS: u64 = 5_000;
+
+/// Default per-probe timeout for health checks (3 minutes).
+pub const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 180_000;
+
+/// Default grace window after spawn during which health-probe failures do not
+/// count as hard failures (1 minute).
+pub const DEFAULT_WARMING_GRACE_MS: u64 = 60_000;
+
+/// Default drain timeout before the supervisor escalates to SIGKILL (30 seconds).
+pub const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 30_000;
+
+/// Default extra grace granted to in-flight streaming requests during drain
+/// (30 seconds).
+pub const DEFAULT_EXTENDED_STREAM_DRAIN_MS: u64 = 30_000;
+
+/// Default cap on the wall-clock duration of a single proxied request
+/// (10 minutes).
+pub const DEFAULT_MAX_REQUEST_DURATION_MS: u64 = 600_000;
+
+/// Default service scheduling priority (higher wins eviction contests).
+pub const DEFAULT_SERVICE_PRIORITY: u8 = 50;
+
+/// Default minimum runtime a borrower must accumulate before the balloon
+/// resolver may fast-kill it (1 minute).
+pub const DEFAULT_MIN_BORROWER_RUNTIME_MS: u64 = 60_000;
+
+/// Convert GiB (as declared by users in config) to MiB using the same
+/// truncating cast the validator has always used. Centralised so the oneshot
+/// API path and the TOML path agree on rounding.
+pub fn gib_to_mib(gib: f32) -> u64 {
+    (gib * 1024.0) as u64
+}
+
 #[derive(Debug, Clone)]
 pub struct EffectiveConfig {
     pub daemon: DaemonSettings,
@@ -79,6 +117,56 @@ pub enum AllocationMode {
         max_mb: u64,
         min_borrower_runtime_ms: u64,
     },
+}
+
+impl AllocationMode {
+    /// Resolve an allocation mode from a `(template, mode)` pair plus the
+    /// associated VRAM knobs. Shared by the TOML validator and the oneshot
+    /// API so both paths agree on the semantics of `"static"`, `"dynamic"`,
+    /// and the llama-cpp exclusions.
+    ///
+    /// The returned error is a bare sentence fragment; the caller is
+    /// expected to prepend context (e.g. `service {name}: `).
+    pub fn from_parts(
+        template: Template,
+        mode: Option<&str>,
+        vram_gb: Option<f32>,
+        min_vram_gb: Option<f32>,
+        max_vram_gb: Option<f32>,
+        min_borrower_runtime_ms: u64,
+    ) -> Result<AllocationMode, String> {
+        match (template, mode) {
+            (Template::LlamaCpp, Some(m)) => Err(format!(
+                "allocation.mode `{m}` invalid for llama-cpp (use placement_override or estimator)"
+            )),
+            (Template::LlamaCpp, None) => Ok(AllocationMode::None),
+            (Template::Command, Some("static")) => {
+                let gb =
+                    vram_gb.ok_or_else(|| "allocation.mode=static requires vram_gb".to_string())?;
+                Ok(AllocationMode::Static {
+                    vram_mb: gib_to_mib(gb),
+                })
+            }
+            (Template::Command, Some("dynamic")) => {
+                let min = min_vram_gb
+                    .ok_or_else(|| "allocation.mode=dynamic requires min_vram_gb".to_string())?;
+                let max = max_vram_gb
+                    .ok_or_else(|| "allocation.mode=dynamic requires max_vram_gb".to_string())?;
+                if max <= min {
+                    return Err("max_vram_gb must be > min_vram_gb".to_string());
+                }
+                Ok(AllocationMode::Dynamic {
+                    min_mb: gib_to_mib(min),
+                    max_mb: gib_to_mib(max),
+                    min_borrower_runtime_ms,
+                })
+            }
+            (Template::Command, Some(other)) => Err(format!("unknown allocation.mode `{other}`")),
+            (Template::Command, None) => {
+                Err("command template requires allocation.mode (static|dynamic)".to_string())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,64 +264,22 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         };
 
         let raw_alloc = raw.allocation.clone().unwrap_or_default();
-        let allocation_mode = match (template, raw_alloc.mode.as_deref()) {
-            (Template::LlamaCpp, Some(m)) => {
-                return Err(fail(format!(
-                    "service {name}: allocation.mode `{m}` invalid for llama-cpp \
-                     (use placement_override or estimator)"
-                )));
-            }
-            (Template::LlamaCpp, None) => AllocationMode::None,
-            (Template::Command, Some("static")) => {
-                let gb = raw_alloc.vram_gb.ok_or_else(|| {
-                    fail(format!(
-                        "service {name}: allocation.mode=static requires vram_gb"
-                    ))
-                })?;
-                AllocationMode::Static {
-                    vram_mb: (gb * 1024.0) as u64,
-                }
-            }
-            (Template::Command, Some("dynamic")) => {
-                let min = raw_alloc.min_vram_gb.ok_or_else(|| {
-                    fail(format!(
-                        "service {name}: allocation.mode=dynamic requires min_vram_gb"
-                    ))
-                })?;
-                let max = raw_alloc.max_vram_gb.ok_or_else(|| {
-                    fail(format!(
-                        "service {name}: allocation.mode=dynamic requires max_vram_gb"
-                    ))
-                })?;
-                if max <= min {
-                    return Err(fail(format!(
-                        "service {name}: max_vram_gb must be > min_vram_gb"
-                    )));
-                }
-                let runtime_ms = raw_alloc
-                    .min_borrower_runtime
-                    .as_deref()
-                    .map(parse_duration_ms)
-                    .transpose()
-                    .map_err(|e| fail(format!("service {name} min_borrower_runtime: {e}")))?
-                    .unwrap_or(60_000);
-                AllocationMode::Dynamic {
-                    min_mb: (min * 1024.0) as u64,
-                    max_mb: (max * 1024.0) as u64,
-                    min_borrower_runtime_ms: runtime_ms,
-                }
-            }
-            (Template::Command, Some(other)) => {
-                return Err(fail(format!(
-                    "service {name}: unknown allocation.mode `{other}`"
-                )));
-            }
-            (Template::Command, None) => {
-                return Err(fail(format!(
-                    "service {name}: command template requires allocation.mode (static|dynamic)"
-                )));
-            }
-        };
+        let runtime_ms = raw_alloc
+            .min_borrower_runtime
+            .as_deref()
+            .map(parse_duration_ms)
+            .transpose()
+            .map_err(|e| fail(format!("service {name} min_borrower_runtime: {e}")))?
+            .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
+        let allocation_mode = AllocationMode::from_parts(
+            template,
+            raw_alloc.mode.as_deref(),
+            raw_alloc.vram_gb,
+            raw_alloc.min_vram_gb,
+            raw_alloc.max_vram_gb,
+            runtime_ms,
+        )
+        .map_err(|e| fail(format!("service {name}: {e}")))?;
 
         if !names.insert(name.clone()) {
             return Err(fail(format!("duplicate service name `{name}`")));
@@ -383,7 +429,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
                         .map_err(|e| fail(format!("service {name} health.timeout: {e}")))
                 })
                 .transpose()?
-                .unwrap_or(180_000),
+                .unwrap_or(DEFAULT_HEALTH_TIMEOUT_MS),
             probe_interval_ms: health_raw
                 .probe_interval
                 .map(|s| {
@@ -391,10 +437,13 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
                         .map_err(|e| fail(format!("service {name} health.probe_interval: {e}")))
                 })
                 .transpose()?
-                .unwrap_or(5_000),
+                .unwrap_or(DEFAULT_HEALTH_PROBE_INTERVAL_MS),
         };
 
-        let priority = raw.priority.or(cfg.defaults.priority).unwrap_or(50);
+        let priority = raw
+            .priority
+            .or(cfg.defaults.priority)
+            .unwrap_or(DEFAULT_SERVICE_PRIORITY);
         let idle_timeout_ms = raw
             .idle_timeout
             .as_deref()
@@ -402,7 +451,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             .map(parse_duration_ms)
             .transpose()
             .map_err(|e| fail(format!("service {name} idle_timeout: {e}")))?
-            .unwrap_or(600_000);
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
         let warming_grace_ms = raw
             .warming_grace
             .as_deref()
@@ -410,28 +459,28 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             .map(parse_duration_ms)
             .transpose()
             .map_err(|e| fail(format!("service {name} warming_grace: {e}")))?
-            .unwrap_or(60_000);
+            .unwrap_or(DEFAULT_WARMING_GRACE_MS);
         let drain_timeout_ms = raw
             .drain_timeout
             .as_deref()
             .map(parse_duration_ms)
             .transpose()
             .map_err(|e| fail(format!("service {name} drain_timeout: {e}")))?
-            .unwrap_or(30_000);
+            .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
         let extended_stream_drain_ms = raw
             .extended_stream_drain
             .as_deref()
             .map(parse_duration_ms)
             .transpose()
             .map_err(|e| fail(format!("service {name} extended_stream_drain: {e}")))?
-            .unwrap_or(30_000);
+            .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
         let max_request_duration_ms = raw
             .max_request_duration
             .as_deref()
             .map(parse_duration_ms)
             .transpose()
             .map_err(|e| fail(format!("service {name} max_request_duration: {e}")))?
-            .unwrap_or(600_000);
+            .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);
 
         let mut filters = Filters::default();
         if let Some(raw_filters) = &raw.filters {
@@ -540,6 +589,66 @@ pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
             .map_err(|e| e.to_string());
     }
     Err(format!("unrecognised duration: {s}"))
+}
+
+#[cfg(test)]
+pub mod test_fixtures {
+    //! Shared `ServiceConfig` factory for unit tests.
+    //!
+    //! Centralised so individual test modules don't drift in their hand-rolled
+    //! fixtures, which previously ranged over the full struct surface and had
+    //! to be updated in lockstep every time a field was added.
+
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use smol_str::SmolStr;
+
+    use super::{
+        AllocationMode, DEFAULT_SERVICE_PRIORITY, DeviceSlot, Filters, HealthSettings, Lifecycle,
+        PlacementPolicy, ServiceConfig, Template,
+    };
+    use crate::config::parse::RawService;
+
+    /// Build a minimal `ServiceConfig` with CPU-only placement, suitable for
+    /// unit tests that need a well-formed config but don't care about its
+    /// specific field values. The caller is free to mutate the returned
+    /// struct to customise individual fields.
+    pub fn minimal_service(name: &str) -> ServiceConfig {
+        let mut placement = BTreeMap::new();
+        placement.insert(DeviceSlot::Cpu, 100);
+        ServiceConfig {
+            name: SmolStr::new(name),
+            template: Template::LlamaCpp,
+            port: 0,
+            private_port: 0,
+            lifecycle: Lifecycle::OnDemand,
+            priority: DEFAULT_SERVICE_PRIORITY,
+            health: HealthSettings {
+                http_path: "/health".into(),
+                timeout_ms: 5_000,
+                probe_interval_ms: 200,
+            },
+            placement_override: placement,
+            placement_policy: PlacementPolicy::CpuOnly,
+            idle_timeout_ms: 60_000,
+            warming_grace_ms: 100,
+            drain_timeout_ms: 1_000,
+            extended_stream_drain_ms: 1_000,
+            max_request_duration_ms: 5_000,
+            filters: Filters::default(),
+            allocation_mode: AllocationMode::None,
+            command: None,
+            workdir: None,
+            openai_compat: true,
+            raw: RawService {
+                name: Some(SmolStr::new(name)),
+                template: Some(SmolStr::new("llama-cpp")),
+                model: Some(PathBuf::from("/fake/model.gguf")),
+                port: Some(0),
+                ..Default::default()
+            },
+        }
+    }
 }
 
 #[cfg(test)]

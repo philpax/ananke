@@ -32,7 +32,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     allocator::placement::Packed,
-    config::validate::{EffectiveConfig, ServiceConfig},
+    config::validate::{DEFAULT_SERVICE_PRIORITY, EffectiveConfig, ServiceConfig},
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
     supervise::{
@@ -582,7 +582,7 @@ impl RunLoop {
                 .iter()
                 .find(|s| s.name == handle.name)
                 .map(|c| c.priority)
-                .unwrap_or(50);
+                .unwrap_or(DEFAULT_SERVICE_PRIORITY);
             out.push(crate::allocator::eviction::EvictionCandidate {
                 name: handle.name.clone(),
                 priority,

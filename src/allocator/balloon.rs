@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     allocator::AllocationTable,
+    config::validate::DEFAULT_SERVICE_PRIORITY,
     supervise::{drain::DrainReason, registry::ServiceRegistry},
     tracking::observation::ObservationTable,
 };
@@ -154,8 +155,9 @@ pub fn spawn_resolver(
             }
 
             // Look for a borrower currently holding an allocation on the same
-            // device. For phase 4, priority is 50 for all borrowers; a later
-            // phase can wire real priority through the registry.
+            // device. For phase 4, priority is the service default for all
+            // borrowers; a later phase can wire real priority through the
+            // registry.
             let reservations = allocations.lock().clone();
             let mut candidate_borrower: Option<(SmolStr, u8)> = None;
             for name in reservations.keys() {
@@ -165,8 +167,9 @@ pub fn spawn_resolver(
                 if let Some(handle) = registry.get(name) {
                     // Snapshot is cheap; we just need the service to be alive.
                     if let Some(_snap) = handle.snapshot().await {
-                        // Borrower priority defaults to 50 until a real lookup is wired.
-                        candidate_borrower = Some((name.clone(), 50));
+                        // Borrower priority defaults to the service default
+                        // until a real lookup is wired.
+                        candidate_borrower = Some((name.clone(), DEFAULT_SERVICE_PRIORITY));
                         break;
                     }
                 }

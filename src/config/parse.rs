@@ -7,6 +7,10 @@ use smol_str::SmolStr;
 
 use crate::errors::ExpectedError;
 
+/// Default concurrency cap on pending start requests waiting for the same
+/// supervisor to finish warming before they are rejected with `QueueFull`.
+pub const DEFAULT_START_QUEUE_DEPTH: usize = 10;
+
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
 pub struct RawAllocation {
@@ -154,9 +158,10 @@ pub struct RawService {
 }
 
 impl RawService {
-    /// Return the start queue depth, falling back to 10 when unset.
+    /// Return the start queue depth, falling back to `DEFAULT_START_QUEUE_DEPTH`
+    /// when unset.
     pub fn start_queue_depth(&self) -> usize {
-        self.start_queue_depth.unwrap_or(10)
+        self.start_queue_depth.unwrap_or(DEFAULT_START_QUEUE_DEPTH)
     }
 }
 
