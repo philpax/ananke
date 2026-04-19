@@ -50,6 +50,8 @@ pub struct DaemonConfig {
     pub data_dir: Option<PathBuf>,
     #[serde(default = "default_shutdown_timeout")]
     pub shutdown_timeout: String,
+    #[serde(default)]
+    pub allow_external_management: bool,
 }
 
 fn default_management_listen() -> String {

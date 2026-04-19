@@ -263,6 +263,13 @@ pub async fn run() -> Result<(), ExpectedError> {
             .with_graceful_shutdown(wait_shutdown(mgmt_shutdown))
             .await;
     });
+    if !mgmt_listen.ip().is_loopback() {
+        warn!(
+            bind = %mgmt_listen,
+            "management API reachable from the network — no authentication enabled; \
+             trust your network perimeter (e.g. Tailscale) or terminate TLS + auth at a reverse proxy"
+        );
+    }
     info!(%mgmt_listen, "management listener bound");
 
     let retention_task = tokio::spawn(retention::run_loop(db.clone(), shutdown_rx.clone()));

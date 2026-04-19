@@ -64,6 +64,7 @@ pub struct DaemonSettings {
     pub openai_listen: String,
     pub data_dir: PathBuf,
     pub shutdown_timeout_ms: u64,
+    pub allow_external_management: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -230,7 +231,20 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     let shutdown_timeout_ms = parse_duration_ms(shutdown_timeout_str)
         .map_err(|e| fail(format!("daemon.shutdown_timeout: {e}")))?;
 
-    let management_addr = cfg.daemon.management_listen.clone();
+    let management_addr = if cfg.daemon.management_listen.is_empty() {
+        "127.0.0.1:7777".into()
+    } else {
+        cfg.daemon.management_listen.clone()
+    };
+    let mgmt_socket_addr: std::net::SocketAddr = management_addr
+        .parse()
+        .map_err(|e: std::net::AddrParseError| fail(format!("daemon.management_listen: {e}")))?;
+    if !mgmt_socket_addr.ip().is_loopback() && !cfg.daemon.allow_external_management {
+        return Err(fail(
+            "daemon.management_listen is non-loopback but daemon.allow_external_management is false; \
+             see §11 of the spec before enabling this — the management API has no authentication".into(),
+        ));
+    }
     let management_port = management_addr
         .rsplit(':')
         .next()
@@ -531,6 +545,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             openai_listen,
             data_dir,
             shutdown_timeout_ms,
+            allow_external_management: cfg.daemon.allow_external_management,
         },
         services: out,
     })
@@ -972,5 +987,46 @@ allocation.max_vram_gb = 5
         );
         let err = validate(&cfg).unwrap_err();
         assert!(format!("{err}").contains("max_vram_gb"));
+    }
+
+    #[test]
+    fn non_loopback_without_flag_is_rejected() {
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+management_listen = "0.0.0.0:17777"
+
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+devices.placement_override = { "gpu:0" = 18944 }
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("allow_external_management"));
+    }
+
+    #[test]
+    fn non_loopback_with_flag_is_accepted() {
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+management_listen = "0.0.0.0:17777"
+allow_external_management = true
+
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+devices.placement_override = { "gpu:0" = 18944 }
+lifecycle = "persistent"
+"#,
+        );
+        assert!(validate(&cfg).is_ok());
     }
 }

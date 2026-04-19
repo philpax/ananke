@@ -78,6 +78,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             openai_listen: "127.0.0.1:0".into(),
             data_dir: tmp.path().to_path_buf(),
             shutdown_timeout_ms: 5_000,
+            allow_external_management: false,
         },
         services: services_rewritten.clone(),
     });

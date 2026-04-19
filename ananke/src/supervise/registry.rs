@@ -69,6 +69,7 @@ mod tests {
                 openai_listen: String::new(),
                 data_dir: std::path::PathBuf::new(),
                 shutdown_timeout_ms: 5000,
+                allow_external_management: false,
             },
             services: vec![svc.clone()],
         });
