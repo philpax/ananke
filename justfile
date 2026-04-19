@@ -8,8 +8,14 @@ lint-rust:
     cargo fmt --all -- --check
     cargo clippy --all-targets --all-features -- -D warnings
     cargo clippy --all-targets --no-default-features -- -D warnings
-    cargo test --workspace
-    cargo test --workspace --no-default-features
+    # Integration tests under ananke/tests rely on the `test-fakes` feature to
+    # swap the real llama-server spawn for a stub; without it, tests that drive
+    # the full supervisor lifecycle try to exec a missing binary against a
+    # nonexistent model path and fail in ways that look like flakes. The
+    # --all-features pass covers fakes; the --no-default-features pass
+    # sticks to unit tests to verify the non-test-feature build still compiles.
+    cargo test --workspace --all-features
+    cargo test --workspace --no-default-features --lib
 
 lint-frontend:
     cd frontend && npm run lint
