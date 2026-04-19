@@ -56,8 +56,26 @@ pub enum Event {
     RetryAfterBackoff,
 }
 
-/// Returns the next state if the transition is valid, else `None`.
-pub fn transition(from: &ServiceState, event: Event) -> Option<ServiceState> {
+/// Returns the next state for this `(from, event)` pair.
+///
+/// Panics if the pair is not in the transition table. Callers must only pass
+/// `(from, event)` combinations they know are legal given the supervisor's
+/// current phase; passing an illegal pair is a programming bug that the
+/// exhaustive panic surfaces loudly rather than silently swallowing.
+pub fn transition(from: &ServiceState, event: Event) -> ServiceState {
+    try_transition(from, event).unwrap_or_else(|| {
+        panic!(
+            "illegal state transition: from={from:?} event={event:?} (this is a programming bug)"
+        )
+    })
+}
+
+/// Returns the next state if the transition is defined, else `None`.
+///
+/// Prefer [`transition`] at call sites where the pair is known legal. Use this
+/// only in genuinely fallible paths (validation, tests, or where an "illegal"
+/// pair is recoverable with an explicit fallback).
+pub fn try_transition(from: &ServiceState, event: Event) -> Option<ServiceState> {
     use ServiceState::*;
     match (from, event) {
         (Idle, Event::SpawnRequested) => Some(Starting),
@@ -100,50 +118,55 @@ mod tests {
 
     #[test]
     fn idle_to_starting_on_spawn() {
-        assert!(matches!(
+        assert_eq!(
             transition(&ServiceState::Idle, Event::SpawnRequested),
-            Some(ServiceState::Starting)
-        ));
+            ServiceState::Starting,
+        );
     }
 
     #[test]
     fn starting_to_warming_on_health() {
-        assert!(matches!(
+        assert_eq!(
             transition(&ServiceState::Starting, Event::HealthPassed),
-            Some(ServiceState::Warming)
-        ));
+            ServiceState::Warming,
+        );
     }
 
     #[test]
     fn warming_health_timeout_disables_with_reason() {
-        let s = transition(&ServiceState::Warming, Event::HealthTimedOut).unwrap();
-        assert!(matches!(
-            s,
+        assert_eq!(
+            transition(&ServiceState::Warming, Event::HealthTimedOut),
             ServiceState::Disabled {
-                reason: DisableReason::HealthTimeout
-            }
-        ));
+                reason: DisableReason::HealthTimeout,
+            },
+        );
     }
 
     #[test]
     fn failed_retries_up_to_three_times_then_disables() {
         let s0 = ServiceState::Failed { retry_count: 0 };
-        let s1 = transition(&s0, Event::RetryAfterBackoff).unwrap();
+        let s1 = transition(&s0, Event::RetryAfterBackoff);
         assert_eq!(s1, ServiceState::Failed { retry_count: 1 });
-        let s2 = transition(&s1, Event::RetryAfterBackoff).unwrap();
+        let s2 = transition(&s1, Event::RetryAfterBackoff);
         assert_eq!(s2, ServiceState::Failed { retry_count: 2 });
-        let s3 = transition(&s2, Event::RetryAfterBackoff).unwrap();
-        assert!(matches!(
+        let s3 = transition(&s2, Event::RetryAfterBackoff);
+        assert_eq!(
             s3,
             ServiceState::Disabled {
-                reason: DisableReason::LaunchFailed
-            }
-        ));
+                reason: DisableReason::LaunchFailed,
+            },
+        );
     }
 
     #[test]
     fn invalid_transition_returns_none() {
-        assert!(transition(&ServiceState::Idle, Event::DrainComplete).is_none());
+        assert!(try_transition(&ServiceState::Idle, Event::DrainComplete).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "illegal state transition")]
+    fn invalid_transition_panics_in_total_api() {
+        let _ = transition(&ServiceState::Idle, Event::DrainComplete);
     }
 
     #[test]
@@ -151,6 +174,6 @@ mod tests {
         let s = ServiceState::Disabled {
             reason: DisableReason::HealthTimeout,
         };
-        assert_eq!(transition(&s, Event::UserEnable), Some(ServiceState::Idle));
+        assert_eq!(transition(&s, Event::UserEnable), ServiceState::Idle);
     }
 }

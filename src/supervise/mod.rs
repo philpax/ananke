@@ -411,7 +411,7 @@ impl RunLoop {
         let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
         self.start_bus_carry = Some(sender);
 
-        let next = transition(&self.state, StateEvent::SpawnRequested).unwrap();
+        let next = transition(&self.state, StateEvent::SpawnRequested);
         self.set_state(next);
         true
     }
@@ -765,7 +765,7 @@ impl RunLoop {
     ) -> StartingOutcome {
         match outcome {
             Ok(HealthOutcome::Healthy) => {
-                let next = transition(&self.state, StateEvent::HealthPassed).unwrap();
+                let next = transition(&self.state, StateEvent::HealthPassed);
                 self.set_state(next);
                 match self.run_warming_grace(child, run_id).await {
                     WarmingOutcome::Complete => {}
@@ -809,7 +809,7 @@ impl RunLoop {
         let grace = Duration::from_millis(self.init.svc.warming_grace_ms);
         tokio::select! {
             _ = tokio::time::sleep(grace) => {
-                let next = transition(&self.state, StateEvent::WarmingComplete).unwrap();
+                let next = transition(&self.state, StateEvent::WarmingComplete);
                 self.set_state(next);
                 WarmingOutcome::Complete
             }
@@ -836,7 +836,7 @@ impl RunLoop {
                     return WarmingOutcome::Shutdown;
                 }
                 // Snapshot or channel-closed: fall through to warming complete.
-                let next = transition(&self.state, StateEvent::WarmingComplete).unwrap();
+                let next = transition(&self.state, StateEvent::WarmingComplete);
                 self.set_state(next);
                 WarmingOutcome::Complete
             }
@@ -894,7 +894,7 @@ impl RunLoop {
         match cmd {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 info!(service = %self.init.svc.name, "draining");
-                let next = transition(&self.state, StateEvent::DrainRequested).unwrap();
+                let next = transition(&self.state, StateEvent::DrainRequested);
                 self.set_state(next);
                 let _ = self.cancel_tx.send(true);
                 send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
@@ -1023,8 +1023,10 @@ impl RunLoop {
         let delay = FAILED_RETRY_BACKOFFS[idx];
         tokio::select! {
             _ = tokio::time::sleep(delay) => {
-                let next = transition(&self.state, StateEvent::RetryAfterBackoff)
-                    .unwrap_or(ServiceState::Disabled { reason: DisableReason::LaunchFailed });
+                // `handle_failed` is only reached in the `Failed` state, for which
+                // `RetryAfterBackoff` is always defined — either bumping retry_count
+                // or promoting to Disabled at the cap.
+                let next = transition(&self.state, StateEvent::RetryAfterBackoff);
                 let next = if !matches!(next, ServiceState::Disabled { .. }) {
                     // Move back to Idle so the next Ensure triggers a fresh start.
                     ServiceState::Idle
