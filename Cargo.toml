@@ -26,8 +26,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 nvml-wrapper = "0.10"
 nix = { version = "0.29", features = ["signal", "fs", "process"] }
-# toasty = "..."  # TODO: add when rusqlite alone is insufficient (phase 5)
-rusqlite = { version = "0.32", features = ["bundled"] }
+toasty = { version = "=0.4.0", features = ["sqlite"] }
+# rusqlite retained only for the pragma side-channel in `src/db/pragma.rs`
+# (auto_vacuum / incremental_vacuum). No non-db code imports it.
+rusqlite = { version = "0.39", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures = "0.3"
 smol_str = { version = "0.3", features = ["serde"] }

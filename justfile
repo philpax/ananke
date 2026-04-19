@@ -18,3 +18,9 @@ lint-frontend:
 fmt:
     cargo fmt --all
     cd frontend && npm run format
+
+# Regenerate the toasty migration SQL from the models.
+# Wraps `toasty-cli migrate generate`. Requires toasty-cli installed:
+#   cargo install toasty-cli
+db-migrate:
+    toasty-cli migrate generate
