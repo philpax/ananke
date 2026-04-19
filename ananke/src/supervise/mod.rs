@@ -30,7 +30,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     allocator::placement::Packed,
-    config::validate::{DEFAULT_SERVICE_PRIORITY, EffectiveConfig, ServiceConfig},
+    config::validate::{DEFAULT_SERVICE_PRIORITY, ServiceConfig},
     daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
@@ -230,6 +230,14 @@ impl SupervisorHandle {
 /// (every field is `Arc`-backed). Outside-world capabilities live inside
 /// `system` ([`crate::system::SystemDeps`]); everything else is
 /// daemon-internal state.
+///
+/// `config` is the live [`ConfigManager`](crate::config::manager::ConfigManager),
+/// not a frozen `Arc<EffectiveConfig>`. Every supervisor reads its current
+/// `ServiceConfig` through it so that `PUT /api/config` edits (priority,
+/// context, override_tensor, idle_timeout, etc.) take effect on the next
+/// spawn or eviction check without requiring a daemon restart. Identity
+/// fields the supervisor can't live-update — name, port, private_port —
+/// stay on `SupervisorInit` which is boot-time.
 #[derive(Clone)]
 pub struct SupervisorDeps {
     pub db: Database,
@@ -239,7 +247,7 @@ pub struct SupervisorDeps {
     pub rolling: RollingTable,
     pub observation: ObservationTable,
     pub registry: ServiceRegistry,
-    pub effective: Arc<EffectiveConfig>,
+    pub config: Arc<crate::config::manager::ConfigManager>,
     pub events: EventBus,
     pub system: crate::system::SystemDeps,
 }
@@ -461,6 +469,26 @@ impl RunLoop {
         }
     }
 
+    /// Resolve the latest `ServiceConfig` for this supervisor's service.
+    ///
+    /// Reads from the live [`ConfigManager`]'s arc-swapped effective config so
+    /// that `PUT /api/config` edits (priority, context, override_tensor,
+    /// idle_timeout, sampling, etc.) reach already-spawned supervisors the
+    /// next time they hit the spawn or eviction path. Falls back to the
+    /// boot-time snapshot if the service has been removed from the config —
+    /// the reload reconciler will shut the supervisor down shortly, but we
+    /// want any lookups in the interim to return a sensible value rather
+    /// than panicking. The returned `ServiceConfig` is cloned so the
+    /// arc-swap guard is released before any `.await`.
+    fn current_svc(&self) -> ServiceConfig {
+        let eff = self.deps.config.effective();
+        eff.services
+            .iter()
+            .find(|s| s.name == self.init.svc.name)
+            .cloned()
+            .unwrap_or_else(|| self.init.svc.clone())
+    }
+
     fn set_state(&mut self, new_state: ServiceState) {
         let prior_state = self.state.clone();
         self.state = new_state;
@@ -667,7 +695,8 @@ impl RunLoop {
         table: &crate::allocator::AllocationTable,
         optimistic: bool,
     ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
-        let svc = &self.init.svc;
+        let current = self.current_svc();
+        let svc = &current;
         if matches!(svc.template(), crate::config::Template::Command) {
             self.packed_for_spawn = None;
             let bytes_mb = match svc.allocation_mode {
@@ -756,9 +785,10 @@ impl RunLoop {
         String,
     > {
         let candidates = self.collect_eviction_candidates().await;
+        let my_priority = self.current_svc().priority;
         let victims: Vec<smol_str::SmolStr> = candidates
             .iter()
-            .filter(|c| c.priority < self.init.svc.priority)
+            .filter(|c| c.priority < my_priority)
             .map(|c| c.name.clone())
             .collect();
         if victims.is_empty() {
@@ -807,7 +837,7 @@ impl RunLoop {
         let to_evict = crate::allocator::eviction::select_for_slot(
             nofit.needed_bytes,
             &nofit.slot,
-            self.init.svc.priority,
+            self.current_svc().priority,
             &candidates,
             &reservations_now,
             free_on_slot,
@@ -857,6 +887,15 @@ impl RunLoop {
         &self,
     ) -> Vec<crate::allocator::eviction::EvictionCandidate> {
         let all_services = self.deps.registry.all();
+        // Materialise the priority map from the live config before any
+        // `.await` below, so the arc-swap guard is released promptly.
+        let priority_by_name: std::collections::BTreeMap<_, _> = {
+            let eff = self.deps.config.effective();
+            eff.services
+                .iter()
+                .map(|s| (s.name.clone(), s.priority))
+                .collect()
+        };
         let mut out = Vec::new();
         for (_name, handle) in all_services {
             if handle.name.as_str() == self.init.svc.name.as_str() {
@@ -874,13 +913,9 @@ impl RunLoop {
                 .cloned()
                 .unwrap_or_default();
             let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
-            let priority = self
-                .deps
-                .effective
-                .services
-                .iter()
-                .find(|s| s.name == handle.name)
-                .map(|c| c.priority)
+            let priority = priority_by_name
+                .get(&handle.name)
+                .copied()
                 .unwrap_or(DEFAULT_SERVICE_PRIORITY);
             out.push(crate::allocator::eviction::EvictionCandidate {
                 name: handle.name.clone(),
@@ -897,6 +932,11 @@ impl RunLoop {
     /// outer dispatcher; we only return when the child has been cleaned up and
     /// the next outer-loop state is either a terminal variant or Idle.
     async fn handle_active_lifecycle(&mut self) -> Step {
+        // Pull the latest ServiceConfig for this spawn. `render_argv`,
+        // `HealthConfig`, and the per-command branches below all read
+        // fields that a reload may have changed (context, override_tensor,
+        // cache_type_k/v, sampling, health probe settings, etc.).
+        let current = self.current_svc();
         // When the placement engine has run (`packed_for_spawn = Some`), use
         // its computed Allocation for CUDA_VISIBLE_DEVICES rendering —
         // `self.init.allocation` is built from `placement_override` at
@@ -909,7 +949,7 @@ impl RunLoop {
             .map(|p| &p.allocation)
             .unwrap_or(&self.init.allocation);
         let spawn_cfg = render_argv(
-            &self.init.svc,
+            &current,
             spawn_alloc,
             self.packed_for_spawn.as_ref().map(|p| &p.args),
         );
@@ -975,12 +1015,14 @@ impl RunLoop {
         }
 
         let health_cfg = HealthConfig {
+            // `private_port` is fixed at boot (proxy binding can't move live),
+            // so read it from init; the rest of the health config is live.
             url: format!(
                 "http://127.0.0.1:{}{}",
-                self.init.svc.private_port, self.init.svc.health.http_path
+                self.init.svc.private_port, current.health.http_path
             ),
-            probe_interval: Duration::from_millis(self.init.svc.health.probe_interval_ms),
-            timeout: Duration::from_millis(self.init.svc.health.timeout_ms),
+            probe_interval: Duration::from_millis(current.health.probe_interval_ms),
+            timeout: Duration::from_millis(current.health.timeout_ms),
         };
 
         let cancel_rx_h = self.cancel_rx.clone();
@@ -1125,7 +1167,7 @@ impl RunLoop {
     /// Warming grace: sleep `warming_grace_ms` while also watching for child
     /// exit and Shutdown.
     async fn run_warming_grace(&mut self, child: &mut dyn ManagedChild, run_id: i64) -> WarmingOutcome {
-        let grace = Duration::from_millis(self.init.svc.warming_grace_ms);
+        let grace = Duration::from_millis(self.current_svc().warming_grace_ms);
         tokio::select! {
             _ = tokio::time::sleep(grace) => {
                 let next = transition(&self.state, StateEvent::WarmingComplete);
@@ -1175,12 +1217,12 @@ impl RunLoop {
                     self.set_state(ServiceState::Failed { retry_count: 0 });
                     return StartingOutcome::Break;
                 }
-                _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.init.svc.idle_timeout_ms)) => {
+                _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.current_svc().idle_timeout_ms)) => {
                     // Re-check the stamp; a recent ping may have extended the deadline.
                     let now = tokio::time::Instant::now();
                     let last = *self.init.last_activity.lock();
                     let fresh_deadline =
-                        last + Duration::from_millis(self.init.svc.idle_timeout_ms);
+                        last + Duration::from_millis(self.current_svc().idle_timeout_ms);
                     if now + Duration::from_millis(IDLE_DEADLINE_SKEW_MS) < fresh_deadline {
                         // A ping arrived; loop again with a fresh deadline.
                         continue;
@@ -1214,10 +1256,11 @@ impl RunLoop {
         reason: crate::supervise::drain::DrainReason,
     ) {
         self.set_state(ServiceState::Draining);
+        let current = self.current_svc();
         let cfg = DrainConfig {
-            max_request_duration: Duration::from_millis(self.init.svc.max_request_duration_ms),
-            drain_timeout: Duration::from_millis(self.init.svc.drain_timeout_ms),
-            extended_stream_drain: Duration::from_millis(self.init.svc.extended_stream_drain_ms),
+            max_request_duration: Duration::from_millis(current.max_request_duration_ms),
+            drain_timeout: Duration::from_millis(current.drain_timeout_ms),
+            extended_stream_drain: Duration::from_millis(current.extended_stream_drain_ms),
             sigterm_grace: RUNNING_SIGTERM_GRACE,
         };
         drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
@@ -1332,7 +1375,7 @@ impl RunLoop {
             Some(SupervisorCommand::Ensure { ack }) => {
                 // Already in Starting; subscribe to existing bus or report running.
                 if let Some(sender) = self.start_bus_carry.as_ref() {
-                    if sender.receiver_count() >= self.init.svc.start_queue_depth {
+                    if sender.receiver_count() >= self.current_svc().start_queue_depth {
                         let _ = ack.send(EnsureResponse::QueueFull);
                     } else {
                         let bus_rx = sender.subscribe();

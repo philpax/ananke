@@ -134,7 +134,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         rolling: rolling.clone(),
         observation: observation.clone(),
         registry: registry.clone(),
-        effective: effective.clone(),
+        config: config_manager.clone(),
         events: events.clone(),
         system: system.clone(),
     };

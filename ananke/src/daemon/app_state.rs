@@ -48,7 +48,7 @@ impl AppState {
             rolling: self.rolling.clone(),
             observation: self.observation.clone(),
             registry: self.registry.clone(),
-            effective: self.config.effective().clone(),
+            config: self.config.clone(),
             events: self.events.clone(),
             system: self.system.clone(),
         }

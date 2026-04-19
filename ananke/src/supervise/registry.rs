@@ -68,7 +68,7 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         let mut svc = minimal_service("demo");
         svc.lifecycle = Lifecycle::Persistent;
-        let effective = Arc::new(crate::config::EffectiveConfig {
+        let effective = crate::config::EffectiveConfig {
             daemon: crate::config::DaemonSettings {
                 management_listen: String::new(),
                 openai_listen: String::new(),
@@ -77,7 +77,9 @@ mod tests {
                 allow_external_management: false,
             },
             services: vec![svc.clone()],
-        });
+        };
+        let events = crate::daemon::events::EventBus::new();
+        let config = crate::config::manager::ConfigManager::in_memory(effective, events.clone());
         let init = crate::supervise::SupervisorInit {
             svc: svc.clone(),
             allocation: Allocation::from_override(&svc.placement_override),
@@ -95,8 +97,8 @@ mod tests {
             rolling: crate::tracking::rolling::RollingTable::new(),
             observation: crate::tracking::observation::ObservationTable::new(),
             registry: ServiceRegistry::new(),
-            effective,
-            events: crate::daemon::events::EventBus::new(),
+            config,
+            events,
             system: crate::system::SystemDeps::fake().0,
         };
         let handle = Arc::new(spawn_supervisor(init, deps));

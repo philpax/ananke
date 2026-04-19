@@ -147,7 +147,7 @@ mod tests {
             rolling,
             observation,
             registry: registry.clone(),
-            effective: Arc::new(effective),
+            config: config.clone(),
             events: events.clone(),
             system: crate::system::SystemDeps::fake().0,
         };

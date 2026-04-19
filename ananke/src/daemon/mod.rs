@@ -109,7 +109,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         rolling: rolling.clone(),
         observation: observation.clone(),
         registry: registry.clone(),
-        effective: effective.clone(),
+        config: config.clone(),
         events: events.clone(),
         system: system.clone(),
     };
