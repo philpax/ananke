@@ -567,16 +567,49 @@ impl RunLoop {
         let snap = self.deps.snapshot.read().clone();
         let table = self.deps.allocations.lock().clone();
 
-        let want = match self.compute_reservation_map(&snap, &table) {
-            Ok(w) => w,
+        let (want, pre_evicted) = match self.compute_reservation_map(&snap, &table) {
+            Ok(w) => (w, Vec::new()),
+            Err(reason) if reason.starts_with("placement:") => {
+                // Pack couldn't lay the model down given current reservations
+                // (e.g. an in-between layer didn't fit on any allowed GPU).
+                // Retry with lower-priority services treated as evicted; if
+                // pack succeeds, drain those victims and carry them through
+                // to the feasibility check.
+                match self.retry_pack_with_eviction(&snap, &table).await {
+                    Ok((want, victims)) => (want, victims),
+                    Err(retry_reason) => {
+                        let _ = ack.send(EnsureResponse::Unavailable {
+                            reason: retry_reason,
+                        });
+                        return false;
+                    }
+                }
+            }
             Err(reason) => {
                 let _ = ack.send(EnsureResponse::Unavailable { reason });
                 return false;
             }
         };
 
-        if let Err(nofit) =
+        // Feasibility check. When we came through `retry_pack_with_eviction`,
+        // the victims it drained are still sitting in the allocation table
+        // (drains are in-flight) and their supervisors are blocked executing
+        // the drain — `try_eviction_to_fit` can't poll their state. Use
+        // `can_fit_after_eviction` with the already-committed victim list so
+        // we don't loop back through select_for_slot only to find zero
+        // candidates.
+        let fit_result = if pre_evicted.is_empty() {
             crate::allocator::can_fit(&want, &snap, &table, Some(&self.init.svc.name))
+        } else {
+            crate::allocator::can_fit_after_eviction(
+                &want,
+                &snap,
+                &table,
+                Some(&self.init.svc.name),
+                &pre_evicted,
+            )
+        };
+        if let Err(nofit) = fit_result
             && let Err(reason) = self.try_eviction_to_fit(&want, &nofit).await
         {
             let _ = ack.send(EnsureResponse::Unavailable { reason });
@@ -612,6 +645,27 @@ impl RunLoop {
         &mut self,
         snap: &crate::devices::DeviceSnapshot,
         table: &crate::allocator::AllocationTable,
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
+        self.compute_reservation_map_inner(snap, table, false)
+    }
+
+    /// Variant of [`compute_reservation_map`] that uses the optimistic
+    /// planner (`pack_optimistic`). Used by the retry-after-eviction path,
+    /// where `table` has had victims filtered out and nvml still shows their
+    /// realized usage.
+    fn compute_reservation_map_optimistic(
+        &mut self,
+        snap: &crate::devices::DeviceSnapshot,
+        table: &crate::allocator::AllocationTable,
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
+        self.compute_reservation_map_inner(snap, table, true)
+    }
+
+    fn compute_reservation_map_inner(
+        &mut self,
+        snap: &crate::devices::DeviceSnapshot,
+        table: &crate::allocator::AllocationTable,
+        optimistic: bool,
     ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
         let svc = &self.init.svc;
         if matches!(svc.template(), crate::config::Template::Command) {
@@ -656,8 +710,12 @@ impl RunLoop {
         let rc = self.deps.rolling.get(&svc.name);
         est.weights_bytes = (est.weights_bytes as f64 * rc.rolling_mean) as u64;
 
-        let packed = crate::allocator::placement::pack(&est, svc, snap, table)
-            .map_err(|e| format!("placement: {e}"))?;
+        let packed = if optimistic {
+            crate::allocator::placement::pack_optimistic(&est, svc, snap, table)
+        } else {
+            crate::allocator::placement::pack(&est, svc, snap, table)
+        }
+        .map_err(|e| format!("placement: {e}"))?;
         // Convert Allocation bytes (per-DeviceId, in bytes) to the
         // BTreeMap<DeviceSlot, u64> in MB that can_fit + insert expects.
         let want_mb: std::collections::BTreeMap<crate::config::DeviceSlot, u64> = packed
@@ -676,6 +734,61 @@ impl RunLoop {
             .collect();
         self.packed_for_spawn = Some(packed);
         Ok(want_mb)
+    }
+
+    /// Pack failed against the current allocation table. Try again pretending
+    /// every lower-priority service has been evicted; if pack now succeeds,
+    /// actually drain those victims and return the new reservation plus the
+    /// committed victim list so the caller can use
+    /// `can_fit_after_eviction` for the final feasibility check. (Going
+    /// through the normal `try_eviction_to_fit` loop here would fail:
+    /// `collect_eviction_candidates` polls each supervisor's snapshot, but
+    /// the ones we just begin_drained are blocked inside their drain.)
+    async fn retry_pack_with_eviction(
+        &mut self,
+        snap: &crate::devices::DeviceSnapshot,
+        table: &crate::allocator::AllocationTable,
+    ) -> Result<
+        (
+            std::collections::BTreeMap<crate::config::DeviceSlot, u64>,
+            Vec<smol_str::SmolStr>,
+        ),
+        String,
+    > {
+        let candidates = self.collect_eviction_candidates().await;
+        let victims: Vec<smol_str::SmolStr> = candidates
+            .iter()
+            .filter(|c| c.priority < self.init.svc.priority)
+            .map(|c| c.name.clone())
+            .collect();
+        if victims.is_empty() {
+            let _ = self.packed_for_spawn.take();
+            let reason = self
+                .compute_reservation_map(snap, table)
+                .err()
+                .unwrap_or_else(|| "placement: unknown failure".into());
+            return Err(reason);
+        }
+
+        let mut filtered = table.clone();
+        for v in &victims {
+            filtered.remove(v);
+        }
+        let want = self.compute_reservation_map_optimistic(snap, &filtered)?;
+
+        warn!(
+            service = %self.init.svc.name,
+            evict_count = victims.len(),
+            "pack succeeded after pretending lower-priority victims were evicted; draining them"
+        );
+        for victim in &victims {
+            if let Some(handle) = self.deps.registry.get(victim) {
+                handle
+                    .begin_drain(crate::supervise::drain::DrainReason::Eviction)
+                    .await;
+            }
+        }
+        Ok((want, victims))
     }
 
     /// Try to make room by draining lower-priority services, then re-check
@@ -716,12 +829,22 @@ impl RunLoop {
             }
         }
 
-        // Re-attempt can_fit after evictions.
+        // Re-attempt feasibility after evictions. `begin_drain` is
+        // non-blocking — the victims' allocation rows aren't actually removed
+        // until each drain finishes (see `record_drain_complete`), so the raw
+        // allocation table still reflects them at this moment.
+        // `can_fit_after_eviction` treats the planned evictees as already
+        // freed; if the drains later fail or stall, the child spawn will see
+        // the real state and OOM-retry will handle it.
         let snap2 = self.deps.snapshot.read().clone();
         let table2 = self.deps.allocations.lock().clone();
-        if let Err(again) =
-            crate::allocator::can_fit(want, &snap2, &table2, Some(&self.init.svc.name))
-        {
+        if let Err(again) = crate::allocator::can_fit_after_eviction(
+            want,
+            &snap2,
+            &table2,
+            Some(&self.init.svc.name),
+            &to_evict,
+        ) {
             let _ = self.packed_for_spawn.take();
             return Err(format!("eviction insufficient: {again}"));
         }
