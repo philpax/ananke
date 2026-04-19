@@ -83,6 +83,7 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
         // via `metadata.openai_compat = true`.
         let compat = state
             .config
+            .effective()
             .services
             .iter()
             .find(|s| s.name == name)
@@ -178,7 +179,8 @@ async fn forward_json_post(
         None => return errors::not_found_model(&model),
     };
 
-    let svc = state.config.services.iter().find(|s| s.name == model);
+    let eff = state.config.effective();
+    let svc = eff.services.iter().find(|s| s.name == model);
     let Some(svc) = svc else {
         return errors::not_found_model(&model);
     };

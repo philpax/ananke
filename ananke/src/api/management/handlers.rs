@@ -25,7 +25,8 @@ pub fn register(router: Router, state: AppState) -> Router {
 #[utoipa::path(get, path = "/api/services", responses((status = 200, body = Vec<ServiceSummary>)))]
 pub async fn list_services(State(state): State<AppState>) -> Response {
     let mut out = Vec::new();
-    for svc_cfg in state.config.services.iter() {
+    let eff = state.config.effective();
+    for svc_cfg in eff.services.iter() {
         let handle = state.registry.get(&svc_cfg.name);
         let snap = match &handle {
             Some(h) => h.snapshot().await,
@@ -55,7 +56,8 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
     responses((status = 200, body = ServiceDetail), (status = 404))
 )]
 pub async fn service_detail(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    let Some(svc_cfg) = state.config.services.iter().find(|s| s.name == name) else {
+    let eff = state.config.effective();
+    let Some(svc_cfg) = eff.services.iter().find(|s| s.name == name) else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not found"})),

@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 
 use crate::{
     allocator::AllocationTable,
-    config::EffectiveConfig,
+    config::manager::ConfigManager,
     daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
     devices::snapshotter::SharedSnapshot,
@@ -20,7 +20,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<EffectiveConfig>,
+    pub config: Arc<ConfigManager>,
     pub registry: ServiceRegistry,
     pub allocations: Arc<Mutex<AllocationTable>>,
     pub snapshot: SharedSnapshot,
@@ -47,7 +47,7 @@ impl AppState {
             rolling: self.rolling.clone(),
             observation: self.observation.clone(),
             registry: self.registry.clone(),
-            effective: self.config.clone(),
+            effective: self.config.effective().clone(),
             events: self.events.clone(),
         }
     }

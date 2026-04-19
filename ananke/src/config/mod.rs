@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::errors::ExpectedError;
 
 pub mod file;
+pub mod manager;
 pub mod merge;
 pub mod parse;
 pub mod validate;

@@ -51,6 +51,10 @@ libc.workspace = true
 nvml-wrapper.workspace = true
 nix.workspace = true
 
+# `tempfile` is used by `config::manager::persist_atomically` for
+# atomic write-then-rename of the config file.
+tempfile.workspace = true
+
 # rusqlite retained only for the pragma side-channel in `src/db/pragma.rs`
 # (auto_vacuum / incremental_vacuum). No non-db code imports it.
 toasty.workspace = true

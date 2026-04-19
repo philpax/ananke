@@ -23,7 +23,8 @@ use ananke::{
     allocator::AllocationTable,
     config::{
         AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
-        Lifecycle, PlacementPolicy, ServiceConfig, Template, parse::RawService,
+        Lifecycle, PlacementPolicy, ServiceConfig, Template, manager::ConfigManager,
+        parse::RawService,
     },
     daemon::app_state::AppState,
     db::{Database, logs::spawn as spawn_batcher},
@@ -100,6 +101,14 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let observation = ananke::tracking::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
     let events = ananke::daemon::events::EventBus::new();
+
+    // The test harness constructs an `EffectiveConfig` directly; wrap it
+    // in an in-memory `ConfigManager` so handlers that go through
+    // `state.config.effective()` see the same snapshot as the supervisors.
+    // Reuses the shared `events` bus so WS subscribers observe both
+    // supervisor-originated and config-originated events on one channel.
+    let config_manager = ConfigManager::in_memory((*effective).clone(), events.clone());
+
     let deps = ananke::supervise::SupervisorDeps {
         db: db.clone(),
         batcher: batcher.clone(),
@@ -127,7 +136,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     }
 
     let state = AppState {
-        config: effective,
+        config: config_manager,
         registry,
         allocations,
         snapshot,

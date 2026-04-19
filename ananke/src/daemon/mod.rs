@@ -16,7 +16,7 @@ use tracing::{error, info, warn};
 use crate::{
     allocator::AllocationTable,
     api::proxy,
-    config::{AllocationMode, Lifecycle, Migration, load_config},
+    config::{AllocationMode, Lifecycle, Migration, manager::ConfigManager},
     daemon::{
         app_state::AppState,
         signals::{ShutdownKind, await_shutdown},
@@ -38,8 +38,10 @@ pub async fn run() -> Result<(), ExpectedError> {
     let config_path = crate::config::resolve_from_env(cli_config.as_deref())?;
     info!(config_path = %config_path.display(), "resolved config path");
 
-    let (effective, migrations) = load_config(&config_path)?;
-    let effective = Arc::new(effective);
+    let events = crate::daemon::events::EventBus::new();
+    let config = ConfigManager::open(config_path.clone(), events.clone()).await?;
+    let migrations = config.take_boot_migrations();
+    let effective = config.effective().clone();
     let db = Database::open(&effective.daemon.data_dir.join("ananke.sqlite")).await?;
     apply_migrations(&db, &migrations).await;
 
@@ -84,7 +86,6 @@ pub async fn run() -> Result<(), ExpectedError> {
         shutdown_rx.clone(),
     );
 
-    let events = crate::daemon::events::EventBus::new();
     let activity = ActivityTable::new();
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
     let inflight = InflightTable::new();
@@ -204,7 +205,7 @@ pub async fn run() -> Result<(), ExpectedError> {
 
     // Build AppState for the routers.
     let app_state = AppState {
-        config: effective.clone(),
+        config: config.clone(),
         registry: registry.clone(),
         allocations: allocations.clone(),
         snapshot: shared_snapshot.clone(),
