@@ -1,3 +1,4 @@
+pub mod config;
 pub mod devices;
 pub mod lifecycle;
 pub mod logs;

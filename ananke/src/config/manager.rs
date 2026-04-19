@@ -75,10 +75,9 @@ impl ConfigManager {
         Ok(this)
     }
 
-    /// Test-only constructor that skips disk I/O and the `notify` watcher.
-    /// Useful for integration tests that build an `EffectiveConfig` in
-    /// memory and don't need the raw TOML surface.
-    #[cfg(any(test, feature = "test-fakes"))]
+    /// Build a manager from a pre-parsed `EffectiveConfig` without touching
+    /// disk or spawning a watcher. Intended for tests + any caller that has
+    /// already loaded the config through another path.
     pub fn in_memory(effective: EffectiveConfig, events: EventBus) -> Arc<Self> {
         Arc::new(Self {
             raw: RwLock::new(String::new()),

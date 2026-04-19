@@ -109,7 +109,6 @@ impl ApiClient {
         }
     }
 
-    #[expect(dead_code)]
     pub async fn put_body(
         &self,
         path: &str,

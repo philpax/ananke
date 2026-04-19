@@ -27,6 +27,19 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum ConfigCommand {
+    /// Show the current configuration.
+    Show,
+    /// Validate a configuration file or stdin.
+    Validate {
+        /// Path to the configuration file (reads stdin if not provided).
+        file: Option<std::path::PathBuf>,
+    },
+    /// Reload the configuration.
+    Reload,
+}
+
+#[derive(Subcommand)]
 enum OneshotCommand {
     /// Submit a oneshot job from a TOML file.
     Submit {
@@ -145,6 +158,13 @@ enum Command {
         #[command(subcommand)]
         command: OneshotCommand,
     },
+    /// Manage configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+    /// Reload configuration (alias for `config reload`).
+    Reload,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -208,6 +228,14 @@ async fn main() -> ExitCode {
             OneshotCommand::List => commands::oneshot::list(&client, cli.json).await,
             OneshotCommand::Kill { id } => commands::oneshot::kill(&client, cli.json, &id).await,
         },
+        Command::Config { command } => match command {
+            ConfigCommand::Show => commands::config::show(&client, cli.json).await,
+            ConfigCommand::Validate { file } => {
+                commands::config::validate(&client, cli.json, file.as_deref()).await
+            }
+            ConfigCommand::Reload => commands::config::reload(&client, cli.json).await,
+        },
+        Command::Reload => commands::config::reload(&client, cli.json).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
