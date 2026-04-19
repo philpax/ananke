@@ -153,7 +153,7 @@ impl AppState {
         };
 
         // Upsert DB record.
-        let now_ms = chrono_like_now_ms();
+        let now_ms = crate::tracking::now_unix_ms();
         let service_id = self
             .db
             .upsert_service(&svc.name, now_ms)
@@ -226,11 +226,4 @@ impl AppState {
 
         Ok(())
     }
-}
-
-fn chrono_like_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }

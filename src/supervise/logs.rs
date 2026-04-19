@@ -1,7 +1,5 @@
 //! Pump child stdout/stderr into the log batcher.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::{ChildStderr, ChildStdout},
@@ -56,14 +54,10 @@ async fn pump<R: AsyncBufReadExt + Unpin>(
             Ok(0) => return,
             Ok(_) => {
                 let line = buf.trim_end_matches(['\n', '\r']).to_string();
-                let ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
                 batcher.push(LogLine {
                     service_id,
                     run_id,
-                    timestamp_ms: ts,
+                    timestamp_ms: crate::tracking::now_unix_ms(),
                     stream,
                     line,
                 });

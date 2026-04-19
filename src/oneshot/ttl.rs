@@ -56,7 +56,7 @@ pub fn spawn_watcher(cfg: WatcherConfig) -> tokio::task::JoinHandle<()> {
         if let Some(handle) = registry.get(&service_name) {
             handle.begin_drain(DrainReason::TtlExpired).await;
         }
-        let now_ms = now_ms();
+        let now_ms = crate::tracking::now_unix_ms();
         {
             use crate::db::models::Oneshot;
             let mut handle = db.handle();
@@ -71,11 +71,4 @@ pub fn spawn_watcher(cfg: WatcherConfig) -> tokio::task::JoinHandle<()> {
         oneshots.remove(&id);
         port_pool.lock().release(port);
     })
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }

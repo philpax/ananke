@@ -12,11 +12,12 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::RwLock;
 use smol_str::SmolStr;
+
+use crate::tracking::now_unix_ms_u64;
 
 #[derive(Clone, Default)]
 pub struct ActivityTable {
@@ -39,13 +40,14 @@ impl ActivityTable {
         let mut guard = self.inner.write();
         guard
             .entry(service.clone())
-            .or_insert_with(|| Arc::new(AtomicU64::new(now_ms())))
+            .or_insert_with(|| Arc::new(AtomicU64::new(now_unix_ms_u64())))
             .clone()
     }
 
     /// Bump the activity timestamp for `service` to now.
     pub fn ping(&self, service: &SmolStr) {
-        self.get_or_init(service).store(now_ms(), Ordering::Relaxed);
+        self.get_or_init(service)
+            .store(now_unix_ms_u64(), Ordering::Relaxed);
     }
 
     /// Read the last activity timestamp for `service`. Returns `None` if
@@ -56,13 +58,6 @@ impl ActivityTable {
             .get(service)
             .map(|a| a.load(Ordering::Relaxed))
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 #[cfg(test)]

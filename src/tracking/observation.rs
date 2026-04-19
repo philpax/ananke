@@ -1,4 +1,5 @@
-//! Per-service observed memory peaks (GPU VRAM via NVML + CPU VmRSS from /proc).
+//! Linux-only: per-service observed memory peaks. Reads NVML for GPU VRAM and
+//! `/proc/{pid}/status` for CPU VmRSS.
 
 use std::{collections::BTreeMap, sync::Arc};
 

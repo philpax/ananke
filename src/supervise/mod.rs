@@ -241,6 +241,15 @@ const FAILED_RETRY_BACKOFFS: [Duration; 3] = [
     Duration::from_secs(15),
 ];
 
+/// 31-bit mask for `run_id`. `run_id` is derived from wall-clock millis; we
+/// clip to a positive `i64` so it round-trips through SQLite's `INTEGER`
+/// without sign surprises.
+const RUN_ID_MASK: i64 = 0x7FFF_FFFF;
+
+/// Clock-skew tolerance on the idle-timeout re-check. Lets a ping that raced
+/// our deadline extend the idle window rather than immediately draining.
+const IDLE_DEADLINE_SKEW_MS: u64 = 100;
+
 async fn run(init: SupervisorInit, deps: SupervisorDeps, rx: mpsc::Receiver<SupervisorCommand>) {
     let mut loop_state = RunLoop::new(init, deps, rx);
     loop {
@@ -616,11 +625,7 @@ impl RunLoop {
             .observation
             .register(&self.init.svc.name, pid as u32);
         let spawn_time = Instant::now();
-        let run_id = ((std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis())
-            & 0x7FFFFFFF) as i64;
+        let run_id = crate::tracking::now_unix_ms() & RUN_ID_MASK;
         let allocation_json = serde_json::to_string(
             &self
                 .init
@@ -856,12 +861,9 @@ impl RunLoop {
                 }
                 _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.init.svc.idle_timeout_ms)) => {
                     // Re-check the atomic; a recent ping may have extended the deadline.
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
+                    let now = crate::tracking::now_unix_ms_u64();
                     let last = self.init.last_activity.load(Ordering::Relaxed);
-                    if now + 100 < last + self.init.svc.idle_timeout_ms {
+                    if now + IDLE_DEADLINE_SKEW_MS < last + self.init.svc.idle_timeout_ms {
                         // A ping arrived; loop again with a fresh deadline.
                         continue;
                     }
@@ -917,11 +919,9 @@ impl RunLoop {
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::ActivityPing) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                self.init.last_activity.store(now, Ordering::Relaxed);
+                self.init
+                    .last_activity
+                    .store(crate::tracking::now_unix_ms_u64(), Ordering::Relaxed);
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::BeginDrain { reason, ack }) => {
@@ -1111,10 +1111,7 @@ enum RunningOutcome {
 /// Compute the tokio `Instant` at which the idle deadline fires, based on the
 /// last recorded activity timestamp.
 fn idle_deadline_for(last_activity: &Arc<AtomicU64>, timeout_ms: u64) -> tokio::time::Instant {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now = crate::tracking::now_unix_ms_u64();
     let last = last_activity.load(Ordering::Relaxed);
     let deadline_ms_from_now = (last + timeout_ms).saturating_sub(now);
     tokio::time::Instant::now() + Duration::from_millis(deadline_ms_from_now)
@@ -1135,13 +1132,6 @@ async fn send_sigterm_and_wait(child: &mut tokio::process::Child, grace: Duratio
     }
 }
 
-fn chrono_like_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 /// Insert a `running_services` row.
 async fn insert_running_row(
     db: &Database,
@@ -1158,7 +1148,7 @@ async fn insert_running_row(
         service_id,
         run_id,
         pid,
-        spawned_at: chrono_like_now_ms(),
+        spawned_at: crate::tracking::now_unix_ms(),
         command_line,
         allocation,
         state: "starting".to_string(),

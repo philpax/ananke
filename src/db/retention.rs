@@ -81,11 +81,7 @@ pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {
         tokio::select! {
             _ = shutdown.changed() => { if *shutdown.borrow() { return; } }
             _ = trim_tick.tick() => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64;
-                match trim_logs_once(&db, now).await {
+                match trim_logs_once(&db, crate::tracking::now_unix_ms()).await {
                     Ok(n) if n > 0 => info!(deleted = n, "log retention trim"),
                     Ok(_) => {}
                     Err(e) => warn!(error = %e, "log retention trim failed"),

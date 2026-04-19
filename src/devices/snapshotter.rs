@@ -8,10 +8,7 @@
 //! Also samples per-service observed memory peaks: for each running service,
 //! sums NVML VRAM + /proc/<pid>/status VmRSS and calls `observation.update_peak`.
 
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::Arc, time::Duration};
 
 use parking_lot::RwLock;
 use tokio::sync::watch;
@@ -136,10 +133,7 @@ fn sample(probe: &Option<Arc<dyn GpuProbe>>) -> DeviceSnapshot {
     DeviceSnapshot {
         gpus,
         cpu,
-        taken_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64,
+        taken_at_ms: crate::tracking::now_unix_ms_u64(),
     }
 }
 

@@ -111,7 +111,9 @@ pub async fn run() -> Result<(), ExpectedError> {
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
     let mut proxy_tasks = Vec::new();
     for svc in ordered {
-        let service_id = db.upsert_service(&svc.name, now_ms()).await?;
+        let service_id = db
+            .upsert_service(&svc.name, crate::tracking::now_unix_ms())
+            .await?;
         let init = crate::supervise::SupervisorInit {
             svc: svc.clone(),
             allocation: Allocation::from_override(&svc.placement_override),
@@ -368,15 +370,8 @@ fn parse_cli_config_arg() -> Option<PathBuf> {
     None
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 async fn apply_migrations(db: &Database, migs: &[Migration]) {
-    let now = now_ms();
+    let now = crate::tracking::now_unix_ms();
     for m in migs {
         if let Err(e) = db.reparent(&m.old_name, &m.new_name, now).await {
             warn!(old = %m.old_name, new = %m.new_name, error = %e, "migrate_from failed");
