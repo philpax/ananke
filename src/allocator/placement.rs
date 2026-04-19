@@ -14,7 +14,17 @@ use crate::{
     estimator::Estimate,
 };
 
+/// Number of per-layer-equivalents added to every active backend as slop
+/// tolerance for tensor-split rounding (spec §8.2.5). Bumped if empirical
+/// overruns show tensor_split's remainder exceeds one layer's worth.
 const ONE_LAYER_FUDGE_MULTIPLIER: u64 = 1;
+
+/// `-ngl` value meaning "offload every layer to the GPU". Used when we
+/// reserved whole-model space on a GPU without per-layer detail.
+const NGL_OFFLOAD_ALL: u32 = 999;
+
+/// `-ngl` value meaning "run entirely on CPU".
+const NGL_CPU_ONLY: u32 = 0;
 
 #[derive(Debug, Clone, Default)]
 pub struct CommandArgs {
@@ -56,232 +66,310 @@ pub fn pack(
     snapshot: &DeviceSnapshot,
     reserved: &AllocationTable,
 ) -> Result<Packed, PackError> {
-    // Step 0: determine the allowed GPUs.
-    let allowed_gpus = allowed_gpu_list(svc, snapshot);
-    let allow_cpu = matches!(
-        svc.placement_policy,
-        PlacementPolicy::CpuOnly | PlacementPolicy::Hybrid
-    );
+    let mut packer = Packer::new(estimate, svc, snapshot, reserved);
+    packer.seed_non_layer();
+    packer.walk_layers()?;
+    packer.place_fallback_weights()?;
+    packer.add_kv_bytes();
+    packer.add_compute_buffer();
+    packer.add_one_layer_fudge();
+    Ok(packer.finish())
+}
 
-    // Step 1: seed per-device bytes with non-layer tensors + override_tensor attributions.
-    let mut per_device: BTreeMap<DeviceSlot, u64> = BTreeMap::new();
+/// Mutable bag threaded through the pack steps. Each method mutates the
+/// relevant subset of these fields and is documented with the single concern
+/// it owns.
+struct Packer<'a> {
+    estimate: &'a Estimate,
+    svc: &'a ServiceConfig,
+    snapshot: &'a DeviceSnapshot,
+    reserved: &'a AllocationTable,
 
-    // Token embeddings always go to CPU.
-    if estimate.non_layer.token_embd_bytes > 0 {
-        *per_device.entry(DeviceSlot::Cpu).or_default() += estimate.non_layer.token_embd_bytes;
-    }
+    allowed_gpus: Vec<u32>,
+    allow_cpu: bool,
+    per_layer: Vec<u64>,
 
-    // Output head: first allowed GPU if any GPU used, else CPU.
-    let head_target = if let Some(first_gpu) = allowed_gpus.first() {
-        DeviceSlot::Gpu(*first_gpu)
-    } else {
-        DeviceSlot::Cpu
-    };
-    if estimate.non_layer.output_head_bytes > 0 {
-        *per_device.entry(head_target.clone()).or_default() += estimate.non_layer.output_head_bytes;
-    }
-    if estimate.non_layer.other_bytes > 0 {
-        *per_device.entry(head_target.clone()).or_default() += estimate.non_layer.other_bytes;
-    }
+    /// Final per-device reservation totals. Steps 1-5 accumulate into this.
+    per_device: BTreeMap<DeviceSlot, u64>,
+    /// Remaining capacity per GPU as the walker consumes it.
+    gpu_remaining: BTreeMap<u32, u64>,
+    /// Number of layers the walker placed on each GPU.
+    layers_per_gpu: BTreeMap<u32, u32>,
+    /// Number of layers the walker spilled to CPU.
+    layers_on_cpu: u32,
+    /// Set when the layer count was unknown and we reserved whole-model
+    /// space on a GPU. `-ngl 999` is emitted in that case so llama.cpp
+    /// offloads everything for us.
+    fallback_on_gpu: bool,
+}
 
-    // override_tensor already-attributed bytes (estimator filled this map).
-    for (slot, bytes) in &estimate.override_tensor_bytes {
-        *per_device.entry(slot.clone()).or_default() += *bytes;
-    }
-
-    // Step 2: layer walker. If per_layer_bytes is None (Mamba),
-    // place all weights on the first device with room (GPU > CPU).
-    let per_layer = estimate.per_layer_bytes.clone().unwrap_or_default();
-    let mut layers_per_gpu: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut layers_on_cpu: u32 = 0;
-    let mut gpu_remaining: BTreeMap<u32, u64> = BTreeMap::new();
-
-    // Pre-reserve per-GPU headroom so the walker doesn't fill to the brim
-    // and get pushed over by Steps 3-5 (KV, compute buffer, one-layer fudge).
-    // Reserve the worst-case share on every GPU: full kv_total (not
-    // kv_total/N) because first-fit may land most layers on one GPU, which
-    // then gets the corresponding large share of KV. Over-reserves on GPUs
-    // that end up with fewer layers, but guarantees no overflow.
-    let n_layers_nonzero = per_layer.iter().filter(|b| **b > 0).count() as u64;
-    let per_layer_avg = per_layer
-        .iter()
-        .sum::<u64>()
-        .checked_div(n_layers_nonzero)
-        .unwrap_or(0);
-    let kv_total_pre = estimate
-        .kv_per_token
-        .saturating_mul(estimate.context as u64);
-    let compute_headroom = estimate.compute_buffer_mb as u64 * 1024 * 1024;
-    let gpu_headroom_each =
-        compute_headroom + kv_total_pre + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
-
-    for gpu in &allowed_gpus {
-        let free = snapshot.free_bytes(&DeviceSlot::Gpu(*gpu)).unwrap_or(0);
-        let reserved_here = sum_reserved(reserved, &DeviceSlot::Gpu(*gpu), &svc.name);
-        let raw = free
-            .saturating_sub(reserved_here)
-            .saturating_sub(*per_device.get(&DeviceSlot::Gpu(*gpu)).unwrap_or(&0));
-        gpu_remaining.insert(*gpu, raw.saturating_sub(gpu_headroom_each));
-    }
-
-    for (idx, bytes) in per_layer.iter().enumerate() {
-        if *bytes == 0 {
-            continue;
-        }
-        // First-fit: walk allowed GPUs in ascending-id order; pack onto
-        // the first one with room (spec §8.2). Single-GPU models stay on
-        // GPU 0; multi-GPU models produce the natural unequal split.
-        let mut placed_on: Option<u32> = None;
-        for gpu in &allowed_gpus {
-            let rem = gpu_remaining.get_mut(gpu).unwrap();
-            if *rem >= *bytes {
-                *rem = rem.saturating_sub(*bytes);
-                placed_on = Some(*gpu);
-                break;
-            }
-        }
-        match placed_on {
-            Some(gpu) => {
-                *per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += *bytes;
-                *layers_per_gpu.entry(gpu).or_default() += 1;
-            }
-            None if allow_cpu => {
-                *per_device.entry(DeviceSlot::Cpu).or_default() += *bytes;
-                layers_on_cpu += 1;
-            }
-            None => {
-                return Err(PackError {
-                    reason: format!("layer {idx} ({bytes} bytes) does not fit on any allowed GPU"),
-                });
-            }
+impl<'a> Packer<'a> {
+    fn new(
+        estimate: &'a Estimate,
+        svc: &'a ServiceConfig,
+        snapshot: &'a DeviceSnapshot,
+        reserved: &'a AllocationTable,
+    ) -> Self {
+        // Step 0: determine the allowed GPUs and CPU permissibility.
+        let allowed_gpus = allowed_gpu_list(svc, snapshot);
+        let allow_cpu = matches!(
+            svc.placement_policy,
+            PlacementPolicy::CpuOnly | PlacementPolicy::Hybrid
+        );
+        let per_layer = estimate.per_layer_bytes.clone().unwrap_or_default();
+        Self {
+            estimate,
+            svc,
+            snapshot,
+            reserved,
+            allowed_gpus,
+            allow_cpu,
+            per_layer,
+            per_device: BTreeMap::new(),
+            gpu_remaining: BTreeMap::new(),
+            layers_per_gpu: BTreeMap::new(),
+            layers_on_cpu: 0,
+            fallback_on_gpu: false,
         }
     }
 
-    // If the architecture gave no per-layer info (Mamba, or fallback for
-    // unknown architectures), place the entire weights bundle into the
-    // first GPU with room (or CPU). `fallback_on_gpu` marks that we
-    // reserved whole-model space on a GPU without per-layer detail —
-    // the ngl derivation later sets -ngl 999 so llama.cpp offloads
-    // everything.
-    let mut fallback_on_gpu = false;
-    if per_layer.is_empty() && estimate.weights_bytes > 0 {
-        let mut placed = false;
-        for gpu in &allowed_gpus {
-            let rem = gpu_remaining.get_mut(gpu).unwrap();
-            if *rem >= estimate.weights_bytes {
-                *rem = rem.saturating_sub(estimate.weights_bytes);
-                *per_device.entry(DeviceSlot::Gpu(*gpu)).or_default() += estimate.weights_bytes;
-                placed = true;
-                fallback_on_gpu = true;
-                break;
+    /// Step 1: seed per-device bytes with non-layer tensors + override_tensor
+    /// attributions. Token embeddings go to CPU; output head + residual
+    /// "other" tensors ride with the first allowed GPU (or CPU if there is no
+    /// GPU). override_tensor has its own pre-computed map from the estimator.
+    fn seed_non_layer(&mut self) {
+        let non_layer = &self.estimate.non_layer;
+
+        if non_layer.token_embd_bytes > 0 {
+            *self.per_device.entry(DeviceSlot::Cpu).or_default() += non_layer.token_embd_bytes;
+        }
+
+        let head_target = match self.allowed_gpus.first() {
+            Some(first_gpu) => DeviceSlot::Gpu(*first_gpu),
+            None => DeviceSlot::Cpu,
+        };
+        if non_layer.output_head_bytes > 0 {
+            *self.per_device.entry(head_target.clone()).or_default() += non_layer.output_head_bytes;
+        }
+        if non_layer.other_bytes > 0 {
+            *self.per_device.entry(head_target).or_default() += non_layer.other_bytes;
+        }
+
+        for (slot, bytes) in &self.estimate.override_tensor_bytes {
+            *self.per_device.entry(slot.clone()).or_default() += *bytes;
+        }
+    }
+
+    /// Step 2: first-fit layer walker. Pre-reserves per-GPU headroom for
+    /// steps 3-5 so we don't fill to the brim and then overflow. Returns
+    /// `PackError` if a layer's bytes don't fit on any allowed GPU and CPU
+    /// spill is disabled.
+    fn walk_layers(&mut self) -> Result<(), PackError> {
+        self.initialise_gpu_remaining();
+
+        for (idx, bytes) in self.per_layer.iter().copied().enumerate() {
+            if bytes == 0 {
+                continue;
+            }
+            // First-fit: walk allowed GPUs in ascending-id order; pack onto
+            // the first with room (spec §8.2). Single-GPU models stay on
+            // GPU 0; multi-GPU models produce the natural unequal split.
+            let placed = self
+                .allowed_gpus
+                .iter()
+                .copied()
+                .find(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0) >= bytes);
+            match placed {
+                Some(gpu) => {
+                    *self.gpu_remaining.entry(gpu).or_default() -= bytes;
+                    *self.per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += bytes;
+                    *self.layers_per_gpu.entry(gpu).or_default() += 1;
+                }
+                None if self.allow_cpu => {
+                    *self.per_device.entry(DeviceSlot::Cpu).or_default() += bytes;
+                    self.layers_on_cpu += 1;
+                }
+                None => {
+                    return Err(PackError {
+                        reason: format!(
+                            "layer {idx} ({bytes} bytes) does not fit on any allowed GPU"
+                        ),
+                    });
+                }
             }
         }
-        if !placed && allow_cpu {
-            *per_device.entry(DeviceSlot::Cpu).or_default() += estimate.weights_bytes;
-        } else if !placed {
-            return Err(PackError {
+        Ok(())
+    }
+
+    /// Reserve the worst-case per-GPU headroom for steps 3-5: full `kv_total`
+    /// (not kv_total/N) because first-fit may land most layers on one GPU.
+    /// Over-reserves on GPUs that end up with fewer layers, but guarantees no
+    /// overflow.
+    fn initialise_gpu_remaining(&mut self) {
+        let n_layers_nonzero = self.per_layer.iter().filter(|b| **b > 0).count() as u64;
+        let per_layer_avg = self
+            .per_layer
+            .iter()
+            .sum::<u64>()
+            .checked_div(n_layers_nonzero)
+            .unwrap_or(0);
+        let kv_total_pre = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        let compute_headroom = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
+        let gpu_headroom_each =
+            compute_headroom + kv_total_pre + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
+
+        for gpu in &self.allowed_gpus {
+            let free = self
+                .snapshot
+                .free_bytes(&DeviceSlot::Gpu(*gpu))
+                .unwrap_or(0);
+            let reserved_here = sum_reserved(self.reserved, &DeviceSlot::Gpu(*gpu), &self.svc.name);
+            let raw = free
+                .saturating_sub(reserved_here)
+                .saturating_sub(*self.per_device.get(&DeviceSlot::Gpu(*gpu)).unwrap_or(&0));
+            self.gpu_remaining
+                .insert(*gpu, raw.saturating_sub(gpu_headroom_each));
+        }
+    }
+
+    /// Fallback for architectures (Mamba, unknown) that didn't supply a
+    /// per-layer breakdown: place the entire weights bundle on the first GPU
+    /// with room, or spill to CPU.
+    fn place_fallback_weights(&mut self) -> Result<(), PackError> {
+        if !self.per_layer.is_empty() || self.estimate.weights_bytes == 0 {
+            return Ok(());
+        }
+        let bytes = self.estimate.weights_bytes;
+        for gpu in self.allowed_gpus.clone() {
+            let rem = self.gpu_remaining.entry(gpu).or_default();
+            if *rem >= bytes {
+                *rem -= bytes;
+                *self.per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += bytes;
+                self.fallback_on_gpu = true;
+                return Ok(());
+            }
+        }
+        if self.allow_cpu {
+            *self.per_device.entry(DeviceSlot::Cpu).or_default() += bytes;
+            Ok(())
+        } else {
+            Err(PackError {
                 reason: "weights do not fit on any allowed device".into(),
-            });
+            })
         }
     }
 
-    // Step 3: add KV bytes to GPUs proportional to layers placed, or
-    // CPU for layers that spilled.
-    let n_layers = per_layer.len() as u32;
-    let kv_total = estimate
-        .kv_per_token
-        .saturating_mul(estimate.context as u64);
-    if n_layers > 0 && kv_total > 0 {
-        for gpu in &allowed_gpus {
-            let share = layers_per_gpu.get(gpu).copied().unwrap_or(0);
+    /// Step 3: add KV bytes to GPUs proportional to layers placed, or to CPU
+    /// for layers that spilled.
+    fn add_kv_bytes(&mut self) {
+        let n_layers = self.per_layer.len() as u32;
+        let kv_total = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        if n_layers == 0 || kv_total == 0 {
+            return;
+        }
+        for gpu in &self.allowed_gpus {
+            let share = self.layers_per_gpu.get(gpu).copied().unwrap_or(0);
             if share > 0 {
                 let bytes = kv_total * share as u64 / n_layers as u64;
-                *per_device.entry(DeviceSlot::Gpu(*gpu)).or_default() += bytes;
+                *self.per_device.entry(DeviceSlot::Gpu(*gpu)).or_default() += bytes;
             }
         }
-        if layers_on_cpu > 0 {
-            let bytes = kv_total * layers_on_cpu as u64 / n_layers as u64;
-            *per_device.entry(DeviceSlot::Cpu).or_default() += bytes;
+        if self.layers_on_cpu > 0 {
+            let bytes = kv_total * self.layers_on_cpu as u64 / n_layers as u64;
+            *self.per_device.entry(DeviceSlot::Cpu).or_default() += bytes;
         }
     }
 
-    // Step 4: compute buffer per active backend (default 400 MB).
-    let compute_bytes = estimate.compute_buffer_mb as u64 * 1024 * 1024;
-    let active_slots: Vec<DeviceSlot> = per_device.keys().cloned().collect();
-    for slot in &active_slots {
-        *per_device.entry(slot.clone()).or_default() += compute_bytes;
+    /// Step 4: compute buffer per active backend (default 400 MB).
+    fn add_compute_buffer(&mut self) {
+        let compute_bytes = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
+        let active_slots: Vec<DeviceSlot> = self.per_device.keys().cloned().collect();
+        for slot in active_slots {
+            *self.per_device.entry(slot).or_default() += compute_bytes;
+        }
     }
 
-    // Step 5: one-layer fudge for tensor-split slop (spec §8.2.5).
-    if n_layers > 0 && !per_layer.is_empty() {
-        let per_layer_avg = per_layer.iter().sum::<u64>() / n_layers as u64;
-        let per_layer_kv = if n_layers > 0 {
-            kv_total / n_layers as u64
-        } else {
-            0
-        };
+    /// Step 5: one-layer fudge for tensor-split slop (spec §8.2.5).
+    fn add_one_layer_fudge(&mut self) {
+        let n_layers = self.per_layer.len() as u32;
+        if n_layers == 0 || self.per_layer.is_empty() {
+            return;
+        }
+        let kv_total = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        let per_layer_avg = self.per_layer.iter().sum::<u64>() / n_layers as u64;
+        let per_layer_kv = kv_total / n_layers as u64;
         let fudge_each = ONE_LAYER_FUDGE_MULTIPLIER * (per_layer_avg + per_layer_kv);
-        let slots: Vec<DeviceSlot> = per_device.keys().cloned().collect();
+        let slots: Vec<DeviceSlot> = self.per_device.keys().cloned().collect();
         for slot in slots {
             match slot {
-                DeviceSlot::Gpu(_) => *per_device.entry(slot).or_default() += fudge_each,
-                DeviceSlot::Cpu if layers_on_cpu > 0 => {
-                    *per_device.entry(slot).or_default() += fudge_each
+                DeviceSlot::Gpu(_) => *self.per_device.entry(slot).or_default() += fudge_each,
+                DeviceSlot::Cpu if self.layers_on_cpu > 0 => {
+                    *self.per_device.entry(slot).or_default() += fudge_each
                 }
                 _ => {}
             }
         }
     }
 
-    // Step 6: CommandArgs.
-    let total_on_gpus: u32 = layers_per_gpu.values().sum();
-    let ngl = if allowed_gpus.is_empty() {
-        // cpu-only: emit -ngl 0 via the spawn code path (kept out of our args struct).
-        Some(0)
-    } else if fallback_on_gpu {
-        // Unknown architecture / no per-layer info: emit -ngl 999 so
-        // llama.cpp offloads everything we reserved for.
-        Some(999)
-    } else {
-        Some(total_on_gpus)
-    };
+    /// Step 6: materialise the final `Packed` — derive -ngl, --tensor-split,
+    /// -ot, and convert the per_device map into an `Allocation`.
+    fn finish(self) -> Packed {
+        let total_on_gpus: u32 = self.layers_per_gpu.values().sum();
+        let ngl = if self.allowed_gpus.is_empty() {
+            Some(NGL_CPU_ONLY)
+        } else if self.fallback_on_gpu {
+            Some(NGL_OFFLOAD_ALL)
+        } else {
+            Some(total_on_gpus)
+        };
 
-    let tensor_split = if allowed_gpus.len() > 1 && total_on_gpus > 0 {
-        // Ratios in CUDA_VISIBLE_DEVICES-remapped order: render in the
-        // same GPU-id order as the allocation iterates (ascending ids).
-        Some(
-            allowed_gpus
-                .iter()
-                .map(|g| layers_per_gpu.get(g).copied().unwrap_or(0))
+        let tensor_split = if self.allowed_gpus.len() > 1 && total_on_gpus > 0 {
+            // Ratios in CUDA_VISIBLE_DEVICES-remapped order: render in the
+            // same GPU-id order as the allocation iterates (ascending ids).
+            Some(
+                self.allowed_gpus
+                    .iter()
+                    .map(|g| self.layers_per_gpu.get(g).copied().unwrap_or(0))
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
+        let override_tensor = self.svc.raw.override_tensor.clone().unwrap_or_default();
+
+        let allocation = Allocation {
+            bytes: self
+                .per_device
+                .into_iter()
+                .map(|(slot, bytes)| {
+                    let id = match slot {
+                        DeviceSlot::Cpu => DeviceId::Cpu,
+                        DeviceSlot::Gpu(n) => DeviceId::Gpu(n),
+                    };
+                    (id, bytes)
+                })
                 .collect(),
-        )
-    } else {
-        None
-    };
+        };
 
-    let override_tensor = svc.raw.override_tensor.clone().unwrap_or_default();
-
-    let allocation = Allocation {
-        bytes: per_device
-            .into_iter()
-            .map(|(slot, bytes)| {
-                let id = match slot {
-                    DeviceSlot::Cpu => DeviceId::Cpu,
-                    DeviceSlot::Gpu(n) => DeviceId::Gpu(n),
-                };
-                (id, bytes)
-            })
-            .collect(),
-    };
-
-    Ok(Packed {
-        allocation,
-        args: CommandArgs {
-            ngl,
-            tensor_split,
-            override_tensor,
-        },
-    })
+        Packed {
+            allocation,
+            args: CommandArgs {
+                ngl,
+                tensor_split,
+                override_tensor,
+            },
+        }
+    }
 }
 
 fn allowed_gpu_list(svc: &ServiceConfig, snapshot: &DeviceSnapshot) -> Vec<u32> {
