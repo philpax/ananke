@@ -1,7 +1,16 @@
 //! Integration test: after idle timeout the service returns to idle and
 //! a subsequent request triggers a fresh spawn.
+//!
+//! Runs under `start_paused = true` with `current_thread` flavor so the
+//! supervisor's tokio-based idle deadline advances virtually rather than
+//! waiting wall-clock. The unification of activity tracking on
+//! `tokio::time::Instant` (see `tracking::activity`) is what makes this
+//! possible — previously the supervisor mixed wall-clock activity pings
+//! with tokio time arithmetic and the test had to sleep real seconds.
 
 mod common;
+
+use std::time::Duration;
 
 use ananke::api::openai;
 use axum::{
@@ -11,9 +20,8 @@ use axum::{
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn service_returns_to_idle_after_timeout_and_restarts() {
-    // Set a very short idle timeout so the test completes in a few seconds.
     let mut svc = minimal_llama_service("alpha", 0);
     svc.idle_timeout_ms = 500;
 
@@ -31,10 +39,13 @@ async fn service_returns_to_idle_after_timeout_and_restarts() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "first request must succeed");
 
-    // Wait long enough for the idle timeout to fire and the supervisor to drain
-    // back to Idle. 1 500 ms is 3× the timeout, giving the supervisor ample
-    // time even on a loaded CI runner.
-    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    // Advance virtual time past the idle deadline. The supervisor's
+    // `sleep_until(idle_deadline)` now fires, drains the fake child, and
+    // transitions back to Idle. We advance past the drain grace too so the
+    // SIGTERM → exit path has fully unwound.
+    tokio::time::advance(Duration::from_secs(30)).await;
+    // Yield so the supervisor task gets a chance to process the fired timer.
+    tokio::task::yield_now().await;
 
     // Second request: the service should be idle again, triggering a fresh spawn.
     let req2 = Request::builder()

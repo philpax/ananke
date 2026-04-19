@@ -13,10 +13,7 @@ pub mod state;
 
 use std::{
     os::unix::process::ExitStatusExt,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -249,7 +246,7 @@ pub struct SupervisorInit {
     pub svc: ServiceConfig,
     pub allocation: Allocation,
     pub service_id: i64,
-    pub last_activity: Arc<AtomicU64>,
+    pub last_activity: crate::tracking::activity::ActivityStamp,
     pub inflight: Arc<AtomicU64>,
 }
 
@@ -1176,10 +1173,12 @@ impl RunLoop {
                     return StartingOutcome::Break;
                 }
                 _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.init.svc.idle_timeout_ms)) => {
-                    // Re-check the atomic; a recent ping may have extended the deadline.
-                    let now = crate::tracking::now_unix_ms_u64();
-                    let last = self.init.last_activity.load(Ordering::Relaxed);
-                    if now + IDLE_DEADLINE_SKEW_MS < last + self.init.svc.idle_timeout_ms {
+                    // Re-check the stamp; a recent ping may have extended the deadline.
+                    let now = tokio::time::Instant::now();
+                    let last = *self.init.last_activity.lock();
+                    let fresh_deadline =
+                        last + Duration::from_millis(self.init.svc.idle_timeout_ms);
+                    if now + Duration::from_millis(IDLE_DEADLINE_SKEW_MS) < fresh_deadline {
                         // A ping arrived; loop again with a fresh deadline.
                         continue;
                     }
@@ -1257,9 +1256,7 @@ impl RunLoop {
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::ActivityPing) => {
-                self.init
-                    .last_activity
-                    .store(crate::tracking::now_unix_ms_u64(), Ordering::Relaxed);
+                *self.init.last_activity.lock() = tokio::time::Instant::now();
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::BeginDrain { reason, ack }) => {
@@ -1510,12 +1507,14 @@ fn slot_to_key(slot: &crate::config::DeviceSlot) -> String {
 }
 
 /// Compute the tokio `Instant` at which the idle deadline fires, based on the
-/// last recorded activity timestamp.
-fn idle_deadline_for(last_activity: &Arc<AtomicU64>, timeout_ms: u64) -> tokio::time::Instant {
-    let now = crate::tracking::now_unix_ms_u64();
-    let last = last_activity.load(Ordering::Relaxed);
-    let deadline_ms_from_now = (last + timeout_ms).saturating_sub(now);
-    tokio::time::Instant::now() + Duration::from_millis(deadline_ms_from_now)
+/// last recorded activity instant. Lives entirely on the tokio monotonic
+/// clock so `tokio::time::pause()` can freeze and advance it virtually.
+fn idle_deadline_for(
+    last_activity: &crate::tracking::activity::ActivityStamp,
+    timeout_ms: u64,
+) -> tokio::time::Instant {
+    let last = *last_activity.lock();
+    last + Duration::from_millis(timeout_ms)
 }
 
 /// Insert a `running_services` row.

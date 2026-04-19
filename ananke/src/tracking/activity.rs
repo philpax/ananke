@@ -1,27 +1,27 @@
-//! Per-service activity timestamps, shared across tasks via `Arc<AtomicU64>`.
+//! Per-service activity timestamps, shared across tasks via
+//! `Arc<Mutex<tokio::time::Instant>>`.
 //!
-//! Stores UNIX epoch milliseconds. Readers (supervisors computing idle
-//! deadlines) use `load(Ordering::Relaxed)`; writers (proxy paths) use
-//! `store(now_ms, Ordering::Relaxed)`. A monotonic wall clock is not
-//! required: a stale value only delays idle transitions, which is
-//! harmless for the scheduler.
+//! Uses the tokio monotonic clock rather than wall-clock millis so
+//! `tokio::time::pause()` can advance it virtually in tests. Idle-deadline
+//! arithmetic then lives entirely on one clock, making reload/drain/timeout
+//! behaviour deterministic under `start_paused = true`.
+//!
+//! A stale read only delays idle transitions, which is harmless for the
+//! scheduler — so we don't need to hold the lock across the whole
+//! deadline-compute window.
 
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::BTreeMap, sync::Arc};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use smol_str::SmolStr;
 
-use crate::tracking::now_unix_ms_u64;
+/// Per-service activity stamp. Cloneable handle around a shared tokio
+/// `Instant`.
+pub type ActivityStamp = Arc<Mutex<tokio::time::Instant>>;
 
 #[derive(Clone, Default)]
 pub struct ActivityTable {
-    inner: Arc<RwLock<BTreeMap<SmolStr, Arc<AtomicU64>>>>,
+    inner: Arc<RwLock<BTreeMap<SmolStr, ActivityStamp>>>,
 }
 
 impl ActivityTable {
@@ -29,8 +29,10 @@ impl ActivityTable {
         Self::default()
     }
 
-    /// Return the atomic for `service`, creating it if missing.
-    pub fn get_or_init(&self, service: &SmolStr) -> Arc<AtomicU64> {
+    /// Return the stamp for `service`, creating it if missing. A fresh
+    /// stamp is seeded to `Instant::now()` so the first `idle_deadline`
+    /// reading doesn't fire immediately.
+    pub fn get_or_init(&self, service: &SmolStr) -> ActivityStamp {
         {
             let guard = self.inner.read();
             if let Some(existing) = guard.get(service) {
@@ -40,23 +42,20 @@ impl ActivityTable {
         let mut guard = self.inner.write();
         guard
             .entry(service.clone())
-            .or_insert_with(|| Arc::new(AtomicU64::new(now_unix_ms_u64())))
+            .or_insert_with(|| Arc::new(Mutex::new(tokio::time::Instant::now())))
             .clone()
     }
 
-    /// Bump the activity timestamp for `service` to now.
+    /// Bump the activity stamp for `service` to the current tokio instant.
     pub fn ping(&self, service: &SmolStr) {
-        self.get_or_init(service)
-            .store(now_unix_ms_u64(), Ordering::Relaxed);
+        let stamp = self.get_or_init(service);
+        *stamp.lock() = tokio::time::Instant::now();
     }
 
-    /// Read the last activity timestamp for `service`. Returns `None` if
-    /// the service has never been pinged.
-    pub fn last_ms(&self, service: &SmolStr) -> Option<u64> {
-        self.inner
-            .read()
-            .get(service)
-            .map(|a| a.load(Ordering::Relaxed))
+    /// Read the last activity instant for `service`. Returns `None` if
+    /// the service has never been pinged and has no stamp yet.
+    pub fn last(&self, service: &SmolStr) -> Option<tokio::time::Instant> {
+        self.inner.read().get(service).map(|a| *a.lock())
     }
 }
 
@@ -64,26 +63,27 @@ impl ActivityTable {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ping_updates_last_ms() {
+    #[tokio::test]
+    async fn ping_updates_last() {
         let t = ActivityTable::new();
         let svc = SmolStr::new("demo");
-        assert!(t.last_ms(&svc).is_none());
+        assert!(t.last(&svc).is_none());
         t.ping(&svc);
-        let first = t.last_ms(&svc).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        let first = t.last(&svc).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         t.ping(&svc);
-        let second = t.last_ms(&svc).unwrap();
+        let second = t.last(&svc).unwrap();
         assert!(second >= first);
     }
 
-    #[test]
-    fn get_or_init_returns_same_atomic() {
+    #[tokio::test]
+    async fn get_or_init_returns_same_stamp() {
         let t = ActivityTable::new();
         let svc = SmolStr::new("demo");
         let a = t.get_or_init(&svc);
         let b = t.get_or_init(&svc);
-        a.store(42, Ordering::Relaxed);
-        assert_eq!(b.load(Ordering::Relaxed), 42);
+        let marker = tokio::time::Instant::now();
+        *a.lock() = marker;
+        assert_eq!(*b.lock(), marker);
     }
 }

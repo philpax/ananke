@@ -44,7 +44,7 @@ impl ServiceRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicU64};
+    use std::sync::Arc;
 
     use smol_str::SmolStr;
     use tempfile::tempdir;
@@ -77,7 +77,7 @@ mod tests {
             svc: svc.clone(),
             allocation: Allocation::from_override(&svc.placement_override),
             service_id: 1,
-            last_activity: Arc::new(AtomicU64::new(0)),
+            last_activity: Arc::new(parking_lot::Mutex::new(tokio::time::Instant::now())),
             inflight: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         let deps = crate::supervise::SupervisorDeps {
