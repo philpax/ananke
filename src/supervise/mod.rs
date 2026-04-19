@@ -1,4 +1,7 @@
 //! Service supervision: per-service tokio tasks, child lifetimes, health loops.
+//!
+//! Linux-coupled via `os::unix::process::ExitStatusExt` (signal() on ExitStatus)
+//! and the submodules it delegates to (`drain`, `orphans`, `spawn`).
 
 pub mod drain;
 pub mod health;

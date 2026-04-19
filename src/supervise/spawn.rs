@@ -1,5 +1,6 @@
-//! Render llama-server argv from an `EffectiveConfig` service entry, and spawn
-//! the child with `prctl(PR_SET_PDEATHSIG, SIGTERM)`.
+//! Linux-only: render llama-server argv from an `EffectiveConfig` service
+//! entry, and spawn the child with `prctl(PR_SET_PDEATHSIG, SIGTERM)` so
+//! it dies if the daemon exits unexpectedly.
 
 use std::collections::BTreeMap;
 #[cfg(not(feature = "test-fakes"))]

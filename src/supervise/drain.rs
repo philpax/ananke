@@ -1,4 +1,5 @@
-//! Full drain pipeline per spec §10.3.
+//! Linux-only: full drain pipeline per spec §10.3. Sends SIGTERM via
+//! `nix::sys::signal::kill` and escalates to SIGKILL on timeout.
 
 use std::{
     sync::{

@@ -1,4 +1,6 @@
-//! NVML-backed [`GpuProbe`] impl.
+//! Linux-only: NVML-backed [`GpuProbe`] impl (nvml-wrapper loads
+//! `libnvidia-ml.so` at runtime; the crate compiles on other platforms
+//! but the driver only ships on Linux).
 
 use std::sync::Arc;
 

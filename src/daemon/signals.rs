@@ -1,4 +1,5 @@
-//! Signal handling: SIGTERM/SIGINT → graceful drain, SIGQUIT → emergency.
+//! Linux-only: signal handling via `tokio::signal::unix`.
+//! SIGTERM/SIGINT → graceful drain, SIGQUIT → emergency.
 
 use std::time::Duration;
 

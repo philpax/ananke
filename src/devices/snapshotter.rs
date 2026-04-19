@@ -1,4 +1,4 @@
-//! 2-second-cadence device snapshotter.
+//! Linux-only: 2-second-cadence device snapshotter.
 //!
 //! Samples NVML (if available) and /proc/meminfo once per tick and writes
 //! into an `Arc<RwLock<DeviceSnapshot>>` shared with readers (allocator,

@@ -1,4 +1,4 @@
-//! Linux /proc/meminfo reader.
+//! Linux-only: `/proc/meminfo` reader.
 //!
 //! `MemAvailable` is used (spec §4.2), not `MemFree`, because `MemFree` ignores
 //! reclaimable page cache and misleads the scheduler about how much memory can

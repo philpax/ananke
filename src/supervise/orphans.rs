@@ -1,4 +1,6 @@
-//! Startup orphan recovery per spec §9.3.
+//! Linux-only: startup orphan recovery per spec §9.3. Reads
+//! `/proc/{pid}/cmdline` to decide whether a previously-recorded child
+//! is still alive and still ours.
 
 use std::path::Path;
 

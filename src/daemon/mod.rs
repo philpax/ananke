@@ -1,5 +1,7 @@
 //! Top-level daemon orchestration: wires config, DB, devices, supervisors,
 //! proxies, signals, and retention together.
+//!
+//! Linux-coupled via `/proc` orphan reconciliation and the `signals` submodule.
 
 pub mod app_state;
 pub mod signals;
