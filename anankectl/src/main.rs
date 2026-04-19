@@ -41,6 +41,36 @@ enum Command {
         /// Service name.
         name: String,
     },
+    /// Start a service.
+    Start {
+        /// Service name.
+        name: String,
+    },
+    /// Stop a service.
+    Stop {
+        /// Service name.
+        name: String,
+    },
+    /// Restart a service.
+    Restart {
+        /// Service name.
+        name: String,
+    },
+    /// Enable a service.
+    Enable {
+        /// Service name.
+        name: String,
+    },
+    /// Disable a service.
+    Disable {
+        /// Service name.
+        name: String,
+    },
+    /// Retry a service (enable then start).
+    Retry {
+        /// Service name.
+        name: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -51,6 +81,12 @@ async fn main() -> ExitCode {
         Command::Devices => commands::devices::run(&client, cli.json).await,
         Command::Services { all } => commands::services::run(&client, cli.json, all).await,
         Command::Show { name } => commands::show::run(&client, cli.json, &name).await,
+        Command::Start { name } => commands::lifecycle::start(&client, cli.json, &name).await,
+        Command::Stop { name } => commands::lifecycle::stop(&client, cli.json, &name).await,
+        Command::Restart { name } => commands::lifecycle::restart(&client, cli.json, &name).await,
+        Command::Enable { name } => commands::lifecycle::enable(&client, cli.json, &name).await,
+        Command::Disable { name } => commands::lifecycle::disable(&client, cli.json, &name).await,
+        Command::Retry { name } => commands::lifecycle::retry(&client, cli.json, &name).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

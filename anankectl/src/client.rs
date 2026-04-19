@@ -64,8 +64,6 @@ impl ApiClient {
         self.read_json(resp).await
     }
 
-    // The methods below are not yet called by the current command set but are
-    // part of the shared client surface for upcoming lifecycle and config commands.
     #[expect(dead_code)]
     pub async fn post_json<T: DeserializeOwned, B: serde::Serialize>(
         &self,
@@ -83,7 +81,6 @@ impl ApiClient {
         self.read_json(resp).await
     }
 
-    #[expect(dead_code)]
     pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiClientError> {
         let url = self.endpoint.join(path).expect("valid path");
         let resp = self
