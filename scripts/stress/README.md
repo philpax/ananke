@@ -24,10 +24,11 @@ the required roles.
 
 - A running ananke daemon, reachable at `http://127.0.0.1:17777` by default.
   Override via `ANANKE_ENDPOINT` env.
-- Python 3.11+.
-- `pip install requests websockets` (or equivalent — for NixOS, drop into a
-  dev shell with those two packages).
+- [`uv`](https://docs.astral.sh/uv/) for Python environment management.
 - A `matrix.toml` next to `lib.py` (see below).
+
+Python dependencies are declared in `pyproject.toml`. On first use, `uv` will
+create a `.venv/` automatically; subsequent `uv run` invocations reuse it.
 
 ## Setting up the matrix
 
@@ -43,11 +44,13 @@ the scenario to skip with a clear message.
 ## Running
 
 ```bash
+cd scripts/stress
+
 # One scenario:
-python scenarios/01_estimator_sanity.py
+uv run scenarios/01_estimator_sanity.py
 
 # All scenarios in order:
-for s in scenarios/*.py; do python "$s" || break; done
+for s in scenarios/*.py; do uv run "$s" || break; done
 ```
 
 Scenarios leave the daemon in a drained state at exit (every started service

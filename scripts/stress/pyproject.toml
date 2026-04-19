@@ -1,0 +1,12 @@
+[project]
+name = "ananke-stress"
+version = "0.1.0"
+description = "Stress-test scenarios for a running ananke daemon"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "websockets>=12",
+]
+
+[tool.uv]
+# Lockfile kept next to pyproject.toml.
