@@ -249,6 +249,15 @@ pub struct RawServiceDevices {
 pub struct EstimationConfig {
     pub compute_buffer_mb: Option<u32>,
     pub safety_factor: Option<f32>,
+    /// Accept the coarse fallback estimate when the GGUF's architecture
+    /// isn't recognised by any per-family estimator. Defaults to `false`
+    /// — unknown architectures hard-reject at config load so the
+    /// operator either adds the arch to the right family list or
+    /// explicitly opts in here. The silent fallback previously masked a
+    /// 67× under-reservation on glm4moe before it was a recognised
+    /// family. (See `ananke::estimator::fallback` for the current
+    /// formula.)
+    pub allow_fallback: Option<bool>,
 }
 
 /// Sampling parameters that map to `llama-server` CLI flags. Only the knobs

@@ -9,6 +9,7 @@ pub mod moe;
 pub mod override_tensor;
 pub mod types;
 
+use smol_str::SmolStr;
 use tracing::{info, warn};
 pub use types::{Estimate, EstimatorInputs, NonLayer};
 
@@ -17,12 +18,96 @@ use crate::{
     system::Fs,
 };
 
+/// One per-architecture family, paired with the `general.architecture`
+/// values it accepts and the function that produces an `Estimate` for
+/// them. Dispatch walks this table top-to-bottom; error formatting
+/// enumerates the same table so "recognised" never drifts from "actually
+/// dispatched".
+struct Family {
+    name: &'static str,
+    arches: &'static [&'static str],
+    estimate: fn(&GgufSummary, &EstimatorInputs<'_>) -> Estimate,
+}
+
+const FAMILIES: &[Family] = &[
+    Family {
+        name: "llama",
+        arches: llama::LLAMA_FAMILY,
+        estimate: llama::estimate,
+    },
+    Family {
+        name: "moe",
+        arches: moe::MOE_FAMILY,
+        estimate: moe::estimate,
+    },
+    Family {
+        name: "mamba",
+        arches: mamba::MAMBA_FAMILY,
+        estimate: mamba::estimate,
+    },
+    Family {
+        name: "hybrid",
+        arches: hybrid::HYBRID_FAMILY,
+        estimate: hybrid::estimate,
+    },
+];
+
+/// Failure modes from [`estimate_from_path`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EstimatorError {
+    /// `gguf::read` failed (bad magic, IO error, unsupported dtype, …).
+    /// The inner string is the reader's own diagnostic.
+    GgufRead { path: std::path::PathBuf, cause: String },
+    /// The GGUF parsed cleanly but its `general.architecture` is not in
+    /// any per-family estimator's allowlist and the service config
+    /// hasn't opted into the coarse fallback.
+    UnknownArchitecture { architecture: SmolStr },
+}
+
+impl std::fmt::Display for EstimatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GgufRead { path, cause } => {
+                write!(f, "read gguf at {}: {cause}", path.display())
+            }
+            Self::UnknownArchitecture { architecture } => {
+                write!(
+                    f,
+                    "architecture {architecture:?} is not recognised. Set \
+                     `estimation.allow_fallback = true` on the service to \
+                     accept the coarse fallback (no KV modelling, weights-only). \
+                     Recognised families:"
+                )?;
+                for fam in FAMILIES {
+                    write!(f, " {}=[", fam.name)?;
+                    for (i, arch) in fam.arches.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(",")?;
+                        }
+                        f.write_str(arch)?;
+                    }
+                    f.write_str("]")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for EstimatorError {}
+
 /// Produce a base estimate for the model described by `inputs`. Reads the
 /// GGUF (including any mmproj) through `fs` and dispatches on
 /// `general.architecture`. Pure function over `inputs` + the bytes on
 /// disk; caller applies rolling correction + safety factor afterward.
-pub fn estimate_from_path(fs: &dyn Fs, inputs: &EstimatorInputs<'_>) -> Result<Estimate, String> {
-    let summary = gguf::read(fs, inputs.model).map_err(|e| e.to_string())?;
+pub fn estimate_from_path(
+    fs: &dyn Fs,
+    inputs: &EstimatorInputs<'_>,
+) -> Result<Estimate, EstimatorError> {
+    let summary = gguf::read(fs, inputs.model).map_err(|e| EstimatorError::GgufRead {
+        path: inputs.model.to_path_buf(),
+        cause: e.to_string(),
+    })?;
 
     info!(
         service = %inputs.name,
@@ -34,7 +119,7 @@ pub fn estimate_from_path(fs: &dyn Fs, inputs: &EstimatorInputs<'_>) -> Result<E
         "gguf summary",
     );
 
-    let mut est = dispatch(&summary, inputs);
+    let mut est = dispatch(&summary, inputs)?;
 
     info!(
         service = %inputs.name,
@@ -67,21 +152,22 @@ pub fn estimate_from_path(fs: &dyn Fs, inputs: &EstimatorInputs<'_>) -> Result<E
     Ok(est)
 }
 
-pub fn dispatch(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {
+pub fn dispatch(
+    summary: &GgufSummary,
+    inputs: &EstimatorInputs<'_>,
+) -> Result<Estimate, EstimatorError> {
     let arch = summary.architecture.as_str();
-    if llama::is_llama_family(arch) {
-        return llama::estimate(summary, inputs);
+    for fam in FAMILIES {
+        if fam.arches.contains(&arch) {
+            return Ok((fam.estimate)(summary, inputs));
+        }
     }
-    if moe::is_moe(arch) {
-        return moe::estimate(summary, inputs);
+    if inputs.allow_fallback {
+        return Ok(fallback::estimate_fallback(summary, inputs.context));
     }
-    if mamba::is_mamba(arch) {
-        return mamba::estimate(summary, inputs);
-    }
-    if hybrid::is_hybrid(arch) {
-        return hybrid::estimate(summary, inputs);
-    }
-    fallback::estimate_fallback(summary, inputs.context)
+    Err(EstimatorError::UnknownArchitecture {
+        architecture: summary.architecture.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -104,6 +190,7 @@ mod tests {
             override_tensor: empty_override,
             n_cpu_moe: None,
             compute_buffer_mb: None,
+            allow_fallback: true,
         }
     }
 
@@ -125,12 +212,12 @@ mod tests {
             shards: vec!["/fake".into()],
         };
         let empty: Vec<String> = Vec::new();
-        let e = dispatch(&summary, &inputs_for(&empty));
+        let e = dispatch(&summary, &inputs_for(&empty)).unwrap();
         assert_eq!(e.architecture, "qwen3");
     }
 
     #[test]
-    fn dispatch_unknown_goes_to_fallback() {
+    fn dispatch_unknown_goes_to_fallback_when_opted_in() {
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert(
             SmolStr::new("general.architecture"),
@@ -146,8 +233,43 @@ mod tests {
             shards: vec!["/fake".into()],
         };
         let empty: Vec<String> = Vec::new();
-        let e = dispatch(&summary, &inputs_for(&empty));
-        // Fallback uses 1.15 × total + 512 MB.
-        assert!(e.weights_bytes >= 512 * 1024 * 1024);
+        let mut inputs = inputs_for(&empty);
+        inputs.allow_fallback = true;
+        let e = dispatch(&summary, &inputs).unwrap();
+        // Fallback returns a non-zero weights estimate (the exact formula
+        // lives in `fallback::estimate_fallback`; asserting shape here
+        // keeps this test decoupled from the specific coefficients).
+        assert!(e.weights_bytes > 0);
+    }
+
+    /// Regression: an unknown architecture with `allow_fallback = false`
+    /// must return `UnknownArchitecture` rather than silently producing
+    /// the coarse fallback guess. Guards against another glm4moe-style
+    /// silent 67× under-reservation.
+    #[test]
+    fn unknown_architecture_rejects_without_opt_in() {
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("novel-arch".into()),
+        );
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 1_000_000,
+            tensors: Default::default(),
+            metadata,
+            block_count: None,
+            architecture: SmolStr::new("novel-arch"),
+            shards: vec!["/fake".into()],
+        };
+        let empty: Vec<String> = Vec::new();
+        let mut inputs = inputs_for(&empty);
+        inputs.allow_fallback = false;
+        match dispatch(&summary, &inputs) {
+            Err(EstimatorError::UnknownArchitecture { architecture }) => {
+                assert_eq!(architecture.as_str(), "novel-arch");
+            }
+            other => panic!("expected UnknownArchitecture; got {other:?}"),
+        }
     }
 }

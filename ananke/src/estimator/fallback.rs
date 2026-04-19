@@ -8,15 +8,25 @@ use tracing::warn;
 use super::types::{Estimate, NonLayer};
 use crate::gguf::GgufSummary;
 
-/// Produce a coarse estimate for any GGUF: `total_tensor_bytes × 1.15 + 512 MB`
-/// goes into `weights_bytes`; no KV modelling; no per-layer split. Emits
-/// a warning so the operator knows rolling correction is the only tuning.
+/// Multiplier applied to the GGUF's on-disk tensor bytes as a rough
+/// headroom factor for the unmodelled non-tensor overhead (KV, compute
+/// buffer, context scratch).
+const FALLBACK_WEIGHTS_SCALE: f64 = 1.15;
+
+/// Flat headroom added on top of the scaled weights.
+const FALLBACK_WEIGHTS_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Produce a coarse estimate for any GGUF: scaled tensor bytes plus a flat
+/// headroom landing in `weights_bytes`; no KV modelling; no per-layer
+/// split. Emits a warning so the operator knows rolling correction is
+/// the only tuning they'll get.
 pub fn estimate_fallback(summary: &GgufSummary, context: u32) -> Estimate {
     warn!(
         architecture = %summary.architecture,
-        "unknown architecture — using fallback estimator (total_tensor_bytes × 1.15 + 512 MB)"
+        "unknown architecture — using fallback estimator"
     );
-    let weights = ((summary.total_tensor_bytes as f64) * 1.15) as u64 + 512 * 1024 * 1024;
+    let weights = ((summary.total_tensor_bytes as f64) * FALLBACK_WEIGHTS_SCALE) as u64
+        + FALLBACK_WEIGHTS_HEADROOM_BYTES;
     Estimate {
         weights_bytes: weights,
         kv_per_token: 0,
@@ -53,12 +63,14 @@ mod tests {
     }
 
     #[test]
-    fn fallback_uses_1_point_15_plus_512mb() {
+    fn fallback_applies_declared_scale_and_headroom() {
         let s = summary_with(1_000_000_000, "nonsense-arch");
         let e = estimate_fallback(&s, 4096);
+        // Assert against the named constants so the test tracks any
+        // future re-tuning without silently drifting.
         assert_eq!(
             e.weights_bytes,
-            (1_000_000_000f64 * 1.15) as u64 + 512 * 1024 * 1024
+            (1_000_000_000f64 * FALLBACK_WEIGHTS_SCALE) as u64 + FALLBACK_WEIGHTS_HEADROOM_BYTES
         );
         assert_eq!(e.kv_per_token, 0);
     }

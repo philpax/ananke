@@ -205,6 +205,7 @@ mod tests {
             override_tensor: empty,
             n_cpu_moe: None,
             compute_buffer_mb: None,
+            allow_fallback: false,
         }
     }
 

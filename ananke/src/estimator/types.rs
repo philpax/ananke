@@ -37,6 +37,11 @@ pub struct EstimatorInputs<'a> {
     /// Override for the compute-buffer reservation (MB per active device).
     /// Absent means the estimator's 400 MB default.
     pub compute_buffer_mb: Option<u32>,
+    /// Whether the operator has opted into the coarse fallback when the
+    /// GGUF's architecture isn't recognised by any per-family estimator.
+    /// `false` by default — unknown architectures return an error instead
+    /// of silently producing a guess that may be badly wrong.
+    pub allow_fallback: bool,
 }
 
 impl<'a> EstimatorInputs<'a> {
@@ -55,6 +60,7 @@ impl<'a> EstimatorInputs<'a> {
             override_tensor: &lc.override_tensor,
             n_cpu_moe: lc.n_cpu_moe,
             compute_buffer_mb: lc.estimation.compute_buffer_mb,
+            allow_fallback: lc.estimation.allow_fallback.unwrap_or(false),
         })
     }
 }

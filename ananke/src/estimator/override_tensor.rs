@@ -129,13 +129,13 @@ pub fn apply(estimate: &mut Estimate, summary: &GgufSummary, rules: &[OverrideRu
     // in-place and we sum those back up.
     //
     // The fallback estimator, however, sets `per_layer_bytes = None` and
-    // leaves `non_layer` all-zero — it only knows the coarse
-    // `weights_bytes = total_tensor_bytes × 1.15 + 512 MB`. Recomputing
-    // from zero in that case would clobber the only sensible weights
-    // estimate the fallback produced (we hit this with glm4moe + a
-    // CPU-offload regex: predicted 400 MiB vs 27 GiB observed). Instead,
-    // subtract the redirected bytes from the fallback's coarse total so
-    // the remaining on-device weights still account for what stays.
+    // leaves `non_layer` all-zero — it only populates the coarse
+    // `weights_bytes` number. Recomputing from zero in that case would
+    // clobber the only sensible weights estimate the fallback produced
+    // (we hit this with glm4moe + a CPU-offload regex: predicted 400 MiB
+    // vs 27 GiB observed). Instead, subtract the redirected bytes from
+    // the fallback's coarse total so the remaining on-device weights
+    // still account for what stays.
     if estimate.per_layer_bytes.is_some() {
         let per_layer_sum = estimate
             .per_layer_bytes

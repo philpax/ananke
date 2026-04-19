@@ -33,8 +33,10 @@ const DEFAULT_COMPUTE_BUFFER_MB: u32 = 400;
 /// llama.cpp's default.
 const DEFAULT_CONTEXT: u32 = 4096;
 
+pub const MAMBA_FAMILY: &[&str] = &["mamba"];
+
 pub fn is_mamba(arch: &str) -> bool {
-    arch == "mamba"
+    MAMBA_FAMILY.contains(&arch)
 }
 
 pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {

@@ -10,8 +10,10 @@ use super::{
 };
 use crate::gguf::GgufSummary;
 
+pub const HYBRID_FAMILY: &[&str] = &["jamba"];
+
 pub fn is_hybrid(arch: &str) -> bool {
-    arch == "jamba"
+    HYBRID_FAMILY.contains(&arch)
 }
 
 pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {

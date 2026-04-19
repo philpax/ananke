@@ -178,6 +178,7 @@ fn merge_llama_cpp(
             (Some(p), Some(c)) => Some(crate::config::parse::EstimationConfig {
                 compute_buffer_mb: c.compute_buffer_mb.or(p.compute_buffer_mb),
                 safety_factor: c.safety_factor.or(p.safety_factor),
+                allow_fallback: c.allow_fallback.or(p.allow_fallback),
             }),
         },
     })

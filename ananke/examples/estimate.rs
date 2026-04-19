@@ -8,7 +8,11 @@
 //!     [--cache-type-k q8_0 --cache-type-v q8_0] \
 //!     [--override-tensor '<regex>=<device>' ...] \
 //!     [--n-cpu-moe N] \
-//!     [--compute-buffer-mb N]
+//!     [--compute-buffer-mb N] \
+//!     [--allow-fallback]
+//!
+//! Unknown architectures now hard-reject by default; pass `--allow-fallback`
+//! to accept the coarse fallback (see `ananke::estimator::fallback`).
 //!
 //! The estimator is a pure function over the GGUF bytes plus a small set
 //! of service-level knobs (context, cache-type, override rules, mmproj,
@@ -37,6 +41,7 @@ struct Args {
     override_tensor: Vec<String>,
     n_cpu_moe: Option<u32>,
     compute_buffer_mb: Option<u32>,
+    allow_fallback: bool,
 }
 
 fn parse_args() -> Args {
@@ -49,6 +54,7 @@ fn parse_args() -> Args {
     let mut override_tensor: Vec<String> = Vec::new();
     let mut n_cpu_moe: Option<u32> = None;
     let mut compute_buffer_mb: Option<u32> = None;
+    let mut allow_fallback = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--model" => model = it.next().map(PathBuf::from),
@@ -65,6 +71,7 @@ fn parse_args() -> Args {
             }
             "--n-cpu-moe" => n_cpu_moe = it.next().and_then(|s| s.parse().ok()),
             "--compute-buffer-mb" => compute_buffer_mb = it.next().and_then(|s| s.parse().ok()),
+            "--allow-fallback" => allow_fallback = true,
             _ => {
                 eprintln!("unknown argument: {arg}");
                 process::exit(2);
@@ -84,6 +91,7 @@ fn parse_args() -> Args {
         override_tensor,
         n_cpu_moe,
         compute_buffer_mb,
+        allow_fallback,
     }
 }
 
@@ -99,6 +107,7 @@ fn main() {
         override_tensor: &args.override_tensor,
         n_cpu_moe: args.n_cpu_moe,
         compute_buffer_mb: args.compute_buffer_mb,
+        allow_fallback: args.allow_fallback,
     };
 
     let estimate = match estimator::estimate_from_path(&LocalFs, &inputs) {

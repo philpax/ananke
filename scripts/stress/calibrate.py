@@ -175,6 +175,8 @@ def run_estimator(binary: Path, svc: dict[str, Any], context: int) -> dict[str, 
     estimation = svc.get("estimation") or {}
     if estimation.get("compute_buffer_mb") is not None:
         args += ["--compute-buffer-mb", str(estimation["compute_buffer_mb"])]
+    if estimation.get("allow_fallback"):
+        args.append("--allow-fallback")
 
     result = subprocess.run(args, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:

@@ -249,6 +249,7 @@ mod tests {
             override_tensor: &empty_override,
             n_cpu_moe: Some(1),
             compute_buffer_mb: None,
+            allow_fallback: false,
         };
 
         let e = estimate(&summary, &inputs);
