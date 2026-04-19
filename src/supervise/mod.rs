@@ -797,12 +797,12 @@ impl RunLoop {
                 self.set_state(ServiceState::Disabled {
                     reason: DisableReason::HealthTimeout,
                 });
-                send_sigterm_and_wait(child, STARTING_SIGTERM_GRACE).await;
+                drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 StartingOutcome::Break
             }
             Ok(HealthOutcome::Cancelled) | Err(_) => {
                 self.deps.allocations.lock().remove(&self.init.svc.name);
-                send_sigterm_and_wait(child, STARTING_SIGTERM_GRACE).await;
+                drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 StartingOutcome::Exit
             }
         }
@@ -834,7 +834,7 @@ impl RunLoop {
                 if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
                     info!(service = %self.init.svc.name, "draining during warming");
                     let _ = self.cancel_tx.send(true);
-                    send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
+                    drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.deps.allocations.lock().remove(&self.init.svc.name);
                     let _ = ack.send(());
@@ -868,7 +868,7 @@ impl RunLoop {
                         continue;
                     }
                     info!(service = %self.init.svc.name, "idle timeout; draining to idle");
-                    send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
+                    drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.record_drain_complete();
                     self.set_state(ServiceState::Idle);
@@ -899,7 +899,7 @@ impl RunLoop {
                 let next = transition(&self.state, StateEvent::DrainRequested);
                 self.set_state(next);
                 let _ = self.cancel_tx.send(true);
-                send_sigterm_and_wait(child, RUNNING_SIGTERM_GRACE).await;
+                drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                 self.record_drain_complete();
                 let _ = ack.send(());
@@ -975,7 +975,7 @@ impl RunLoop {
         match cmd {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 let _ = self.cancel_tx.send(true);
-                send_sigterm_and_wait(child, STARTING_SIGTERM_GRACE).await;
+                drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 self.deps.allocations.lock().remove(&self.init.svc.name);
                 let _ = ack.send(());
                 StartingOutcome::Exit
@@ -1115,21 +1115,6 @@ fn idle_deadline_for(last_activity: &Arc<AtomicU64>, timeout_ms: u64) -> tokio::
     let last = last_activity.load(Ordering::Relaxed);
     let deadline_ms_from_now = (last + timeout_ms).saturating_sub(now);
     tokio::time::Instant::now() + Duration::from_millis(deadline_ms_from_now)
-}
-
-async fn send_sigterm_and_wait(child: &mut tokio::process::Child, grace: Duration) {
-    if let Some(pid) = child.id() {
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(pid as i32),
-            nix::sys::signal::Signal::SIGTERM,
-        );
-    }
-    match tokio::time::timeout(grace, child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = child.kill().await;
-        }
-    }
 }
 
 /// Insert a `running_services` row.

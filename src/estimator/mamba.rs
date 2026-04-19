@@ -8,11 +8,27 @@ use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use super::{
-    llama::{collect_non_layer, layer_index},
-    types::Estimate,
-};
+use super::{llama::collect_non_layer, types::Estimate};
 use crate::{config::ServiceConfig, gguf::GgufSummary};
+
+/// Default mamba.ssm.state_size when the model metadata omits it. Matches the
+/// Mamba-1 reference implementation.
+const DEFAULT_STATE_SIZE: u64 = 16;
+
+/// Default mamba.ssm.conv_kernel width when metadata omits it. Matches the
+/// Mamba-1 reference implementation.
+const DEFAULT_CONV_KERNEL: u64 = 4;
+
+/// Size in bytes of one SSM state element (f32).
+const STATE_ELEMENT_BYTES: u64 = std::mem::size_of::<f32>() as u64;
+
+/// Default estimator compute-buffer overhead in MiB when the service config
+/// does not override it. Matches other estimator families.
+const DEFAULT_COMPUTE_BUFFER_MB: u32 = 400;
+
+/// Default context length when the service config does not set one. Mirrors
+/// llama.cpp's default.
+const DEFAULT_CONTEXT: u32 = 4096;
 
 pub fn is_mamba(arch: &str) -> bool {
     arch == "mamba"
@@ -20,7 +36,7 @@ pub fn is_mamba(arch: &str) -> bool {
 
 pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     let arch = summary.architecture.as_str();
-    let context = svc.raw.context.unwrap_or(4096);
+    let context = svc.raw.context.unwrap_or(DEFAULT_CONTEXT);
     let n_layers = summary.block_count.unwrap_or(0);
 
     let per_layer = super::llama::collect_per_layer(summary, n_layers);
@@ -31,24 +47,24 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         + non_layer.token_embd_bytes
         + non_layer.other_bytes;
 
-    // State cost: state_size × conv_kernel × inner_size × 4 bytes (f32), per layer.
+    // State cost: state_size × conv_kernel × inner_size × sizeof(f32), per layer.
     let state_size = summary
         .metadata
         .get("mamba.ssm.state_size")
         .and_then(|v| v.as_u32())
-        .unwrap_or(16) as u64;
+        .map_or(DEFAULT_STATE_SIZE, u64::from);
     let conv_kernel = summary
         .metadata
         .get("mamba.ssm.conv_kernel")
         .and_then(|v| v.as_u32())
-        .unwrap_or(4) as u64;
+        .map_or(DEFAULT_CONV_KERNEL, u64::from);
     let inner_size = summary
         .metadata
         .get("mamba.ssm.inner_size")
         .and_then(|v| v.as_u32())
-        .unwrap_or(0) as u64;
+        .map_or(0u64, u64::from);
 
-    let state_per_layer = state_size * conv_kernel * inner_size * 4;
+    let state_per_layer = state_size * conv_kernel * inner_size * STATE_ELEMENT_BYTES;
     let kv_per_token = n_layers as u64 * state_per_layer;
 
     Estimate {
@@ -59,7 +75,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
             .estimation
             .as_ref()
             .and_then(|e| e.compute_buffer_mb)
-            .unwrap_or(400),
+            .unwrap_or(DEFAULT_COMPUTE_BUFFER_MB),
         per_layer_bytes: Some(per_layer),
         attention_layers: None,
         non_layer,
@@ -69,12 +85,6 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         context,
         architecture: SmolStr::new(arch),
     }
-}
-
-// Suppress dead-code lint on layer_index re-export path used by mamba.
-#[allow(dead_code)]
-fn _use_layer_index(name: &str) -> Option<u32> {
-    layer_index(name)
 }
 
 #[cfg(test)]

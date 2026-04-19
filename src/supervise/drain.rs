@@ -12,6 +12,13 @@ use std::{
 use tokio::process::Child;
 use tracing::{info, warn};
 
+/// Polling cadence while waiting for in-flight counters to reach zero.
+const INFLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// SIGTERM grace used by `fast_kill`. Short because the caller has already
+/// decided the child has misbehaved and must go; no streaming-client courtesy.
+const FAST_KILL_SIGTERM_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrainReason {
     Shutdown,
@@ -40,20 +47,13 @@ pub async fn drain_pipeline(
     reason: DrainReason,
 ) {
     info!(?reason, "drain: waiting for in-flight requests");
-    let deadline = tokio::time::Instant::now() + cfg.max_request_duration;
-    loop {
-        if inflight.load(Ordering::Relaxed) == 0 {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            warn!(
-                ?reason,
-                inflight = inflight.load(Ordering::Relaxed),
-                "drain: max_request_duration elapsed with requests still in flight"
-            );
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    let timed_out = wait_inflight_zero(&inflight, cfg.max_request_duration).await;
+    if timed_out {
+        warn!(
+            ?reason,
+            inflight = inflight.load(Ordering::Relaxed),
+            "drain: max_request_duration elapsed with requests still in flight"
+        );
     }
 
     info!(?reason, "drain: drain_timeout grace");
@@ -64,47 +64,60 @@ pub async fn drain_pipeline(
     // the guard on response end).
     if inflight.load(Ordering::Relaxed) > 0 {
         info!(?reason, "drain: extended stream drain");
-        let stream_deadline = tokio::time::Instant::now() + cfg.extended_stream_drain;
-        loop {
-            if inflight.load(Ordering::Relaxed) == 0 {
-                break;
-            }
-            if tokio::time::Instant::now() >= stream_deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        let _ = wait_inflight_zero(&inflight, cfg.extended_stream_drain).await;
     }
 
     info!(?reason, "drain: SIGTERM");
+    match sigterm_then_sigkill(child, cfg.sigterm_grace).await {
+        SigtermOutcome::Exited => info!(?reason, "drain: child exited gracefully"),
+        SigtermOutcome::Killed => warn!(?reason, "drain: SIGKILL after grace"),
+    }
+}
+
+/// Balloon fast-path: short SIGTERM grace then SIGKILL; no inflight wait.
+pub async fn fast_kill(child: &mut Child, reason: DrainReason) {
+    warn!(?reason, "fast_kill: SIGTERM + short grace");
+    let _ = sigterm_then_sigkill(child, FAST_KILL_SIGTERM_GRACE).await;
+}
+
+/// Send SIGTERM to `child` and wait up to `grace` for it to exit. Escalates
+/// to SIGKILL on timeout. Shared between `drain_pipeline`, `fast_kill`, and
+/// the supervisor's starting/running abort paths.
+pub async fn sigterm_then_sigkill(child: &mut Child, grace: Duration) -> SigtermOutcome {
     if let Some(pid) = child.id() {
         let _ = nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(pid as i32),
             nix::sys::signal::Signal::SIGTERM,
         );
     }
-    match tokio::time::timeout(cfg.sigterm_grace, child.wait()).await {
-        Ok(_) => info!(?reason, "drain: child exited gracefully"),
+    match tokio::time::timeout(grace, child.wait()).await {
+        Ok(_) => SigtermOutcome::Exited,
         Err(_) => {
-            warn!(?reason, "drain: SIGKILL after grace");
             let _ = child.kill().await;
+            SigtermOutcome::Killed
         }
     }
 }
 
-/// Balloon fast-path: 5 s SIGTERM grace then SIGKILL; no inflight wait.
-pub async fn fast_kill(child: &mut Child, reason: DrainReason) {
-    warn!(?reason, "fast_kill: SIGTERM + 5s grace");
-    if let Some(pid) = child.id() {
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(pid as i32),
-            nix::sys::signal::Signal::SIGTERM,
-        );
-    }
-    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = child.kill().await;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigtermOutcome {
+    /// Child exited within the grace window.
+    Exited,
+    /// Grace elapsed; SIGKILL issued.
+    Killed,
+}
+
+/// Poll `inflight` until it reaches zero or `bound` elapses. Returns `true`
+/// if the bound expired before the counter reached zero.
+async fn wait_inflight_zero(inflight: &AtomicU64, bound: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + bound;
+    loop {
+        if inflight.load(Ordering::Relaxed) == 0 {
+            return false;
         }
+        if tokio::time::Instant::now() >= deadline {
+            return true;
+        }
+        tokio::time::sleep(INFLIGHT_POLL_INTERVAL).await;
     }
 }

@@ -42,7 +42,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
                 .as_ref()
                 .map(|s| state_name(&s.state))
                 .unwrap_or_else(|| "unknown".into()),
-            lifecycle: format!("{:?}", svc_cfg.lifecycle).to_lowercase(),
+            lifecycle: svc_cfg.lifecycle.as_str().to_string(),
             priority: svc_cfg.priority,
             port: svc_cfg.port,
             run_id: snap.as_ref().and_then(|s| s.run_id),
@@ -136,7 +136,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         priority: svc_cfg.priority,
         port: svc_cfg.port,
         private_port: svc_cfg.private_port,
-        template: format!("{:?}", svc_cfg.template).to_lowercase(),
+        template: svc_cfg.template.as_str().to_string(),
         placement_override,
         idle_timeout_ms: svc_cfg.idle_timeout_ms,
         run_id: snap.as_ref().and_then(|s| s.run_id),

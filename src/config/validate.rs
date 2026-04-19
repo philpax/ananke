@@ -58,6 +58,15 @@ pub enum Template {
     Command,
 }
 
+impl Template {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Template::LlamaCpp => "llamacpp",
+            Template::Command => "command",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocationMode {
     /// Llama-cpp services: placement decided by estimator/override; mode absent.
@@ -76,6 +85,15 @@ pub enum AllocationMode {
 pub enum Lifecycle {
     Persistent,
     OnDemand,
+}
+
+impl Lifecycle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lifecycle::Persistent => "persistent",
+            Lifecycle::OnDemand => "ondemand",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
