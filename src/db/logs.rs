@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use tracing::warn;
 
 use crate::db::Database;
+use crate::db::models::ServiceLog;
 
 const BATCH_LINES: usize = 100;
 const BATCH_INTERVAL: Duration = Duration::from_millis(200);
@@ -90,25 +91,25 @@ async fn run(db: Database, mut rx: mpsc::UnboundedReceiver<Msg>) {
             msg = rx.recv() => match msg {
                 None => {
                     // Channel closed; do a final flush and exit.
-                    flush(&db, &mut buffer, &mut seq_counters);
+                    flush(&db, &mut buffer, &mut seq_counters).await;
                     return;
                 }
                 Some(Msg::Line(line)) => {
                     buffer.push(line);
                     if buffer.len() >= BATCH_LINES {
-                        flush(&db, &mut buffer, &mut seq_counters);
+                        flush(&db, &mut buffer, &mut seq_counters).await;
                         deadline = Instant::now() + BATCH_INTERVAL;
                     }
                 }
                 Some(Msg::Flush(ack)) => {
-                    flush(&db, &mut buffer, &mut seq_counters);
+                    flush(&db, &mut buffer, &mut seq_counters).await;
                     let _ = ack.send(());
                     deadline = Instant::now() + BATCH_INTERVAL;
                 }
             },
             _ = &mut tick => {
                 if !buffer.is_empty() {
-                    flush(&db, &mut buffer, &mut seq_counters);
+                    flush(&db, &mut buffer, &mut seq_counters).await;
                 }
                 deadline = Instant::now() + BATCH_INTERVAL;
             }
@@ -120,36 +121,41 @@ async fn run(db: Database, mut rx: mpsc::UnboundedReceiver<Msg>) {
 ///
 /// The `seq` counter is per `(service_id, run_id)` and starts at 1, incrementing
 /// monotonically across flush calls so ordering is preserved even across batches.
-fn flush(db: &Database, buffer: &mut Vec<LogLine>, seq: &mut HashMap<(i64, i64), i64>) {
+async fn flush(db: &Database, buffer: &mut Vec<LogLine>, seq: &mut HashMap<(i64, i64), i64>) {
     if buffer.is_empty() {
         return;
     }
     let lines = std::mem::take(buffer);
-    let res = db.with_conn_mut(|conn| {
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO service_logs(service_id, run_id, timestamp_ms, seq, stream, line) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?;
-            for line in &lines {
-                let counter = seq.entry((line.service_id, line.run_id)).or_insert(0);
-                *counter += 1;
-                stmt.execute((
-                    line.service_id,
-                    line.run_id,
-                    line.timestamp_ms,
-                    *counter,
-                    line.stream.as_str(),
-                    &line.line,
-                ))?;
-            }
+
+    let mut handle = db.handle();
+    let mut tx = match handle.transaction().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            warn!(error = %e, "log batch: begin transaction failed");
+            return;
         }
-        tx.commit()?;
-        Ok(())
-    });
-    if let Err(e) = res {
-        warn!(error = %e, "log batch flush failed");
+    };
+
+    for line in lines {
+        let counter = seq.entry((line.service_id, line.run_id)).or_insert(0);
+        *counter += 1;
+        let res = toasty::create!(ServiceLog {
+            service_id: line.service_id,
+            run_id: line.run_id,
+            seq: *counter,
+            timestamp_ms: line.timestamp_ms,
+            stream: line.stream.as_str().to_string(),
+            line: line.line,
+        })
+        .exec(&mut tx)
+        .await;
+        if let Err(e) = res {
+            warn!(error = %e, "log batch: insert failed");
+        }
+    }
+
+    if let Err(e) = tx.commit().await {
+        warn!(error = %e, "log batch: commit failed");
     }
 }
 
@@ -161,6 +167,11 @@ mod tests {
 
     use super::*;
     use crate::db::Database;
+
+    async fn count_logs(db: &Database) -> usize {
+        let mut handle = db.handle();
+        ServiceLog::all().exec(&mut handle).await.unwrap().len()
+    }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn flushes_on_threshold() {
@@ -180,10 +191,7 @@ mod tests {
         }
         h.flush().await;
 
-        let count: i64 = db
-            .with_conn(|c| c.query_row("SELECT COUNT(*) FROM service_logs", [], |r| r.get(0)))
-            .unwrap();
-        assert_eq!(count, BATCH_LINES as i64);
+        assert_eq!(count_logs(&db).await, BATCH_LINES);
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -204,10 +212,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(250)).await;
         h.flush().await;
 
-        let count: i64 = db
-            .with_conn(|c| c.query_row("SELECT COUNT(*) FROM service_logs", [], |r| r.get(0)))
-            .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count_logs(&db).await, 1);
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -228,15 +233,10 @@ mod tests {
         }
         h.flush().await;
 
-        let seqs: Vec<i64> = db
-            .with_conn(|c| {
-                let mut stmt = c
-                    .prepare("SELECT seq FROM service_logs ORDER BY timestamp_ms")
-                    .unwrap();
-                let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).unwrap();
-                Ok(rows.collect::<Result<Vec<_>, _>>().unwrap())
-            })
-            .unwrap();
+        let mut handle = db.handle();
+        let mut rows: Vec<ServiceLog> = ServiceLog::all().exec(&mut handle).await.unwrap();
+        rows.sort_by_key(|r| r.timestamp_ms);
+        let seqs: Vec<i64> = rows.into_iter().map(|r| r.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3]);
     }
 }

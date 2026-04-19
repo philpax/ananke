@@ -106,15 +106,15 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         batcher.flush().await;
 
-        let lines: Vec<String> = db
-            .with_conn(|c| {
-                let mut stmt = c
-                    .prepare("SELECT line FROM service_logs WHERE service_id = ?1 ORDER BY seq")
-                    .unwrap();
-                let rows = stmt.query_map([svc], |r| r.get::<_, String>(0)).unwrap();
-                Ok(rows.collect::<Result<Vec<_>, _>>().unwrap())
-            })
-            .unwrap();
+        let mut handle = db.handle();
+        let mut rows: Vec<crate::db::models::ServiceLog> = crate::db::models::ServiceLog::filter(
+            crate::db::models::ServiceLog::fields().service_id().eq(svc),
+        )
+        .exec(&mut handle)
+        .await
+        .unwrap();
+        rows.sort_by_key(|r| r.seq);
+        let lines: Vec<String> = rows.into_iter().map(|r| r.line).collect();
         assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
     }
 }
