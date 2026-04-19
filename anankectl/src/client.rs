@@ -16,8 +16,6 @@ pub enum ApiClientError {
         body: String,
     },
     Parse(String),
-    // Unused today but reserved for commands that validate locally before hitting the API.
-    #[expect(dead_code)]
     Usage(String),
     /// WebSocket connection failure (e.g. from `--follow`).
     WebSocket(String),
@@ -67,7 +65,6 @@ impl ApiClient {
         self.read_json(resp).await
     }
 
-    #[expect(dead_code)]
     pub async fn post_json<T: DeserializeOwned, B: serde::Serialize>(
         &self,
         path: &str,
@@ -95,7 +92,6 @@ impl ApiClient {
         self.read_json(resp).await
     }
 
-    #[expect(dead_code)]
     pub async fn delete(&self, path: &str) -> Result<(), ApiClientError> {
         let url = self.endpoint.join(path).expect("valid path");
         let resp = self
