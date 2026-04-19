@@ -104,6 +104,17 @@ impl ConfigManager {
         })
     }
 
+    /// Swap the in-memory effective config without persisting or publishing.
+    /// Tests use this to stage the "post-reload" state before firing the
+    /// `ConfigReloaded` event manually. Never used by production code.
+    ///
+    /// Lib-side tests use this directly; integration tests (compiled as
+    /// their own binaries) reach it through the `test-fakes` feature gate.
+    #[cfg(any(test, feature = "test-fakes"))]
+    pub fn swap_effective_for_test(&self, new: EffectiveConfig) {
+        self.effective.store(Arc::new(new));
+    }
+
     /// Return the raw TOML content and its hash as a pair.
     pub fn raw(&self) -> (String, ConfigHash) {
         let raw = self.raw.read().clone();

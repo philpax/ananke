@@ -29,6 +29,13 @@ impl ServiceRegistry {
         self.inner.read().get(name).cloned()
     }
 
+    /// Evict `name` and return its handle if present. The caller typically
+    /// awaits `shutdown()` on the returned handle to drain the underlying
+    /// child before the `Arc` is dropped.
+    pub fn remove(&self, name: &str) -> Option<Arc<SupervisorHandle>> {
+        self.inner.write().remove(name)
+    }
+
     pub fn names(&self) -> Vec<SmolStr> {
         self.inner.read().keys().cloned().collect()
     }
@@ -90,7 +97,7 @@ mod tests {
             registry: ServiceRegistry::new(),
             effective,
             events: crate::daemon::events::EventBus::new(),
-            fs: Arc::new(crate::system::InMemoryFs::new()),
+            system: crate::system::SystemDeps::fake().0,
         };
         let handle = Arc::new(spawn_supervisor(init, deps));
 
@@ -99,6 +106,13 @@ mod tests {
         assert!(registry.get("demo").is_some());
         assert!(registry.get("missing").is_none());
         assert_eq!(registry.names(), vec![SmolStr::new("demo")]);
+
+        // Remove returns the evicted handle; subsequent lookups miss.
+        let taken = registry.remove("demo").expect("registry had demo");
+        assert!(registry.get("demo").is_none());
+        assert_eq!(registry.names(), Vec::<SmolStr>::new());
+        // Shutdown the evicted handle so the supervisor actor exits cleanly.
+        taken.shutdown().await;
 
         handle.shutdown().await;
     }

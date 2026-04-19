@@ -7,6 +7,7 @@ pub mod drain;
 pub mod health;
 pub mod logs;
 pub mod orphans;
+pub mod reconciler;
 pub mod registry;
 pub mod spawn;
 pub mod state;
@@ -22,7 +23,6 @@ pub use orphans::{OrphanDisposition, reconcile};
 use parking_lot::Mutex as SyncMutex;
 pub use spawn::{SpawnConfig, render_argv};
 use tokio::{
-    process::Child,
     sync::{broadcast, mpsc, watch},
     task::JoinHandle,
 };
@@ -39,9 +39,9 @@ use crate::{
         health::{HealthConfig, HealthOutcome, wait_healthy},
         logs::{spawn_pump_stderr, spawn_pump_stdout},
         registry::ServiceRegistry,
-        spawn::spawn_child,
         state::{DisableReason, Event as StateEvent, ServiceState, transition},
     },
+    system::ManagedChild,
     tracking::{observation::ObservationTable, rolling::RollingTable},
 };
 
@@ -227,7 +227,9 @@ impl SupervisorHandle {
 }
 
 /// Daemon-wide shared state every supervisor borrows. Cloning it is cheap
-/// (every field is `Arc`-backed).
+/// (every field is `Arc`-backed). Outside-world capabilities live inside
+/// `system` ([`crate::system::SystemDeps`]); everything else is
+/// daemon-internal state.
 #[derive(Clone)]
 pub struct SupervisorDeps {
     pub db: Database,
@@ -239,7 +241,7 @@ pub struct SupervisorDeps {
     pub registry: ServiceRegistry,
     pub effective: Arc<EffectiveConfig>,
     pub events: EventBus,
-    pub fs: Arc<dyn crate::system::Fs>,
+    pub system: crate::system::SystemDeps,
 }
 
 /// Per-service initialisation for a single supervisor task.
@@ -702,7 +704,7 @@ impl RunLoop {
             .ok_or_else(|| "no model path configured".to_string())?
             .model
             .clone();
-        let mut est = crate::estimator::estimate_from_path(self.deps.fs.as_ref(), &model_path, svc)
+        let mut est = crate::estimator::estimate_from_path(self.deps.system.fs.as_ref(), &model_path, svc)
             .map_err(|e| format!("estimator: {e}"))?;
         // Apply rolling correction to weights_bytes.
         let rc = self.deps.rolling.get(&svc.name);
@@ -912,7 +914,7 @@ impl RunLoop {
             self.packed_for_spawn.as_ref().map(|p| &p.args),
         );
         let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
-        let mut child = match spawn_child(&spawn_cfg).await {
+        let mut child = match self.deps.system.process_spawner.spawn(&spawn_cfg).await {
             Ok(c) => c,
             Err(e) => {
                 error!(error = %e, "spawn failed");
@@ -955,7 +957,7 @@ impl RunLoop {
         )
         .await;
 
-        if let Some(stdout) = child.stdout.take() {
+        if let Some(stdout) = child.take_stdout() {
             spawn_pump_stdout(
                 stdout,
                 self.init.service_id,
@@ -963,7 +965,7 @@ impl RunLoop {
                 self.deps.batcher.clone(),
             );
         }
-        if let Some(stderr) = child.stderr.take() {
+        if let Some(stderr) = child.take_stderr() {
             spawn_pump_stderr(
                 stderr,
                 self.init.service_id,
@@ -991,14 +993,14 @@ impl RunLoop {
                     return self.on_child_exit_during_start(exit, spawn_time);
                 }
                 outcome = &mut health_task => {
-                    match self.on_health_outcome(outcome, &mut child, run_id).await {
+                    match self.on_health_outcome(outcome, &mut *child, run_id).await {
                         StartingOutcome::Continue => {}
                         StartingOutcome::Break => break,
                         StartingOutcome::Exit => return Step::Exit,
                     }
                 }
                 cmd = self.rx.recv() => {
-                    match self.on_starting_command(cmd, &mut child, run_id).await {
+                    match self.on_starting_command(cmd, &mut *child, run_id).await {
                         StartingOutcome::Continue => {}
                         StartingOutcome::Break => break,
                         StartingOutcome::Exit => return Step::Exit,
@@ -1075,7 +1077,7 @@ impl RunLoop {
     async fn on_health_outcome(
         &mut self,
         outcome: Result<HealthOutcome, tokio::task::JoinError>,
-        child: &mut Child,
+        child: &mut dyn ManagedChild,
         run_id: i64,
     ) -> StartingOutcome {
         match outcome {
@@ -1122,7 +1124,7 @@ impl RunLoop {
 
     /// Warming grace: sleep `warming_grace_ms` while also watching for child
     /// exit and Shutdown.
-    async fn run_warming_grace(&mut self, child: &mut Child, run_id: i64) -> WarmingOutcome {
+    async fn run_warming_grace(&mut self, child: &mut dyn ManagedChild, run_id: i64) -> WarmingOutcome {
         let grace = Duration::from_millis(self.init.svc.warming_grace_ms);
         tokio::select! {
             _ = tokio::time::sleep(grace) => {
@@ -1163,7 +1165,7 @@ impl RunLoop {
     }
 
     /// The Running inner loop: wait for child exit, idle timeout, or commands.
-    async fn run_running_loop(&mut self, child: &mut Child, run_id: i64) -> StartingOutcome {
+    async fn run_running_loop(&mut self, child: &mut dyn ManagedChild, run_id: i64) -> StartingOutcome {
         let pid = child.id().unwrap_or(0) as i32;
         loop {
             tokio::select! {
@@ -1207,7 +1209,7 @@ impl RunLoop {
     /// returns.
     async fn drain_now(
         &mut self,
-        child: &mut Child,
+        child: &mut dyn ManagedChild,
         run_id: i64,
         reason: crate::supervise::drain::DrainReason,
     ) {
@@ -1227,7 +1229,7 @@ impl RunLoop {
     async fn on_running_command(
         &mut self,
         cmd: Option<SupervisorCommand>,
-        child: &mut Child,
+        child: &mut dyn ManagedChild,
         run_id: i64,
         pid: i32,
     ) -> RunningOutcome {
@@ -1305,7 +1307,7 @@ impl RunLoop {
     async fn on_starting_command(
         &mut self,
         cmd: Option<SupervisorCommand>,
-        child: &mut Child,
+        child: &mut dyn ManagedChild,
         run_id: i64,
     ) -> StartingOutcome {
         let pid = child.id().unwrap_or(0) as i32;

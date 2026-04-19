@@ -47,6 +47,14 @@ pub struct TestHarness {
     /// and AppState. Tests that need the estimator to find a GGUF at a
     /// particular path can insert bytes here before issuing a request.
     pub fs: ananke::system::InMemoryFs,
+    /// Concrete handle to the in-memory process spawner. Tests that want to
+    /// assert "service X's child was terminated by the reconciler" inspect
+    /// this directly rather than polling OS pids.
+    pub process_spawner: Arc<ananke::system::FakeSpawner>,
+    /// Shutdown channel for the reload reconciler task.
+    pub reconciler_shutdown: tokio::sync::watch::Sender<bool>,
+    /// Join handle for the reload reconciler; awaited in `cleanup`.
+    pub reconciler_join: tokio::task::JoinHandle<()>,
 }
 
 /// Build a `TestHarness` from a list of service configs.
@@ -60,8 +68,9 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     // Nothing below this line touches the real disk.
     let db = Database::open_in_memory().await.unwrap();
     let batcher = spawn_batcher(db.clone());
-    let fs_concrete = ananke::system::InMemoryFs::new();
-    let fs: Arc<dyn ananke::system::Fs> = Arc::new(fs_concrete.clone());
+    let (system, fakes) = ananke::system::SystemDeps::fake();
+    let fs_concrete = fakes.fs;
+    let fake_spawner = fakes.process_spawner;
 
     let echo_state = echo_server::EchoState::default();
     let echo_port = free_port();
@@ -127,7 +136,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         registry: registry.clone(),
         effective: effective.clone(),
         events: events.clone(),
-        fs: fs.clone(),
+        system: system.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -146,7 +155,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
 
     let state = AppState {
         config: config_manager,
-        registry,
+        registry: registry.clone(),
         allocations,
         snapshot,
         activity,
@@ -157,9 +166,20 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         port_pool: Arc::new(Mutex::new(ananke::oneshot::PortPool::new(18000..19000))),
         oneshots: ananke::oneshot::OneshotRegistry::new(),
         batcher,
-        fs: fs.clone(),
-        events,
+        events: events.clone(),
+        system: system.clone(),
     };
+
+    // Drain-on-remove reconciler: matches what daemon::run wires up, so
+    // integration tests can PUT a synthetic config that drops a service and
+    // see the supervisor drained + removed from the registry.
+    let (reconciler_shutdown, reconciler_rx) = tokio::sync::watch::channel(false);
+    let reconciler_join = ananke::supervise::reconciler::spawn(
+        events,
+        state.config.clone(),
+        registry,
+        reconciler_rx,
+    );
 
     TestHarness {
         state,
@@ -168,6 +188,9 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         echo_shutdown,
         supervisors,
         fs: fs_concrete,
+        process_spawner: fake_spawner,
+        reconciler_shutdown,
+        reconciler_join,
     }
 }
 
@@ -257,6 +280,9 @@ impl TestHarness {
     /// Shut down the echo server and all supervisors.
     pub async fn cleanup(self) {
         let _ = self.echo_shutdown.send(true);
+        let _ = self.reconciler_shutdown.send(true);
+        self.reconciler_join.abort();
+        let _ = self.reconciler_join.await;
         for sup in &self.supervisors {
             sup.shutdown().await;
         }

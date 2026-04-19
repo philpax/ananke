@@ -1,15 +1,15 @@
 //! Pump child stdout/stderr into the log batcher.
 
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{ChildStderr, ChildStdout},
-};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::db::logs::{BatcherHandle, LogLine, Stream};
+use crate::{
+    db::logs::{BatcherHandle, LogLine, Stream},
+    system::DynAsyncRead,
+};
 
 /// Spawn a task that reads lines from `stdout` and forwards them to the batcher.
 pub fn spawn_pump_stdout(
-    stdout: ChildStdout,
+    stdout: DynAsyncRead,
     service_id: i64,
     run_id: i64,
     batcher: BatcherHandle,
@@ -25,7 +25,7 @@ pub fn spawn_pump_stdout(
 
 /// Spawn a task that reads lines from `stderr` and forwards them to the batcher.
 pub fn spawn_pump_stderr(
-    stderr: ChildStderr,
+    stderr: DynAsyncRead,
     service_id: i64,
     run_id: i64,
     batcher: BatcherHandle,
@@ -69,34 +69,30 @@ async fn pump<R: AsyncBufReadExt + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use tokio::process::Command;
+    use std::io::Cursor;
+    use std::pin::Pin;
 
     use super::*;
     use crate::db::{Database, logs::spawn as spawn_batcher};
 
+    /// Wrap a static byte buffer as a `DynAsyncRead` for tests that want to
+    /// exercise the pump without spawning a real process.
+    fn fixed(bytes: &'static [u8]) -> DynAsyncRead {
+        Box::pin(Cursor::new(bytes)) as Pin<Box<_>>
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn pumps_echoed_lines() {
+    async fn pumps_lines_from_dyn_reader() {
         let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let batcher = spawn_batcher(db.clone());
 
-        let mut child = Command::new("/bin/sh")
-            .arg("-c")
-            .arg("printf 'hello\\nworld\\n'; exit 0")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-        spawn_pump_stdout(stdout, svc, 1, batcher.clone());
-        spawn_pump_stderr(stderr, svc, 1, batcher.clone());
+        spawn_pump_stdout(fixed(b"hello\nworld\n"), svc, 1, batcher.clone());
+        spawn_pump_stderr(fixed(b""), svc, 1, batcher.clone());
 
-        let _ = child.wait().await;
-        // Wait a tick for the pump tasks to drain before flushing.
-        batcher.flush().await;
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        // The pump tasks drain their readers and exit on EOF. Give them one
+        // scheduler tick, then flush the batcher.
+        tokio::task::yield_now().await;
         batcher.flush().await;
 
         let mut handle = db.handle();

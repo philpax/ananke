@@ -74,8 +74,9 @@ The pipeline is not yet wired up — implement it when the first API handler lan
   - `cargo fmt --all -- --check`
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo clippy --all-targets --no-default-features -- -D warnings`
-  - `cargo test --workspace`
-  - `cargo test --workspace --no-default-features`
+  - `cargo test --workspace --all-features`
+  - `cargo test --workspace --no-default-features --lib`
+- Integration tests live under `ananke/tests/` and depend on the `test-fakes` feature (for `FakeSpawner` etc.). They run under `--all-features`. The no-default-features pass is scoped to `--lib` to verify the non-feature build still compiles; integration-test failures under no-default-features are expected.
 
 ### Type system patterns
 
@@ -238,7 +239,56 @@ Same principle as the Rust side: the frontend stack is chosen, and most of these
 - **API types**: `openapi-typescript` generates raw types; `orval` generates the hooks on top. See "The Rust ↔ TypeScript boundary" above.
 - **Code editor component**: CodeMirror 6 (for the in-app TOML config editor).
 
-## Testing 
+## Testing
+
+### Tests are pure; the outside world goes through `system::SystemDeps`
+
+Tests must be deterministic. They must not spawn real processes, probe real
+pids, read real `/proc`, touch disk, sleep on wall-clock, or depend on any
+state the daemon didn't hand them. The way we enforce this is that every
+capability the daemon takes from the outside world lives behind a trait in
+`crate::system`:
+
+- `Fs` — filesystem. `LocalFs` in production, `InMemoryFs` in tests.
+- `ProcessSpawner` + `ManagedChild` — child-process lifecycle. `LocalSpawner`
+  in production (uses `tokio::process` + `nix` for signals); `FakeSpawner`
+  in tests (virtual pids, no OS processes, state inspectable for assertions).
+
+These are bundled into `system::SystemDeps`. Production code calls
+`SystemDeps::local()`; tests call `SystemDeps::fake()` which also returns
+the concrete fakes so assertions can inspect state (e.g. "which children
+were SIGTERM'd, which were SIGKILL'd"). The `SupervisorDeps` and `AppState`
+structs carry a `system: SystemDeps` field — they never hold `LocalFs`
+or `LocalSpawner` directly.
+
+**When adding a new outside-world dependency (clock, network, `/proc`
+readers, etc.):**
+
+1. Define a trait in `ananke/src/system/<name>.rs` with a production impl
+   and a test fake. Gate the fake behind `#[cfg(any(test, feature = "test-fakes"))]`.
+2. Re-export from `system::mod.rs` and add it as a field on `SystemDeps`.
+   Update `SystemDeps::local()` and `SystemDeps::fake()`.
+3. Route every caller through `deps.system.<field>`; never use
+   `std::fs::*`, `tokio::process::Command`, `SystemTime::now`, etc.
+   directly outside the trait's production impl.
+
+Time is the narrow exception: supervisors already run on `tokio::time` so
+`start_paused = true` gives tests virtual time without another trait.
+`tracking::now_unix_ms` (wall-clock) is used for event timestamps and DB
+rows; tests don't assert on its values.
+
+**Anti-patterns that should not appear in tests:**
+
+- `nix::sys::signal::kill(pid, 0)` to probe a real pid — use
+  `FakeSpawner::children()` and assert on `FakeProcessState`.
+- `tokio::process::Command` to spawn a shell sleep — use `FakeSpawner`.
+- `tokio::time::sleep(Duration::from_millis(N))` to let real wall-clock
+  time pass — use `start_paused = true` + `tokio::time::advance` or
+  `wait_for(predicate)` on explicit state.
+- `std::fs::*` or `tempfile::*` — use `InMemoryFs`.
+- Real TCP sockets to a real service — the `TestHarness` echo server is the
+  single permitted loopback listener and exists only because routing the
+  hyper proxy data-plane through a trait would obscure its semantics.
 
 ### Rust testing tools
 

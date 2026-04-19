@@ -1,5 +1,8 @@
-//! Linux-only: full drain pipeline per spec §10.3. Sends SIGTERM via
-//! `nix::sys::signal::kill` and escalates to SIGKILL on timeout.
+//! Full drain pipeline per spec §10.3. Sends SIGTERM via the child's
+//! `ManagedChild::sigterm` and escalates to SIGKILL on timeout. The
+//! [`ProcessSpawner`](crate::system::ProcessSpawner) abstraction means the
+//! same pipeline works against real children under `LocalSpawner` and
+//! against purely virtual ones under `FakeSpawner` in tests.
 
 use std::{
     sync::{
@@ -9,8 +12,9 @@ use std::{
     time::Duration,
 };
 
-use tokio::process::Child;
 use tracing::{info, warn};
+
+use crate::system::ManagedChild;
 
 /// Polling cadence while waiting for in-flight counters to reach zero.
 const INFLIGHT_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -41,7 +45,7 @@ pub struct DrainConfig {
 /// have already transitioned the service state to `Draining` and
 /// refused new requests.
 pub async fn drain_pipeline(
-    child: &mut Child,
+    child: &mut dyn ManagedChild,
     cfg: &DrainConfig,
     inflight: Arc<AtomicU64>,
     reason: DrainReason,
@@ -75,7 +79,7 @@ pub async fn drain_pipeline(
 }
 
 /// Balloon fast-path: short SIGTERM grace then SIGKILL; no inflight wait.
-pub async fn fast_kill(child: &mut Child, reason: DrainReason) {
+pub async fn fast_kill(child: &mut dyn ManagedChild, reason: DrainReason) {
     warn!(?reason, "fast_kill: SIGTERM + short grace");
     let _ = sigterm_then_sigkill(child, FAST_KILL_SIGTERM_GRACE).await;
 }
@@ -83,17 +87,15 @@ pub async fn fast_kill(child: &mut Child, reason: DrainReason) {
 /// Send SIGTERM to `child` and wait up to `grace` for it to exit. Escalates
 /// to SIGKILL on timeout. Shared between `drain_pipeline`, `fast_kill`, and
 /// the supervisor's starting/running abort paths.
-pub async fn sigterm_then_sigkill(child: &mut Child, grace: Duration) -> SigtermOutcome {
-    if let Some(pid) = child.id() {
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(pid as i32),
-            nix::sys::signal::Signal::SIGTERM,
-        );
-    }
+pub async fn sigterm_then_sigkill(
+    child: &mut dyn ManagedChild,
+    grace: Duration,
+) -> SigtermOutcome {
+    let _ = child.sigterm().await;
     match tokio::time::timeout(grace, child.wait()).await {
         Ok(_) => SigtermOutcome::Exited,
         Err(_) => {
-            let _ = child.kill().await;
+            let _ = child.sigkill().await;
             SigtermOutcome::Killed
         }
     }

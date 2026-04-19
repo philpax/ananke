@@ -99,7 +99,7 @@ pub async fn run() -> Result<(), ExpectedError> {
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    let fs: std::sync::Arc<dyn crate::system::Fs> = std::sync::Arc::new(crate::system::LocalFs);
+    let system = crate::system::SystemDeps::local();
 
     let supervisor_deps = crate::supervise::SupervisorDeps {
         db: db.clone(),
@@ -111,7 +111,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         registry: registry.clone(),
         effective: effective.clone(),
         events: events.clone(),
-        fs: fs.clone(),
+        system: system.clone(),
     };
 
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
@@ -203,6 +203,17 @@ pub async fn run() -> Result<(), ExpectedError> {
         }
     }
 
+    // Drain-on-remove reconciler: watches ConfigReloaded and shuts down any
+    // supervisor whose service name has disappeared from the new effective
+    // config. Without this, a reload that removes a service would leave the
+    // supervisor alive and its child continuing to consume VRAM.
+    let reconciler_task = crate::supervise::reconciler::spawn(
+        events.clone(),
+        config.clone(),
+        registry.clone(),
+        shutdown_rx.clone(),
+    );
+
     let port_pool = Arc::new(Mutex::new(PortPool::new(18000..19000)));
     let oneshots = OneshotRegistry::new();
 
@@ -221,7 +232,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         oneshots,
         batcher: batcher.clone(),
         events: events.clone(),
-        fs: fs.clone(),
+        system: system.clone(),
     };
 
     // OpenAI listener.
@@ -309,6 +320,8 @@ pub async fn run() -> Result<(), ExpectedError> {
         t.abort();
         let _ = t.await;
     }
+    reconciler_task.abort();
+    let _ = reconciler_task.await;
 
     batcher.flush().await;
     Ok(())

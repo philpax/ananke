@@ -33,7 +33,7 @@ pub struct AppState {
     pub oneshots: OneshotRegistry,
     pub batcher: BatcherHandle,
     pub events: EventBus,
-    pub fs: Arc<dyn crate::system::Fs>,
+    pub system: crate::system::SystemDeps,
 }
 
 impl AppState {
@@ -50,7 +50,7 @@ impl AppState {
             registry: self.registry.clone(),
             effective: self.config.effective().clone(),
             events: self.events.clone(),
-            fs: self.fs.clone(),
+            system: self.system.clone(),
         }
     }
 }
