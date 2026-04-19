@@ -1,5 +1,6 @@
 //! Read-only management endpoints.
 
+use ananke_api::{DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary};
 use axum::{
     Json,
     extract::{Path, State},
@@ -8,13 +9,7 @@ use axum::{
     routing::{Router, get},
 };
 
-use crate::{
-    api::management::types::{
-        DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary,
-    },
-    daemon::app_state::AppState,
-    supervise::state::ServiceState,
-};
+use crate::{daemon::app_state::AppState, supervise::state::ServiceState};
 
 pub fn register(router: Router, state: AppState) -> Router {
     // Build the typed router against AppState, collapse to Router<()> via
@@ -116,6 +111,8 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
                         timestamp_ms: r.timestamp_ms,
                         stream: r.stream,
                         line: r.line,
+                        run_id: r.run_id,
+                        seq: r.seq,
                     })
                     .collect()
             }
@@ -142,8 +139,13 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         run_id: snap.as_ref().and_then(|s| s.run_id),
         pid: snap.as_ref().and_then(|s| s.pid),
         recent_logs,
-        rolling_mean: rc.rolling_mean,
-        rolling_samples: rc.sample_count,
+        // Cast from the internal f64/u32 representation to the shared DTO's f32/u64.
+        rolling_mean: if rc.sample_count == 0 {
+            None
+        } else {
+            Some(rc.rolling_mean as f32)
+        },
+        rolling_samples: rc.sample_count.into(),
         observed_peak_bytes,
         // Placeholder: elastic borrower tracking is deferred to a later phase.
         elastic_borrower: None,

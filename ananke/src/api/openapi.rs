@@ -1,5 +1,9 @@
 //! Aggregated OpenAPI document for the daemon.
 
+use ananke_api::{
+    DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary,
+    oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
+};
 use axum::{
     Json,
     extract::State,
@@ -10,7 +14,7 @@ use utoipa::OpenApi;
 
 use crate::{
     api::{
-        management::{handlers as mgmt_handlers, types as mgmt_types},
+        management::handlers as mgmt_handlers,
         openai::{errors as openai_errors, handlers as openai_handlers, schema as openai_schema},
     },
     daemon::app_state::AppState,
@@ -40,15 +44,16 @@ use crate::{
         openai_schema::EmbeddingEnvelope,
         openai_errors::ErrorBody,
         openai_errors::ErrorDetail,
-        mgmt_types::ServiceSummary,
-        mgmt_types::ServiceDetail,
-        mgmt_types::LogLine,
-        mgmt_types::DeviceSummary,
-        mgmt_types::DeviceReservation,
-        oneshot_handlers::OneshotRequest,
-        oneshot_handlers::OneshotAllocation,
-        oneshot_handlers::OneshotResponse,
-        oneshot_handlers::OneshotStatus,
+        ServiceSummary,
+        ServiceDetail,
+        LogLine,
+        DeviceSummary,
+        DeviceReservation,
+        OneshotRequest,
+        OneshotAllocation,
+        OneshotDevices,
+        OneshotResponse,
+        OneshotStatus,
     )),
     info(title = "Ananke API", version = "0.1.0")
 )]

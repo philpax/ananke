@@ -2,7 +2,6 @@
 //! `/api/openapi.json`.
 
 pub mod handlers;
-pub mod types;
 
 use axum::Router;
 

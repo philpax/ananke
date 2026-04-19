@@ -4,6 +4,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
+use ananke_api::oneshot::OneshotRequest;
 use smol_str::SmolStr;
 
 use crate::{
@@ -19,7 +20,7 @@ use crate::{
     },
     daemon::app_state::AppState,
     devices::Allocation,
-    oneshot::{OneshotId, OneshotRecord, handlers::OneshotRequest},
+    oneshot::{OneshotId, OneshotRecord},
 };
 
 /// Spawn a oneshot service from a validated request: synthesise a
