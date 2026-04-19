@@ -96,7 +96,10 @@ pub fn pack(
 
     // Pre-reserve per-GPU headroom so the walker doesn't fill to the brim
     // and get pushed over by Steps 3-5 (KV, compute buffer, one-layer fudge).
-    // Headroom per GPU: kv_share + compute_buffer_mb + one_layer_fudge.
+    // Reserve the worst-case share on every GPU: full kv_total (not
+    // kv_total/N) because first-fit may land most layers on one GPU, which
+    // then gets the corresponding large share of KV. Over-reserves on GPUs
+    // that end up with fewer layers, but guarantees no overflow.
     let n_layers_nonzero = per_layer.iter().filter(|b| **b > 0).count() as u64;
     let per_layer_avg = per_layer
         .iter()
@@ -107,9 +110,8 @@ pub fn pack(
         .kv_per_token
         .saturating_mul(estimate.context as u64);
     let compute_headroom = estimate.compute_buffer_mb as u64 * 1024 * 1024;
-    let gpu_headroom_each = compute_headroom
-        + kv_total_pre.saturating_div(allowed_gpus.len().max(1) as u64)
-        + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
+    let gpu_headroom_each =
+        compute_headroom + kv_total_pre + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
 
     for gpu in &allowed_gpus {
         let free = snapshot.free_bytes(&DeviceSlot::Gpu(*gpu)).unwrap_or(0);
@@ -124,18 +126,20 @@ pub fn pack(
         if *bytes == 0 {
             continue;
         }
-        // Pick the GPU with the most remaining room that can hold this
-        // layer — balances layers across equal-capacity GPUs rather than
-        // filling GPU 0 to the brim first.
-        let best_gpu = allowed_gpus
-            .iter()
-            .filter(|g| gpu_remaining.get(g).copied().unwrap_or(0) >= *bytes)
-            .max_by_key(|g| gpu_remaining.get(g).copied().unwrap_or(0))
-            .copied();
-        match best_gpu {
-            Some(gpu) => {
-                let rem = gpu_remaining.get_mut(&gpu).unwrap();
+        // First-fit: walk allowed GPUs in ascending-id order; pack onto
+        // the first one with room (spec §8.2). Single-GPU models stay on
+        // GPU 0; multi-GPU models produce the natural unequal split.
+        let mut placed_on: Option<u32> = None;
+        for gpu in &allowed_gpus {
+            let rem = gpu_remaining.get_mut(gpu).unwrap();
+            if *rem >= *bytes {
                 *rem = rem.saturating_sub(*bytes);
+                placed_on = Some(*gpu);
+                break;
+            }
+        }
+        match placed_on {
+            Some(gpu) => {
                 *per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += *bytes;
                 *layers_per_gpu.entry(gpu).or_default() += 1;
             }
