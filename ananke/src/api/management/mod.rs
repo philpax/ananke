@@ -1,6 +1,7 @@
 //! Read-only management API — `/api/services`, `/api/devices`, and
 //! `/api/openapi.json`.
 
+pub mod config;
 pub mod handlers;
 pub mod lifecycle;
 pub mod logs;
@@ -14,6 +15,11 @@ use crate::daemon::app_state::AppState;
 
 pub fn router(state: AppState) -> Router {
     let mgmt: Router = Router::new()
+        .route(
+            "/api/config",
+            get(config::get_config).put(config::put_config),
+        )
+        .route("/api/config/validate", post(config::post_validate))
         .route("/api/services/:name/start", post(lifecycle::post_start))
         .route("/api/services/:name/stop", post(lifecycle::post_stop))
         .route("/api/services/:name/restart", post(lifecycle::post_restart))
