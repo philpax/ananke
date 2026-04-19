@@ -45,7 +45,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
         "ttl": f"{ttl_s}s",
     }
     print(f"\n>>> submitting oneshot (ttl={ttl_s}s): {body['name']}")
-    resp = api.submit_oneshot(body)
+    resp = await api.submit_oneshot(body)
     print(f"    response: {resp}")
     oneshot_id = resp["id"]
 
@@ -54,7 +54,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     last_state = None
     while time.monotonic() < deadline:
         try:
-            status = api._get(f"/api/oneshot/{oneshot_id}")  # type: ignore[attr-defined]
+            status = await api.get_oneshot(oneshot_id)
             if status.get("state") != last_state:
                 print(
                     f"    t+{time.monotonic() - rec.start:.1f}s "
@@ -70,12 +70,12 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
             print(f"    status poll error: {e}")
         await asyncio.sleep(3)
 
-    # Final check: the oneshot should be absent from the active registry
-    # (it's in the DB history but no longer held in the in-memory map for
-    # the routing table).
+    # Final check: the oneshot should report state=ended with ended_at_ms
+    # populated. The in-memory registry keeps the record as a tombstone so
+    # post-TTL polls still succeed (pre-fix, this flipped to 404).
     print("\n  final detail:")
     try:
-        print(f"    {api._get(f'/api/oneshot/{oneshot_id}')}")  # type: ignore[attr-defined]
+        print(f"    {await api.get_oneshot(oneshot_id)}")
     except Exception as e:
         print(f"    lookup failed: {e}")
 
@@ -87,9 +87,13 @@ def summary(rec: Recorder) -> None:
         print(f"  t+{e['at_s']:.1f}s: {e['service']} drained")
 
 
+async def main_async() -> None:
+    parse_args()
+    await run_scenario("oneshot lifecycle", body, summary=summary)
+
+
 def main() -> None:
-    args = parse_args()
-    asyncio.run(run_scenario("oneshot lifecycle", body, summary=summary))
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

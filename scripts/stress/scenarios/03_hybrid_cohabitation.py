@@ -34,7 +34,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
 
     for svc in services:
         print(f"\n>>> starting {svc}")
-        resp = api.start(svc)
+        resp = await api.start(svc)
         print(f"    start → {resp}")
         running_at = await rec.wait_running(svc, timeout_s=600)
         if running_at is None:
@@ -43,7 +43,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
         print(f"    running at t+{running_at:.1f}s")
 
         # Report reservations + observed peak (if any).
-        detail = api.detail(svc)
+        detail = await api.detail(svc)
         print(f"    observed_peak_bytes: {detail.get('observed_peak_bytes')}")
         print(f"    rolling_mean: {detail.get('rolling_mean')}")
 
@@ -64,7 +64,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     print("\nwaiting 20 s for balloon sampler to establish baseline...")
     await asyncio.sleep(20)
     for svc in services:
-        d = api.detail(svc)
+        d = await api.detail(svc)
         print(
             f"  {svc}: rolling_mean={d.get('rolling_mean')} "
             f"observed_peak_mib={(d.get('observed_peak_bytes') or 0) // (1024 * 1024)}"
@@ -82,15 +82,20 @@ def summary(rec: Recorder) -> None:
             print(f"  t+{e['at_s']:.1f}s: {e['service']} mean={e['rolling_mean']:.3f}")
 
 
-def main() -> None:
+async def main_async() -> None:
     args = parse_args()
     matrix = Matrix.load()
     services = matrix.require_roles(*matrix.scenario_config(SCENARIO).get("services", []))
     try:
-        asyncio.run(run_scenario("hybrid cohabitation", body, summary=summary))
+        await run_scenario("hybrid cohabitation", body, summary=summary)
     finally:
         if not args.keep_running:
-            cleanup_all(Api(matrix), services)
+            async with Api(matrix) as api:
+                await cleanup_all(api, services)
+
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

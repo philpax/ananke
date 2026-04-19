@@ -7,7 +7,13 @@ Each scenario imports this module. It centralises:
 - Event-bus subscription with a recording buffer.
 - Narrative-friendly scenario runner.
 
-Requires: `pip install websockets requests`.
+Requires: ``pip install websockets httpx`` (or use the supplied uv env).
+
+The HTTP client is async (``httpx.AsyncClient``). Using a synchronous client
+here blocks the asyncio event loop for the duration of each request, which
+starves the events-WebSocket pump and causes the recorder to drop frames
+while long operations (e.g. model cold-starts) are in flight. Every API
+method therefore awaits.
 """
 
 from __future__ import annotations
@@ -22,15 +28,15 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 try:
-    import requests  # type: ignore[import]
+    import httpx  # type: ignore[import]
     import websockets  # type: ignore[import]
 except ImportError as e:  # pragma: no cover
     sys.stderr.write(
         f"missing dependency {e.name!r}; "
-        "install with `pip install websockets requests`\n"
+        "install with `pip install httpx websockets`\n"
     )
     sys.exit(2)
 
@@ -192,72 +198,107 @@ async def subscribe_events(
 
 
 class Api:
-    def __init__(self, matrix: Matrix):
+    """Async HTTP client bound to the daemon's management endpoint.
+
+    Use as an async context manager so the underlying ``httpx.AsyncClient``
+    is closed cleanly. The default timeout is deliberately generous — model
+    cold-starts can run for several minutes on 30B+ weights.
+    """
+
+    def __init__(self, matrix: Matrix, *, default_timeout: float = 180.0):
         self.matrix = matrix
+        self._client = httpx.AsyncClient(timeout=default_timeout)
 
-    def start(self, name: str) -> Any:
-        return self._post(f"/api/services/{name}/start")
+    async def __aenter__(self) -> "Api":
+        return self
 
-    def stop(self, name: str) -> Any:
-        return self._post(f"/api/services/{name}/stop")
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.aclose()
 
-    def restart(self, name: str) -> Any:
-        return self._post(f"/api/services/{name}/restart")
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
-    def enable(self, name: str) -> Any:
-        return self._post(f"/api/services/{name}/enable")
+    async def start(self, name: str) -> Any:
+        return await self._post(f"/api/services/{name}/start")
 
-    def disable(self, name: str) -> Any:
-        return self._post(f"/api/services/{name}/disable")
+    async def stop(self, name: str) -> Any:
+        return await self._post(f"/api/services/{name}/stop")
 
-    def detail(self, name: str) -> Any:
-        return self._get(f"/api/services/{name}")
+    async def restart(self, name: str) -> Any:
+        return await self._post(f"/api/services/{name}/restart")
 
-    def services(self) -> Any:
-        return self._get("/api/services")
+    async def enable(self, name: str) -> Any:
+        return await self._post(f"/api/services/{name}/enable")
 
-    def devices(self) -> Any:
-        return self._get("/api/devices")
+    async def disable(self, name: str) -> Any:
+        return await self._post(f"/api/services/{name}/disable")
 
-    def logs(self, name: str, **params: Any) -> Any:
+    async def detail(self, name: str) -> Any:
+        return await self._get(f"/api/services/{name}")
+
+    async def services(self) -> Any:
+        return await self._get("/api/services")
+
+    async def devices(self) -> Any:
+        return await self._get("/api/devices")
+
+    async def logs(self, name: str, **params: Any) -> Any:
         qs = "&".join(f"{k}={v}" for k, v in params.items() if v is not None)
         path = f"/api/services/{name}/logs"
         if qs:
             path += "?" + qs
-        return self._get(path)
+        return await self._get(path)
 
-    def config(self) -> dict[str, Any]:
-        return self._get("/api/config")
+    async def config(self) -> dict[str, Any]:
+        return await self._get("/api/config")
 
-    def put_config(self, content: str, if_match: str) -> int:
-        resp = requests.put(
+    async def put_config(self, content: str, if_match: str) -> int:
+        resp = await self._client.put(
             f"{self.matrix.management}/api/config",
-            data=content,
+            content=content,
             headers={"If-Match": f'"{if_match}"'},
-            timeout=30,
+            timeout=30.0,
         )
         return resp.status_code
 
-    def submit_oneshot(self, body: dict[str, Any]) -> Any:
-        resp = requests.post(
-            f"{self.matrix.management}/api/oneshot", json=body, timeout=30
+    async def submit_oneshot(self, body: dict[str, Any]) -> Any:
+        resp = await self._client.post(
+            f"{self.matrix.management}/api/oneshot", json=body, timeout=30.0
         )
         resp.raise_for_status()
         return resp.json()
 
-    def _get(self, path: str) -> Any:
-        resp = requests.get(f"{self.matrix.management}{path}", timeout=15)
-        resp.raise_for_status()
-        return resp.json() if resp.headers.get("content-type", "").startswith(
-            "application/json"
-        ) else resp.text
+    async def get_oneshot(self, oneshot_id: str) -> Any:
+        return await self._get(f"/api/oneshot/{oneshot_id}")
 
-    def _post(self, path: str) -> Any:
-        resp = requests.post(f"{self.matrix.management}{path}", timeout=180)
+    async def chat(
+        self, model: str, prompt: str, *, timeout: float = 300.0
+    ) -> httpx.Response:
+        return await self._client.post(
+            f"{self.matrix.openai}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 32,
+            },
+            timeout=timeout,
+        )
+
+    async def _get(self, path: str) -> Any:
+        resp = await self._client.get(
+            f"{self.matrix.management}{path}", timeout=15.0
+        )
         resp.raise_for_status()
-        return resp.json() if resp.headers.get("content-type", "").startswith(
-            "application/json"
-        ) else None
+        ctype = resp.headers.get("content-type", "")
+        return resp.json() if ctype.startswith("application/json") else resp.text
+
+    async def _post(self, path: str) -> Any:
+        resp = await self._client.post(
+            f"{self.matrix.management}{path}", timeout=180.0
+        )
+        resp.raise_for_status()
+        ctype = resp.headers.get("content-type", "")
+        return resp.json() if ctype.startswith("application/json") else None
 
 
 # --- scenario runner -------------------------------------------------------
@@ -265,30 +306,30 @@ class Api:
 
 async def run_scenario(
     title: str,
-    body: Callable[[Matrix, Api, Recorder], Any],
+    body: Callable[[Matrix, Api, Recorder], Awaitable[Any]],
     *,
     subscribe_service: str | None = None,
     summary: Optional[Callable[[Recorder], None]] = None,
 ) -> Recorder:
     matrix = Matrix.load()
-    api = Api(matrix)
-    confirm_daemon_up(api)
     recorder = Recorder()
+    async with Api(matrix) as api:
+        await confirm_daemon_up(api)
 
-    print(f"\n=== {title} ===")
-    print(f"  management: {matrix.management}")
-    async with subscribe_events(matrix, recorder, service=subscribe_service):
-        await body(matrix, api, recorder)
+        print(f"\n=== {title} ===")
+        print(f"  management: {matrix.management}")
+        async with subscribe_events(matrix, recorder, service=subscribe_service):
+            await body(matrix, api, recorder)
     print(f"\n--- {len(recorder.events)} events captured ---")
     if summary is not None:
         summary(recorder)
     return recorder
 
 
-def confirm_daemon_up(api: Api) -> None:
+async def confirm_daemon_up(api: Api) -> None:
     try:
-        api.services()
-    except requests.ConnectionError:
+        await api.services()
+    except (httpx.ConnectError, httpx.ReadTimeout):
         sys.stderr.write(
             f"cannot reach ananke management at {api.matrix.management}\n"
             "start the daemon (and make sure your matrix.toml's endpoint "
@@ -298,18 +339,6 @@ def confirm_daemon_up(api: Api) -> None:
 
 
 # --- misc helpers ----------------------------------------------------------
-
-
-def chat(matrix: Matrix, model: str, prompt: str, *, timeout: int = 300) -> requests.Response:
-    return requests.post(
-        f"{matrix.openai}/v1/chat/completions",
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 32,
-        },
-        timeout=timeout,
-    )
 
 
 def parse_args(
@@ -326,11 +355,11 @@ def parse_args(
     return parser.parse_args()
 
 
-def cleanup_all(api: Api, names: list[str]) -> None:
+async def cleanup_all(api: Api, names: list[str]) -> None:
     print("\n[cleanup] draining services...")
     for name in names:
         try:
-            api.stop(name)
+            await api.stop(name)
             print(f"  stop({name}) ok")
         except Exception as e:
             print(f"  stop({name}) failed: {e}")

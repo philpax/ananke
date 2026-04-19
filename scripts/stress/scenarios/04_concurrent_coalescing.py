@@ -30,21 +30,17 @@ from lib import Api, Matrix, Recorder, cleanup_all, parse_args, run_scenario  # 
 SCENARIO = "04_concurrent_coalescing"
 
 
-async def fire_one(api: Api, svc: str) -> dict:
-    return await asyncio.to_thread(api.start, svc)
-
-
 async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     cfg = matrix.scenario_config(SCENARIO)
     (svc,) = matrix.require_roles(cfg.get("service", ""))
     n = cfg.get("concurrent_requests", 12)
 
     # Make sure the service is idle first.
-    api.stop(svc)
+    await api.stop(svc)
     await asyncio.sleep(2)
 
     print(f"\n>>> firing {n} concurrent start requests at {svc}")
-    tasks = [fire_one(api, svc) for _ in range(n)]
+    tasks = [api.start(svc) for _ in range(n)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     statuses: dict[str, int] = {}
@@ -85,15 +81,20 @@ def summary(rec: Recorder) -> None:
         print(f"  {name}: {' | '.join(ts)}")
 
 
-def main() -> None:
+async def main_async() -> None:
     args = parse_args()
     matrix = Matrix.load()
     (svc,) = matrix.require_roles(matrix.scenario_config(SCENARIO).get("service", ""))
     try:
-        asyncio.run(run_scenario("concurrent coalescing", body, summary=summary))
+        await run_scenario("concurrent coalescing", body, summary=summary)
     finally:
         if not args.keep_running:
-            cleanup_all(Api(matrix), [svc])
+            async with Api(matrix) as api:
+                await cleanup_all(api, [svc])
+
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

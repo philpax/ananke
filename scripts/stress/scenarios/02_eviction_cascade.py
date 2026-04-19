@@ -27,8 +27,8 @@ from lib import Api, Matrix, Recorder, cleanup_all, parse_args, run_scenario  # 
 SCENARIO = "02_eviction_cascade"
 
 
-def print_allocations(api: Api) -> None:
-    for g in api.devices():
+async def print_allocations(api: Api) -> None:
+    for g in await api.devices():
         used = sum(r["bytes"] for r in g.get("reservations", []))
         print(
             f"  {g['id']}: reserved {used // (1024 * 1024)} MiB, "
@@ -44,11 +44,11 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     services = matrix.require_roles(*sequence_roles)
 
     for svc_name in services:
-        detail = api.detail(svc_name)
+        detail = await api.detail(svc_name)
         print(
             f"\n>>> starting {svc_name} (priority {detail.get('priority')})"
         )
-        resp = api.start(svc_name)
+        resp = await api.start(svc_name)
         print(f"    start response: {resp}")
 
         running_at = await rec.wait_running(svc_name, timeout_s=300)
@@ -58,12 +58,12 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
             print(f"    running at t+{running_at:.1f}s")
 
         print("    allocations:")
-        print_allocations(api)
+        await print_allocations(api)
         await asyncio.sleep(2)
 
     # Summary: which services are currently Running?
     print("\nfinal states:")
-    for s in api.services():
+    for s in await api.services():
         print(f"  {s['name']}: {s['state']}")
 
 
@@ -80,15 +80,20 @@ def summary(rec: Recorder) -> None:
         print(f"  t+{e['at_s']:.1f}s: {e['service']} = {reservations}")
 
 
-def main() -> None:
+async def main_async() -> None:
     args = parse_args()
     matrix = Matrix.load()
     services = matrix.require_roles(*matrix.scenario_config(SCENARIO).get("sequence", []))
     try:
-        asyncio.run(run_scenario("eviction cascade", body, summary=summary))
+        await run_scenario("eviction cascade", body, summary=summary)
     finally:
         if not args.keep_running:
-            cleanup_all(Api(matrix), services)
+            async with Api(matrix) as api:
+                await cleanup_all(api, services)
+
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

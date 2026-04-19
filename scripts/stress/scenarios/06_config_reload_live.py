@@ -20,14 +20,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib import Api, Matrix, Recorder, chat, cleanup_all, parse_args, run_scenario  # noqa: E402
+from lib import Api, Matrix, Recorder, cleanup_all, parse_args, run_scenario  # noqa: E402
 
 SCENARIO = "06_config_reload_live"
 
 
-async def background_chat(matrix: Matrix, svc: str, results: list) -> None:
+async def background_chat(api: Api, svc: str, results: list) -> None:
     try:
-        resp = await asyncio.to_thread(chat, matrix, svc, "Count to ten, slowly.")
+        resp = await api.chat(svc, "Count to ten, slowly.")
         results.append(("ok", resp.status_code, len(resp.content)))
     except Exception as e:
         results.append(("err", str(e)))
@@ -39,23 +39,23 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
 
     # Warm the service.
     print(f"\n>>> warming {svc}")
-    api.start(svc)
+    await api.start(svc)
     t = await rec.wait_running(svc, timeout_s=300)
     print(f"    running at t+{t}")
 
     # Fire background traffic.
     results: list = []
     print("\n>>> firing background chat request")
-    traffic = asyncio.create_task(background_chat(matrix, svc, results))
+    traffic = asyncio.create_task(background_chat(api, svc, results))
     await asyncio.sleep(1)  # let the request start
 
     # GET + PUT the config (idempotent).
     print("\n>>> GET /api/config")
-    current = api.config()
+    current = await api.config()
     print(f"    hash: {current['hash'][:16]}..., content length: {len(current['content'])}")
 
     print("\n>>> PUT /api/config (noop — same content, same hash)")
-    code = api.put_config(current["content"], current["hash"])
+    code = await api.put_config(current["content"], current["hash"])
     print(f"    status: {code}")
 
     # The apply() no-op path short-circuits before persisting, so we expect
@@ -69,7 +69,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     # hash changes but semantics don't.
     mutated = current["content"].rstrip() + "\n# ananke stress reload marker\n"
     print("\n>>> PUT /api/config (content change: append comment)")
-    code = api.put_config(mutated, current["hash"])
+    code = await api.put_config(mutated, current["hash"])
     print(f"    status: {code}")
 
     # Expect config_reloaded event shortly.
@@ -104,15 +104,20 @@ def summary(rec: Recorder) -> None:
         print(f"  t+{e['at_s']:.1f}s: changed_services={e.get('changed_services', [])}")
 
 
-def main() -> None:
+async def main_async() -> None:
     args = parse_args()
     matrix = Matrix.load()
     (svc,) = matrix.require_roles(matrix.scenario_config(SCENARIO).get("service", ""))
     try:
-        asyncio.run(run_scenario("config reload live", body, summary=summary))
+        await run_scenario("config reload live", body, summary=summary)
     finally:
         if not args.keep_running:
-            cleanup_all(Api(matrix), [svc])
+            async with Api(matrix) as api:
+                await cleanup_all(api, [svc])
+
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

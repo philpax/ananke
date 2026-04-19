@@ -28,7 +28,7 @@ from pathlib import Path
 import websockets  # type: ignore[import]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib import Api, Matrix, Recorder, chat, cleanup_all, parse_args, run_scenario  # noqa: E402
+from lib import Api, Matrix, Recorder, cleanup_all, parse_args, run_scenario  # noqa: E402
 
 SCENARIO = "07_log_flood"
 
@@ -52,9 +52,9 @@ async def ws_consumer(matrix: Matrix, svc: str, stats: dict) -> None:
         stats["ws_error"] = str(e)
 
 
-async def fire_request(matrix: Matrix, svc: str, results: list) -> None:
+async def fire_request(api: Api, svc: str, results: list) -> None:
     try:
-        resp = await asyncio.to_thread(chat, matrix, svc, "Write a haiku.", timeout=90)
+        resp = await api.chat(svc, "Write a haiku.", timeout=90)
         results.append(resp.status_code)
     except Exception as e:
         results.append(f"err:{e}")
@@ -65,7 +65,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     (svc,) = matrix.require_roles(cfg.get("service", ""))
     duration_s = cfg.get("duration_s", 60)
 
-    api.start(svc)
+    await api.start(svc)
     await rec.wait_running(svc, timeout_s=300)
 
     print(f"\n>>> subscribing to log stream of {svc}")
@@ -79,7 +79,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     request_count = 0
     while time.monotonic() - start < duration_s:
         request_count += 1
-        asyncio.create_task(fire_request(matrix, svc, request_results))
+        asyncio.create_task(fire_request(api, svc, request_results))
         await asyncio.sleep(0.5)
     await asyncio.sleep(5)  # let in-flight settle
 
@@ -91,7 +91,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
 
     # Historical GET /logs.
     print("\n>>> fetching historical /logs")
-    logs_resp = api.logs(svc, limit=500)
+    logs_resp = await api.logs(svc, limit=500)
     print(
         f"    got {len(logs_resp['logs'])} lines, "
         f"next_cursor {'present' if logs_resp['next_cursor'] else 'none'}"
@@ -100,7 +100,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     # Follow-up page if cursor exists.
     cursor = logs_resp.get("next_cursor")
     if cursor:
-        page2 = api.logs(svc, limit=500, before=cursor)
+        page2 = await api.logs(svc, limit=500, before=cursor)
         print(f"    page 2: {len(page2['logs'])} lines")
 
     print(f"\n    WS stats: {stats}")
@@ -118,15 +118,20 @@ def summary(rec: Recorder) -> None:
             print(f"  t+{e['at_s']:.1f}s: {e['service']} mean={e['rolling_mean']:.3f}")
 
 
-def main() -> None:
+async def main_async() -> None:
     args = parse_args()
     matrix = Matrix.load()
     (svc,) = matrix.require_roles(matrix.scenario_config(SCENARIO).get("service", ""))
     try:
-        asyncio.run(run_scenario("log flood", body, summary=summary))
+        await run_scenario("log flood", body, summary=summary)
     finally:
         if not args.keep_running:
-            cleanup_all(Api(matrix), [svc])
+            async with Api(matrix) as api:
+                await cleanup_all(api, [svc])
+
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

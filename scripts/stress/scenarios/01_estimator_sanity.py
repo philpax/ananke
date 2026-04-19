@@ -26,7 +26,6 @@ from lib import (  # noqa: E402
     Api,
     Matrix,
     Recorder,
-    chat,
     cleanup_all,
     parse_args,
     run_scenario,
@@ -64,7 +63,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
         before = {gi: nvml_used_mib(gi) for gi in (0, 1)}
         print(f"    nvml before: {before}")
 
-        resp = api.start(svc_name)
+        resp = await api.start(svc_name)
         print(f"    start → {resp}")
 
         running_at = await rec.wait_running(svc_name, timeout_s=timeout_s)
@@ -73,10 +72,10 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
             continue
         print(f"    running at t+{running_at:.1f}s")
 
-        detail = api.detail(svc_name)
+        detail = await api.detail(svc_name)
         print(f"    pid={detail.get('pid')} run_id={detail.get('run_id')}")
 
-        for g in api.devices():
+        for g in await api.devices():
             for r in g.get("reservations", []):
                 if r["service"] == svc_name:
                     print(f"    reserved {r['bytes'] // (1024 * 1024)} MiB on {g['id']}")
@@ -87,12 +86,12 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
         print(f"    nvml delta: {delta} MiB")
 
         try:
-            resp = chat(matrix, svc_name, "Say hi in three words.")
+            resp = await api.chat(svc_name, "Say hi in three words.")
             print(f"    /v1/chat: HTTP {resp.status_code}, {len(resp.content)} bytes")
         except Exception as e:
             print(f"    chat failed: {e}")
 
-        api.stop(svc_name)
+        await api.stop(svc_name)
         await asyncio.sleep(4)
 
 
@@ -106,15 +105,20 @@ def summary(rec: Recorder) -> None:
         print(f"  {name}: {t:.1f}s")
 
 
-def main() -> None:
+async def main_async() -> None:
     args = parse_args()
+    matrix = Matrix.load()
+    services = matrix.require_roles(*matrix.scenario_config(SCENARIO).get("services", []))
     try:
-        matrix = Matrix.load()
-        services = matrix.require_roles(*matrix.scenario_config(SCENARIO).get("services", []))
-        asyncio.run(run_scenario("estimator sanity", body, summary=summary))
+        await run_scenario("estimator sanity", body, summary=summary)
     finally:
         if not args.keep_running:
-            cleanup_all(Api(Matrix.load()), services)
+            async with Api(matrix) as api:
+                await cleanup_all(api, services)
+
+
+def main() -> None:
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
