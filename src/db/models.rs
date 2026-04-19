@@ -4,9 +4,13 @@
 
 #[derive(Debug, toasty::Model)]
 pub struct Service {
+    // `u64` on the auto PK because toasty 0.4's SQLite backend emits
+    // `BIGINT PRIMARY KEY AUTOINCREMENT` for `i64`, which SQLite rejects —
+    // only `INTEGER PRIMARY KEY AUTOINCREMENT` is legal. `u64` maps to
+    // `INTEGER` under the SQLite driver.
     #[key]
     #[auto]
-    pub service_id: i64,
+    pub service_id: u64,
 
     #[unique]
     pub name: String,
@@ -55,9 +59,10 @@ pub struct ServiceLog {
 
 #[derive(Debug, toasty::Model)]
 pub struct AllocationEvent {
+    // `u64` on the auto PK: see the note on `Service::service_id`.
     #[key]
     #[auto]
-    pub event_id: i64,
+    pub event_id: u64,
 
     #[index]
     pub service_id: i64,

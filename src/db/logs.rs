@@ -165,8 +165,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn flushes_on_threshold() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let h = spawn(db.clone());
 
         for i in 0..BATCH_LINES as i64 {
@@ -189,8 +189,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn flushes_on_interval() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("b.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("b.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let h = spawn(db.clone());
 
         h.push(LogLine {
@@ -213,8 +213,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn seq_is_per_service_run_monotonic() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("c.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("c.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let h = spawn(db.clone());
 
         for i in 0..3 {

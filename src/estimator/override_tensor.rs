@@ -44,8 +44,8 @@ pub fn parse_rules(rules: &[String]) -> Result<Vec<OverrideRule>, ParseError> {
         let (pattern, device_str) = rule
             .rsplit_once('=')
             .ok_or_else(|| ParseError(format!("missing '=' in rule `{rule}`")))?;
-        let regex = Regex::new(pattern)
-            .map_err(|e| ParseError(format!("regex `{pattern}`: {e}")))?;
+        let regex =
+            Regex::new(pattern).map_err(|e| ParseError(format!("regex `{pattern}`: {e}")))?;
         let target = parse_device(device_str.trim())
             .ok_or_else(|| ParseError(format!("unknown device `{device_str}` in rule `{rule}`")))?;
         out.push(OverrideRule { regex, target });
@@ -80,7 +80,10 @@ pub fn apply(estimate: &mut Estimate, summary: &GgufSummary, rules: &[OverrideRu
     let mut override_bytes: BTreeMap<DeviceSlot, u64> = BTreeMap::new();
 
     for tensor in summary.tensors.values() {
-        let Some(rule) = rules.iter().find(|r| r.regex.is_match(tensor.name.as_str())) else {
+        let Some(rule) = rules
+            .iter()
+            .find(|r| r.regex.is_match(tensor.name.as_str()))
+        else {
             continue;
         };
         *override_bytes.entry(rule.target.clone()).or_default() += tensor.byte_size;
@@ -89,8 +92,7 @@ pub fn apply(estimate: &mut Estimate, summary: &GgufSummary, rules: &[OverrideRu
             if let Some(per_layer) = estimate.per_layer_bytes.as_mut()
                 && (idx as usize) < per_layer.len()
             {
-                per_layer[idx as usize] =
-                    per_layer[idx as usize].saturating_sub(tensor.byte_size);
+                per_layer[idx as usize] = per_layer[idx as usize].saturating_sub(tensor.byte_size);
             }
             if let Some(existing) = estimate.expert_layer_cpu_bytes.get_mut(&idx) {
                 *existing = existing.saturating_sub(tensor.byte_size);

@@ -105,7 +105,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn insert_and_get() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
         let batcher = spawn_batcher(db.clone());
         let svc = minimal_svc("demo");
         let alloc = Allocation::from_override(&svc.placement_override);

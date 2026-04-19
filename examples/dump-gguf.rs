@@ -32,7 +32,10 @@ fn main() {
         *by_category.entry(category.into()).or_default() += tensor.byte_size;
     }
 
-    println!("{:<40} {:>12} {:>10}", "category", "total GiB", "% of model");
+    println!(
+        "{:<40} {:>12} {:>10}",
+        "category", "total GiB", "% of model"
+    );
     println!("{}", "-".repeat(65));
     let mut cats: Vec<_> = by_category.iter().collect();
     cats.sort_by(|a, b| b.1.cmp(a.1));
@@ -73,8 +76,7 @@ fn categorise(name: &str) -> &'static str {
         return "non-layer (other)";
     }
     // blk.N.<kind>
-    let Some((_, rest)) = name.split_once('.').and_then(|(_, r)| r.split_once('.'))
-    else {
+    let Some((_, rest)) = name.split_once('.').and_then(|(_, r)| r.split_once('.')) else {
         return "unknown layer tensor";
     };
     if rest.starts_with("attn_") {

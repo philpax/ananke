@@ -7,13 +7,18 @@ use tempfile::tempdir;
 use ananke::db::Database;
 use ananke::supervise::{OrphanDisposition, reconcile};
 
-#[test]
-fn cleans_row_for_dead_pid() {
+#[tokio::test]
+async fn cleans_row_for_dead_pid() {
     let tmp = tempdir().expect("tempdir");
-    let db = Database::open(&tmp.path().join("ananke.sqlite")).expect("open db");
+    let db = Database::open(&tmp.path().join("ananke.sqlite"))
+        .await
+        .expect("open db");
 
     // Register a service so the foreign key is satisfied.
-    let service_id = db.upsert_service("test-svc", 0).expect("upsert_service");
+    let service_id = db
+        .upsert_service("test-svc", 0)
+        .await
+        .expect("upsert_service");
 
     // Insert a running_services row pointing at PID 99999, which is extremely
     // unlikely to exist and, even if it did, /proc/99999 won't exist under our

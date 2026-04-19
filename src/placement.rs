@@ -149,9 +149,7 @@ pub fn pack(
             }
             None => {
                 return Err(PackError {
-                    reason: format!(
-                        "layer {idx} ({bytes} bytes) does not fit on any allowed GPU"
-                    ),
+                    reason: format!("layer {idx} ({bytes} bytes) does not fit on any allowed GPU"),
                 });
             }
         }

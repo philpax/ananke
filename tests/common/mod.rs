@@ -58,7 +58,7 @@ pub struct TestHarness {
 /// placed in the returned `AppState`.
 pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let tmp = tempfile::tempdir().unwrap();
-    let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
+    let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
     let batcher = spawn_batcher(db.clone());
 
     let echo_state = echo_server::EchoState::default();
@@ -106,7 +106,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let registry = ServiceRegistry::new();
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
-        let service_id = db.upsert_service(&svc.name, 0).unwrap();
+        let service_id = db.upsert_service(&svc.name, 0).await.unwrap();
         let alloc = Allocation::from_override(&svc.placement_override);
         let last_activity = activity.get_or_init(&svc.name);
         let inflight_counter = ananke::inflight::InflightTable::new().counter(&svc.name);

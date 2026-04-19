@@ -91,11 +91,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn trims_old_rows_and_excess_per_service() {
+    #[tokio::test]
+    async fn trims_old_rows_and_excess_per_service() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let now = 10_000_000_000i64;
         let eight_days_ago = now - 8 * 24 * 60 * 60 * 1000;
 

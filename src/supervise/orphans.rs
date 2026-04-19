@@ -129,11 +129,11 @@ mod tests {
         std::fs::write(dir.join("cmdline"), nul_sep).unwrap();
     }
 
-    #[test]
-    fn adopts_matching_cmdline() {
+    #[tokio::test]
+    async fn adopts_matching_cmdline() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let procfs = tmp.path().join("proc");
         insert_row(&db, svc, 1, 1234, "llama-server -m x");
         write_cmdline(&procfs, 1234, "llama-server -m x");
@@ -142,11 +142,11 @@ mod tests {
         assert!(matches!(out[0], OrphanDisposition::Adopted { .. }));
     }
 
-    #[test]
-    fn cleans_missing_pid() {
+    #[tokio::test]
+    async fn cleans_missing_pid() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let procfs = tmp.path().join("proc");
         std::fs::create_dir_all(&procfs).unwrap();
         insert_row(&db, svc, 1, 9999, "llama-server -m x");
@@ -170,11 +170,11 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    #[test]
-    fn cleans_mismatched_cmdline() {
+    #[tokio::test]
+    async fn cleans_mismatched_cmdline() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let procfs = tmp.path().join("proc");
         insert_row(&db, svc, 1, 4242, "llama-server -m x");
         write_cmdline(&procfs, 4242, "firefox");

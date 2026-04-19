@@ -40,8 +40,8 @@ pub async fn run() -> Result<(), ExpectedError> {
 
     let (effective, migrations) = load_config(&config_path)?;
     let effective = Arc::new(effective);
-    let db = Database::open(&effective.daemon.data_dir.join("ananke.sqlite"))?;
-    apply_migrations(&db, &migrations);
+    let db = Database::open(&effective.daemon.data_dir.join("ananke.sqlite")).await?;
+    apply_migrations(&db, &migrations).await;
 
     let probe: Option<Arc<dyn GpuProbe>> = match NvmlProbe::init() {
         Ok(p) => {
@@ -100,7 +100,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
     let mut proxy_tasks = Vec::new();
     for svc in ordered {
-        let service_id = db.upsert_service(&svc.name, now_ms())?;
+        let service_id = db.upsert_service(&svc.name, now_ms()).await?;
         let allocation = Allocation::from_override(&svc.placement_override);
         let last_activity = activity.get_or_init(&svc.name);
         let inflight_counter = inflight.counter(&svc.name);
@@ -372,10 +372,10 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-fn apply_migrations(db: &Database, migs: &[Migration]) {
+async fn apply_migrations(db: &Database, migs: &[Migration]) {
     let now = now_ms();
     for m in migs {
-        if let Err(e) = db.reparent(&m.old_name, &m.new_name, now) {
+        if let Err(e) = db.reparent(&m.old_name, &m.new_name, now).await {
             warn!(old = %m.old_name, new = %m.new_name, error = %e, "migrate_from failed");
         } else {
             info!(old = %m.old_name, new = %m.new_name, "migrated service");

@@ -138,6 +138,7 @@ impl AppState {
         let service_id = self
             .db
             .upsert_service(&svc.name, now_ms)
+            .await
             .map_err(|e| e.to_string())?;
         let _ = self.db.with_conn(|c| {
             c.execute(

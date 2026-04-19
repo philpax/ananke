@@ -83,8 +83,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pumps_echoed_lines() {
         let tmp = tempdir().unwrap();
-        let db = Database::open(&tmp.path().join("a.sqlite")).unwrap();
-        let svc = db.upsert_service("demo", 0).unwrap();
+        let db = Database::open(&tmp.path().join("a.sqlite")).await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
         let batcher = spawn_batcher(db.clone());
 
         let mut child = Command::new("/bin/sh")
