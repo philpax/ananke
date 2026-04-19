@@ -80,36 +80,43 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         })
         .collect();
 
-    let svc_id_opt: Option<i64> = state
-        .db
-        .with_conn(|c| {
-            c.query_row(
-                "SELECT service_id FROM services WHERE name = ?1",
-                [&name],
-                |r| r.get(0),
-            )
-        })
-        .ok();
-
-    let recent_logs: Vec<LogLine> = match svc_id_opt {
-        Some(svc_id) => state
-            .db
-            .with_conn(|c| {
-                let mut stmt = c.prepare(
-                    "SELECT timestamp_ms, stream, line FROM service_logs
-                     WHERE service_id = ?1 ORDER BY timestamp_ms DESC, seq DESC LIMIT 200",
-                )?;
-                let rows = stmt.query_map([svc_id], |r| {
-                    Ok(LogLine {
-                        timestamp_ms: r.get(0)?,
-                        stream: r.get(1)?,
-                        line: r.get(2)?,
+    let recent_logs: Vec<LogLine> = {
+        use crate::db::models::{Service, ServiceLog};
+        let mut handle = state.db.handle();
+        let svc_id_opt: Option<u64> = Service::filter_by_name(name.clone())
+            .first()
+            .exec(&mut handle)
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.service_id);
+        match svc_id_opt {
+            Some(svc_id) => {
+                let mut rows: Vec<ServiceLog> =
+                    ServiceLog::filter(ServiceLog::fields().service_id().eq(svc_id as i64))
+                        .exec(&mut handle)
+                        .await
+                        .unwrap_or_default();
+                // Sort newest first by (timestamp_ms DESC, seq DESC) and
+                // truncate to 200 — toasty does not compose multi-column
+                // ordering yet, so we sort in memory. The index on
+                // `timestamp_ms` keeps the candidate set cheap to fetch.
+                rows.sort_by(|a, b| {
+                    b.timestamp_ms
+                        .cmp(&a.timestamp_ms)
+                        .then_with(|| b.seq.cmp(&a.seq))
+                });
+                rows.truncate(200);
+                rows.into_iter()
+                    .map(|r| LogLine {
+                        timestamp_ms: r.timestamp_ms,
+                        stream: r.stream,
+                        line: r.line,
                     })
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()
-            })
-            .unwrap_or_default(),
-        None => Vec::new(),
+                    .collect()
+            }
+            None => Vec::new(),
+        }
     };
 
     let rc = state.rolling.get(&svc_cfg.name);

@@ -12,12 +12,8 @@ use crate::errors::ExpectedError;
 
 /// Shared database handle.
 ///
-/// Wraps a [`toasty::Db`], which is itself cheaply cloneable (the underlying
-/// connection pool and schema live behind an `Arc`). The transitional
-/// `with_conn*` shims open short-lived rusqlite connections against the same
-/// file so phase-4 call sites continue to work while individual call sites
-/// migrate to toasty. Those shims are slated for removal in the final step of
-/// the toasty migration.
+/// Wraps a [`toasty::Db`], which is itself cheaply cloneable — the underlying
+/// connection pool and schema live behind an `Arc`.
 #[derive(Clone)]
 pub struct Database {
     db: Db,
@@ -145,26 +141,6 @@ impl Database {
             (None, _) => {}
         }
         Ok(())
-    }
-
-    /// Transitional rusqlite escape hatch. Opens a fresh short-lived
-    /// connection against the same file and runs `f`. Individual call sites
-    /// migrate to toasty in subsequent steps; when the last caller is gone,
-    /// this method (and its sibling) are removed.
-    pub fn with_conn<T>(
-        &self,
-        f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
-    ) -> rusqlite::Result<T> {
-        let conn = rusqlite::Connection::open(&self.path)?;
-        f(&conn)
-    }
-
-    pub fn with_conn_mut<T>(
-        &self,
-        f: impl FnOnce(&mut rusqlite::Connection) -> rusqlite::Result<T>,
-    ) -> rusqlite::Result<T> {
-        let mut conn = rusqlite::Connection::open(&self.path)?;
-        f(&mut conn)
     }
 }
 
