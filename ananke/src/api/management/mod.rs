@@ -6,6 +6,7 @@ pub mod events_ws;
 pub mod handlers;
 pub mod lifecycle;
 pub mod logs;
+pub mod logs_ws;
 
 use axum::{
     Router,
@@ -27,6 +28,7 @@ pub fn register(router: Router, state: AppState) -> Router {
         .route("/api/services/:name/enable", post(lifecycle::post_enable))
         .route("/api/services/:name/disable", post(lifecycle::post_disable))
         .route("/api/services/:name/logs", get(logs::get_logs))
+        .route("/api/services/:name/logs/stream", any(logs_ws::get_logs_ws))
         .route("/api/events", any(events_ws::get_events_ws))
         .with_state(state.clone());
     handlers::register(router, state.clone())
