@@ -23,8 +23,10 @@ fn llama_family_weights_include_layers_and_non_layer() {
         .tensor_f16("token_embd.weight", 4 * 512 * 1024)
         .into_in_memory_fs(path);
 
-    let svc = common::minimal_llama_service("demo", 0);
-    let est = estimator::estimate_from_path(&fs, path, &svc).unwrap();
+    let mut svc = common::minimal_llama_service("demo", 0);
+    common::set_model_path(&mut svc, path);
+    let inputs = estimator::EstimatorInputs::from_service(&svc).unwrap();
+    let est = estimator::estimate_from_path(&fs, &inputs).unwrap();
     assert!(est.weights_bytes > 0, "weights_bytes must be positive");
     assert_eq!(est.architecture, "qwen3");
     assert!(est.kv_per_token > 0, "kv_per_token must be positive");

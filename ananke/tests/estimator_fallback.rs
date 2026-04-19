@@ -18,8 +18,10 @@ fn fallback_estimator_produces_at_least_512mb() {
         .tensor_f16("some.weight", 1024)
         .into_in_memory_fs(path);
 
-    let svc = common::minimal_llama_service("demo", 0);
-    let est = estimator::estimate_from_path(&fs, path, &svc).unwrap();
+    let mut svc = common::minimal_llama_service("demo", 0);
+    common::set_model_path(&mut svc, path);
+    let inputs = estimator::EstimatorInputs::from_service(&svc).unwrap();
+    let est = estimator::estimate_from_path(&fs, &inputs).unwrap();
     assert!(
         est.weights_bytes >= 512 * 1024 * 1024,
         "fallback must reserve at least 512 MB; got {}",

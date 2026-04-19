@@ -13,9 +13,9 @@ use smol_str::SmolStr;
 use super::{
     kv,
     llama::{collect_non_layer, layer_index},
-    types::Estimate,
+    types::{Estimate, EstimatorInputs},
 };
-use crate::{config::ServiceConfig, gguf::GgufSummary};
+use crate::gguf::GgufSummary;
 
 pub const MOE_FAMILY: &[&str] = &[
     "llama4",
@@ -30,13 +30,8 @@ pub fn is_moe(arch: &str) -> bool {
     MOE_FAMILY.contains(&arch)
 }
 
-pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
-    let lc = svc
-        .llama_cpp()
-        .expect("moe::estimate on non-llama-cpp service");
+pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {
     let arch = summary.architecture.as_str();
-    let context = lc.context.unwrap_or(4096);
-
     let n_layers = summary.block_count.unwrap_or(0);
 
     // Per-layer split into {non-expert, expert} bytes.
@@ -59,7 +54,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
 
     let non_layer = collect_non_layer(summary);
 
-    let n_cpu_moe = lc.n_cpu_moe.unwrap_or(0) as usize;
+    let n_cpu_moe = inputs.n_cpu_moe.unwrap_or(0) as usize;
 
     // Pick the top-N layers by expert byte count for offload.
     let mut layer_scores: Vec<(u32, u64)> = per_layer_exp
@@ -110,8 +105,8 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         .and_then(|v| v.as_u32())
         .unwrap_or(128) as u64;
 
-    let cache_k = lc.cache_type_k.as_deref().unwrap_or("f16");
-    let cache_v = lc.cache_type_v.as_deref().unwrap_or("f16");
+    let cache_k = inputs.cache_type_k.unwrap_or("f16");
+    let cache_v = inputs.cache_type_v.unwrap_or("f16");
 
     let kv_per_token = if n_layers > 0 && n_kv_heads > 0 {
         let per_layer_bytes_kv = n_kv_heads
@@ -131,14 +126,14 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: lc.estimation.compute_buffer_mb.unwrap_or(400),
+        compute_buffer_mb: inputs.compute_buffer_mb.unwrap_or(400),
         per_layer_bytes: Some(per_layer_total),
         attention_layers: None,
         non_layer,
         override_tensor_bytes: BTreeMap::new(),
         expert_layers,
         expert_layer_cpu_bytes,
-        context,
+        context: inputs.context,
         architecture: SmolStr::new(arch),
     }
 }
@@ -174,12 +169,12 @@ mod tests {
 
     #[test]
     fn n_cpu_moe_offloads_top_layers() {
+        use std::path::Path;
+
         use smol_str::SmolStr;
 
         use crate::{
-            config::validate::{
-                DeviceSlot, PlacementPolicy, ServiceConfig, test_fixtures::minimal_service,
-            },
+            estimator::types::EstimatorInputs,
             gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
         };
 
@@ -235,17 +230,20 @@ mod tests {
             shards: vec!["/fake".into()],
         };
 
-        let mut svc: ServiceConfig = minimal_service("demo");
-        svc.placement_override.clear();
-        svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
-        svc.placement_policy = PlacementPolicy::Hybrid;
-        let lc = crate::config::validate::test_fixtures::expect_llama_cpp(&mut svc);
-        lc.model = "/fake".into();
-        lc.context = Some(4096);
-        lc.n_cpu_moe = Some(1);
-        lc.flash_attn = Some(true);
+        let empty_override: Vec<String> = Vec::new();
+        let inputs = EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context: 4096,
+            cache_type_k: None,
+            cache_type_v: None,
+            override_tensor: &empty_override,
+            n_cpu_moe: Some(1),
+            compute_buffer_mb: None,
+        };
 
-        let e = estimate(&summary, &svc);
+        let e = estimate(&summary, &inputs);
         // The layer with the largest expert bytes is layer 1 (10 MiB).
         assert_eq!(e.expert_layer_cpu_bytes.len(), 1);
         assert!(e.expert_layer_cpu_bytes.contains_key(&1));

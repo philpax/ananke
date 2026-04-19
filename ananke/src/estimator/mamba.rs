@@ -8,8 +8,11 @@ use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use super::{llama::collect_non_layer, types::Estimate};
-use crate::{config::ServiceConfig, gguf::GgufSummary};
+use super::{
+    llama::collect_non_layer,
+    types::{Estimate, EstimatorInputs},
+};
+use crate::gguf::GgufSummary;
 
 /// Default mamba.ssm.state_size when the model metadata omits it. Matches the
 /// Mamba-1 reference implementation.
@@ -34,12 +37,13 @@ pub fn is_mamba(arch: &str) -> bool {
     arch == "mamba"
 }
 
-pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
-    let lc = svc
-        .llama_cpp()
-        .expect("mamba::estimate on non-llama-cpp service");
+pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {
     let arch = summary.architecture.as_str();
-    let context = lc.context.unwrap_or(DEFAULT_CONTEXT);
+    let context = if inputs.context == 0 {
+        DEFAULT_CONTEXT
+    } else {
+        inputs.context
+    };
     let n_layers = summary.block_count.unwrap_or(0);
 
     let per_layer = super::llama::collect_per_layer(summary, n_layers);
@@ -73,8 +77,7 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: lc
-            .estimation
+        compute_buffer_mb: inputs
             .compute_buffer_mb
             .unwrap_or(DEFAULT_COMPUTE_BUFFER_MB),
         per_layer_bytes: Some(per_layer),

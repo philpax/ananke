@@ -28,8 +28,10 @@ fn moe_estimator_identifies_expert_layers() {
         .tensor_f16("output.weight", 512 * 1024)
         .into_in_memory_fs(path);
 
-    let svc = common::minimal_llama_service("demo", 0);
-    let est = estimator::estimate_from_path(&fs, path, &svc).unwrap();
+    let mut svc = common::minimal_llama_service("demo", 0);
+    common::set_model_path(&mut svc, path);
+    let inputs = estimator::EstimatorInputs::from_service(&svc).unwrap();
+    let est = estimator::estimate_from_path(&fs, &inputs).unwrap();
     assert!(
         !est.expert_layers.is_empty(),
         "expert_layers must be non-empty"

@@ -46,8 +46,10 @@ fn mmproj_bytes_included_in_weights_estimate() {
     let svc_without_mmproj = svc_with_mmproj(main_path.to_path_buf(), None);
     let svc_with = svc_with_mmproj(main_path.to_path_buf(), Some(mmproj_path.to_path_buf()));
 
-    let est_without = estimator::estimate_from_path(&fs, main_path, &svc_without_mmproj).unwrap();
-    let est_with = estimator::estimate_from_path(&fs, main_path, &svc_with).unwrap();
+    let inputs_without = estimator::EstimatorInputs::from_service(&svc_without_mmproj).unwrap();
+    let inputs_with = estimator::EstimatorInputs::from_service(&svc_with).unwrap();
+    let est_without = estimator::estimate_from_path(&fs, &inputs_without).unwrap();
+    let est_with = estimator::estimate_from_path(&fs, &inputs_with).unwrap();
 
     assert!(
         est_with.weights_bytes > est_without.weights_bytes,

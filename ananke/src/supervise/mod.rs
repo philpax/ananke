@@ -729,12 +729,9 @@ impl RunLoop {
         }
 
         // Estimator + placement path.
-        let model_path = svc
-            .llama_cpp()
-            .ok_or_else(|| "no model path configured".to_string())?
-            .model
-            .clone();
-        let mut est = crate::estimator::estimate_from_path(self.deps.system.fs.as_ref(), &model_path, svc)
+        let inputs = crate::estimator::EstimatorInputs::from_service(svc)
+            .ok_or_else(|| "no model path configured".to_string())?;
+        let mut est = crate::estimator::estimate_from_path(self.deps.system.fs.as_ref(), &inputs)
             .map_err(|e| format!("estimator: {e}"))?;
         // Apply rolling correction to weights_bytes.
         let rc = self.deps.rolling.get(&svc.name);

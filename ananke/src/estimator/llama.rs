@@ -12,9 +12,9 @@ use smol_str::SmolStr;
 
 use super::{
     kv,
-    types::{Estimate, NonLayer},
+    types::{Estimate, EstimatorInputs, NonLayer},
 };
-use crate::{config::ServiceConfig, gguf::GgufSummary};
+use crate::gguf::GgufSummary;
 
 pub const LLAMA_FAMILY: &[&str] = &[
     "llama", "qwen2", "qwen3", "mistral", "gemma", "gemma2", "gemma3", "phi3", "glm4",
@@ -30,13 +30,8 @@ pub fn is_llama_family(arch: &str) -> bool {
     LLAMA_FAMILY.contains(&arch)
 }
 
-pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
-    let lc = svc
-        .llama_cpp()
-        .expect("llama::estimate on non-llama-cpp service");
+pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {
     let arch = summary.architecture.as_str();
-    let context = lc.context.unwrap_or(4096);
-
     let n_layers = summary.block_count.unwrap_or(0);
 
     let per_layer_bytes = collect_per_layer(summary, n_layers);
@@ -63,8 +58,8 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
         .and_then(|v| v.as_u32())
         .unwrap_or(128) as u64;
 
-    let cache_k = lc.cache_type_k.as_deref().unwrap_or("f16");
-    let cache_v = lc.cache_type_v.as_deref().unwrap_or("f16");
+    let cache_k = inputs.cache_type_k.unwrap_or("f16");
+    let cache_v = inputs.cache_type_v.unwrap_or("f16");
 
     let bytes_k = kv::kv_bytes_per_element(cache_k);
     let bytes_v = kv::kv_bytes_per_element(cache_v);
@@ -80,14 +75,14 @@ pub fn estimate(summary: &GgufSummary, svc: &ServiceConfig) -> Estimate {
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: lc.estimation.compute_buffer_mb.unwrap_or(400),
+        compute_buffer_mb: inputs.compute_buffer_mb.unwrap_or(400),
         per_layer_bytes: Some(per_layer_bytes),
         attention_layers: None,
         non_layer,
         override_tensor_bytes: BTreeMap::new(),
         expert_layers: Vec::new(),
         expert_layer_cpu_bytes: BTreeMap::new(),
-        context,
+        context: inputs.context,
         architecture: SmolStr::new(arch),
     }
 }
@@ -128,15 +123,12 @@ pub(crate) fn layer_index(name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use smol_str::SmolStr;
 
     use super::*;
-    use crate::{
-        config::validate::{
-            DeviceSlot, PlacementPolicy, ServiceConfig, test_fixtures::minimal_service,
-        },
-        gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
-    };
+    use crate::gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue};
 
     fn tensor(name: &str, bytes: u64) -> GgufTensor {
         GgufTensor {
@@ -197,24 +189,30 @@ mod tests {
         }
     }
 
-    fn svc(cache_k: &str, cache_v: &str, context: u32) -> ServiceConfig {
-        let mut svc = minimal_service("demo");
-        svc.placement_policy = PlacementPolicy::GpuOnly;
-        svc.placement_override.clear();
-        svc.placement_override.insert(DeviceSlot::Gpu(0), 1000);
-        let lc = crate::config::validate::test_fixtures::expect_llama_cpp(&mut svc);
-        lc.model = "/fake".into();
-        lc.context = Some(context);
-        lc.cache_type_k = Some(SmolStr::new(cache_k));
-        lc.cache_type_v = Some(SmolStr::new(cache_v));
-        lc.flash_attn = Some(true);
-        svc
+    fn inputs<'a>(
+        cache_k: &'a str,
+        cache_v: &'a str,
+        context: u32,
+        empty: &'a [String],
+    ) -> EstimatorInputs<'a> {
+        EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context,
+            cache_type_k: Some(cache_k),
+            cache_type_v: Some(cache_v),
+            override_tensor: empty,
+            n_cpu_moe: None,
+            compute_buffer_mb: None,
+        }
     }
 
     #[test]
     fn sums_per_layer_and_non_layer() {
         let s = fake_summary();
-        let e = estimate(&s, &svc("f16", "f16", 4096));
+        let empty: Vec<String> = Vec::new();
+        let e = estimate(&s, &inputs("f16", "f16", 4096, &empty));
         // per-layer: 2 layers × 3 tensors × 1 MiB = 6 MiB weights from layers.
         // non-layer: 2 MiB output + 4 MiB token_embd = 6 MiB.
         assert_eq!(e.weights_bytes, 12 * 1024 * 1024);
@@ -224,7 +222,8 @@ mod tests {
     #[test]
     fn kv_uses_arch_metadata() {
         let s = fake_summary();
-        let e = estimate(&s, &svc("f16", "f16", 4096));
+        let empty: Vec<String> = Vec::new();
+        let e = estimate(&s, &inputs("f16", "f16", 4096, &empty));
         // n_layers=2, n_kv=4, k=v=128, 2 bytes/element (f16).
         // per_layer_kv = 4 × (128*2 + 128*2) = 4 × 512 = 2048 bytes.
         // kv_per_token = 2 × 2048 = 4096 bytes.
@@ -234,8 +233,9 @@ mod tests {
     #[test]
     fn kv_quantised_shrinks() {
         let s = fake_summary();
-        let e_q8 = estimate(&s, &svc("q8_0", "q8_0", 4096));
-        let e_f16 = estimate(&s, &svc("f16", "f16", 4096));
+        let empty: Vec<String> = Vec::new();
+        let e_q8 = estimate(&s, &inputs("q8_0", "q8_0", 4096, &empty));
+        let e_f16 = estimate(&s, &inputs("f16", "f16", 4096, &empty));
         assert!(e_q8.kv_per_token < e_f16.kv_per_token);
     }
 
