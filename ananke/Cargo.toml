@@ -67,6 +67,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-stream.workspace = true
 futures.workspace = true
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 
 [features]
 default = []

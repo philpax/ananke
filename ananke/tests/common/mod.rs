@@ -234,6 +234,29 @@ impl TestHarness {
             sup.shutdown().await;
         }
     }
+
+    /// Same as `cleanup` but named `shutdown` for tests that prefer that terminology.
+    pub async fn shutdown(self) {
+        self.cleanup().await;
+    }
+
+    /// Bind an ephemeral TCP listener, serve the management router on it, and
+    /// return the bound address. Useful for WebSocket tests that need a real
+    /// TCP connection rather than an in-process `oneshot` call.
+    pub async fn spawn_management_server(&self) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = ananke::api::management::register(axum::Router::new(), self.state.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        addr
+    }
+}
+
+/// Build a `http://…` URL for a path served by the management server at `addr`.
+pub fn management_url(addr: std::net::SocketAddr, path: &str) -> String {
+    format!("http://{addr}{path}")
 }
 
 /// Synthetic GGUF builder for integration tests.

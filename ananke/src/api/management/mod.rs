@@ -2,18 +2,19 @@
 //! `/api/openapi.json`.
 
 pub mod config;
+pub mod events_ws;
 pub mod handlers;
 pub mod lifecycle;
 pub mod logs;
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{any, get, post},
 };
 
 use crate::daemon::app_state::AppState;
 
-pub fn router(state: AppState) -> Router {
+pub fn register(router: Router, state: AppState) -> Router {
     let mgmt: Router = Router::new()
         .route(
             "/api/config",
@@ -26,9 +27,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/services/:name/enable", post(lifecycle::post_enable))
         .route("/api/services/:name/disable", post(lifecycle::post_disable))
         .route("/api/services/:name/logs", get(logs::get_logs))
+        .route("/api/events", any(events_ws::get_events_ws))
         .with_state(state.clone());
-    handlers::register(Router::new(), state.clone())
+    handlers::register(router, state.clone())
         .merge(crate::api::openapi::register(Router::new(), state.clone()))
         .merge(crate::oneshot::handlers::register(Router::new(), state))
         .merge(mgmt)
+}
+
+pub fn router(state: AppState) -> Router {
+    register(Router::new(), state)
 }
