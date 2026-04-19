@@ -1,7 +1,7 @@
 //! Run the estimator against a GGUF and dump JSON.
 //!
 //! Usage:
-//!   cargo run --release --example estimate -- \
+//!   cargo run --example estimate -- \
 //!     --model /path/to/model.gguf \
 //!     --context 8192 \
 //!     [--mmproj /path/to/mmproj.gguf] \

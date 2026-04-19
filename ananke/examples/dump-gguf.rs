@@ -1,6 +1,6 @@
 //! Dump a GGUF file's tensor table with per-layer expert/non-expert breakdown.
 //!
-//! Usage: cargo run --release --example dump-gguf -- /path/to/file.gguf
+//! Usage: cargo run --example dump-gguf -- /path/to/file.gguf
 
 use std::{collections::BTreeMap, env};
 

@@ -119,18 +119,36 @@ pub fn apply(estimate: &mut Estimate, summary: &GgufSummary, rules: &[OverrideRu
         }
     }
 
+    let override_total: u64 = override_bytes.values().sum();
     estimate.override_tensor_bytes = override_bytes;
 
-    // Recompute the weights total to reflect the reduced per-layer/non-layer sums.
-    let per_layer_sum = estimate
-        .per_layer_bytes
-        .as_ref()
-        .map(|p| p.iter().sum::<u64>())
-        .unwrap_or(0);
-    estimate.weights_bytes = per_layer_sum
-        + estimate.non_layer.output_head_bytes
-        + estimate.non_layer.token_embd_bytes
-        + estimate.non_layer.other_bytes;
+    // Recompute the weights total to reflect the redirected tensors.
+    //
+    // When the architecture-specific estimator supplied a per-layer
+    // breakdown, the loop above mutated `per_layer_bytes` + `non_layer`
+    // in-place and we sum those back up.
+    //
+    // The fallback estimator, however, sets `per_layer_bytes = None` and
+    // leaves `non_layer` all-zero — it only knows the coarse
+    // `weights_bytes = total_tensor_bytes × 1.15 + 512 MB`. Recomputing
+    // from zero in that case would clobber the only sensible weights
+    // estimate the fallback produced (we hit this with glm4moe + a
+    // CPU-offload regex: predicted 400 MiB vs 27 GiB observed). Instead,
+    // subtract the redirected bytes from the fallback's coarse total so
+    // the remaining on-device weights still account for what stays.
+    if estimate.per_layer_bytes.is_some() {
+        let per_layer_sum = estimate
+            .per_layer_bytes
+            .as_ref()
+            .map(|p| p.iter().sum::<u64>())
+            .unwrap_or(0);
+        estimate.weights_bytes = per_layer_sum
+            + estimate.non_layer.output_head_bytes
+            + estimate.non_layer.token_embd_bytes
+            + estimate.non_layer.other_bytes;
+    } else {
+        estimate.weights_bytes = estimate.weights_bytes.saturating_sub(override_total);
+    }
 }
 
 /// Convenience: parse and apply in one call; errors are logged (not returned),
@@ -251,6 +269,52 @@ mod tests {
         );
         // weights_bytes reflects the reduced per-layer + non-layer.
         assert_eq!(est.weights_bytes, 2 * 1024 * 1024);
+    }
+
+    /// Regression: when the architecture-specific estimator doesn't run
+    /// (e.g. glm4moe before being added to `MOE_FAMILY`), `apply` receives
+    /// a fallback-style estimate whose `per_layer_bytes` is `None` and
+    /// whose non-layer fields are all zero. The recompute step used to
+    /// zero `weights_bytes` in that case, leading to a 400 MiB prediction
+    /// for a 26 GiB model. Instead, it must subtract the redirected bytes
+    /// from the fallback's coarse weights total so the remaining
+    /// on-device weights are still accounted for.
+    #[test]
+    fn preserves_fallback_weights_when_no_per_layer_breakdown() {
+        let tensors = vec![
+            tensor("blk.0.attn_q.weight", 1024 * 1024),
+            tensor("blk.0.ffn_up_exps.weight", 10 * 1024 * 1024),
+            tensor("blk.0.ffn_down_exps.weight", 10 * 1024 * 1024),
+        ];
+        let summary = summary_with(tensors);
+
+        // Mimic the fallback estimator: coarse `weights_bytes` with no
+        // per-layer breakdown and empty non_layer.
+        let total_on_disk: u64 = summary.total_tensor_bytes;
+        let mut est = Estimate {
+            weights_bytes: total_on_disk,
+            kv_per_token: 0,
+            compute_buffer_mb: 400,
+            per_layer_bytes: None,
+            attention_layers: None,
+            non_layer: NonLayer::default(),
+            override_tensor_bytes: BTreeMap::new(),
+            expert_layers: Vec::new(),
+            expert_layer_cpu_bytes: BTreeMap::new(),
+            context: 4096,
+            architecture: SmolStr::new("glm4moe"),
+        };
+
+        let rules = parse_rules(&[".ffn_(up|down)_exps.=CPU".into()]).unwrap();
+        apply(&mut est, &summary, &rules);
+
+        // 20 MiB of experts moved to CPU; remaining on-GPU weights =
+        // total − override = 1 MiB attn.
+        assert_eq!(
+            est.override_tensor_bytes.get(&DeviceSlot::Cpu).copied(),
+            Some(20 * 1024 * 1024)
+        );
+        assert_eq!(est.weights_bytes, 1024 * 1024);
     }
 
     #[test]

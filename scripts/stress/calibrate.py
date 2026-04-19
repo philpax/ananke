@@ -4,7 +4,7 @@
 For each target llama-cpp service in the source config and each context
 in the doubling sequence (2k, 4k, 8k, 16k, …), this script:
 
-1. Invokes ``cargo run --release --example estimate`` against the
+1. Invokes ``cargo run --example estimate`` against the
    service's GGUF to get ananke's *predicted* VRAM reservation per
    device — same estimator + packer the daemon would use, but without
    DB / supervisor / NVML coupling.
@@ -47,7 +47,7 @@ import tomlkit  # type: ignore[import]
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
-DEFAULT_ESTIMATE_BIN = REPO_ROOT / "target" / "release" / "examples" / "estimate"
+DEFAULT_ESTIMATE_BIN = REPO_ROOT / "target" / "debug" / "examples" / "estimate"
 
 INITIAL_CONTEXT: int = 2048
 
@@ -461,7 +461,7 @@ async def main_async(args: argparse.Namespace) -> None:
     if not estimate_bin.exists() or not os.access(estimate_bin, os.X_OK):
         sys.stderr.write(
             f"estimate binary {estimate_bin} missing — build with:\n"
-            f"  cargo build --release --example estimate\n"
+            f"  cargo build --example estimate\n"
         )
         sys.exit(2)
 
@@ -518,7 +518,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--estimate-binary",
         default=os.environ.get("ANANKE_ESTIMATE_BIN", str(DEFAULT_ESTIMATE_BIN)),
-        help="path to the `estimate` example binary (build with: cargo build --release --example estimate)",
+        help="path to the `estimate` example binary (build with: cargo build --example estimate)",
     )
     p.add_argument(
         "--source-config",

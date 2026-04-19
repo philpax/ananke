@@ -24,6 +24,14 @@ pub const MOE_FAMILY: &[&str] = &[
     "deepseek2",
     "mixtral",
     "gpt-oss",
+    // GLM-4.5 series (including glm-4-5-air) uses the standard MoE tensor
+    // layout: `blk.N.ffn_{gate,up,down}_exps.weight` + shared expert tensors
+    // (`_shexp`). Without this entry the dispatcher falls through to the
+    // generic fallback, which has no per-layer breakdown — and the
+    // operator's CPU-offload `override_tensor` regex then zeroes the
+    // weight estimate entirely, leading to 400 MiB predicted vs 27 GiB
+    // observed (a 67× under-reservation).
+    "glm4moe",
 ];
 
 pub fn is_moe(arch: &str) -> bool {
