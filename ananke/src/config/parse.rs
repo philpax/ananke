@@ -59,6 +59,13 @@ pub struct DaemonConfig {
     pub shutdown_timeout: String,
     #[serde(default)]
     pub allow_external_management: bool,
+    /// Inclusive lower bound of the loopback port range handed out to
+    /// llama-server children for their private listener. Default: 40000.
+    pub private_port_start: Option<u16>,
+    /// Inclusive upper bound of the private-listener port range. Default:
+    /// 59999. Override (together with `private_port_start`) when another
+    /// process on the host occupies the default window.
+    pub private_port_end: Option<u16>,
 }
 
 fn default_management_listen() -> String {

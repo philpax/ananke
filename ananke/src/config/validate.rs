@@ -333,6 +333,10 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .clone()
         .unwrap_or_else(|| "127.0.0.1:8080".into());
 
+    let private_port_range =
+        PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;
+    let mut private_ports = PrivatePortAllocator::new(private_port_range);
+
     let mut names: BTreeSet<SmolStr> = BTreeSet::new();
     let mut ports: BTreeSet<u16> = BTreeSet::new();
     let mut out = Vec::new();
@@ -345,6 +349,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             management_port,
             &mut names,
             &mut ports,
+            &mut private_ports,
         )?;
         out.push(svc);
     }
@@ -368,6 +373,7 @@ fn validate_service(
     management_port: Option<u16>,
     names: &mut BTreeSet<SmolStr>,
     ports: &mut BTreeSet<u16>,
+    private_ports: &mut PrivatePortAllocator,
 ) -> Result<ServiceConfig, ExpectedError> {
     let common = raw.common();
     let name = common
@@ -622,10 +628,12 @@ fn validate_service(
     }
     let env = common.env.clone().unwrap_or_default();
 
-    // Allocate a private loopback port deterministically based on the external
-    // port plus a large offset so two services with adjacent external ports
-    // don't collide on private ports.
-    let private_port = 40_000u16.saturating_add(port.wrapping_sub(11_000));
+    // Allocate a private loopback port from the configured range. The
+    // allocator hands out ports first-come first-served from the range
+    // start; if another process on the host has a port bound, the
+    // supervisor's spawn-time bind failure will surface it as a clear
+    // `StartFailure` rather than silently colliding.
+    let private_port = private_ports.allocate(&name)?;
 
     Ok(ServiceConfig {
         name,
@@ -746,6 +754,71 @@ fn toml_value_to_json(v: toml::Value) -> Result<serde_json::Value, String> {
         }
         toml::Value::Datetime(dt) => serde_json::Value::String(dt.to_string()),
     })
+}
+
+/// Default private-port window. Hand out loopback ports llama-server will
+/// bind for its private HTTP listener. Configurable via
+/// `daemon.private_port_start` / `daemon.private_port_end`.
+const DEFAULT_PRIVATE_PORT_START: u16 = 40_000;
+const DEFAULT_PRIVATE_PORT_END: u16 = 59_999;
+
+/// Inclusive `start..=end` range of loopback ports assigned to supervised
+/// children. Derived from `daemon.private_port_start` / `_end` or the
+/// compiled-in default.
+#[derive(Debug, Clone, Copy)]
+struct PrivatePortRange {
+    start: u16,
+    end: u16,
+}
+
+impl PrivatePortRange {
+    fn width(self) -> u32 {
+        (self.end as u32) - (self.start as u32) + 1
+    }
+
+    fn from_config(start: Option<u16>, end: Option<u16>) -> Result<Self, ExpectedError> {
+        let start = start.unwrap_or(DEFAULT_PRIVATE_PORT_START);
+        let end = end.unwrap_or(DEFAULT_PRIVATE_PORT_END);
+        if end <= start {
+            return Err(fail(format!(
+                "daemon.private_port_end ({end}) must exceed daemon.private_port_start ({start})"
+            )));
+        }
+        Ok(Self { start, end })
+    }
+}
+
+/// Hand out unique private ports from a bounded range. First-come
+/// first-served from `range.start` upward. External-process collisions are
+/// detected at spawn time by llama-server's bind failure, not by this
+/// allocator — probing here would only narrow a race window that the
+/// supervisor already surfaces as a `StartFailure`.
+struct PrivatePortAllocator {
+    range: PrivatePortRange,
+    next: u32,
+}
+
+impl PrivatePortAllocator {
+    fn new(range: PrivatePortRange) -> Self {
+        Self {
+            range,
+            next: range.start as u32,
+        }
+    }
+
+    fn allocate(&mut self, svc_name: &SmolStr) -> Result<u16, ExpectedError> {
+        if self.next > self.range.end as u32 {
+            return Err(fail(format!(
+                "service {svc_name}: private_port_range [{}, {}] exhausted ({} slots) — widen the range or reduce service count",
+                self.range.start,
+                self.range.end,
+                self.range.width()
+            )));
+        }
+        let port = self.next as u16;
+        self.next += 1;
+        Ok(port)
+    }
 }
 
 pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
