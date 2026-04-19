@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use crate::{
     allocator::AllocationTable,
     config::EffectiveConfig,
+    daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
     devices::snapshotter::SharedSnapshot,
     oneshot::{OneshotRegistry, PortPool},
@@ -31,6 +32,7 @@ pub struct AppState {
     pub port_pool: Arc<Mutex<PortPool>>,
     pub oneshots: OneshotRegistry,
     pub batcher: BatcherHandle,
+    pub events: EventBus,
 }
 
 impl AppState {
@@ -46,6 +48,7 @@ impl AppState {
             observation: self.observation.clone(),
             registry: self.registry.clone(),
             effective: self.config.clone(),
+            events: self.events.clone(),
         }
     }
 }

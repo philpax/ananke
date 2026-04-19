@@ -90,6 +90,7 @@ mod tests {
             observation: crate::tracking::observation::ObservationTable::new(),
             registry: ServiceRegistry::new(),
             effective,
+            events: crate::daemon::events::EventBus::new(),
         };
         let handle = Arc::new(spawn_supervisor(init, deps));
 

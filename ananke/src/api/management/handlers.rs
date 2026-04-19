@@ -9,7 +9,7 @@ use axum::{
     routing::{Router, get},
 };
 
-use crate::{daemon::app_state::AppState, supervise::state::ServiceState};
+use crate::daemon::app_state::AppState;
 
 pub fn register(router: Router, state: AppState) -> Router {
     // Build the typed router against AppState, collapse to Router<()> via
@@ -35,7 +35,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             name: svc_cfg.name.to_string(),
             state: snap
                 .as_ref()
-                .map(|s| state_name(&s.state))
+                .map(|s| s.state.name().to_string())
                 .unwrap_or_else(|| "unknown".into()),
             lifecycle: svc_cfg.lifecycle.as_str().to_string(),
             priority: svc_cfg.priority,
@@ -127,7 +127,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         name: svc_cfg.name.to_string(),
         state: snap
             .as_ref()
-            .map(|s| state_name(&s.state))
+            .map(|s| s.state.name().to_string())
             .unwrap_or_else(|| "unknown".into()),
         lifecycle: format!("{:?}", svc_cfg.lifecycle).to_lowercase(),
         priority: svc_cfg.priority,
@@ -209,19 +209,4 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
     }
 
     (StatusCode::OK, Json(out)).into_response()
-}
-
-fn state_name(s: &ServiceState) -> String {
-    match s {
-        ServiceState::Idle => "idle",
-        ServiceState::Starting => "starting",
-        ServiceState::Warming => "warming",
-        ServiceState::Running => "running",
-        ServiceState::Draining => "draining",
-        ServiceState::Stopped => "stopped",
-        ServiceState::Evicted => "evicted",
-        ServiceState::Failed { .. } => "failed",
-        ServiceState::Disabled { .. } => "disabled",
-    }
-    .to_string()
 }

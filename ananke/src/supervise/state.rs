@@ -26,6 +26,22 @@ pub enum DisableReason {
     UserDisabled,
 }
 
+impl ServiceState {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ServiceState::Idle => "idle",
+            ServiceState::Starting => "starting",
+            ServiceState::Warming => "warming",
+            ServiceState::Running => "running",
+            ServiceState::Draining => "draining",
+            ServiceState::Stopped => "stopped",
+            ServiceState::Evicted => "evicted",
+            ServiceState::Failed { .. } => "failed",
+            ServiceState::Disabled { .. } => "disabled",
+        }
+    }
+}
+
 impl DisableReason {
     pub fn as_str(&self) -> &str {
         match self {

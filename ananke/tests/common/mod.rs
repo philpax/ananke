@@ -99,6 +99,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let rolling = ananke::tracking::rolling::RollingTable::new();
     let observation = ananke::tracking::observation::ObservationTable::new();
     let registry = ServiceRegistry::new();
+    let events = ananke::daemon::events::EventBus::new();
     let deps = ananke::supervise::SupervisorDeps {
         db: db.clone(),
         batcher: batcher.clone(),
@@ -108,6 +109,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         observation: observation.clone(),
         registry: registry.clone(),
         effective: effective.clone(),
+        events: events.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -137,6 +139,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         port_pool: Arc::new(Mutex::new(ananke::oneshot::PortPool::new(18000..19000))),
         oneshots: ananke::oneshot::OneshotRegistry::new(),
         batcher,
+        events,
     };
 
     TestHarness {

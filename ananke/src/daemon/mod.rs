@@ -4,6 +4,7 @@
 //! Linux-coupled via `/proc` orphan reconciliation and the `signals` submodule.
 
 pub mod app_state;
+pub mod events;
 pub mod signals;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
@@ -83,6 +84,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         shutdown_rx.clone(),
     );
 
+    let events = crate::daemon::events::EventBus::new();
     let activity = ActivityTable::new();
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
     let inflight = InflightTable::new();
@@ -105,6 +107,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         observation: observation.clone(),
         registry: registry.clone(),
         effective: effective.clone(),
+        events: events.clone(),
     };
 
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
@@ -213,6 +216,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         port_pool,
         oneshots,
         batcher: batcher.clone(),
+        events: events.clone(),
     };
 
     // OpenAI listener.

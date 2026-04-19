@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ananke_api::Event;
 pub use orphans::{OrphanDisposition, reconcile};
 use parking_lot::Mutex as SyncMutex;
 pub use spawn::{SpawnConfig, render_argv};
@@ -33,6 +34,7 @@ use tracing::{error, info, warn};
 use crate::{
     allocator::placement::Packed,
     config::validate::{DEFAULT_SERVICE_PRIORITY, EffectiveConfig, ServiceConfig},
+    daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
     supervise::{
@@ -195,6 +197,7 @@ pub struct SupervisorDeps {
     pub observation: ObservationTable,
     pub registry: ServiceRegistry,
     pub effective: Arc<EffectiveConfig>,
+    pub events: EventBus,
 }
 
 /// Per-service initialisation for a single supervisor task.
@@ -404,8 +407,36 @@ impl RunLoop {
     }
 
     fn set_state(&mut self, new_state: ServiceState) {
+        let prior_state = self.state.clone();
         self.state = new_state;
         *self.state_mirror.lock() = self.state.clone();
+        self.deps.events.publish(Event::StateChanged {
+            service: self.init.svc.name.clone(),
+            from: prior_state.name().to_string(),
+            to: self.state.name().to_string(),
+            at_ms: crate::tracking::now_unix_ms(),
+        });
+    }
+
+    /// Publish an `AllocationChanged` event reflecting the current state of
+    /// this service's entry in the allocation table. Called after every
+    /// reserve, drain, or eviction that touches our row.
+    fn emit_allocation_changed(&self) {
+        let reservations: std::collections::BTreeMap<String, u64> = self
+            .deps
+            .allocations
+            .lock()
+            .get(&self.init.svc.name)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(slot, mb)| (slot_to_key(&slot), mb * 1024 * 1024))
+            .collect();
+        self.deps.events.publish(Event::AllocationChanged {
+            service: self.init.svc.name.clone(),
+            reservations,
+            at_ms: crate::tracking::now_unix_ms(),
+        });
     }
 
     /// Remove this service's reservation, clear observation, and finalise the
@@ -420,6 +451,7 @@ impl RunLoop {
         );
         self.deps.observation.clear(&self.init.svc.name);
         self.deps.allocations.lock().remove(&self.init.svc.name);
+        self.emit_allocation_changed();
     }
 
     /// For on_demand services we wait here for an Ensure. Persistent services
@@ -492,6 +524,7 @@ impl RunLoop {
             .allocations
             .lock()
             .insert(self.init.svc.name.clone(), want);
+        self.emit_allocation_changed();
 
         // Create broadcast channel and subscribe the caller.
         let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
@@ -694,6 +727,7 @@ impl RunLoop {
                     }));
                 }
                 self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.emit_allocation_changed();
                 self.set_state(ServiceState::Failed { retry_count: 0 });
                 return Step::Continue;
             }
@@ -789,6 +823,7 @@ impl RunLoop {
         warn!(?exit, "child exited during starting/warming");
         self.deps.allocations.lock().remove(&self.init.svc.name);
         self.deps.observation.clear(&self.init.svc.name);
+        self.emit_allocation_changed();
 
         // Detect OOM kill: process died within 30 s and was killed by
         // SIGKILL (kernel OOM killer or cgroup limit).
@@ -873,6 +908,7 @@ impl RunLoop {
                     }));
                 }
                 self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.emit_allocation_changed();
                 self.set_state(ServiceState::Disabled {
                     reason: DisableReason::HealthTimeout,
                 });
@@ -881,6 +917,7 @@ impl RunLoop {
             }
             Ok(HealthOutcome::Cancelled) | Err(_) => {
                 self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.emit_allocation_changed();
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 StartingOutcome::Exit
             }
@@ -906,6 +943,7 @@ impl RunLoop {
                     }));
                 }
                 self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.emit_allocation_changed();
                 self.set_state(ServiceState::Failed { retry_count: 0 });
                 WarmingOutcome::ChildExited
             }
@@ -916,6 +954,7 @@ impl RunLoop {
                     drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.deps.allocations.lock().remove(&self.init.svc.name);
+                    self.emit_allocation_changed();
                     let _ = ack.send(());
                     return WarmingOutcome::Shutdown;
                 }
@@ -1035,6 +1074,7 @@ impl RunLoop {
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                 self.deps.allocations.lock().remove(&self.init.svc.name);
                 self.deps.observation.clear(&self.init.svc.name);
+                self.emit_allocation_changed();
                 let _ = ack.send(());
                 self.set_state(ServiceState::Idle);
                 RunningOutcome::Break
@@ -1056,6 +1096,7 @@ impl RunLoop {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.emit_allocation_changed();
                 let _ = ack.send(());
                 StartingOutcome::Exit
             }
@@ -1185,6 +1226,15 @@ enum RunningOutcome {
     Continue,
     Break,
     Exit,
+}
+
+/// Convert a `DeviceSlot` to the canonical string key used in
+/// `AllocationChanged` reservations (`"cpu"` or `"gpu:N"`).
+fn slot_to_key(slot: &crate::config::DeviceSlot) -> String {
+    match slot {
+        crate::config::DeviceSlot::Cpu => "cpu".to_string(),
+        crate::config::DeviceSlot::Gpu(n) => format!("gpu:{n}"),
+    }
 }
 
 /// Compute the tokio `Instant` at which the idle deadline fires, based on the
