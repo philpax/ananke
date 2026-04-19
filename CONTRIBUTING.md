@@ -11,6 +11,18 @@ Both components share the general conventions below. The Rust- and TypeScript-sp
 
 v1 targets Linux only — the daemon depends on NVML, `/proc`, and `prctl`, none of which have direct equivalents elsewhere. Linux-specific code is fine today; write it directly rather than introducing cross-platform shims that don't yet have a second platform to justify them. When a second platform does land, follow the cross-platform guidance under "User experience as a primary driver" and keep OS-specific logic behind `#[cfg(...)]` boundaries.
 
+### Dev shell
+
+A `shell.nix` at the repo root wires up the toolchain (rustc, cargo,
+clippy, rustfmt, rust-analyzer, uv, Python 3.12) and — importantly —
+exports `LD_LIBRARY_PATH=/run/opengl-driver/lib` so `nvml-wrapper` can
+`dlopen` the driver. Enter with `nix-shell`. Without the shell (or an
+equivalent env export) on NixOS, the daemon logs "NVML init failed",
+falls back to CPU-only, and every GPU-bound service fails placement.
+
+This shell is for local development only. Packaging + a systemd unit
+live in a separate NixOS module.
+
 ### Task automation
 
 A top-level `justfile` is the canonical entry point for project-wide tasks: regenerating types, running both linters together, release flows, etc. It is not yet present — add it when the first cross-cutting recipe appears, and put future cross-cutting recipes there rather than inventing parallel scripts. Component-local invocations (`cargo …`, `npm run …`) stay where they are; `just` is for things that span the two halves or encode a multi-step flow.
