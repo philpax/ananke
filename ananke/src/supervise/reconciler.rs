@@ -1,43 +1,48 @@
 //! Reconcile live supervisors with the current `EffectiveConfig`.
 //!
-//! Subscribes to the daemon event bus. On each `ConfigReloaded`, every
-//! service whose name appears in the change list but is no longer present
-//! in `effective.services` has its supervisor drained and removed from the
-//! registry. Without this reconciler the supervisor for a removed service
-//! would live on for the lifetime of the daemon — its child would keep
-//! consuming VRAM and its pledge would keep counting against placement —
-//! because supervisors are spawned once at boot and never recycled.
+//! Subscribes to the daemon event bus. On each `ConfigReloaded`, the
+//! reconciler cross-references the change list with the new effective
+//! config:
 //!
-//! Scope limits: this reconciler handles *removal* only. Additions via
-//! reload are still a no-op (no supervisor is spawned for a newly-added
-//! service) because that path requires non-trivial rewiring of the
-//! daemon's boot-time service/proxy setup; tracked separately.
-//!
-//! The per-service HTTP proxy task spawned in `daemon::run` is also *not*
-//! torn down here. Requests to the removed service's public port will
-//! return 502 after the drain; releasing the port cleanly requires a
-//! per-proxy shutdown channel that doesn't exist yet. Tracked as a
-//! follow-up.
+//! - Services **removed** from the config: the reconciler drains the
+//!   supervisor (via `shutdown()`, which SIGTERMs the child and cleans up
+//!   the allocation table) and evicts the handle from the registry. The
+//!   per-service HTTP proxy task is *not* torn down here — released
+//!   cleanly it needs a per-proxy shutdown channel that doesn't exist
+//!   yet (tracked as a follow-up). Requests to the removed service's
+//!   public port will return 502 until the daemon restarts.
+//! - Services **added** to the config: the reconciler calls
+//!   [`provision::provision_service`] to spawn a supervisor, bind the
+//!   proxy listener, spawn the balloon resolver if the service is
+//!   dynamic, and (for persistent services) fire the implicit `ensure()`.
+//!   This mirrors the daemon's boot loop exactly, so added services
+//!   behave as if they had been present at boot.
 
 use std::{collections::BTreeSet, sync::Arc};
 
 use ananke_api::Event;
 use smol_str::SmolStr;
 use tokio::sync::{broadcast::error::RecvError, watch};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
-    config::manager::ConfigManager, daemon::events::EventBus,
-    supervise::registry::ServiceRegistry,
+    config::manager::ConfigManager,
+    daemon::events::EventBus,
+    supervise::{provision::ProvisioningDeps, registry::ServiceRegistry},
 };
 
 /// Spawn the reconciler task. Returns a `JoinHandle` so the caller can
 /// await it on daemon shutdown. The task exits when `shutdown_rx` fires
 /// true or the event bus sender is dropped.
+///
+/// `provisioning` is optional so lib-level tests (which don't need the
+/// add-service path) can pass `None`. Production always supplies it so
+/// reload-add actually provisions.
 pub fn spawn(
     events: EventBus,
     config: Arc<ConfigManager>,
     registry: ServiceRegistry,
+    provisioning: Option<ProvisioningDeps>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     let mut rx = events.subscribe();
@@ -51,7 +56,7 @@ pub fn spawn(
                 }
                 ev = rx.recv() => match ev {
                     Ok(Event::ConfigReloaded { changed_services, .. }) => {
-                        handle_reload(&config, &registry, &changed_services).await;
+                        handle_reload(&config, &registry, provisioning.as_ref(), &changed_services).await;
                     }
                     Ok(_) => {}
                     Err(RecvError::Lagged(n)) => {
@@ -67,25 +72,56 @@ pub fn spawn(
 async fn handle_reload(
     config: &ConfigManager,
     registry: &ServiceRegistry,
+    provisioning: Option<&ProvisioningDeps>,
     changed: &[SmolStr],
 ) {
-    // Snapshot the current service-name set and release the arc-swap guard
-    // before awaiting anywhere — `Guard` is `!Send` in practice and we want
-    // the live config to remain swappable while we drain.
-    let live: BTreeSet<SmolStr> = {
+    // Snapshot the live services as `(name, full ServiceConfig)` before
+    // awaiting, so the arc-swap guard releases promptly. We need the full
+    // ServiceConfig to provision adds; cloning is cheap at the ~tens-of-
+    // services scale daemons run.
+    let live: BTreeSet<SmolStr>;
+    let live_configs: std::collections::BTreeMap<SmolStr, crate::config::ServiceConfig>;
+    {
         let current = config.effective();
-        current.services.iter().map(|s| s.name.clone()).collect()
-    };
+        live = current.services.iter().map(|s| s.name.clone()).collect();
+        live_configs = current
+            .services
+            .iter()
+            .map(|s| (s.name.clone(), s.clone()))
+            .collect();
+    }
 
     for name in changed {
-        if live.contains(name) {
-            continue;
+        let in_live = live.contains(name);
+        let in_registry = registry.get(name).is_some();
+
+        match (in_live, in_registry) {
+            // Removed: live has it? No. Registry has it? Yes. Drain it.
+            (false, true) => {
+                if let Some(handle) = registry.remove(name) {
+                    info!(%name, "draining service removed by config reload");
+                    handle.shutdown().await;
+                }
+            }
+            // Added: live has it, registry doesn't — provision.
+            (true, false) => {
+                let Some(prov) = provisioning else {
+                    warn!(%name, "reload added a service but reconciler has no provisioning deps; supervisor not spawned");
+                    continue;
+                };
+                let Some(svc) = live_configs.get(name).cloned() else {
+                    continue;
+                };
+                info!(%name, "provisioning service added by config reload");
+                if let Err(e) = crate::supervise::provision::provision_service(svc, prov).await {
+                    error!(%name, error = %e, "provisioning failed for reload-added service");
+                }
+            }
+            // In both (edit to existing service) or in neither (stale
+            // event): nothing to do here — edit-in-place is handled by
+            // the supervisor's `current_svc()` live read at Ensure time.
+            _ => {}
         }
-        let Some(handle) = registry.remove(name) else {
-            continue;
-        };
-        info!(%name, "draining service removed by config reload");
-        handle.shutdown().await;
     }
 }
 
@@ -183,7 +219,13 @@ mod tests {
         let (registry, events, config) = fixture(vec![svc_a.clone(), svc_b.clone()]).await;
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let join = spawn(events.clone(), config.clone(), registry.clone(), shutdown_rx);
+        let join = spawn(
+            events.clone(),
+            config.clone(),
+            registry.clone(),
+            None,
+            shutdown_rx,
+        );
 
         // Simulate the apply() path by publishing a ConfigReloaded whose
         // changed_services includes "b" — but first mutate the config so

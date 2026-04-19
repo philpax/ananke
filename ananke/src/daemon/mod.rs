@@ -11,23 +11,20 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use tokio::{net::TcpListener, sync::watch};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     allocator::AllocationTable,
-    api::proxy,
-    config::{AllocationMode, Lifecycle, Migration, manager::ConfigManager},
+    config::{Migration, manager::ConfigManager},
     daemon::{
         app_state::AppState,
         signals::{ShutdownKind, await_shutdown},
     },
     db::{Database, logs::spawn as spawn_batcher, retention},
-    devices::{Allocation, GpuProbe, cpu, nvml::NvmlProbe, snapshotter},
+    devices::{GpuProbe, cpu, nvml::NvmlProbe, snapshotter},
     errors::ExpectedError,
     oneshot::{OneshotRegistry, PortPool},
-    supervise::{
-        SupervisorHandle, orphans::reconcile, registry::ServiceRegistry, spawn_supervisor,
-    },
+    supervise::{SupervisorHandle, orphans::reconcile, registry::ServiceRegistry},
     tracking::{activity::ActivityTable, inflight::InflightTable},
 };
 
@@ -101,123 +98,13 @@ pub async fn run() -> Result<(), ExpectedError> {
 
     let system = crate::system::SystemDeps::local();
 
-    let supervisor_deps = crate::supervise::SupervisorDeps {
-        db: db.clone(),
-        batcher: batcher.clone(),
-        snapshot: shared_snapshot.clone(),
-        allocations: allocations.clone(),
-        rolling: rolling.clone(),
-        observation: observation.clone(),
-        registry: registry.clone(),
-        config: config.clone(),
-        events: events.clone(),
-        system: system.clone(),
-    };
-
-    let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
-    let mut proxy_tasks = Vec::new();
-    for svc in ordered {
-        let service_id = db
-            .upsert_service(&svc.name, crate::tracking::now_unix_ms())
-            .await?;
-        let init = crate::supervise::SupervisorInit {
-            svc: svc.clone(),
-            allocation: Allocation::from_override(&svc.placement_override),
-            service_id,
-            last_activity: activity.get_or_init(&svc.name),
-            inflight: inflight.counter(&svc.name),
-        };
-        let handle = Arc::new(spawn_supervisor(init, supervisor_deps.clone()));
-        registry.insert(svc.name.clone(), handle.clone());
-
-        // Persistent services kick-start via an implicit Ensure so they begin
-        // transitioning out of Idle immediately without blocking the startup loop.
-        if matches!(svc.lifecycle, Lifecycle::Persistent) {
-            let handle2 = handle.clone();
-            tokio::spawn(async move {
-                let _ = handle2.ensure().await;
-            });
-        }
-
-        let listen: SocketAddr =
-            format!("127.0.0.1:{}", svc.port)
-                .parse()
-                .map_err(|e: std::net::AddrParseError| {
-                    ExpectedError::bind_failed(format!("127.0.0.1:{}", svc.port), e.to_string())
-                })?;
-        let shutdown_rx2 = shutdown_rx.clone();
-        let upstream = svc.private_port;
-        let name = svc.name.clone();
-        let inflight_counter = inflight.counter(&svc.name);
-        let before_request = make_proxy_before_request(
-            svc.name.clone(),
-            handle.clone(),
-            activity.clone(),
-            Duration::from_millis(svc.max_request_duration_ms),
-        );
-        proxy_tasks.push(tokio::spawn(async move {
-            if let Err(e) = proxy::serve_with_activity(
-                listen,
-                upstream,
-                shutdown_rx2,
-                before_request,
-                inflight_counter,
-            )
-            .await
-            {
-                error!(service = %name, error = %e, "proxy failed");
-            }
-        }));
-        supervisors.push(handle);
-    }
-
-    // Spawn balloon resolvers for dynamic services. Each resolver monitors
-    // observed VRAM usage and fast-kills the lower-priority side when
-    // growth pressure builds under contention.
-    let mut balloon_tasks = Vec::new();
-    for svc in &effective.services {
-        if let AllocationMode::Dynamic {
-            min_mb,
-            max_mb,
-            min_borrower_runtime_ms,
-        } = svc.allocation_mode
-        {
-            // 512 MiB headroom above `min_mb` before balloon triggers growth detection.
-            const BALLOON_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
-            let cfg = crate::allocator::balloon::BalloonConfig {
-                min_mb,
-                max_mb,
-                min_borrower_runtime: Duration::from_millis(min_borrower_runtime_ms),
-                margin_bytes: BALLOON_MARGIN_BYTES,
-            };
-            let join = crate::allocator::balloon::spawn_resolver(
-                svc.name.clone(),
-                cfg,
-                svc.priority,
-                observation.clone(),
-                registry.clone(),
-                allocations.clone(),
-                shutdown_rx.clone(),
-            );
-            balloon_tasks.push(join);
-        }
-    }
-
-    // Drain-on-remove reconciler: watches ConfigReloaded and shuts down any
-    // supervisor whose service name has disappeared from the new effective
-    // config. Without this, a reload that removes a service would leave the
-    // supervisor alive and its child continuing to consume VRAM.
-    let reconciler_task = crate::supervise::reconciler::spawn(
-        events.clone(),
-        config.clone(),
-        registry.clone(),
-        shutdown_rx.clone(),
-    );
-
     let port_pool = Arc::new(Mutex::new(PortPool::new(18000..19000)));
     let oneshots = OneshotRegistry::new();
 
-    // Build AppState for the routers.
+    // Build AppState early — it holds only Arc-backed handles, and the
+    // provisioner wants to pull `ProvisioningDeps` out of it. Supervisors
+    // get registered into `app_state.registry` as `provision_service`
+    // inserts them, so post-boot the state is complete.
     let app_state = AppState {
         config: config.clone(),
         registry: registry.clone(),
@@ -234,6 +121,34 @@ pub async fn run() -> Result<(), ExpectedError> {
         events: events.clone(),
         system: system.clone(),
     };
+
+    let provisioning_deps = crate::supervise::provision::ProvisioningDeps::from_state(
+        &app_state,
+        shutdown_rx.clone(),
+    );
+
+    let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
+    let mut proxy_tasks = Vec::new();
+    let mut balloon_tasks = Vec::new();
+    for svc in ordered {
+        let provisioned = crate::supervise::provision::provision_service(svc, &provisioning_deps).await?;
+        supervisors.push(provisioned.handle);
+        proxy_tasks.push(provisioned.proxy_task);
+        if let Some(balloon) = provisioned.balloon_task {
+            balloon_tasks.push(balloon);
+        }
+    }
+
+    // Drain-on-remove + spawn-on-add reconciler. Threads the same
+    // `ProvisioningDeps` that the boot loop used so a reload-added
+    // service is spawned through exactly the same path.
+    let reconciler_task = crate::supervise::reconciler::spawn(
+        events.clone(),
+        config.clone(),
+        registry.clone(),
+        Some(provisioning_deps.clone()),
+        shutdown_rx.clone(),
+    );
 
     // OpenAI listener.
     let openai_listen: SocketAddr =
@@ -346,49 +261,6 @@ fn parse_cli_config_arg() -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// Build the `before_request` hook passed to `proxy::serve_with_activity`:
-/// each request pings the activity table, ensures the supervisor is running,
-/// and — on failure — short-circuits with a proxy error body.
-fn make_proxy_before_request(
-    name: smol_str::SmolStr,
-    handle: Arc<crate::supervise::SupervisorHandle>,
-    activity: ActivityTable,
-    max_request_duration: Duration,
-) -> Arc<
-    dyn Fn() -> futures::future::BoxFuture<'static, Option<crate::api::proxy::ProxyError>>
-        + Send
-        + Sync,
-> {
-    Arc::new(move || {
-        let name = name.clone();
-        let handle = handle.clone();
-        let activity = activity.clone();
-        Box::pin(async move {
-            activity.ping(&name);
-            match crate::supervise::await_ensure(&handle, max_request_duration).await {
-                crate::supervise::EnsureOutcome::Ready { .. } => None,
-                crate::supervise::EnsureOutcome::Failed(f) => {
-                    Some(ensure_failure_to_proxy_error(f))
-                }
-            }
-        }) as futures::future::BoxFuture<'static, _>
-    })
-}
-
-fn ensure_failure_to_proxy_error(
-    f: crate::supervise::EnsureFailure,
-) -> crate::api::proxy::ProxyError {
-    use crate::supervise::EnsureFailure;
-    match f {
-        EnsureFailure::InsufficientVram(msg) => proxy::error_response("insufficient_vram", &msg),
-        EnsureFailure::ServiceDisabled(msg) => proxy::error_response("service_disabled", &msg),
-        EnsureFailure::StartQueueFull => {
-            proxy::error_response("start_queue_full", "start queue full")
-        }
-        EnsureFailure::StartFailed(msg) => proxy::error_response("start_failed", &msg),
-    }
 }
 
 async fn apply_migrations(db: &Database, migs: &[Migration]) {

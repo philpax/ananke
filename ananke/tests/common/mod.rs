@@ -170,14 +170,17 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         system: system.clone(),
     };
 
-    // Drain-on-remove reconciler: matches what daemon::run wires up, so
-    // integration tests can PUT a synthetic config that drops a service and
-    // see the supervisor drained + removed from the registry.
+    // Drain-on-remove + spawn-on-add reconciler. Matches what daemon::run
+    // wires up, so integration tests can PUT a synthetic config that
+    // drops or adds a service and observe the supervisor lifecycle.
     let (reconciler_shutdown, reconciler_rx) = tokio::sync::watch::channel(false);
+    let provisioning_deps =
+        ananke::supervise::provision::ProvisioningDeps::from_state(&state, reconciler_rx.clone());
     let reconciler_join = ananke::supervise::reconciler::spawn(
         events,
         state.config.clone(),
         registry,
+        Some(provisioning_deps),
         reconciler_rx,
     );
 
