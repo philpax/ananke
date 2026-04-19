@@ -76,6 +76,32 @@ pub enum SupervisorCommand {
         reason: crate::supervise::drain::DrainReason,
         ack: tokio::sync::oneshot::Sender<()>,
     },
+    /// Re-enable a disabled service, returning it to Idle.
+    Enable {
+        ack: tokio::sync::oneshot::Sender<EnableResult>,
+    },
+    /// Administratively disable a running or idle service.
+    Disable {
+        ack: tokio::sync::oneshot::Sender<DisableResult>,
+    },
+}
+
+/// Result of a `SupervisorCommand::Enable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnableResult {
+    /// Was `Disabled`; now `Idle`.
+    Enabled,
+    /// Already in a non-disabled state (Idle, Running, etc.).
+    NotDisabled,
+}
+
+/// Result of a `SupervisorCommand::Disable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisableResult {
+    /// Transitioned to `Disabled`.
+    Disabled,
+    /// Was already `Disabled`; no change.
+    AlreadyDisabled,
 }
 
 #[derive(Debug)]
@@ -182,6 +208,18 @@ impl SupervisorHandle {
             .send(SupervisorCommand::FastKill { reason, ack })
             .await;
         let _ = rx.await;
+    }
+
+    pub async fn enable(&self) -> EnableResult {
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let _ = self.tx.send(SupervisorCommand::Enable { ack }).await;
+        rx.await.unwrap_or(EnableResult::NotDisabled)
+    }
+
+    pub async fn disable(&self) -> DisableResult {
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let _ = self.tx.send(SupervisorCommand::Disable { ack }).await;
+        rx.await.unwrap_or(DisableResult::AlreadyDisabled)
     }
 }
 
@@ -483,6 +521,18 @@ impl RunLoop {
                 }
                 Some(SupervisorCommand::FastKill { ack, .. }) => {
                     let _ = ack.send(());
+                }
+                Some(SupervisorCommand::Enable { ack }) => {
+                    // Idle is already enabled.
+                    let _ = ack.send(EnableResult::NotDisabled);
+                }
+                Some(SupervisorCommand::Disable { ack }) => {
+                    // Transition idle service directly to Disabled.
+                    self.set_state(ServiceState::Disabled {
+                        reason: DisableReason::UserDisabled,
+                    });
+                    let _ = ack.send(DisableResult::Disabled);
+                    return Step::Continue;
                 }
                 None => return Step::Exit,
             }
@@ -802,7 +852,7 @@ impl RunLoop {
                     }
                 }
                 cmd = self.rx.recv() => {
-                    match self.on_starting_command(cmd, &mut child).await {
+                    match self.on_starting_command(cmd, &mut child, run_id).await {
                         StartingOutcome::Continue => {}
                         StartingOutcome::Break => break,
                         StartingOutcome::Exit => return Step::Exit,
@@ -1003,6 +1053,28 @@ impl RunLoop {
         }
     }
 
+    /// Full drain pipeline for a running child: transitions to Draining, runs
+    /// the drain pipeline, deletes the DB row, and clears the allocation.
+    /// Caller is responsible for transitioning to the next state after this
+    /// returns.
+    async fn drain_now(
+        &mut self,
+        child: &mut Child,
+        run_id: i64,
+        reason: crate::supervise::drain::DrainReason,
+    ) {
+        self.set_state(ServiceState::Draining);
+        let cfg = DrainConfig {
+            max_request_duration: Duration::from_millis(self.init.svc.max_request_duration_ms),
+            drain_timeout: Duration::from_millis(self.init.svc.drain_timeout_ms),
+            extended_stream_drain: Duration::from_millis(self.init.svc.extended_stream_drain_ms),
+            sigterm_grace: RUNNING_SIGTERM_GRACE,
+        };
+        drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
+        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+        self.record_drain_complete();
+    }
+
     /// Dispatch a command received while the service is Running.
     async fn on_running_command(
         &mut self,
@@ -1044,23 +1116,7 @@ impl RunLoop {
             }
             Some(SupervisorCommand::BeginDrain { reason, ack }) => {
                 info!(service = %self.init.svc.name, ?reason, "BeginDrain received; draining");
-                self.set_state(ServiceState::Draining);
-
-                let cfg = DrainConfig {
-                    max_request_duration: Duration::from_millis(
-                        self.init.svc.max_request_duration_ms,
-                    ),
-                    drain_timeout: Duration::from_millis(self.init.svc.drain_timeout_ms),
-                    extended_stream_drain: Duration::from_millis(
-                        self.init.svc.extended_stream_drain_ms,
-                    ),
-                    sigterm_grace: RUNNING_SIGTERM_GRACE,
-                };
-                drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
-
-                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                self.record_drain_complete();
-
+                self.drain_now(child, run_id, reason).await;
                 let _ = ack.send(());
                 self.set_state(ServiceState::Idle);
                 RunningOutcome::Break
@@ -1079,6 +1135,21 @@ impl RunLoop {
                 self.set_state(ServiceState::Idle);
                 RunningOutcome::Break
             }
+            Some(SupervisorCommand::Enable { ack }) => {
+                // Already running; enable is a no-op.
+                let _ = ack.send(EnableResult::NotDisabled);
+                RunningOutcome::Continue
+            }
+            Some(SupervisorCommand::Disable { ack }) => {
+                info!(service = %self.init.svc.name, "Disable received; draining then disabling");
+                self.drain_now(child, run_id, drain::DrainReason::UserKilled)
+                    .await;
+                self.set_state(ServiceState::Disabled {
+                    reason: DisableReason::UserDisabled,
+                });
+                let _ = ack.send(DisableResult::Disabled);
+                RunningOutcome::Break
+            }
             None => RunningOutcome::Exit,
         }
     }
@@ -1089,6 +1160,7 @@ impl RunLoop {
         &mut self,
         cmd: Option<SupervisorCommand>,
         child: &mut Child,
+        run_id: i64,
     ) -> StartingOutcome {
         let pid = child.id().unwrap_or(0) as i32;
         match cmd {
@@ -1134,6 +1206,32 @@ impl RunLoop {
                 let _ = ack.send(());
                 StartingOutcome::Continue
             }
+            Some(SupervisorCommand::Enable { ack }) => {
+                // Already starting; not disabled.
+                let _ = ack.send(EnableResult::NotDisabled);
+                StartingOutcome::Continue
+            }
+            Some(SupervisorCommand::Disable { ack }) => {
+                // Disable during starting: drain the child, clean up, and
+                // transition to Disabled.
+                let _ = self.cancel_tx.send(true);
+                drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps.observation.clear(&self.init.svc.name);
+                self.emit_allocation_changed();
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::Disabled,
+                        message: "service disabled by operator".into(),
+                    }));
+                }
+                self.set_state(ServiceState::Disabled {
+                    reason: DisableReason::UserDisabled,
+                });
+                let _ = ack.send(DisableResult::Disabled);
+                StartingOutcome::Break
+            }
             None => StartingOutcome::Exit,
         }
     }
@@ -1157,9 +1255,24 @@ impl RunLoop {
                 Step::Continue
             }
             cmd = self.rx.recv() => {
-                if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
-                    let _ = ack.send(());
-                    return Step::Exit;
+                match cmd {
+                    Some(SupervisorCommand::Shutdown { ack }) => {
+                        let _ = ack.send(());
+                        return Step::Exit;
+                    }
+                    Some(SupervisorCommand::Enable { ack }) => {
+                        // Failed is not disabled; enable is a no-op.
+                        let _ = ack.send(EnableResult::NotDisabled);
+                    }
+                    Some(SupervisorCommand::Disable { ack }) => {
+                        // Disable a failed service: skip the retry and go to Disabled.
+                        self.set_state(ServiceState::Disabled {
+                            reason: DisableReason::UserDisabled,
+                        });
+                        let _ = ack.send(DisableResult::Disabled);
+                        return Step::Continue;
+                    }
+                    _ => {}
                 }
                 Step::Continue
             }
@@ -1194,6 +1307,17 @@ impl RunLoop {
                 }
                 Some(SupervisorCommand::FastKill { ack, .. }) => {
                     let _ = ack.send(());
+                }
+                Some(SupervisorCommand::Enable { ack }) => {
+                    // Transition back to Idle so the next Ensure can start it.
+                    let next = transition(&self.state, StateEvent::UserEnable);
+                    self.set_state(next);
+                    let _ = ack.send(EnableResult::Enabled);
+                    return Step::Continue;
+                }
+                Some(SupervisorCommand::Disable { ack }) => {
+                    // Already disabled.
+                    let _ = ack.send(DisableResult::AlreadyDisabled);
                 }
                 None => return Step::Exit,
             }
