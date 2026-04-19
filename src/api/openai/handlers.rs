@@ -15,7 +15,6 @@ use futures::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Frame, SizeHint};
 use serde_json::Value;
-use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::{
@@ -27,7 +26,7 @@ use crate::{
         },
     },
     daemon::app_state::AppState,
-    supervise::{EnsureResponse, StartFailureKind, StartOutcome, state::ServiceState},
+    supervise::{EnsureFailure, EnsureOutcome, await_ensure, state::ServiceState},
     tracking::inflight::InflightGuard,
 };
 
@@ -185,39 +184,20 @@ async fn forward_json_post(
     };
 
     // Ensure the service is running (coalescing concurrent first-requests).
-    let mut ensure_rx: Option<broadcast::Receiver<StartOutcome>> = None;
-    match handle.ensure().await {
-        Some(EnsureResponse::AlreadyRunning) => {}
-        Some(EnsureResponse::Waiting { rx }) => ensure_rx = Some(rx),
-        Some(EnsureResponse::QueueFull) => return errors::start_queue_full(&model),
-        Some(EnsureResponse::Unavailable { reason }) => {
-            if reason.starts_with("no fit") {
-                return errors::insufficient_vram(&model, &reason);
-            }
-            return errors::service_disabled(&model, &reason);
+    let max_request_duration = Duration::from_millis(svc.max_request_duration_ms);
+    match await_ensure(&handle, max_request_duration).await {
+        EnsureOutcome::Ready => {}
+        EnsureOutcome::Failed(EnsureFailure::InsufficientVram(msg)) => {
+            return errors::insufficient_vram(&model, &msg);
         }
-        None => return errors::start_failed(&model, "supervisor unreachable"),
-    }
-
-    if let Some(mut rx) = ensure_rx {
-        let timeout = Duration::from_millis(svc.max_request_duration_ms);
-        match tokio::time::timeout(timeout, rx.recv()).await {
-            Ok(Ok(StartOutcome::Ok)) => {}
-            Ok(Ok(StartOutcome::Err(f))) => {
-                return match f.kind {
-                    StartFailureKind::NoFit => errors::insufficient_vram(&model, &f.message),
-                    StartFailureKind::HealthTimeout => {
-                        errors::start_failed(&model, "health check timed out")
-                    }
-                    StartFailureKind::Disabled => errors::service_disabled(&model, &f.message),
-                    StartFailureKind::LaunchFailed => errors::start_failed(&model, &f.message),
-                    StartFailureKind::Oom => errors::insufficient_vram(&model, &f.message),
-                };
-            }
-            Ok(Err(e)) => {
-                return errors::start_failed(&model, &format!("start broadcast closed: {e}"));
-            }
-            Err(_) => return errors::start_failed(&model, "start timed out"),
+        EnsureOutcome::Failed(EnsureFailure::ServiceDisabled(msg)) => {
+            return errors::service_disabled(&model, &msg);
+        }
+        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
+            return errors::start_queue_full(&model);
+        }
+        EnsureOutcome::Failed(EnsureFailure::StartFailed(msg)) => {
+            return errors::start_failed(&model, &msg);
         }
     }
 

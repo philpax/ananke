@@ -26,8 +26,13 @@ use tracing::{info, warn};
 use crate::{errors::ExpectedError, tracking::inflight::InflightGuard};
 
 /// Boxed body type used for both upstream requests and downstream responses.
-type ProxyBody =
+pub type ProxyBody =
     http_body_util::combinators::BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Short-circuit error response returned by a `before_request` hook. Alias of
+/// `Response<ProxyBody>`; kept as a separate name so callers that build an
+/// error reply need not reach into `ProxyBody` themselves.
+pub type ProxyError = Response<ProxyBody>;
 
 pub async fn serve(
     listen: SocketAddr,
@@ -84,7 +89,7 @@ pub async fn serve_with_activity(
     listen: SocketAddr,
     upstream_port: u16,
     mut shutdown: watch::Receiver<bool>,
-    before_request: Arc<dyn Fn() -> BoxFuture<'static, Option<Response<ProxyBody>>> + Send + Sync>,
+    before_request: Arc<dyn Fn() -> BoxFuture<'static, Option<ProxyError>> + Send + Sync>,
     inflight_counter: Arc<AtomicU64>,
 ) -> Result<(), ExpectedError> {
     let listener = TcpListener::bind(listen)
@@ -137,7 +142,7 @@ pub async fn serve_with_activity(
 }
 
 /// Build a 503 Service Unavailable response with an OpenAI-shaped JSON error body.
-pub fn error_response(code: &str, message: &str) -> Response<ProxyBody> {
+pub fn error_response(code: &str, message: &str) -> ProxyError {
     let body_json = serde_json::json!({
         "error": {"code": code, "message": message, "type": "server_error"}
     });

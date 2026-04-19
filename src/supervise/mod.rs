@@ -220,6 +220,85 @@ pub fn spawn_supervisor(init: SupervisorInit, deps: SupervisorDeps) -> Superviso
 /// Mailbox depth for per-supervisor command channels.
 const SUPERVISOR_COMMAND_MAILBOX: usize = 32;
 
+/// Outcome of waiting for a supervisor to reach Running.
+///
+/// Both the per-service transparent proxy and the OpenAI-compat router need
+/// the same "ensure + wait-on-bus + map to error kind" dance before
+/// forwarding. [`await_ensure`] packages it once; each caller renders its
+/// own error response from the [`EnsureFailure`] kinds.
+pub enum EnsureOutcome {
+    /// Service is Running (or was already).
+    Ready,
+    /// Service cannot serve the request.
+    Failed(EnsureFailure),
+}
+
+/// Semantic bucket of an [`EnsureOutcome::Failed`]. Callers map these onto
+/// their own error-response surface (OpenAI error JSON, proxy error body).
+pub enum EnsureFailure {
+    /// The start fit-check rejected or the child got OOM-killed.
+    InsufficientVram(String),
+    /// The service is Disabled (config or health) or otherwise unavailable.
+    ServiceDisabled(String),
+    /// The supervisor's start queue is saturated.
+    StartQueueFull,
+    /// The start itself failed (launch error, health timeout, bus closed,
+    /// overall timeout, or the supervisor task is gone).
+    StartFailed(String),
+}
+
+/// Ensure the service is Running, waiting up to `max_request_duration` for
+/// an in-flight start to finish. Used by every HTTP path that forwards to
+/// a supervised child.
+pub async fn await_ensure(
+    handle: &SupervisorHandle,
+    max_request_duration: Duration,
+) -> EnsureOutcome {
+    let rx = match handle.ensure().await {
+        Some(EnsureResponse::AlreadyRunning) => return EnsureOutcome::Ready,
+        Some(EnsureResponse::Waiting { rx }) => rx,
+        Some(EnsureResponse::QueueFull) => {
+            return EnsureOutcome::Failed(EnsureFailure::StartQueueFull);
+        }
+        Some(EnsureResponse::Unavailable { reason }) => {
+            return EnsureOutcome::Failed(if reason.starts_with("no fit") {
+                EnsureFailure::InsufficientVram(reason)
+            } else {
+                EnsureFailure::ServiceDisabled(reason)
+            });
+        }
+        None => {
+            return EnsureOutcome::Failed(EnsureFailure::StartFailed(
+                "supervisor unreachable".into(),
+            ));
+        }
+    };
+    await_start_bus(rx, max_request_duration).await
+}
+
+async fn await_start_bus(
+    mut rx: tokio::sync::broadcast::Receiver<StartOutcome>,
+    max_request_duration: Duration,
+) -> EnsureOutcome {
+    match tokio::time::timeout(max_request_duration, rx.recv()).await {
+        Ok(Ok(StartOutcome::Ok)) => EnsureOutcome::Ready,
+        Ok(Ok(StartOutcome::Err(f))) => EnsureOutcome::Failed(match f.kind {
+            StartFailureKind::NoFit | StartFailureKind::Oom => {
+                EnsureFailure::InsufficientVram(f.message)
+            }
+            StartFailureKind::Disabled => EnsureFailure::ServiceDisabled(f.message),
+            StartFailureKind::HealthTimeout => {
+                EnsureFailure::StartFailed("health check timed out".into())
+            }
+            StartFailureKind::LaunchFailed => EnsureFailure::StartFailed(f.message),
+        }),
+        Ok(Err(e)) => EnsureOutcome::Failed(EnsureFailure::StartFailed(format!(
+            "start broadcast closed: {e}"
+        ))),
+        Err(_) => EnsureOutcome::Failed(EnsureFailure::StartFailed("start timed out".into())),
+    }
+}
+
 /// If a child dies with SIGKILL within this window from spawn, we treat it
 /// as an OOM kill and bump the rolling safety factor for the next attempt.
 const OOM_KILL_WINDOW: Duration = Duration::from_secs(30);
