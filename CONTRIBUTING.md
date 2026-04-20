@@ -90,6 +90,10 @@ The pipeline is not yet wired up — implement it when the first API handler lan
   - `cargo test --workspace --no-default-features --lib`
 - Integration tests live under `ananke/tests/` and depend on the `test-fakes` feature (for `FakeSpawner` etc.). They run under `--all-features`. The no-default-features pass is scoped to `--lib` to verify the non-feature build still compiles; integration-test failures under no-default-features are expected.
 
+### Build profile
+
+- Use `cargo build` (debug) for local iteration — don't reach for `cargo build --release` unless you're specifically benchmarking or packaging. The daemon's hot paths are either I/O (child stdout piping, HTTP proxying) or already-optimised native libraries (NVML, SQLite, hyper), so the extra compile time rarely pays off and the iteration cost is real.
+
 ### Type system patterns
 
 - **Builder patterns** for complex construction (e.g., `TestRunnerBuilder`)

@@ -50,6 +50,16 @@ pub enum PackError {
     /// an unknown architecture) and the weights can't fit on any
     /// allowed device.
     WeightsDoNotFit,
+    /// A GPU's proportional KV-cache share (`kv_total × layers_placed_here /
+    /// total_layers`) does not fit in its remaining capacity after the
+    /// layer walk. Emitted by the post-walk validation that replaced the
+    /// old "reserve full kv_total on every GPU" pessimism.
+    KvShareDoesNotFit {
+        gpu: u32,
+        layers_placed: u32,
+        kv_share_bytes: u64,
+        remaining_bytes: u64,
+    },
 }
 
 impl std::fmt::Display for PackError {
@@ -62,6 +72,17 @@ impl std::fmt::Display for PackError {
                 )
             }
             Self::WeightsDoNotFit => f.write_str("weights do not fit on any allowed device"),
+            Self::KvShareDoesNotFit {
+                gpu,
+                layers_placed,
+                kv_share_bytes,
+                remaining_bytes,
+            } => {
+                write!(
+                    f,
+                    "gpu {gpu}: KV share for {layers_placed} layers needs {kv_share_bytes} bytes, only {remaining_bytes} bytes remain after walk"
+                )
+            }
         }
     }
 }
@@ -111,6 +132,7 @@ fn pack_inner(
     packer.seed_non_layer();
     packer.walk_layers()?;
     packer.place_fallback_weights()?;
+    packer.validate_kv_shares_fit()?;
     packer.add_kv_bytes();
     packer.add_compute_buffer();
     packer.add_one_layer_fudge();
@@ -251,10 +273,14 @@ impl<'a> Packer<'a> {
         Ok(())
     }
 
-    /// Reserve the worst-case per-GPU headroom for steps 3-5: full `kv_total`
-    /// (not kv_total/N) because first-fit may land most layers on one GPU.
-    /// Over-reserves on GPUs that end up with fewer layers, but guarantees no
-    /// overflow.
+    /// Reserve the fixed per-GPU headroom that does not depend on how layers
+    /// end up distributed: compute buffer + one-layer fudge. The KV cache is
+    /// **not** reserved here — it's validated post-walk against the actual
+    /// layer distribution in [`Self::validate_kv_shares_fit`]. Reserving the
+    /// full `kv_total` on every GPU up front would waste `kv_total × (N-1)`
+    /// of capacity and prevent large-context models (e.g. 256K-context
+    /// Gemma 4 31B on 2×24 GB) from packing even when the proportional KV
+    /// share fits fine on each GPU.
     fn initialise_gpu_remaining(&mut self) {
         let n_layers_nonzero = self.per_layer.iter().filter(|b| **b > 0).count() as u64;
         let per_layer_avg = self
@@ -263,13 +289,8 @@ impl<'a> Packer<'a> {
             .sum::<u64>()
             .checked_div(n_layers_nonzero)
             .unwrap_or(0);
-        let kv_total_pre = self
-            .estimate
-            .kv_per_token
-            .saturating_mul(self.estimate.context as u64);
         let compute_headroom = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
-        let gpu_headroom_each =
-            compute_headroom + kv_total_pre + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
+        let gpu_headroom_each = compute_headroom + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
 
         for gpu in &self.allowed_gpus {
             let slot = DeviceSlot::Gpu(*gpu);
@@ -321,6 +342,45 @@ impl<'a> Packer<'a> {
         } else {
             Err(PackError::WeightsDoNotFit)
         }
+    }
+
+    /// Step 2.5: confirm that each GPU's proportional KV-cache share fits in
+    /// its post-walk remaining capacity. [`Self::initialise_gpu_remaining`]
+    /// no longer pre-reserves KV (that would over-reserve by `kv_total × (N-1)`
+    /// and reject fittable models); instead we wait until `walk_layers` has
+    /// produced the actual `layers_per_gpu` distribution and check the real
+    /// per-GPU share against what's left on each GPU. Any GPU whose share
+    /// doesn't fit is reported by name with the exact deficit so the
+    /// operator can see which device couldn't take its proportional KV.
+    fn validate_kv_shares_fit(&self) -> Result<(), PackError> {
+        let n_layers = self.per_layer.iter().filter(|b| **b > 0).count() as u64;
+        if n_layers == 0 {
+            return Ok(());
+        }
+        let kv_total = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        if kv_total == 0 {
+            return Ok(());
+        }
+        for gpu in &self.allowed_gpus {
+            let layers_here = u64::from(*self.layers_per_gpu.get(gpu).unwrap_or(&0));
+            if layers_here == 0 {
+                continue;
+            }
+            let kv_share = kv_total.saturating_mul(layers_here) / n_layers;
+            let remaining = self.gpu_remaining.get(gpu).copied().unwrap_or(0);
+            if remaining < kv_share {
+                return Err(PackError::KvShareDoesNotFit {
+                    gpu: *gpu,
+                    layers_placed: layers_here as u32,
+                    kv_share_bytes: kv_share,
+                    remaining_bytes: remaining,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Step 3: add KV bytes to GPUs proportional to layers placed, or to CPU
@@ -627,5 +687,87 @@ mod tests {
         let packed = pack_optimistic(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc)
             .expect("pack_optimistic must succeed when the pledge book allows it");
         assert_eq!(packed.args.ngl, Some(4));
+    }
+
+    /// Regression for the 256K-context Gemma 4 31B repro: the pre-fix packer
+    /// reserved full `kv_total` (11 GB) on every allowed GPU as worst-case
+    /// headroom, leaving only ~9 GB per GPU for layers. That rejected layer
+    /// 59 by ~40 MB even though the real proportional KV share per GPU was
+    /// half of kv_total and the model genuinely fit on 2×24 GB.
+    ///
+    /// With the two-pass check, the walker runs with only compute-buffer +
+    /// fudge reserved, lays all 60 layers out roughly 30/30 across the two
+    /// GPUs, and the post-walk validator confirms each GPU's proportional
+    /// KV share (~5.5 GB) fits in the ~10 GB remaining after the walk.
+    #[test]
+    fn long_context_moe_packs_with_proportional_kv_headroom() {
+        // Gemma 4 31B numbers from the live failure log: 60 layers at ~296 MB
+        // avg (≈17.8 GB total), kv_per_token = 45220, 256 K context, compute
+        // buffer 3792 MB.
+        let per_layer_bytes: Vec<u64> = (0..60).map(|_| 296 * 1024 * 1024).collect();
+        let weights_bytes: u64 = per_layer_bytes.iter().sum();
+        let e = Estimate {
+            weights_bytes,
+            kv_per_token: 45220,
+            compute_buffer_mb: 3792,
+            per_layer_bytes: Some(per_layer_bytes),
+            attention_layers: None,
+            non_layer: NonLayer::default(),
+            override_tensor_bytes: BTreeMap::new(),
+            expert_layers: Vec::new(),
+            expert_layer_cpu_bytes: BTreeMap::new(),
+            context: 262_144,
+            architecture: SmolStr::new("gemma4"),
+        };
+        // 2×24 GB 3090s, fully free, empty pledge book.
+        let snap = snapshot(&[24, 24]);
+        let alloc = AllocationTable::new();
+        let packed = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc)
+            .expect("Gemma 4 31B at 256K context must pack on 2×24 GB");
+        let split = packed.args.tensor_split.as_ref().expect("two-GPU split");
+        assert_eq!(split.iter().sum::<u32>(), 60);
+        // Best-fit should keep the split close to even.
+        let diff = (split[0] as i32 - split[1] as i32).abs();
+        assert!(
+            diff <= 4,
+            "best-fit should distribute layers roughly evenly; got {split:?}"
+        );
+    }
+
+    /// The post-walk validator must still reject layouts where a GPU's
+    /// proportional KV share truly doesn't fit — e.g. when the walker piles
+    /// most layers onto one GPU because another GPU has asymmetric seed
+    /// content and the context is large enough that the pile-up's KV share
+    /// exceeds what's left.
+    #[test]
+    fn post_walk_validator_rejects_overcommitted_kv_share() {
+        // 60 layers × 200 MB = 12 GB weights. kv_total at 128K tokens with
+        // kv_per_token = 120 KB ≈ 15 GB. If one GPU gets all 60 layers,
+        // its kv_share = 15 GB; 24 GB total − 12 GB layers − compute buffer
+        // (2 GB) ≈ 10 GB remaining, < 15 GB share. Must fail.
+        let per_layer_bytes: Vec<u64> = (0..60).map(|_| 200 * 1024 * 1024).collect();
+        let weights_bytes: u64 = per_layer_bytes.iter().sum();
+        let e = Estimate {
+            weights_bytes,
+            kv_per_token: 120_000,
+            compute_buffer_mb: 2048,
+            per_layer_bytes: Some(per_layer_bytes),
+            attention_layers: None,
+            non_layer: NonLayer::default(),
+            override_tensor_bytes: BTreeMap::new(),
+            expert_layers: Vec::new(),
+            expert_layer_cpu_bytes: BTreeMap::new(),
+            context: 131_072,
+            architecture: SmolStr::new("qwen3"),
+        };
+        // Single 24 GB GPU, no spill allowed — forces all 60 layers onto GPU 0.
+        let snap = snapshot(&[24]);
+        let alloc = AllocationTable::new();
+        let err = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc)
+            .expect_err("kv share must overflow single GPU at long context");
+        assert!(
+            matches!(err, PackError::KvShareDoesNotFit { gpu: 0, .. }),
+            "expected KvShareDoesNotFit on gpu 0, got {err:?}"
+        );
     }
 }
