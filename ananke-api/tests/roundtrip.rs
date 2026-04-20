@@ -17,6 +17,9 @@ where
 
 #[test]
 fn service_summary_roundtrips() {
+    let mut ananke_metadata = ananke_api::AnankeMetadata::new();
+    ananke_metadata.insert("tags".into(), serde_json::json!(["general", "chat"]));
+    ananke_metadata.insert("discord_visible".into(), serde_json::json!(true));
     let v = ServiceSummary {
         name: "demo".into(),
         state: "running".into(),
@@ -26,6 +29,7 @@ fn service_summary_roundtrips() {
         run_id: Some(1),
         pid: Some(1234),
         elastic_borrower: None,
+        ananke_metadata,
     };
     assert_eq!(v.clone(), roundtrip(v));
 }
@@ -143,6 +147,7 @@ fn service_detail_roundtrips() {
         rolling_samples: 0,
         observed_peak_bytes: 0,
         elastic_borrower: None,
+        ananke_metadata: ananke_api::AnankeMetadata::new(),
     };
     assert_eq!(v.clone(), roundtrip(v));
 }

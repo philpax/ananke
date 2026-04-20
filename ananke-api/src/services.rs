@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::logs::LogLine;
+use crate::{logs::LogLine, metadata::AnankeMetadata};
 
 /// One entry in `GET /api/services`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ServiceSummary {
     /// Service name (matches `[[service]]` table in config).
     pub name: String,
@@ -24,6 +24,13 @@ pub struct ServiceSummary {
     pub pid: Option<i32>,
     /// Placeholder for elastic-borrower tracking (future work).
     pub elastic_borrower: Option<String>,
+    /// Passthrough entries from `[[service]] metadata.*`. Empty when
+    /// none were set; the field is elided from JSON when the map is
+    /// empty so existing consumers see no change unless a service opts
+    /// in to metadata.
+    #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
+    #[schema(value_type = Object)]
+    pub ananke_metadata: AnankeMetadata,
 }
 
 /// `GET /api/services/{name}` response body.
@@ -61,4 +68,9 @@ pub struct ServiceDetail {
     pub observed_peak_bytes: u64,
     /// Placeholder for elastic-borrower tracking.
     pub elastic_borrower: Option<String>,
+    /// Passthrough entries from `[[service]] metadata.*`. See
+    /// [`ServiceSummary::ananke_metadata`].
+    #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
+    #[schema(value_type = Object)]
+    pub ananke_metadata: AnankeMetadata,
 }
