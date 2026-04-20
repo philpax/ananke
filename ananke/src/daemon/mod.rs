@@ -201,6 +201,10 @@ pub async fn run() -> Result<(), ExpectedError> {
     info!(%mgmt_listen, "management listener bound");
 
     let retention_task = tokio::spawn(retention::run_loop(db.clone(), shutdown_rx.clone()));
+    let persistent_watcher_task = tokio::spawn(crate::supervise::persistent_watcher::run_loop(
+        app_state.clone(),
+        shutdown_rx.clone(),
+    ));
 
     let shutdown_kind = await_shutdown().await;
     info!(?shutdown_kind, "shutdown initiated");
@@ -229,6 +233,8 @@ pub async fn run() -> Result<(), ExpectedError> {
     let _ = snapshotter_join.await;
     retention_task.abort();
     let _ = retention_task.await;
+    persistent_watcher_task.abort();
+    let _ = persistent_watcher_task.await;
     for t in balloon_tasks {
         t.abort();
         let _ = t.await;

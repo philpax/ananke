@@ -7,6 +7,7 @@ pub mod drain;
 pub mod health;
 pub mod logs;
 pub mod orphans;
+pub mod persistent_watcher;
 pub mod provision;
 pub mod reconciler;
 pub mod registry;
