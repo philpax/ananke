@@ -1455,74 +1455,133 @@ impl RunLoop {
     }
 
     /// Warming grace: sleep `warming_grace_ms` while also watching for child
-    /// exit and Shutdown.
+    /// exit and Shutdown. Non-lifecycle commands (Snapshot / Ensure /
+    /// ActivityPing / Enable) are handled inline without short-circuiting
+    /// the grace — the old "fall through to warming complete on any
+    /// command" behaviour dropped acks (Ensures/Snapshots arriving during
+    /// warming surfaced as "supervisor unreachable" 503s to the client).
     async fn run_warming_grace(
         &mut self,
         child: &mut dyn ManagedChild,
         run_id: i64,
     ) -> WarmingOutcome {
+        let pid = child.id().unwrap_or(0) as i32;
         let grace = Duration::from_millis(self.current_svc().warming_grace_ms);
-        tokio::select! {
-            _ = tokio::time::sleep(grace) => {
-                let next = transition(&self.state, StateEvent::WarmingComplete);
-                self.set_state(next);
-                WarmingOutcome::Complete
-            }
-            _ = child.wait() => {
-                warn!("child exited during warming grace");
-                if let Some(bus) = self.start_bus_carry.take() {
-                    let _ = bus.send(StartOutcome::Err(StartFailure {
-                        kind: StartFailureKind::LaunchFailed,
-                        message: "child exited during warming".into(),
-                    }));
+        let deadline = tokio::time::Instant::now() + grace;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    let next = transition(&self.state, StateEvent::WarmingComplete);
+                    self.set_state(next);
+                    return WarmingOutcome::Complete;
                 }
-                self.deps.allocations.lock().remove(&self.init.identity.name);
-                self.emit_allocation_changed();
-                self.set_state(ServiceState::Failed { retry_count: 0 });
-                WarmingOutcome::ChildExited
-            }
-            cmd = self.rx.recv() => {
-                match cmd {
-                    Some(SupervisorCommand::Shutdown { ack }) => {
-                        info!(service = %self.init.identity.name, "draining during warming");
-                        let _ = self.cancel_tx.send(true);
-                        drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
-                        self.run_shutdown_command().await;
-                        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                        self.deps.allocations.lock().remove(&self.init.identity.name);
-                        self.emit_allocation_changed();
-                        let _ = ack.send(());
-                        WarmingOutcome::Shutdown
+                _ = child.wait() => {
+                    warn!("child exited during warming grace");
+                    if let Some(bus) = self.start_bus_carry.take() {
+                        let _ = bus.send(StartOutcome::Err(StartFailure {
+                            kind: StartFailureKind::LaunchFailed,
+                            message: "child exited during warming".into(),
+                        }));
                     }
-                    Some(SupervisorCommand::BeginDrain { reason, ack })
-                    | Some(SupervisorCommand::FastKill { reason, ack }) => {
-                        info!(
-                            service = %self.init.identity.name,
-                            ?reason,
-                            "drain requested during warming; aborting spawn"
-                        );
-                        let _ = self.cancel_tx.send(true);
-                        drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
-                        self.run_shutdown_command().await;
-                        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                        self.deps.allocations.lock().remove(&self.init.identity.name);
-                        self.deps.observation.clear(&self.init.identity.name);
-                        self.emit_allocation_changed();
-                        if let Some(bus) = self.start_bus_carry.take() {
-                            let _ = bus.send(StartOutcome::Err(StartFailure {
-                                kind: StartFailureKind::LaunchFailed,
-                                message: format!("start aborted during warming ({reason:?})"),
-                            }));
+                    self.deps.allocations.lock().remove(&self.init.identity.name);
+                    self.emit_allocation_changed();
+                    self.set_state(ServiceState::Failed { retry_count: 0 });
+                    return WarmingOutcome::ChildExited;
+                }
+                cmd = self.rx.recv() => {
+                    match cmd {
+                        Some(SupervisorCommand::Shutdown { ack }) => {
+                            info!(service = %self.init.identity.name, "draining during warming");
+                            let _ = self.cancel_tx.send(true);
+                            drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                            self.run_shutdown_command().await;
+                            delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                            self.deps.allocations.lock().remove(&self.init.identity.name);
+                            self.emit_allocation_changed();
+                            let _ = ack.send(());
+                            return WarmingOutcome::Shutdown;
                         }
-                        self.set_state(ServiceState::Idle);
-                        let _ = ack.send(());
-                        WarmingOutcome::ChildExited
-                    }
-                    _ => {
-                        // Snapshot or channel-closed: fall through to warming complete.
-                        let next = transition(&self.state, StateEvent::WarmingComplete);
-                        self.set_state(next);
-                        WarmingOutcome::Complete
+                        Some(SupervisorCommand::BeginDrain { reason, ack })
+                        | Some(SupervisorCommand::FastKill { reason, ack }) => {
+                            info!(
+                                service = %self.init.identity.name,
+                                ?reason,
+                                "drain requested during warming; aborting spawn"
+                            );
+                            let _ = self.cancel_tx.send(true);
+                            drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                            self.run_shutdown_command().await;
+                            delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                            self.deps.allocations.lock().remove(&self.init.identity.name);
+                            self.deps.observation.clear(&self.init.identity.name);
+                            self.emit_allocation_changed();
+                            if let Some(bus) = self.start_bus_carry.take() {
+                                let _ = bus.send(StartOutcome::Err(StartFailure {
+                                    kind: StartFailureKind::LaunchFailed,
+                                    message: format!("start aborted during warming ({reason:?})"),
+                                }));
+                            }
+                            self.set_state(ServiceState::Idle);
+                            let _ = ack.send(());
+                            return WarmingOutcome::ChildExited;
+                        }
+                        Some(SupervisorCommand::Snapshot { ack }) => {
+                            let _ = ack.send(SupervisorSnapshot {
+                                name: self.init.identity.name.clone(),
+                                state: self.state.clone(),
+                                run_id: Some(run_id),
+                                pid: Some(pid),
+                            });
+                        }
+                        Some(SupervisorCommand::Ensure { ack }) => {
+                            // Coalesce with the in-flight start the same
+                            // way the Starting inner loop does — subscribe
+                            // the caller to our StartOutcome bus so it
+                            // waits alongside us.
+                            if let Some(sender) = self.start_bus_carry.as_ref() {
+                                if sender.receiver_count()
+                                    >= self.current_svc().start_queue_depth
+                                {
+                                    let _ = ack.send(EnsureResponse::QueueFull);
+                                } else {
+                                    let bus_rx = sender.subscribe();
+                                    let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
+                                }
+                            } else {
+                                let _ = ack.send(EnsureResponse::AlreadyRunning);
+                            }
+                        }
+                        Some(SupervisorCommand::ActivityPing) => {}
+                        Some(SupervisorCommand::Enable { ack }) => {
+                            // Warming is not Disabled.
+                            let _ = ack.send(EnableResult::NotDisabled);
+                        }
+                        Some(SupervisorCommand::Disable { ack }) => {
+                            // Disable during warming mirrors disable during
+                            // starting: abort, transition to Disabled, ack.
+                            let _ = self.cancel_tx.send(true);
+                            drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                            self.run_shutdown_command().await;
+                            delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                            self.deps.allocations.lock().remove(&self.init.identity.name);
+                            self.deps.observation.clear(&self.init.identity.name);
+                            self.emit_allocation_changed();
+                            if let Some(bus) = self.start_bus_carry.take() {
+                                let _ = bus.send(StartOutcome::Err(StartFailure {
+                                    kind: StartFailureKind::Disabled,
+                                    message: "service disabled by operator".into(),
+                                }));
+                            }
+                            self.set_state(ServiceState::Disabled {
+                                reason: DisableReason::UserDisabled,
+                            });
+                            let _ = ack.send(DisableResult::Disabled);
+                            return WarmingOutcome::ChildExited;
+                        }
+                        None => {
+                            // Channel closed: supervisor is being torn down.
+                            return WarmingOutcome::ChildExited;
+                        }
                     }
                 }
             }
@@ -1839,11 +1898,43 @@ impl RunLoop {
                 match cmd {
                     Some(SupervisorCommand::Shutdown { ack }) => {
                         let _ = ack.send(());
-                        return Step::Exit;
+                        Step::Exit
                     }
+                    Some(SupervisorCommand::Snapshot { ack }) => {
+                        let _ = ack.send(SupervisorSnapshot {
+                            name: self.init.identity.name.clone(),
+                            state: self.state.clone(),
+                            run_id: None,
+                            pid: None,
+                        });
+                        Step::Continue
+                    }
+                    Some(SupervisorCommand::Ensure { ack }) => {
+                        // Surface a meaningful failure instead of dropping
+                        // the ack: the client would otherwise see
+                        // "supervisor unreachable", which doesn't tell them
+                        // the service is in retry backoff.
+                        let _ = ack.send(EnsureResponse::Unavailable(
+                            EnsureFailure::StartFailed(format!(
+                                "service {} is in Failed state; awaiting retry backoff",
+                                self.init.identity.name
+                            )),
+                        ));
+                        Step::Continue
+                    }
+                    // Failed means there's no child and no allocation to
+                    // release, so drain/kill are instant no-ops but must
+                    // still ack so the caller's `begin_drain.await` returns.
+                    Some(SupervisorCommand::BeginDrain { ack, .. })
+                    | Some(SupervisorCommand::FastKill { ack, .. }) => {
+                        let _ = ack.send(());
+                        Step::Continue
+                    }
+                    Some(SupervisorCommand::ActivityPing) => Step::Continue,
                     Some(SupervisorCommand::Enable { ack }) => {
                         // Failed is not disabled; enable is a no-op.
                         let _ = ack.send(EnableResult::NotDisabled);
+                        Step::Continue
                     }
                     Some(SupervisorCommand::Disable { ack }) => {
                         // Disable a failed service: skip the retry and go to Disabled.
@@ -1851,11 +1942,10 @@ impl RunLoop {
                             reason: DisableReason::UserDisabled,
                         });
                         let _ = ack.send(DisableResult::Disabled);
-                        return Step::Continue;
+                        Step::Continue
                     }
-                    _ => {}
+                    None => Step::Exit,
                 }
-                Step::Continue
             }
         }
     }
