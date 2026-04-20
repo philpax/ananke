@@ -46,6 +46,16 @@ pub const LLAMA_FAMILY: &[&str] = &[
     // attention layers' `*_length`. All of this is handled below; the
     // tensor layout is unchanged from llama-family.
     "gemma4",
+    // Gemma 3n: MatFormer + PLE variant sharing gemma4's metadata schema
+    // (per-layer `sliding_window_pattern` bool mask, `shared_kv_layers`).
+    // head_count_kv is a scalar here rather than a per-layer array, but
+    // `compute_kv_per_token` already handles the scalar case uniformly.
+    // The architecture's 2+ GiB `per_layer_token_embd.weight` (PLE table)
+    // is routed to CPU by the existing gemma4 non-layer special case, so
+    // the packer's GPU pledge matches llama.cpp's actual placement.
+    // MatFormer altup/laurel tensors live under `blk.N.*` and are picked
+    // up by `collect_per_layer` automatically.
+    "gemma3n",
 ];
 
 pub fn is_llama_family(arch: &str) -> bool {
@@ -398,6 +408,61 @@ mod tests {
         // compute_kv_per_token's per-layer bool mask + separate SWA head
         // dim paths, not a distinct estimator.
         assert!(is_llama_family("gemma4"));
+    }
+
+    #[test]
+    fn gemma3n_is_llama_family() {
+        // Gemma 3n (MatFormer / PLE variant) shares gemma4's metadata
+        // schema. The estimator needs to recognise it so that the service
+        // doesn't flip to `Disabled { ConfigError }` on first-Ensure.
+        assert!(is_llama_family("gemma3n"));
+    }
+
+    #[test]
+    fn gemma3n_ple_tensor_is_cpu_resident() {
+        // The E4B quant carries a ~2.3 GiB `per_layer_token_embd.weight`
+        // PLE table plus MatFormer `altup_*` / `per_layer_*_proj.weight`
+        // tensors. The PLE must land on CPU (same rule as gemma4 above);
+        // altup/proj are tiny and fall through to `other_bytes` which is
+        // fine — they genuinely do live on GPU at runtime.
+        let mut tensors = std::collections::BTreeMap::new();
+        tensors.insert(
+            SmolStr::new("token_embd.weight"),
+            tensor("token_embd.weight", 352 * 1024 * 1024),
+        );
+        tensors.insert(
+            SmolStr::new("per_layer_token_embd.weight"),
+            tensor("per_layer_token_embd.weight", 2380 * 1024 * 1024),
+        );
+        tensors.insert(
+            SmolStr::new("altup_proj.weight"),
+            tensor("altup_proj.weight", 24 * 1024 * 1024),
+        );
+        tensors.insert(
+            SmolStr::new("altup_unembd_proj.weight"),
+            tensor("altup_unembd_proj.weight", 24 * 1024 * 1024),
+        );
+        tensors.insert(
+            SmolStr::new("per_layer_model_proj.weight"),
+            tensor("per_layer_model_proj.weight", 35 * 1024 * 1024),
+        );
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors,
+            metadata: std::collections::BTreeMap::new(),
+            block_count: Some(0),
+            architecture: SmolStr::new("gemma3n"),
+            shards: vec!["/fake".into()],
+        };
+        let nl = collect_non_layer(&summary);
+        // PLE + token_embd both route to CPU.
+        assert_eq!(nl.token_embd_bytes, (352 + 2380) * 1024 * 1024);
+        // altup + per_layer_model_proj are GPU-resident (together < 100 MiB).
+        assert_eq!(nl.other_bytes, (24 + 24 + 35) * 1024 * 1024);
+        // No explicit output head — gemma3n uses weight-tied output via
+        // token_embd, so `output_head_bytes` stays zero.
+        assert_eq!(nl.output_head_bytes, 0);
     }
 
     #[test]

@@ -126,6 +126,24 @@ fn main() {
     }
     println!();
 
+    // Non-layer tensor list: token_embd, output head, and anything else that
+    // doesn't match `blk.N.*`. Useful when adding a new architecture so we
+    // can see which tensors `collect_non_layer` will route to CPU (token
+    // embedding, PLE) vs to GPU 0 (output head, everything else).
+    println!("non-layer tensors (not under blk.N.*):");
+    let mut non_layer: Vec<(&str, u64)> = summary
+        .tensors
+        .iter()
+        .filter(|(name, _)| !name.starts_with("blk."))
+        .map(|(name, t)| (name.as_str(), t.byte_size))
+        .collect();
+    non_layer.sort_by_key(|e| std::cmp::Reverse(e.1));
+    for (name, bytes) in non_layer {
+        let mib = bytes as f64 / 1024.0_f64.powi(2);
+        println!("    {name:<48} {mib:>10.1} MiB");
+    }
+    println!();
+
     // Per-layer breakdown for the first 3 layers (representative sample).
     println!("per-layer sample (blk.0 .. blk.2):");
     for layer in 0..n_layers.min(3) {
