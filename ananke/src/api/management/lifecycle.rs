@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use tracing::{info, warn};
 
 use crate::{
     daemon::app_state::AppState,
@@ -19,7 +20,9 @@ use crate::{
 };
 
 pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    info!(service = %name, "management start requested");
     let Some((svc, handle)) = resolve(&state, &name) else {
+        warn!(service = %name, "management start rejected: service not found");
         return not_found(&name);
     };
     let duration = Duration::from_millis(svc.max_request_duration_ms);
@@ -33,14 +36,20 @@ pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>)
             let run_id = handle.run_id().await.unwrap_or(0);
             StartResponse::Started { run_id }
         }
-        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => StartResponse::QueueFull,
+        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
+            warn!(service = %name, "management start rejected: start_queue_full");
+            StartResponse::QueueFull
+        }
         EnsureOutcome::Failed(EnsureFailure::InsufficientVram(reason)) => {
+            warn!(service = %name, %reason, "management start rejected: insufficient_vram");
             StartResponse::Unavailable { reason }
         }
         EnsureOutcome::Failed(EnsureFailure::ServiceDisabled(reason)) => {
+            warn!(service = %name, %reason, "management start rejected: service_disabled");
             StartResponse::Unavailable { reason }
         }
         EnsureOutcome::Failed(EnsureFailure::StartFailed(reason)) => {
+            warn!(service = %name, %reason, "management start failed");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ApiError::new("start_failed", reason)),
@@ -52,7 +61,9 @@ pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>)
 }
 
 pub async fn post_stop(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    info!(service = %name, "management stop requested");
     let Some((_svc, handle)) = resolve(&state, &name) else {
+        warn!(service = %name, "management stop rejected: service not found");
         return not_found(&name);
     };
     handle.begin_drain(DrainReason::UserKilled).await;
@@ -60,7 +71,9 @@ pub async fn post_stop(State(state): State<AppState>, Path(name): Path<String>) 
 }
 
 pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    info!(service = %name, "management restart requested");
     let Some((svc, handle)) = resolve(&state, &name) else {
+        warn!(service = %name, "management restart rejected: service not found");
         return not_found(&name);
     };
     handle.begin_drain(DrainReason::UserKilled).await;
@@ -75,14 +88,20 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
             let run_id = handle.run_id().await.unwrap_or(0);
             StartResponse::Started { run_id }
         }
-        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => StartResponse::QueueFull,
+        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
+            warn!(service = %name, "management restart rejected: start_queue_full");
+            StartResponse::QueueFull
+        }
         EnsureOutcome::Failed(EnsureFailure::InsufficientVram(reason)) => {
+            warn!(service = %name, %reason, "management restart rejected: insufficient_vram");
             StartResponse::Unavailable { reason }
         }
         EnsureOutcome::Failed(EnsureFailure::ServiceDisabled(reason)) => {
+            warn!(service = %name, %reason, "management restart rejected: service_disabled");
             StartResponse::Unavailable { reason }
         }
         EnsureOutcome::Failed(EnsureFailure::StartFailed(reason)) => {
+            warn!(service = %name, %reason, "management restart failed");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ApiError::new("start_failed", reason)),
@@ -94,7 +113,9 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
 }
 
 pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    info!(service = %name, "management enable requested");
     let Some((_svc, handle)) = resolve(&state, &name) else {
+        warn!(service = %name, "management enable rejected: service not found");
         return not_found(&name);
     };
     let body = match handle.enable().await {
@@ -105,7 +126,9 @@ pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>
 }
 
 pub async fn post_disable(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    info!(service = %name, "management disable requested");
     let Some((_svc, handle)) = resolve(&state, &name) else {
+        warn!(service = %name, "management disable rejected: service not found");
         return not_found(&name);
     };
     let body = match handle.disable().await {

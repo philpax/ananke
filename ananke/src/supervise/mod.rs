@@ -792,15 +792,24 @@ impl RunLoop {
 
         let (want, pre_evicted) = match self.compute_reservation_map(&snap, &table) {
             Ok(w) => (w, Vec::new()),
-            Err(ReservationFailure::PackFailed(_)) => {
+            Err(ReservationFailure::PackFailed(msg)) => {
                 // Pack couldn't lay the model down given current reservations
                 // (e.g. an in-between layer didn't fit on any allowed GPU).
                 // Retry with lower-priority services treated as evicted; if
                 // pack succeeds, drain those victims and carry them through
                 // to the feasibility check.
+                info!(
+                    service = %self.init.identity.name,
+                    reason = %msg,
+                    "initial pack failed; retrying with eviction"
+                );
                 match self.retry_pack_with_eviction(&snap, &table).await {
                     Ok((want, victims)) => (want, victims),
                     Err(retry_reason) => {
+                        // Reason is already logged by `retry_pack_with_eviction`
+                        // (either "optimistic pack failed" or "no evictable
+                        // candidates"), so no second log here — the consuming
+                        // handler emits the client-facing line.
                         let _ = ack.send(EnsureResponse::Unavailable(
                             EnsureFailure::InsufficientVram(retry_reason),
                         ));
@@ -809,8 +818,14 @@ impl RunLoop {
                 }
             }
             Err(other) => {
+                let msg = other.message();
+                warn!(
+                    service = %self.init.identity.name,
+                    reason = %msg,
+                    "ensure failed: reservation computation error"
+                );
                 let _ = ack.send(EnsureResponse::Unavailable(EnsureFailure::ServiceDisabled(
-                    other.message(),
+                    msg,
                 )));
                 return false;
             }
@@ -1018,9 +1033,19 @@ impl RunLoop {
         for v in &victims {
             filtered.remove(v);
         }
-        let want = self
-            .compute_reservation_map_optimistic(snap, &filtered)
-            .map_err(ReservationFailure::message)?;
+        let want = match self.compute_reservation_map_optimistic(snap, &filtered) {
+            Ok(w) => w,
+            Err(e) => {
+                let reason = e.message();
+                warn!(
+                    service = %self.init.identity.name,
+                    reason = %reason,
+                    victim_count = victims.len(),
+                    "optimistic pack failed even with all evictable peers treated as gone"
+                );
+                return Err(reason);
+            }
+        };
 
         info!(
             service = %self.init.identity.name,

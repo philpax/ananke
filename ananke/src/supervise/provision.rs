@@ -8,7 +8,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
 use tokio::{sync::watch, task::JoinHandle};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::{
     allocator::AllocationTable,
@@ -197,6 +197,7 @@ fn make_proxy_before_request(
             match await_ensure(&handle, max_request_duration).await {
                 crate::supervise::EnsureOutcome::Ready { .. } => None,
                 crate::supervise::EnsureOutcome::Failed(f) => {
+                    warn!(service = %name, failure = ?f, "per-service proxy rejected request");
                     Some(ensure_failure_to_proxy_error(f))
                 }
             }

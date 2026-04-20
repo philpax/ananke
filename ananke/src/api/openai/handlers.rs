@@ -161,23 +161,33 @@ async fn forward_json_post(
 ) -> Response {
     let mut parsed: Value = match serde_json::from_slice(&body_bytes) {
         Ok(v) => v,
-        Err(e) => return errors::bad_request(format!("invalid JSON body: {e}")),
+        Err(e) => {
+            warn!(endpoint = path, error = %e, "request rejected: invalid JSON body");
+            return errors::bad_request(format!("invalid JSON body: {e}"));
+        }
     };
     let model = match parsed.get("model").and_then(|v| v.as_str()) {
         Some(m) => m.to_string(),
-        None => return errors::bad_request("request body missing `model` field"),
+        None => {
+            warn!(endpoint = path, "request rejected: missing `model` field");
+            return errors::bad_request("request body missing `model` field");
+        }
     };
 
     info!(model = %model, endpoint = path, "openai request received");
 
     let handle = match state.registry.get(&model) {
         Some(h) => h,
-        None => return errors::not_found_model(&model),
+        None => {
+            warn!(model = %model, endpoint = path, "request rejected: model not found in registry");
+            return errors::not_found_model(&model);
+        }
     };
 
     let eff = state.config.effective();
     let svc = eff.services.iter().find(|s| s.name == model);
     let Some(svc) = svc else {
+        warn!(model = %model, endpoint = path, "request rejected: model not found in effective config");
         return errors::not_found_model(&model);
     };
 
@@ -186,15 +196,19 @@ async fn forward_json_post(
     match await_ensure(&handle, max_request_duration).await {
         EnsureOutcome::Ready { .. } => {}
         EnsureOutcome::Failed(EnsureFailure::InsufficientVram(msg)) => {
+            warn!(model = %model, endpoint = path, reason = %msg, "request rejected: insufficient_vram");
             return errors::insufficient_vram(&model, &msg);
         }
         EnsureOutcome::Failed(EnsureFailure::ServiceDisabled(msg)) => {
+            warn!(model = %model, endpoint = path, reason = %msg, "request rejected: service_disabled");
             return errors::service_disabled(&model, &msg);
         }
         EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
+            warn!(model = %model, endpoint = path, "request rejected: start_queue_full");
             return errors::start_queue_full(&model);
         }
         EnsureOutcome::Failed(EnsureFailure::StartFailed(msg)) => {
+            warn!(model = %model, endpoint = path, reason = %msg, "request rejected: start_failed");
             return errors::start_failed(&model, &msg);
         }
     }
