@@ -206,6 +206,11 @@ fn merge_command(
                 min_borrower_runtime: c.min_borrower_runtime.or(p.min_borrower_runtime),
             }),
         },
+        private_port: child.private_port.or(parent.private_port),
+        shutdown_command: child
+            .shutdown_command
+            .clone()
+            .or_else(|| parent.shutdown_command.clone()),
     })
 }
 

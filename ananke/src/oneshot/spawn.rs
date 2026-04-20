@@ -68,6 +68,8 @@ pub async fn spawn_oneshot(
             TemplateConfig::Command(CommandConfig {
                 command,
                 workdir: req.workdir.map(PathBuf::from),
+                shutdown_command: None,
+                private_port_override: None,
             })
         }
     };

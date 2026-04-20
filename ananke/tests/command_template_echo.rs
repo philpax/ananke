@@ -54,6 +54,8 @@ fn command_argv_substitutes_port() {
         template_config: TemplateConfig::Command(CommandConfig {
             command: argv,
             workdir: None,
+            shutdown_command: None,
+            private_port_override: None,
         }),
     };
 

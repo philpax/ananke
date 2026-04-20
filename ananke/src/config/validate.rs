@@ -167,6 +167,16 @@ pub struct LlamaCppConfig {
 pub struct CommandConfig {
     pub command: Vec<String>,
     pub workdir: Option<PathBuf>,
+    /// Optional argv to run after the SIGTERM/SIGKILL drain pipeline
+    /// exits. Used for external services that can't stop via signal
+    /// alone — e.g. a docker-run wrapper whose container needs an
+    /// explicit `docker stop` sibling command.
+    pub shutdown_command: Option<Vec<String>>,
+    /// When `Some`, ananke's reverse proxy forwards to this port rather
+    /// than one picked from the private-port pool. Lets operators point
+    /// at a fixed upstream (docker host binding, a service managed
+    /// externally, etc). `None` = auto-assign.
+    pub private_port_override: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,12 +638,40 @@ fn validate_service(
     }
     let env = common.env.clone().unwrap_or_default();
 
-    // Allocate a private loopback port from the configured range. The
-    // allocator hands out ports first-come first-served from the range
-    // start; if another process on the host has a port bound, the
-    // supervisor's spawn-time bind failure will surface it as a clear
-    // `StartFailure` rather than silently colliding.
-    let private_port = private_ports.allocate(&name)?;
+    // Allocate a private loopback port. Default is auto-assignment from
+    // the daemon's pool; a command service may override with a fixed
+    // port (used when the external service binds a predictable host
+    // port, e.g. a docker container). If the operator didn't override,
+    // warn when their `command`/`env` never substitutes `{port}` — that
+    // suggests the child binds a fixed port ananke doesn't know about.
+    let private_port_override = match &template_config {
+        TemplateConfig::Command(cmd) => cmd.private_port_override,
+        TemplateConfig::LlamaCpp(_) => None,
+    };
+    let private_port = if let Some(fixed) = private_port_override {
+        if private_ports.contains(fixed) {
+            warn!(
+                service = %name,
+                port = fixed,
+                range_start = private_ports.range.start,
+                range_end = private_ports.range.end,
+                "private_port override falls inside the auto-assignment pool; a later auto-assigned service may collide — move this port outside [private_port_start, private_port_end]"
+            );
+        }
+        fixed
+    } else {
+        let p = private_ports.allocate(&name)?;
+        if let TemplateConfig::Command(cmd) = &template_config
+            && !command_uses_port_placeholder(cmd, common.env.as_ref())
+        {
+            warn!(
+                service = %name,
+                private_port = p,
+                "auto-assigned private_port is never referenced via {{port}} in the command or env — the child likely binds a different port and ananke's proxy will fail to forward. Either substitute {{port}} or set `private_port` to match the child's actual port"
+            );
+        }
+        p
+    };
 
     Ok(ServiceConfig {
         name,
@@ -722,9 +760,18 @@ fn validate_command(
     if command.is_empty() {
         return Err(fail(format!("service {name}: command is empty")));
     }
+    if let Some(sd) = &cmd.shutdown_command
+        && sd.is_empty()
+    {
+        return Err(fail(format!(
+            "service {name}: shutdown_command is present but empty"
+        )));
+    }
     Ok(CommandConfig {
         command,
         workdir: cmd.workdir.clone(),
+        shutdown_command: cmd.shutdown_command.clone(),
+        private_port_override: cmd.private_port,
     })
 }
 
@@ -819,6 +866,27 @@ impl PrivatePortAllocator {
         self.next += 1;
         Ok(port)
     }
+
+    /// `true` when `port` is within the allocator's range (and would be
+    /// a candidate for auto-assignment). Used to warn operators whose
+    /// `private_port` override happens to overlap the auto-pool.
+    fn contains(&self, port: u16) -> bool {
+        port >= self.range.start && port <= self.range.end
+    }
+}
+
+/// Returns `true` when the command service's argv or any env value
+/// references `{port}`. Heuristic for warning about an auto-assigned
+/// `private_port` that the child never receives.
+fn command_uses_port_placeholder(
+    cmd: &CommandConfig,
+    env: Option<&BTreeMap<String, String>>,
+) -> bool {
+    const PLACEHOLDER: &str = "{port}";
+    cmd.command.iter().any(|a| a.contains(PLACEHOLDER))
+        || env
+            .map(|m| m.values().any(|v| v.contains(PLACEHOLDER)))
+            .unwrap_or(false)
 }
 
 pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
@@ -918,6 +986,8 @@ pub mod test_fixtures {
         svc.template_config = TemplateConfig::Command(CommandConfig {
             command: argv,
             workdir: None,
+            shutdown_command: None,
+            private_port_override: None,
         });
         svc.openai_compat = false;
         svc
@@ -1445,6 +1515,69 @@ model = "/m/x.gguf"
 port = 11435
 devices.placement_override = { "gpu:0" = 18944 }
 lifecycle = "persistent"
+"#,
+        );
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn command_service_honours_private_port_override() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "ext"
+template = "command"
+command = ["/bin/true"]
+port = 8500
+private_port = 18188
+allocation.mode = "static"
+allocation.vram_gb = 1
+"#,
+        );
+        let eff = validate(&cfg).expect("validate");
+        let svc = &eff.services[0];
+        assert_eq!(svc.private_port, 18188);
+    }
+
+    #[test]
+    fn command_service_rejects_empty_shutdown_command() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "ext"
+template = "command"
+command = ["/bin/true"]
+port = 8500
+shutdown_command = []
+allocation.mode = "static"
+allocation.vram_gb = 1
+"#,
+        );
+        let err = validate(&cfg).expect_err("empty shutdown_command is rejected");
+        assert!(
+            format!("{err}").contains("shutdown_command is present but empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn private_port_override_outside_pool_does_not_warn() {
+        // Smoke-test the code path; we don't capture tracing output,
+        // but this at least exercises the branch.
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+private_port_start = 40000
+private_port_end = 40100
+
+[[service]]
+name = "ext"
+template = "command"
+command = ["/bin/true"]
+port = 8500
+private_port = 18188
+allocation.mode = "static"
+allocation.vram_gb = 1
 "#,
         );
         assert!(validate(&cfg).is_ok());

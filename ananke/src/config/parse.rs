@@ -197,6 +197,18 @@ pub struct RawCommandService {
     pub command: Option<Vec<String>>,
     pub workdir: Option<PathBuf>,
     pub allocation: Option<RawAllocation>,
+    /// Upstream port ananke's reverse proxy should forward to. When
+    /// absent, ananke picks one from the daemon's private-port pool and
+    /// substitutes it into `command` / `env` via the `{port}`
+    /// placeholder. Set it explicitly when the external service binds a
+    /// fixed port (e.g. a docker container exposing 18188 on the host).
+    pub private_port: Option<u16>,
+    /// Optional argv run at drain time after SIGTERM-then-SIGKILL
+    /// completes. Useful for external services that don't stop via
+    /// signal — e.g. a docker-run wrapper where SIGTERM reaches the
+    /// host shell but the container needs an explicit `docker stop`.
+    /// Accepts the same placeholder substitutions as `command`.
+    pub shutdown_command: Option<Vec<String>>,
 }
 
 /// Fields shared by every template variant. Flattened into each variant so
