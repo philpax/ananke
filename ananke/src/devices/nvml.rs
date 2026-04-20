@@ -104,13 +104,15 @@ impl GpuProbe for NvmlProbe {
                             nvml_wrapper::enums::device::UsedGpuMemory::Used(b) => b,
                             nvml_wrapper::enums::device::UsedGpuMemory::Unavailable => 0,
                         };
-                        let name = std::fs::read_to_string(format!("/proc/{}/comm", p.pid))
-                            .map(|s| s.trim().to_string())
-                            .unwrap_or_else(|_| format!("pid {}", p.pid));
+                        // `GpuProcess.name` is a diagnostic label — nothing
+                        // surfaces it today. We previously read `/proc/<pid>/comm`
+                        // to resolve it, which bypassed `crate::system::Fs`;
+                        // fall back to the `pid N` format the prior branch
+                        // already used when the read failed.
                         GpuProcess {
                             pid: p.pid,
                             used_bytes: used,
-                            name,
+                            name: format!("pid {}", p.pid),
                         }
                     })
                     .collect()

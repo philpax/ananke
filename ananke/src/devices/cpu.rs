@@ -3,8 +3,13 @@
 //! `MemAvailable` is used (spec §4.2), not `MemFree`, because `MemFree` ignores
 //! reclaimable page cache and misleads the scheduler about how much memory can
 //! actually be allocated to a new process.
+//!
+//! Goes through `crate::system::Fs` so tests can stage synthetic meminfo
+//! through `InMemoryFs` rather than relying on a real `/proc`.
 
 use std::path::Path;
+
+use crate::system::Fs;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CpuMemory {
@@ -12,12 +17,11 @@ pub struct CpuMemory {
     pub available_bytes: u64,
 }
 
-pub fn read() -> std::io::Result<CpuMemory> {
-    read_from(Path::new("/proc/meminfo"))
-}
-
-pub fn read_from(path: &Path) -> std::io::Result<CpuMemory> {
-    let content = std::fs::read_to_string(path)?;
+/// Read `/proc/meminfo` via `fs` and parse the `MemTotal` + `MemAvailable`
+/// fields. Production callers pass `LocalFs`; tests stage `/proc/meminfo`
+/// through an `InMemoryFs` and call this directly.
+pub fn read(fs: &dyn Fs) -> std::io::Result<CpuMemory> {
+    let content = fs.read_to_string(Path::new("/proc/meminfo"))?;
     parse_meminfo(&content)
         .ok_or_else(|| std::io::Error::other("meminfo missing MemTotal or MemAvailable"))
 }
@@ -46,6 +50,7 @@ fn parse_kb(rest: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::InMemoryFs;
 
     const SAMPLE: &str = "\
 MemTotal:       98765432 kB
@@ -64,5 +69,13 @@ Buffers:        1000000 kB
     #[test]
     fn returns_none_when_missing() {
         assert!(parse_meminfo("MemFree: 100 kB").is_none());
+    }
+
+    #[test]
+    fn read_goes_through_fs() {
+        let fs = InMemoryFs::new();
+        Fs::write(&fs, Path::new("/proc/meminfo"), SAMPLE.as_bytes()).unwrap();
+        let m = read(&fs).unwrap();
+        assert_eq!(m.total_bytes, 98_765_432 * 1024);
     }
 }

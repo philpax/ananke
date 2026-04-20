@@ -60,9 +60,13 @@ impl ObservationTable {
     }
 }
 
-/// Read `/proc/<pid>/status` and return `VmRSS` in bytes.
-pub fn read_vm_rss(pid: u32) -> Option<u64> {
-    let content = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+/// Read `/proc/<pid>/status` via `fs` and return `VmRSS` in bytes. Returns
+/// `None` when the file is missing (the pid exited) or doesn't contain a
+/// `VmRSS:` line (the kernel is still filling in the entry).
+pub fn read_vm_rss(fs: &dyn crate::system::Fs, pid: u32) -> Option<u64> {
+    let content = fs
+        .read_to_string(std::path::Path::new(&format!("/proc/{pid}/status")))
+        .ok()?;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
             let kb = rest
@@ -80,6 +84,25 @@ pub fn read_vm_rss(pid: u32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system::InMemoryFs;
+
+    #[test]
+    fn read_vm_rss_goes_through_fs() {
+        let fs = InMemoryFs::new();
+        crate::system::Fs::write(
+            &fs,
+            std::path::Path::new("/proc/4242/status"),
+            b"Name:\tfoo\nVmPeak:\t 1234 kB\nVmRSS:\t 5120 kB\n",
+        )
+        .unwrap();
+        assert_eq!(read_vm_rss(&fs, 4242), Some(5120 * 1024));
+    }
+
+    #[test]
+    fn read_vm_rss_none_when_pid_missing() {
+        let fs = InMemoryFs::new();
+        assert_eq!(read_vm_rss(&fs, 9999), None);
+    }
 
     #[test]
     fn peak_is_monotonic() {

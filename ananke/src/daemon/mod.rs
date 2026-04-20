@@ -54,7 +54,8 @@ pub async fn run() -> Result<(), ExpectedError> {
             None
         }
     };
-    if let Ok(m) = cpu::read() {
+    let system = crate::system::SystemDeps::local();
+    if let Ok(m) = cpu::read(system.fs.as_ref()) {
         info!(
             total = m.total_bytes,
             avail = m.available_bytes,
@@ -80,6 +81,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         probe,
         observation.clone(),
         registry.clone(),
+        system.fs.clone(),
         shutdown_rx.clone(),
     );
 
@@ -95,8 +97,6 @@ pub async fn run() -> Result<(), ExpectedError> {
             .cmp(&a.priority)
             .then_with(|| a.name.cmp(&b.name))
     });
-
-    let system = crate::system::SystemDeps::local();
 
     let port_pool = Arc::new(Mutex::new(PortPool::new(18000..19000)));
     let oneshots = OneshotRegistry::new();
@@ -122,16 +122,15 @@ pub async fn run() -> Result<(), ExpectedError> {
         system: system.clone(),
     };
 
-    let provisioning_deps = crate::supervise::provision::ProvisioningDeps::from_state(
-        &app_state,
-        shutdown_rx.clone(),
-    );
+    let provisioning_deps =
+        crate::supervise::provision::ProvisioningDeps::from_state(&app_state, shutdown_rx.clone());
 
     let mut supervisors: Vec<Arc<SupervisorHandle>> = Vec::new();
     let mut proxy_tasks = Vec::new();
     let mut balloon_tasks = Vec::new();
     for svc in ordered {
-        let provisioned = crate::supervise::provision::provision_service(svc, &provisioning_deps).await?;
+        let provisioned =
+            crate::supervise::provision::provision_service(svc, &provisioning_deps).await?;
         supervisors.push(provisioned.handle);
         proxy_tasks.push(provisioned.proxy_task);
         if let Some(balloon) = provisioned.balloon_task {
