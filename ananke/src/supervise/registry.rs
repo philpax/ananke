@@ -81,7 +81,7 @@ mod tests {
         let events = crate::daemon::events::EventBus::new();
         let config = crate::config::manager::ConfigManager::in_memory(effective, events.clone());
         let init = crate::supervise::SupervisorInit {
-            svc: svc.clone(),
+            identity: crate::supervise::ServiceIdentity::from_service(&svc),
             allocation: Allocation::from_override(&svc.placement_override),
             service_id: 1,
             last_activity: Arc::new(parking_lot::Mutex::new(tokio::time::Instant::now())),
@@ -101,7 +101,7 @@ mod tests {
             events,
             system: crate::system::SystemDeps::fake().0,
         };
-        let handle = Arc::new(spawn_supervisor(init, deps));
+        let handle = Arc::new(spawn_supervisor(init, svc.clone(), deps));
 
         let registry = ServiceRegistry::new();
         registry.insert(SmolStr::new("demo"), handle.clone());

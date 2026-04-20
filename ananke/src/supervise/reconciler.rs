@@ -136,10 +136,7 @@ mod tests {
     use super::*;
     use crate::{
         allocator::AllocationTable,
-        config::{
-            EffectiveConfig, Lifecycle,
-            validate::test_fixtures::minimal_llama_cpp_service,
-        },
+        config::{EffectiveConfig, Lifecycle, validate::test_fixtures::minimal_llama_cpp_service},
         db::{Database, logs::spawn as spawn_batcher},
         devices::{Allocation, snapshotter},
         supervise::{SupervisorDeps, SupervisorInit, spawn_supervisor},
@@ -191,13 +188,13 @@ mod tests {
         for svc in services {
             let service_id = db.upsert_service(&svc.name, 0).await.unwrap();
             let init = SupervisorInit {
-                svc: svc.clone(),
+                identity: crate::supervise::ServiceIdentity::from_service(&svc),
                 allocation: Allocation::from_override(&svc.placement_override),
                 service_id,
                 last_activity: activity.get_or_init(&svc.name),
                 inflight: InflightTable::new().counter(&svc.name),
             };
-            let handle = Arc::new(spawn_supervisor(init, deps.clone()));
+            let handle = Arc::new(spawn_supervisor(init, svc.clone(), deps.clone()));
             registry.insert(svc.name.clone(), handle);
         }
 
@@ -250,7 +247,10 @@ mod tests {
         }
 
         assert!(registry.get("a").is_some(), "a should stay registered");
-        assert!(registry.get("b").is_none(), "b should be drained and dropped");
+        assert!(
+            registry.get("b").is_none(),
+            "b should be drained and dropped"
+        );
 
         let _ = shutdown_tx.send(true);
         let _ = join.await;

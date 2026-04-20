@@ -17,7 +17,10 @@ use crate::{
     db::Database,
     devices::Allocation,
     errors::ExpectedError,
-    supervise::{SupervisorDeps, SupervisorHandle, SupervisorInit, await_ensure, spawn_supervisor},
+    supervise::{
+        ServiceIdentity, SupervisorDeps, SupervisorHandle, SupervisorInit, await_ensure,
+        spawn_supervisor,
+    },
     tracking::{activity::ActivityTable, inflight::InflightTable, observation::ObservationTable},
 };
 
@@ -80,13 +83,17 @@ pub async fn provision_service(
         .upsert_service(&svc.name, crate::tracking::now_unix_ms())
         .await?;
     let init = SupervisorInit {
-        svc: svc.clone(),
+        identity: ServiceIdentity::from_service(&svc),
         allocation: Allocation::from_override(&svc.placement_override),
         service_id,
         last_activity: deps.activity.get_or_init(&svc.name),
         inflight: deps.inflight.counter(&svc.name),
     };
-    let handle = Arc::new(spawn_supervisor(init, deps.supervisor_deps.clone()));
+    let handle = Arc::new(spawn_supervisor(
+        init,
+        svc.clone(),
+        deps.supervisor_deps.clone(),
+    ));
     deps.supervisor_deps
         .registry
         .insert(svc.name.clone(), handle.clone());

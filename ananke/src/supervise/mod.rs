@@ -253,19 +253,53 @@ pub struct SupervisorDeps {
     pub system: crate::system::SystemDeps,
 }
 
+/// Identity fields that don't change across a reload. Everything else a
+/// supervisor needs about its service (priority, context, health paths,
+/// etc.) is fetched live from [`SupervisorDeps::config`] so edits pushed
+/// via `PUT /api/config` reach already-spawned supervisors.
+#[derive(Debug, Clone)]
+pub struct ServiceIdentity {
+    /// Service name — the primary key for registry lookups, events, the
+    /// allocation table, etc.
+    pub name: smol_str::SmolStr,
+    /// Upstream port bound at daemon start; used to build the health probe
+    /// URL. The reconciler refuses to change `private_port` across a
+    /// reload (a port change respawns the supervisor), so freezing it
+    /// here is safe.
+    pub private_port: u16,
+}
+
+impl ServiceIdentity {
+    /// Derive an identity from a boot-time [`ServiceConfig`].
+    pub fn from_service(svc: &ServiceConfig) -> Self {
+        Self {
+            name: svc.name.clone(),
+            private_port: svc.private_port,
+        }
+    }
+}
+
 /// Per-service initialisation for a single supervisor task.
 pub struct SupervisorInit {
-    pub svc: ServiceConfig,
+    pub identity: ServiceIdentity,
     pub allocation: Allocation,
     pub service_id: i64,
     pub last_activity: crate::tracking::activity::ActivityStamp,
     pub inflight: Arc<AtomicU64>,
 }
 
-pub fn spawn_supervisor(init: SupervisorInit, deps: SupervisorDeps) -> SupervisorHandle {
+/// Spawn a supervisor task. `boot_svc` seeds the `current_svc()` fallback
+/// used when the service is briefly removed from live config during a
+/// reload — the reconciler will shut the supervisor down shortly after,
+/// but any interim lookup still returns a sensible value.
+pub fn spawn_supervisor(
+    init: SupervisorInit,
+    boot_svc: ServiceConfig,
+    deps: SupervisorDeps,
+) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(SUPERVISOR_COMMAND_MAILBOX);
-    let name = init.svc.name.clone();
-    let join = tokio::spawn(run(init, deps, rx));
+    let name = init.identity.name.clone();
+    let join = tokio::spawn(run(init, boot_svc, deps, rx));
     SupervisorHandle {
         name,
         tx,
@@ -396,8 +430,13 @@ const RUN_ID_MASK: i64 = 0x7FFF_FFFF;
 /// our deadline extend the idle window rather than immediately draining.
 const IDLE_DEADLINE_SKEW_MS: u64 = 100;
 
-async fn run(init: SupervisorInit, deps: SupervisorDeps, rx: mpsc::Receiver<SupervisorCommand>) {
-    let mut loop_state = RunLoop::new(init, deps, rx);
+async fn run(
+    init: SupervisorInit,
+    boot_svc: ServiceConfig,
+    deps: SupervisorDeps,
+    rx: mpsc::Receiver<SupervisorCommand>,
+) {
+    let mut loop_state = RunLoop::new(init, boot_svc, deps, rx);
     loop {
         let step = match loop_state.state.clone() {
             ServiceState::Idle => loop_state.handle_idle().await,
@@ -444,11 +483,17 @@ struct RunLoop {
     /// Total reserved bytes captured at Ensure time, used as the base for the
     /// rolling update that fires when the service later drains back to Idle.
     base_total_bytes_for_rolling: u64,
+    /// Boot-time snapshot of this service's config, consulted by
+    /// [`Self::current_svc`] as a fallback only when the live config has
+    /// dropped the service (mid-reload). Never mutated — the live
+    /// [`ConfigManager`] is always preferred.
+    boot_svc: ServiceConfig,
 }
 
 impl RunLoop {
     fn new(
         init: SupervisorInit,
+        boot_svc: ServiceConfig,
         deps: SupervisorDeps,
         rx: mpsc::Receiver<SupervisorCommand>,
     ) -> Self {
@@ -467,6 +512,7 @@ impl RunLoop {
             packed_for_spawn: None,
             oom_attempts: 0,
             base_total_bytes_for_rolling: 0,
+            boot_svc,
         }
     }
 
@@ -485,9 +531,9 @@ impl RunLoop {
         let eff = self.deps.config.effective();
         eff.services
             .iter()
-            .find(|s| s.name == self.init.svc.name)
+            .find(|s| s.name == self.init.identity.name)
             .cloned()
-            .unwrap_or_else(|| self.init.svc.clone())
+            .unwrap_or_else(|| self.boot_svc.clone())
     }
 
     fn set_state(&mut self, new_state: ServiceState) {
@@ -495,7 +541,7 @@ impl RunLoop {
         self.state = new_state;
         *self.state_mirror.lock() = self.state.clone();
         self.deps.events.publish(Event::StateChanged {
-            service: self.init.svc.name.clone(),
+            service: self.init.identity.name.clone(),
             from: prior_state.name().to_string(),
             to: self.state.name().to_string(),
             at_ms: crate::tracking::now_unix_ms(),
@@ -510,14 +556,14 @@ impl RunLoop {
             .deps
             .allocations
             .lock()
-            .get(&self.init.svc.name)
+            .get(&self.init.identity.name)
             .cloned()
             .unwrap_or_default()
             .into_iter()
             .map(|(slot, mb)| (slot_to_key(&slot), mb * 1024 * 1024))
             .collect();
         self.deps.events.publish(Event::AllocationChanged {
-            service: self.init.svc.name.clone(),
+            service: self.init.identity.name.clone(),
             reservations,
             at_ms: crate::tracking::now_unix_ms(),
         });
@@ -529,12 +575,15 @@ impl RunLoop {
     /// their context.
     fn record_drain_complete(&mut self) {
         self.deps.rolling.update(
-            &self.init.svc.name,
-            self.deps.observation.read_peak(&self.init.svc.name),
+            &self.init.identity.name,
+            self.deps.observation.read_peak(&self.init.identity.name),
             self.base_total_bytes_for_rolling,
         );
-        self.deps.observation.clear(&self.init.svc.name);
-        self.deps.allocations.lock().remove(&self.init.svc.name);
+        self.deps.observation.clear(&self.init.identity.name);
+        self.deps
+            .allocations
+            .lock()
+            .remove(&self.init.identity.name);
         self.emit_allocation_changed();
     }
 
@@ -549,7 +598,7 @@ impl RunLoop {
                 }
                 Some(SupervisorCommand::Snapshot { ack }) => {
                     let _ = ack.send(SupervisorSnapshot {
-                        name: self.init.svc.name.clone(),
+                        name: self.init.identity.name.clone(),
                         state: self.state.clone(),
                         run_id: None,
                         pid: None,
@@ -628,13 +677,13 @@ impl RunLoop {
         // we don't loop back through select_for_slot only to find zero
         // candidates.
         let fit_result = if pre_evicted.is_empty() {
-            crate::allocator::can_fit(&want, &snap, &table, Some(&self.init.svc.name))
+            crate::allocator::can_fit(&want, &snap, &table, Some(&self.init.identity.name))
         } else {
             crate::allocator::can_fit_after_eviction(
                 &want,
                 &snap,
                 &table,
-                Some(&self.init.svc.name),
+                Some(&self.init.identity.name),
                 &pre_evicted,
             )
         };
@@ -652,7 +701,7 @@ impl RunLoop {
         self.deps
             .allocations
             .lock()
-            .insert(self.init.svc.name.clone(), want);
+            .insert(self.init.identity.name.clone(), want);
         self.emit_allocation_changed();
 
         // Create broadcast channel and subscribe the caller.
@@ -805,7 +854,7 @@ impl RunLoop {
         let want = self.compute_reservation_map_optimistic(snap, &filtered)?;
 
         warn!(
-            service = %self.init.svc.name,
+            service = %self.init.identity.name,
             evict_count = victims.len(),
             "pack succeeded after pretending lower-priority victims were evicted; draining them"
         );
@@ -848,7 +897,7 @@ impl RunLoop {
             return Err(format!("{nofit}"));
         }
 
-        warn!(service = %self.init.svc.name, evict_count = to_evict.len(), "eviction planned to make room");
+        warn!(service = %self.init.identity.name, evict_count = to_evict.len(), "eviction planned to make room");
         for victim in &to_evict {
             if let Some(handle) = self.deps.registry.get(victim) {
                 handle
@@ -870,7 +919,7 @@ impl RunLoop {
             want,
             &snap2,
             &table2,
-            Some(&self.init.svc.name),
+            Some(&self.init.identity.name),
             &to_evict,
         ) {
             let _ = self.packed_for_spawn.take();
@@ -896,7 +945,7 @@ impl RunLoop {
         };
         let mut out = Vec::new();
         for (_name, handle) in all_services {
-            if handle.name.as_str() == self.init.svc.name.as_str() {
+            if handle.name.as_str() == self.init.identity.name.as_str() {
                 continue;
             }
             let Some(service_snap) = handle.snapshot().await else {
@@ -962,7 +1011,10 @@ impl RunLoop {
                         message: format!("{e}"),
                     }));
                 }
-                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
                 self.emit_allocation_changed();
                 self.set_state(ServiceState::Failed { retry_count: 0 });
                 return Step::Continue;
@@ -972,7 +1024,7 @@ impl RunLoop {
         let pid = child.id().unwrap_or(0) as i32;
         self.deps
             .observation
-            .register(&self.init.svc.name, pid as u32);
+            .register(&self.init.identity.name, pid as u32);
         let spawn_time = Instant::now();
         let run_id = crate::tracking::now_unix_ms() & RUN_ID_MASK;
         let allocation_json = serde_json::to_string(
@@ -1017,7 +1069,7 @@ impl RunLoop {
             // so read it from init; the rest of the health config is live.
             url: format!(
                 "http://127.0.0.1:{}{}",
-                self.init.svc.private_port, current.health.http_path
+                self.init.identity.private_port, current.health.http_path
             ),
             probe_interval: Duration::from_millis(current.health.probe_interval_ms),
             timeout: Duration::from_millis(current.health.timeout_ms),
@@ -1059,8 +1111,11 @@ impl RunLoop {
         spawn_time: Instant,
     ) -> Step {
         warn!(?exit, "child exited during starting/warming");
-        self.deps.allocations.lock().remove(&self.init.svc.name);
-        self.deps.observation.clear(&self.init.svc.name);
+        self.deps
+            .allocations
+            .lock()
+            .remove(&self.init.identity.name);
+        self.deps.observation.clear(&self.init.identity.name);
         self.emit_allocation_changed();
 
         // Detect OOM kill: process died within 30 s and was killed by
@@ -1075,7 +1130,7 @@ impl RunLoop {
         if runtime < OOM_KILL_WINDOW && was_sigkill {
             self.oom_attempts += 1;
             if self.oom_attempts >= 2 {
-                warn!(service = %self.init.svc.name, attempts = self.oom_attempts, "OOM retry limit reached; disabling");
+                warn!(service = %self.init.identity.name, attempts = self.oom_attempts, "OOM retry limit reached; disabling");
                 if let Some(bus) = self.start_bus_carry.take() {
                     let _ = bus.send(StartOutcome::Err(StartFailure {
                         kind: StartFailureKind::Oom,
@@ -1086,8 +1141,10 @@ impl RunLoop {
                     reason: DisableReason::Oom,
                 });
             } else {
-                warn!(service = %self.init.svc.name, "OOM kill detected; bumping rolling factor for retry");
-                self.deps.rolling.bump_for_oom_retry(&self.init.svc.name);
+                warn!(service = %self.init.identity.name, "OOM kill detected; bumping rolling factor for retry");
+                self.deps
+                    .rolling
+                    .bump_for_oom_retry(&self.init.identity.name);
                 // Return to Idle so the next Ensure triggers a re-estimated
                 // start with the bumped safety factor.
                 if let Some(bus) = self.start_bus_carry.take() {
@@ -1138,14 +1195,17 @@ impl RunLoop {
                 self.run_running_loop(child, run_id).await
             }
             Ok(HealthOutcome::TimedOut) => {
-                warn!(service = %self.init.svc.name, "health timed out; disabling");
+                warn!(service = %self.init.identity.name, "health timed out; disabling");
                 if let Some(bus) = self.start_bus_carry.take() {
                     let _ = bus.send(StartOutcome::Err(StartFailure {
                         kind: StartFailureKind::HealthTimeout,
                         message: "health check timed out".into(),
                     }));
                 }
-                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
                 self.emit_allocation_changed();
                 self.set_state(ServiceState::Disabled {
                     reason: DisableReason::HealthTimeout,
@@ -1154,7 +1214,10 @@ impl RunLoop {
                 StartingOutcome::Break
             }
             Ok(HealthOutcome::Cancelled) | Err(_) => {
-                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
                 self.emit_allocation_changed();
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 StartingOutcome::Exit
@@ -1164,7 +1227,11 @@ impl RunLoop {
 
     /// Warming grace: sleep `warming_grace_ms` while also watching for child
     /// exit and Shutdown.
-    async fn run_warming_grace(&mut self, child: &mut dyn ManagedChild, run_id: i64) -> WarmingOutcome {
+    async fn run_warming_grace(
+        &mut self,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+    ) -> WarmingOutcome {
         let grace = Duration::from_millis(self.current_svc().warming_grace_ms);
         tokio::select! {
             _ = tokio::time::sleep(grace) => {
@@ -1180,18 +1247,18 @@ impl RunLoop {
                         message: "child exited during warming".into(),
                     }));
                 }
-                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps.allocations.lock().remove(&self.init.identity.name);
                 self.emit_allocation_changed();
                 self.set_state(ServiceState::Failed { retry_count: 0 });
                 WarmingOutcome::ChildExited
             }
             cmd = self.rx.recv() => {
                 if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
-                    info!(service = %self.init.svc.name, "draining during warming");
+                    info!(service = %self.init.identity.name, "draining during warming");
                     let _ = self.cancel_tx.send(true);
                     drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                    self.deps.allocations.lock().remove(&self.init.svc.name);
+                    self.deps.allocations.lock().remove(&self.init.identity.name);
                     self.emit_allocation_changed();
                     let _ = ack.send(());
                     return WarmingOutcome::Shutdown;
@@ -1205,7 +1272,11 @@ impl RunLoop {
     }
 
     /// The Running inner loop: wait for child exit, idle timeout, or commands.
-    async fn run_running_loop(&mut self, child: &mut dyn ManagedChild, run_id: i64) -> StartingOutcome {
+    async fn run_running_loop(
+        &mut self,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+    ) -> StartingOutcome {
         let pid = child.id().unwrap_or(0) as i32;
         loop {
             tokio::select! {
@@ -1225,7 +1296,7 @@ impl RunLoop {
                         // A ping arrived; loop again with a fresh deadline.
                         continue;
                     }
-                    info!(service = %self.init.svc.name, "idle timeout; draining to idle");
+                    info!(service = %self.init.identity.name, "idle timeout; draining to idle");
                     drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.record_drain_complete();
@@ -1276,7 +1347,7 @@ impl RunLoop {
     ) -> RunningOutcome {
         match cmd {
             Some(SupervisorCommand::Shutdown { ack }) => {
-                info!(service = %self.init.svc.name, "draining");
+                info!(service = %self.init.identity.name, "draining");
                 let next = transition(&self.state, StateEvent::DrainRequested);
                 self.set_state(next);
                 let _ = self.cancel_tx.send(true);
@@ -1288,7 +1359,7 @@ impl RunLoop {
             }
             Some(SupervisorCommand::Snapshot { ack }) => {
                 let _ = ack.send(SupervisorSnapshot {
-                    name: self.init.svc.name.clone(),
+                    name: self.init.identity.name.clone(),
                     state: self.state.clone(),
                     run_id: Some(run_id),
                     pid: Some(pid),
@@ -1304,21 +1375,24 @@ impl RunLoop {
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::BeginDrain { reason, ack }) => {
-                info!(service = %self.init.svc.name, ?reason, "BeginDrain received; draining");
+                info!(service = %self.init.identity.name, ?reason, "BeginDrain received; draining");
                 self.drain_now(child, run_id, reason).await;
                 let _ = ack.send(());
                 self.set_state(ServiceState::Idle);
                 RunningOutcome::Break
             }
             Some(SupervisorCommand::FastKill { reason, ack }) => {
-                info!(service = %self.init.svc.name, ?reason, "FastKill received");
+                info!(service = %self.init.identity.name, ?reason, "FastKill received");
                 self.set_state(ServiceState::Draining);
 
                 fast_kill(child, reason).await;
 
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                self.deps.allocations.lock().remove(&self.init.svc.name);
-                self.deps.observation.clear(&self.init.svc.name);
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
+                self.deps.observation.clear(&self.init.identity.name);
                 self.emit_allocation_changed();
                 let _ = ack.send(());
                 self.set_state(ServiceState::Idle);
@@ -1330,7 +1404,7 @@ impl RunLoop {
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::Disable { ack }) => {
-                info!(service = %self.init.svc.name, "Disable received; draining then disabling");
+                info!(service = %self.init.identity.name, "Disable received; draining then disabling");
                 self.drain_now(child, run_id, drain::DrainReason::UserKilled)
                     .await;
                 self.set_state(ServiceState::Disabled {
@@ -1356,14 +1430,17 @@ impl RunLoop {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
-                self.deps.allocations.lock().remove(&self.init.svc.name);
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
                 self.emit_allocation_changed();
                 let _ = ack.send(());
                 StartingOutcome::Exit
             }
             Some(SupervisorCommand::Snapshot { ack }) => {
                 let _ = ack.send(SupervisorSnapshot {
-                    name: self.init.svc.name.clone(),
+                    name: self.init.identity.name.clone(),
                     state: self.state.clone(),
                     run_id: None,
                     pid: Some(pid),
@@ -1406,8 +1483,11 @@ impl RunLoop {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                self.deps.allocations.lock().remove(&self.init.svc.name);
-                self.deps.observation.clear(&self.init.svc.name);
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
+                self.deps.observation.clear(&self.init.identity.name);
                 self.emit_allocation_changed();
                 if let Some(bus) = self.start_bus_carry.take() {
                     let _ = bus.send(StartOutcome::Err(StartFailure {
@@ -1469,7 +1549,7 @@ impl RunLoop {
     }
 
     async fn handle_disabled(&mut self) -> Step {
-        info!(service = %self.init.svc.name, "disabled; awaiting shutdown or enable");
+        info!(service = %self.init.identity.name, "disabled; awaiting shutdown or enable");
         loop {
             match self.rx.recv().await {
                 Some(SupervisorCommand::Shutdown { ack }) => {
@@ -1478,7 +1558,7 @@ impl RunLoop {
                 }
                 Some(SupervisorCommand::Snapshot { ack }) => {
                     let _ = ack.send(SupervisorSnapshot {
-                        name: self.init.svc.name.clone(),
+                        name: self.init.identity.name.clone(),
                         state: self.state.clone(),
                         run_id: None,
                         pid: None,

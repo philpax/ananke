@@ -142,13 +142,13 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     for svc in &services_rewritten {
         let service_id = db.upsert_service(&svc.name, 0).await.unwrap();
         let init = ananke::supervise::SupervisorInit {
-            svc: svc.clone(),
+            identity: ananke::supervise::ServiceIdentity::from_service(svc),
             allocation: Allocation::from_override(&svc.placement_override),
             service_id,
             last_activity: activity.get_or_init(&svc.name),
             inflight: ananke::tracking::inflight::InflightTable::new().counter(&svc.name),
         };
-        let handle = Arc::new(spawn_supervisor(init, deps.clone()));
+        let handle = Arc::new(spawn_supervisor(init, svc.clone(), deps.clone()));
         registry.insert(svc.name.clone(), handle.clone());
         supervisors.push(handle);
     }

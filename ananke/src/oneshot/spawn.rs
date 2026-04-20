@@ -127,7 +127,7 @@ pub async fn spawn_oneshot(
     }
 
     let init = crate::supervise::SupervisorInit {
-        svc: svc.clone(),
+        identity: crate::supervise::ServiceIdentity::from_service(&svc),
         allocation: Allocation::from_override(&svc.placement_override),
         service_id,
         last_activity: state.activity.get_or_init(&svc.name),
@@ -135,6 +135,7 @@ pub async fn spawn_oneshot(
     };
     let handle = Arc::new(crate::supervise::spawn_supervisor(
         init,
+        svc.clone(),
         state.supervisor_deps(),
     ));
     state.registry.insert(svc.name.clone(), handle.clone());
