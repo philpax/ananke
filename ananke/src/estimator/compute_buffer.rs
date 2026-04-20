@@ -60,16 +60,24 @@ fn tuning_for(summary: &GgufSummary) -> Tuning {
             slope: 7,
         },
 
+        // Vision-language MoE: same _exps pattern as the pure MoE
+        // archs but a heavier attention stack + cross-attention to
+        // vision tokens. qwen3-vl-30b-a3b-instruct under-reserved by
+        // +1365 MiB at 131k with the plain MoE curve, so it gets its
+        // own (700, 7) — base slightly higher, slope much higher.
+        "qwen3vlmoe" => Tuning {
+            base: 700,
+            slope: 7,
+        },
+
         // MoE-only (no SSM component). Attention scratch per active
         // expert is small; compute buffer barely grows with context.
         // Sweep showed gpt-oss 32k delta going *negative* at the 400/0
         // baseline, so this stays conservative at 600/2.
-        "gpt-oss" | "mixtral" | "qwen3moe" | "qwen3vlmoe" | "llama4" | "deepseek2" | "glm4moe" => {
-            Tuning {
-                base: 600,
-                slope: 2,
-            }
-        }
+        "gpt-oss" | "mixtral" | "qwen3moe" | "llama4" | "deepseek2" | "glm4moe" => Tuning {
+            base: 600,
+            slope: 2,
+        },
 
         // Hybrid MoE + SSM (Qwen 3.5+). Most layers are SSM with fixed
         // state; only the 1-in-N full-attention layers contribute to
