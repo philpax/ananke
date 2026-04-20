@@ -47,27 +47,45 @@ impl std::error::Error for SubstituteError {}
 /// Substitute every `{placeholder}` in `input` using `ctx`. Returns a
 /// fresh owned String. Unknown placeholders produce a hard error so
 /// typos surface rather than leaking literal `{oops}` into the argv.
+///
+/// `{{` and `}}` are escapes for a literal `{` / `}` — handy when the
+/// embedded script itself uses braces (Python dicts, shell parameter
+/// expansion, …) and shouldn't be mistaken for a placeholder.
 pub fn substitute(input: &str, ctx: &PlaceholderContext<'_>) -> Result<String, SubstituteError> {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let tail = &rest[open + 1..];
-        let close = match tail.find('}') {
-            Some(c) => c,
-            None => {
-                // Unmatched '{' — copy literal.
-                out.push('{');
-                rest = tail;
+    while !rest.is_empty() {
+        // `{{` → literal `{`.
+        if let Some(after) = rest.strip_prefix("{{") {
+            out.push('{');
+            rest = after;
+            continue;
+        }
+        // `}}` → literal `}`.
+        if let Some(after) = rest.strip_prefix("}}") {
+            out.push('}');
+            rest = after;
+            continue;
+        }
+        if let Some(after_brace) = rest.strip_prefix('{') {
+            // Placeholder: consume up to the matching `}`.
+            if let Some(close) = after_brace.find('}') {
+                let key = &after_brace[..close];
+                let replacement = resolve(key, ctx)?;
+                out.push_str(&replacement);
+                rest = &after_brace[close + 1..];
                 continue;
             }
-        };
-        let key = &tail[..close];
-        let replacement = resolve(key, ctx)?;
-        out.push_str(&replacement);
-        rest = &tail[close + 1..];
+            // Unmatched `{` at EOL — copy literal and stop.
+            out.push('{');
+            rest = after_brace;
+            continue;
+        }
+        // Regular char run up to the next `{` or `}`.
+        let next = rest.find(['{', '}']).unwrap_or(rest.len());
+        out.push_str(&rest[..next]);
+        rest = &rest[next..];
     }
-    out.push_str(rest);
     Ok(out)
 }
 
@@ -208,5 +226,20 @@ mod tests {
         // No close brace → literal.
         let out = substitute("prefix {not closed", &ctx).unwrap();
         assert_eq!(out, "prefix {not closed");
+    }
+
+    #[test]
+    fn double_braces_escape_to_literals() {
+        let alloc = alloc_gpu0_only();
+        let ctx = PlaceholderContext {
+            name: "demo",
+            port: 8188,
+            model: None,
+            allocation: &alloc,
+            static_vram_mb: None,
+        };
+        // `{{` / `}}` are escapes; the embedded script keeps its braces.
+        let out = substitute("print(d[{{'k': 1}}]) on {port}", &ctx).unwrap();
+        assert_eq!(out, "print(d[{'k': 1}]) on 8188");
     }
 }

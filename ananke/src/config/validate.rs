@@ -767,12 +767,51 @@ fn validate_command(
             "service {name}: shutdown_command is present but empty"
         )));
     }
+    // Dry-run the placeholder substitution so typos surface now rather
+    // than at spawn/drain time. Uses a synthetic context — values are
+    // arbitrary but cover every placeholder the supervisor will later
+    // supply, so anything the runtime will accept also passes here.
+    check_placeholders(name, "command", &command)?;
+    if let Some(sd) = &cmd.shutdown_command {
+        check_placeholders(name, "shutdown_command", sd)?;
+    }
     Ok(CommandConfig {
         command,
         workdir: cmd.workdir.clone(),
         shutdown_command: cmd.shutdown_command.clone(),
         private_port_override: cmd.private_port,
     })
+}
+
+/// Resolve every `{placeholder}` in `argv` against a synthetic context
+/// covering every substitution the supervisor can produce. Propagates
+/// the first [`SubstituteError`] as a config error with `field` + `name`
+/// context, so a typo like `{prot}` fails `config validate` rather than
+/// slipping through to a runtime `StartFailure`.
+fn check_placeholders(name: &SmolStr, field: &str, argv: &[String]) -> Result<(), ExpectedError> {
+    use crate::{
+        devices::{Allocation, DeviceId},
+        templates::{PlaceholderContext, substitute},
+    };
+    let mut alloc_bytes = std::collections::BTreeMap::new();
+    alloc_bytes.insert(DeviceId::Gpu(0), 1);
+    let alloc = Allocation { bytes: alloc_bytes };
+    let ctx = PlaceholderContext {
+        name,
+        port: 0,
+        model: Some("/m/x.gguf"),
+        allocation: &alloc,
+        // `None` so a `{vram_mb}` placeholder on a dynamic allocation
+        // trips the `VramMbOnDynamic` branch at config time, not
+        // later. Static allocations re-validate at spawn time against
+        // the real static_vram_mb.
+        static_vram_mb: None,
+    };
+    for (i, arg) in argv.iter().enumerate() {
+        substitute(arg, &ctx)
+            .map_err(|e| fail(format!("service {name}: {field}[{i}] {arg:?}: {e}")))?;
+    }
+    Ok(())
 }
 
 fn fail(msg: String) -> ExpectedError {
@@ -1556,6 +1595,49 @@ allocation.vram_gb = 1
         let err = validate(&cfg).expect_err("empty shutdown_command is rejected");
         assert!(
             format!("{err}").contains("shutdown_command is present but empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_service_rejects_typo_in_placeholder() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "ext"
+template = "command"
+command = ["run", "--port={prot}"]
+port = 8500
+allocation.mode = "static"
+allocation.vram_gb = 1
+"#,
+        );
+        let err = validate(&cfg).expect_err("typoed placeholder is rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("command[1]") && msg.contains("{prot}"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_service_rejects_typo_in_shutdown_placeholder() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "ext"
+template = "command"
+command = ["run", "--port={port}"]
+shutdown_command = ["stop", "{bogus}"]
+port = 8500
+allocation.mode = "static"
+allocation.vram_gb = 1
+"#,
+        );
+        let err = validate(&cfg).expect_err("typoed shutdown placeholder is rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("shutdown_command[1]") && msg.contains("{bogus}"),
             "unexpected error: {err}"
         );
     }

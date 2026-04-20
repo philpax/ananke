@@ -460,6 +460,12 @@ const STARTING_SIGTERM_GRACE: Duration = Duration::from_secs(5);
 /// because the child is healthy and may be mid-request.
 const RUNNING_SIGTERM_GRACE: Duration = Duration::from_secs(10);
 
+/// Upper bound for a command service's optional `shutdown_command`.
+/// Long enough for a `docker stop` (default 10s docker grace + slack)
+/// but short enough that a hung shutdown doesn't block the drain
+/// forever. A timeout escalates to SIGKILL of the shutdown child.
+const SHUTDOWN_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Backoff schedule for consecutive start failures before transitioning to
 /// Disabled. Indexed by `retry_count` (0-based).
 const FAILED_RETRY_BACKOFFS: [Duration; 3] = [
@@ -614,6 +620,63 @@ impl RunLoop {
             reservations,
             at_ms: crate::tracking::now_unix_ms(),
         });
+    }
+
+    /// Run a command-template service's `shutdown_command`, if any, after
+    /// the normal SIGTERM/SIGKILL pipeline completes. No-op for llama-cpp
+    /// services and for command services without a shutdown command.
+    ///
+    /// Gives the shutdown child a bounded window to exit; logs (but does
+    /// not propagate) failures — a drain is already terminal and the
+    /// caller can't usefully recover from a shutdown-command error.
+    async fn run_shutdown_command(&self) {
+        let svc = self.current_svc();
+        let Some(render_result) =
+            crate::supervise::spawn::render_shutdown_argv(&svc, &self.init.allocation)
+        else {
+            return;
+        };
+        let cfg = match render_result {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    service = %self.init.identity.name,
+                    error = %e,
+                    "shutdown_command placeholder substitution failed; skipping"
+                );
+                return;
+            }
+        };
+        info!(service = %self.init.identity.name, binary = %cfg.binary, "drain: running shutdown_command");
+        let mut child = match self.deps.system.process_spawner.spawn(&cfg).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(service = %self.init.identity.name, error = %e, "shutdown_command spawn failed");
+                return;
+            }
+        };
+        match tokio::time::timeout(SHUTDOWN_COMMAND_TIMEOUT, child.wait()).await {
+            Ok(Ok(status)) => {
+                if !status.success() {
+                    warn!(
+                        service = %self.init.identity.name,
+                        ?status,
+                        "shutdown_command exited non-zero"
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                warn!(service = %self.init.identity.name, error = %e, "shutdown_command wait failed");
+            }
+            Err(_) => {
+                warn!(
+                    service = %self.init.identity.name,
+                    timeout_s = SHUTDOWN_COMMAND_TIMEOUT.as_secs(),
+                    "shutdown_command timed out; SIGKILLing it"
+                );
+                let _ = child.sigkill().await;
+            }
+        }
     }
 
     /// Remove this service's reservation, clear observation, and finalise the
@@ -1054,11 +1117,29 @@ impl RunLoop {
             .as_ref()
             .map(|p| &p.allocation)
             .unwrap_or(&self.init.allocation);
-        let spawn_cfg = render_argv(
+        let spawn_cfg = match render_argv(
             &current,
             spawn_alloc,
             self.packed_for_spawn.as_ref().map(|p| &p.args),
-        );
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "placeholder substitution failed; aborting spawn");
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::LaunchFailed,
+                        message: format!("placeholder substitution failed: {e}"),
+                    }));
+                }
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
+                self.emit_allocation_changed();
+                self.set_state(ServiceState::Failed { retry_count: 0 });
+                return Step::Continue;
+            }
+        };
         let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
         let mut child = match self.deps.system.process_spawner.spawn(&spawn_cfg).await {
             Ok(c) => c,
@@ -1270,6 +1351,7 @@ impl RunLoop {
                     reason: DisableReason::HealthTimeout,
                 });
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
                 StartingOutcome::Break
             }
             Ok(HealthOutcome::Cancelled) | Err(_) => {
@@ -1279,6 +1361,7 @@ impl RunLoop {
                     .remove(&self.init.identity.name);
                 self.emit_allocation_changed();
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
                 StartingOutcome::Exit
             }
         }
@@ -1316,6 +1399,7 @@ impl RunLoop {
                     info!(service = %self.init.identity.name, "draining during warming");
                     let _ = self.cancel_tx.send(true);
                     drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                    self.run_shutdown_command().await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.deps.allocations.lock().remove(&self.init.identity.name);
                     self.emit_allocation_changed();
@@ -1357,6 +1441,7 @@ impl RunLoop {
                     }
                     info!(service = %self.init.identity.name, "idle timeout; draining to idle");
                     drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                    self.run_shutdown_command().await;
                     delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                     self.record_drain_complete();
                     self.set_state(ServiceState::Idle);
@@ -1392,6 +1477,7 @@ impl RunLoop {
             sigterm_grace: RUNNING_SIGTERM_GRACE,
         };
         drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
+        self.run_shutdown_command().await;
         delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
         self.record_drain_complete();
     }
@@ -1411,6 +1497,7 @@ impl RunLoop {
                 self.set_state(next);
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                 self.record_drain_complete();
                 let _ = ack.send(());
@@ -1445,6 +1532,7 @@ impl RunLoop {
                 self.set_state(ServiceState::Draining);
 
                 fast_kill(child, reason).await;
+                self.run_shutdown_command().await;
 
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                 self.deps
@@ -1489,6 +1577,7 @@ impl RunLoop {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
                 self.deps
                     .allocations
                     .lock()
@@ -1541,6 +1630,7 @@ impl RunLoop {
                 // transition to Disabled.
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
                 delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
                 self.deps
                     .allocations

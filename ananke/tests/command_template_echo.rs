@@ -60,7 +60,7 @@ fn command_argv_substitutes_port() {
     };
 
     let alloc = Allocation::from_override(&placement);
-    let cfg = render_argv(&svc, &alloc, None);
+    let cfg = render_argv(&svc, &alloc, None).unwrap();
     assert_eq!(cfg.binary, "python");
     // The private port (48188) is substituted into {port}.
     assert!(

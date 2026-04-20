@@ -28,9 +28,9 @@ pub fn render_argv(
     svc: &ServiceConfig,
     alloc: &Allocation,
     cmd_args: Option<&CommandArgs>,
-) -> SpawnConfig {
+) -> Result<SpawnConfig, crate::templates::SubstituteError> {
     match &svc.template_config {
-        TemplateConfig::LlamaCpp(lc) => render_llama_cpp_argv(svc, lc, alloc, cmd_args),
+        TemplateConfig::LlamaCpp(lc) => Ok(render_llama_cpp_argv(svc, lc, alloc, cmd_args)),
         TemplateConfig::Command(_) => render_command_argv(svc, alloc),
     }
 }
@@ -186,38 +186,44 @@ fn render_llama_cpp_argv(
     }
 }
 
-/// Render argv for a `Command`-template service, including placeholder
-/// substitution for `{port}`, `{gpu_ids}`, `{vram_mb}`, `{model}`, `{name}`.
-fn render_command_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
+/// Assemble the [`PlaceholderContext`] a command-template argv renders
+/// against. Shared by spawn-time and shutdown-time so both paths resolve
+/// `{port}` / `{gpu_ids}` / `{vram_mb}` / `{name}` identically.
+fn placeholder_context<'a>(
+    svc: &'a ServiceConfig,
+    alloc: &'a Allocation,
+) -> crate::templates::PlaceholderContext<'a> {
     use crate::config::AllocationMode;
-
-    let TemplateConfig::Command(cmd_cfg) = &svc.template_config else {
-        unreachable!("render_command_argv called on non-command service")
-    };
-
-    let binary = cmd_cfg.command.first().cloned().unwrap_or_default();
-    let raw_argv: Vec<String> = cmd_cfg.command.iter().skip(1).cloned().collect();
-
     let static_vram_mb = match svc.allocation_mode {
         AllocationMode::Static { vram_mb } => Some(vram_mb),
         _ => None,
     };
-    let ctx = crate::templates::PlaceholderContext {
+    crate::templates::PlaceholderContext {
         name: &svc.name,
         port: svc.private_port,
-        // Command template has no model path; {model} placeholder resolves to empty.
+        // Command template has no model path; {model} resolves to empty.
         model: None,
         allocation: alloc,
         static_vram_mb,
-    };
+    }
+}
 
+/// Render any command-template argv (the main `command` or the sibling
+/// `shutdown_command`) under the same substitution rules. Hard-fails on
+/// substitution errors — callers surface them as `StartFailure` /
+/// shutdown-run warnings rather than launching with literal
+/// `{placeholder}` tokens in argv.
+fn render_command_like(
+    argv: &[String],
+    svc: &ServiceConfig,
+    alloc: &Allocation,
+) -> Result<SpawnConfig, crate::templates::SubstituteError> {
+    let binary = argv.first().cloned().unwrap_or_default();
+    let tail: Vec<String> = argv.iter().skip(1).cloned().collect();
+
+    let ctx = placeholder_context(svc, alloc);
     let user_env: BTreeMap<String, String> = svc.env.clone();
-
-    let (args, env_substituted) =
-        crate::templates::substitute_argv(&raw_argv, &user_env, &ctx).unwrap_or_else(|e| {
-            tracing::error!(service = %svc.name, error = %e, "placeholder substitution failed; using raw argv");
-            (raw_argv, user_env)
-        });
+    let (args, env_substituted) = crate::templates::substitute_argv(&tail, &user_env, &ctx)?;
 
     let mut env = BTreeMap::new();
     for (k, v) in env_substituted {
@@ -225,7 +231,38 @@ fn render_command_argv(svc: &ServiceConfig, alloc: &Allocation) -> SpawnConfig {
     }
     env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
-    SpawnConfig { binary, args, env }
+    Ok(SpawnConfig { binary, args, env })
+}
+
+/// Render argv for the optional `shutdown_command` sibling of a
+/// command-template service, if one is configured. Returns `None` when
+/// the service has no shutdown command or isn't a command-template
+/// service. Propagates substitution errors so the caller logs them
+/// (instead of launching the shutdown with unresolved `{placeholder}`s).
+pub fn render_shutdown_argv(
+    svc: &ServiceConfig,
+    alloc: &Allocation,
+) -> Option<Result<SpawnConfig, crate::templates::SubstituteError>> {
+    let TemplateConfig::Command(cmd_cfg) = &svc.template_config else {
+        return None;
+    };
+    let argv = cmd_cfg.shutdown_command.as_ref()?;
+    if argv.is_empty() {
+        return None;
+    }
+    Some(render_command_like(argv, svc, alloc))
+}
+
+/// Render argv for a `Command`-template service. Substitutes `{port}`,
+/// `{gpu_ids}`, `{vram_mb}`, `{model}`, `{name}`.
+fn render_command_argv(
+    svc: &ServiceConfig,
+    alloc: &Allocation,
+) -> Result<SpawnConfig, crate::templates::SubstituteError> {
+    let TemplateConfig::Command(cmd_cfg) = &svc.template_config else {
+        unreachable!("render_command_argv called on non-command service")
+    };
+    render_command_like(&cmd_cfg.command, svc, alloc)
 }
 
 #[cfg(test)]
@@ -262,7 +299,7 @@ mod tests {
     fn renders_core_flags() {
         let svc = base_service();
         let alloc = Allocation::from_override(&svc.placement_override);
-        let cmd = render_argv(&svc, &alloc, None);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
         assert_eq!(cmd.binary, "llama-server");
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.iter().any(|a| a == "/m/x.gguf"));
@@ -279,7 +316,7 @@ mod tests {
         let mut svc = base_service();
         expect_llama_cpp(&mut svc).mmproj = Some(PathBuf::from("/m/x-mmproj.gguf"));
         let alloc = Allocation::from_override(&svc.placement_override);
-        let cmd = render_argv(&svc, &alloc, None);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
         let idx = cmd.args.iter().position(|a| a == "--mmproj").unwrap();
         assert_eq!(cmd.args[idx + 1], "/m/x-mmproj.gguf");
     }
@@ -291,7 +328,7 @@ mod tests {
         svc.placement_override.clear();
         svc.placement_override.insert(DeviceSlot::Cpu, 10240);
         let alloc = Allocation::from_override(&svc.placement_override);
-        let cmd = render_argv(&svc, &alloc, None);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
         let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
         assert_eq!(cmd.args[ngl_idx + 1], "0");
         assert_eq!(cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(), "");
@@ -306,7 +343,7 @@ mod tests {
             tensor_split: Some(vec![12, 12]),
             override_tensor: vec![],
         };
-        let cmd = render_argv(&svc, &alloc, Some(&ca));
+        let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
         let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
         assert_eq!(cmd.args[ngl_idx + 1], "24");
         let ts_idx = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();
@@ -327,7 +364,7 @@ mod tests {
         let svc = base_service();
         // Empty override (estimator-driven) → `init.allocation` is empty.
         let empty_alloc = Allocation::from_override(&BTreeMap::new());
-        let empty_cmd = render_argv(&svc, &empty_alloc, None);
+        let empty_cmd = render_argv(&svc, &empty_alloc, None).unwrap();
         assert_eq!(
             empty_cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(),
             "",
@@ -338,7 +375,7 @@ mod tests {
         let mut placed = BTreeMap::new();
         placed.insert(DeviceSlot::Gpu(1), 4096);
         let packed_alloc = Allocation::from_override(&placed);
-        let packed_cmd = render_argv(&svc, &packed_alloc, None);
+        let packed_cmd = render_argv(&svc, &packed_alloc, None).unwrap();
         assert_eq!(packed_cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(), "1");
     }
 
@@ -359,7 +396,7 @@ mod tests {
         svc.placement_policy = PlacementPolicy::GpuOnly;
         svc.allocation_mode = AllocationMode::Static { vram_mb: 6144 };
         let alloc = Allocation::from_override(&placement);
-        let cfg = render_argv(&svc, &alloc, None);
+        let cfg = render_argv(&svc, &alloc, None).unwrap();
         assert_eq!(cfg.binary, "python");
         assert!(
             cfg.args.iter().any(|a| a == "48188"),
