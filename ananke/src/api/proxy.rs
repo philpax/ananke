@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures::{TryStreamExt, future::BoxFuture};
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::{
-    Request, Response, StatusCode,
+    Request, Response,
     body::{Frame, Incoming},
     service::service_fn,
 };
@@ -23,7 +23,9 @@ use hyper_util::{
 use tokio::{net::TcpListener, sync::watch};
 use tracing::{info, warn};
 
-use crate::{errors::ExpectedError, tracking::inflight::InflightGuard};
+use crate::{
+    api::openai::errors::ProxyErrorCode, errors::ExpectedError, tracking::inflight::InflightGuard,
+};
 
 /// Boxed body type used for both upstream requests and downstream responses.
 pub type ProxyBody =
@@ -141,17 +143,25 @@ pub async fn serve_with_activity(
     }
 }
 
-/// Build a 503 Service Unavailable response with an OpenAI-shaped JSON error body.
-pub fn error_response(code: &str, message: &str) -> ProxyError {
+/// Build an OpenAI-shaped JSON error body for the hyper-native proxy data
+/// plane. The axum OpenAI layer has a sibling `errors::err()` that does the
+/// same thing for its body type — both keep the `{error: {code, message,
+/// type}}` shape and use [`ProxyErrorCode`] as the source of truth for the
+/// code slug, HTTP status, and error-type taxonomy.
+pub fn error_response(code: ProxyErrorCode, message: &str) -> ProxyError {
     let body_json = serde_json::json!({
-        "error": {"code": code, "message": message, "type": "server_error"}
+        "error": {
+            "code": code.to_string(),
+            "message": message,
+            "type": code.kind(),
+        }
     });
     let body_bytes = serde_json::to_vec(&body_json).unwrap_or_default();
     let full: ProxyBody = Full::new(Bytes::from(body_bytes))
         .map_err(|never| -> Box<dyn Error + Send + Sync> { match never {} })
         .boxed();
     Response::builder()
-        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .status(code.status())
         .header("content-type", "application/json")
         .body(full)
         .unwrap()
@@ -172,19 +182,10 @@ async fn handle(
         Ok(resp) => Ok(resp),
         Err(e) => {
             warn!(error = %e, peer = %peer, "proxy error");
-            let body = http_body_util::Full::new(Bytes::from("proxy error"))
-                .map_err(|never| match never {})
-                .boxed();
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(body)
-                .unwrap_or_else(|_| {
-                    Response::new(
-                        http_body_util::Full::new(Bytes::new())
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    )
-                }))
+            Ok(error_response(
+                ProxyErrorCode::ProxyInternal,
+                &e.to_string(),
+            ))
         }
     }
 }
@@ -220,12 +221,10 @@ async fn try_handle(
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, peer = %peer, "upstream request failed");
-            let body = http_body_util::Full::new(Bytes::from("upstream unavailable"))
-                .map_err(|never| match never {})
-                .boxed();
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .body(body)?);
+            return Ok(error_response(
+                ProxyErrorCode::UpstreamUnavailable,
+                &e.to_string(),
+            ));
         }
     };
 

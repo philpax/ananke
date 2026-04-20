@@ -12,14 +12,12 @@ use tracing::error;
 
 use crate::{
     allocator::AllocationTable,
-    api::proxy,
+    api::{openai::errors::ProxyErrorCode, proxy},
     config::{AllocationMode, Lifecycle, ServiceConfig},
     db::Database,
     devices::Allocation,
     errors::ExpectedError,
-    supervise::{
-        SupervisorDeps, SupervisorHandle, SupervisorInit, await_ensure, spawn_supervisor,
-    },
+    supervise::{SupervisorDeps, SupervisorHandle, SupervisorInit, await_ensure, spawn_supervisor},
     tracking::{activity::ActivityTable, inflight::InflightTable, observation::ObservationTable},
 };
 
@@ -100,11 +98,12 @@ pub async fn provision_service(
         });
     }
 
-    let listen: SocketAddr = format!("127.0.0.1:{}", svc.port)
-        .parse()
-        .map_err(|e: std::net::AddrParseError| {
-            ExpectedError::bind_failed(format!("127.0.0.1:{}", svc.port), e.to_string())
-        })?;
+    let listen: SocketAddr =
+        format!("127.0.0.1:{}", svc.port)
+            .parse()
+            .map_err(|e: std::net::AddrParseError| {
+                ExpectedError::bind_failed(format!("127.0.0.1:{}", svc.port), e.to_string())
+            })?;
     let shutdown_rx = deps.shutdown_rx.clone();
     let upstream = svc.private_port;
     let name_for_error = svc.name.clone();
@@ -177,7 +176,9 @@ fn make_proxy_before_request(
             activity.ping(&name);
             match await_ensure(&handle, max_request_duration).await {
                 crate::supervise::EnsureOutcome::Ready { .. } => None,
-                crate::supervise::EnsureOutcome::Failed(f) => Some(ensure_failure_to_proxy_error(f)),
+                crate::supervise::EnsureOutcome::Failed(f) => {
+                    Some(ensure_failure_to_proxy_error(f))
+                }
             }
         }) as BoxFuture<'static, _>
     })
@@ -186,11 +187,15 @@ fn make_proxy_before_request(
 fn ensure_failure_to_proxy_error(f: crate::supervise::EnsureFailure) -> proxy::ProxyError {
     use crate::supervise::EnsureFailure;
     match f {
-        EnsureFailure::InsufficientVram(msg) => proxy::error_response("insufficient_vram", &msg),
-        EnsureFailure::ServiceDisabled(msg) => proxy::error_response("service_disabled", &msg),
-        EnsureFailure::StartQueueFull => {
-            proxy::error_response("start_queue_full", "start queue full")
+        EnsureFailure::InsufficientVram(msg) => {
+            proxy::error_response(ProxyErrorCode::InsufficientVram, &msg)
         }
-        EnsureFailure::StartFailed(msg) => proxy::error_response("start_failed", &msg),
+        EnsureFailure::ServiceDisabled(msg) => {
+            proxy::error_response(ProxyErrorCode::ServiceDisabled, &msg)
+        }
+        EnsureFailure::StartQueueFull => {
+            proxy::error_response(ProxyErrorCode::StartQueueFull, "start queue full")
+        }
+        EnsureFailure::StartFailed(msg) => proxy::error_response(ProxyErrorCode::StartFailed, &msg),
     }
 }
