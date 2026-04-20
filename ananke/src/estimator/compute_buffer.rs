@@ -41,12 +41,12 @@ fn tuning_for(summary: &GgufSummary) -> Tuning {
         // Gemma 4 E-variants (detected by `per_layer_token_embd.weight`):
         // small hidden + per-layer embeddings on CPU, so neither the
         // attention scratch nor the CUDA context take up as much room
-        // as the fat-model gemma4 default. E4B actual at 262k was
-        // ~2.5 GiB; the (2000, 7) curve for regular gemma4 over-reserves
-        // it by 2 GiB otherwise.
+        // as the fat-model gemma4 default. The full (2000, 7) curve
+        // over-reserves E4B by ~2 GiB at 262k; (1100, 7) stays safely
+        // above every observed datapoint (worst-case -176 MiB over).
         "gemma4" if is_gemma_e_variant(summary) => Tuning {
-            base: 1000,
-            slope: 6,
+            base: 1100,
+            slope: 7,
         },
 
         // Gemma family has large hidden, a few full-attention layers
@@ -241,6 +241,6 @@ mod tests {
         assert_eq!(default_for(&summary_for("gpt-oss"), 512), 600);
         assert_eq!(default_for(&summary_for("gemma4"), 0), 2000);
         assert_eq!(default_for(&summary_for("qwen35moe"), 0), 900);
-        assert_eq!(default_for(&gemma4_e_variant_summary(), 0), 1000);
+        assert_eq!(default_for(&gemma4_e_variant_summary(), 0), 1100);
     }
 }
