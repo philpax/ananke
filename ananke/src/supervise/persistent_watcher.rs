@@ -31,6 +31,11 @@ const TICK: Duration = Duration::from_secs(5);
 
 pub async fn run_loop(state: AppState, mut shutdown: watch::Receiver<bool>) {
     let mut tick = tokio::time::interval(TICK);
+    // Skip rather than burst on missed ticks: if a prior `tick.tick()`
+    // was blocked (e.g. awaiting a peer snapshot that queued behind a
+    // long drain), we don't want to fire N back-to-back re-ensures —
+    // one catch-up is enough.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Absorb the immediate tick so we pace from `TICK` onward; the
     // daemon's boot-time `provision::boot` already ensures every
     // persistent service once, and re-firing at t=0 would race with it.
@@ -50,6 +55,35 @@ pub async fn run_loop(state: AppState, mut shutdown: watch::Receiver<bool>) {
 
 async fn re_ensure_persistent(state: &AppState) {
     let effective = state.config.effective();
+
+    // Passive: if *any* other service is currently active
+    // (Starting/Warming/Running), defer. The watcher's job is to
+    // reclaim VRAM that's going unused, not to fight on-demand traffic
+    // for it. If an on-demand service idle-drains out, the next tick
+    // finds the pool quiet and re-ensures; if the operator stops the
+    // on-demand service explicitly, same. This keeps the persistent
+    // service's respawn from ping-ponging against every peer start.
+    let any_peer_active = state
+        .registry
+        .all()
+        .into_iter()
+        .any(|(name, handle)| {
+            let is_persistent = effective
+                .services
+                .iter()
+                .any(|s| s.name == name && s.lifecycle == Lifecycle::Persistent);
+            if is_persistent {
+                return false;
+            }
+            matches!(
+                handle.peek_state(),
+                ServiceState::Starting | ServiceState::Warming | ServiceState::Running,
+            )
+        });
+    if any_peer_active {
+        return;
+    }
+
     for svc_cfg in effective.services.iter() {
         if svc_cfg.lifecycle != Lifecycle::Persistent {
             continue;
@@ -57,16 +91,19 @@ async fn re_ensure_persistent(state: &AppState) {
         let Some(handle) = state.registry.get(&svc_cfg.name) else {
             continue;
         };
-        let Some(snap) = handle.snapshot().await else {
-            continue;
-        };
-        if !dormant(&snap.state) {
+        // Read state via the lock-free mirror so the watcher doesn't
+        // stack commands into the supervisor's bounded mailbox on
+        // every tick. Without this, a supervisor backed up inside its
+        // own `handle_idle_ensure` (serial drains, etc.) would deadlock
+        // with the watcher when the mailbox fills.
+        let peer_state = handle.peek_state();
+        if !dormant(&peer_state) {
             continue;
         }
         let h = handle.clone();
         let name = svc_cfg.name.clone();
         tokio::spawn(async move {
-            info!(service = %name, dormant_state = %snap.state.name(), "re-ensuring persistent service");
+            info!(service = %name, dormant_state = %peer_state.name(), "re-ensuring persistent service");
             // Disabled{NoFit} supervisors reject Ensure outright; Enable
             // transitions back to Idle so the next Ensure can run. Enable
             // is a no-op on non-Disabled states so it's safe to fire

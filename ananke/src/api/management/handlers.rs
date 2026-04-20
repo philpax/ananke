@@ -28,21 +28,25 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
     let eff = state.config.effective();
     for svc_cfg in eff.services.iter() {
         let handle = state.registry.get(&svc_cfg.name);
-        let snap = match &handle {
-            Some(h) => h.snapshot().await,
-            None => None,
-        };
+        // Use the lock-free state mirror rather than sending a Snapshot
+        // command on the supervisor's bounded mailbox: `list_services`
+        // is a read-only endpoint and must stay responsive even while
+        // a supervisor is in the middle of a long drain/spawn. `run_id`
+        // and `pid` aren't in the mirror, so they stay `None` on the
+        // summary — operators can hit `/api/services/{name}` for the
+        // full snapshot when the supervisor is idle enough to answer.
+        let state_name = handle
+            .as_ref()
+            .map(|h| h.peek_state().name().to_string())
+            .unwrap_or_else(|| "unknown".into());
         out.push(ServiceSummary {
             name: svc_cfg.name.to_string(),
-            state: snap
-                .as_ref()
-                .map(|s| s.state.name().to_string())
-                .unwrap_or_else(|| "unknown".into()),
+            state: state_name,
             lifecycle: svc_cfg.lifecycle.as_str().to_string(),
             priority: svc_cfg.priority,
             port: svc_cfg.port,
-            run_id: snap.as_ref().and_then(|s| s.run_id),
-            pid: snap.as_ref().and_then(|s| s.pid),
+            run_id: None,
+            pid: None,
             // Placeholder: elastic borrower tracking is deferred to a later phase.
             elastic_borrower: None,
             ananke_metadata: svc_cfg.metadata.clone(),

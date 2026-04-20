@@ -151,6 +151,13 @@ pub struct SupervisorHandle {
     pub name: smol_str::SmolStr,
     tx: mpsc::Sender<SupervisorCommand>,
     join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Lock-free mirror of the supervisor's current state. Writers: the
+    /// supervisor's own `set_state`. Readers: anyone who just needs the
+    /// state without poking the command channel (eviction planner,
+    /// persistent-respawn watcher, etc.). Going through the mailbox
+    /// for a state peek is what used to deadlock the eviction cascade
+    /// when the mailbox filled up behind serial drains.
+    state_mirror: Arc<SyncMutex<ServiceState>>,
 }
 
 impl SupervisorHandle {
@@ -164,6 +171,16 @@ impl SupervisorHandle {
         if let Some(handle) = self.join.lock().await.take() {
             let _ = handle.await;
         }
+    }
+
+    /// Non-blocking read of the supervisor's current state. Never goes
+    /// through the command channel, so it's safe to call while holding
+    /// schedulers' allocator lock or inside another supervisor's
+    /// `handle_idle_ensure`. Callers that need the pid/run_id too
+    /// should still use [`snapshot`] — everyone else should prefer
+    /// this.
+    pub fn peek_state(&self) -> ServiceState {
+        self.state_mirror.lock().clone()
     }
 
     pub async fn snapshot(&self) -> Option<SupervisorSnapshot> {
@@ -302,11 +319,17 @@ pub fn spawn_supervisor(
 ) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(SUPERVISOR_COMMAND_MAILBOX);
     let name = init.identity.name.clone();
-    let join = tokio::spawn(run(init, boot_svc, deps, rx));
+    // Shared with `RunLoop` so `SupervisorHandle::peek_state` can read the
+    // live state without going through the command channel (which serialises
+    // behind long operations like drain/spawn and would deadlock the eviction
+    // planner if it blocked here).
+    let state_mirror = Arc::new(SyncMutex::new(ServiceState::Idle));
+    let join = tokio::spawn(run(init, boot_svc, deps, rx, state_mirror.clone()));
     SupervisorHandle {
         name,
         tx,
         join: tokio::sync::Mutex::new(Some(join)),
+        state_mirror,
     }
 }
 
@@ -490,8 +513,9 @@ async fn run(
     boot_svc: ServiceConfig,
     deps: SupervisorDeps,
     rx: mpsc::Receiver<SupervisorCommand>,
+    state_mirror: Arc<SyncMutex<ServiceState>>,
 ) {
-    let mut loop_state = RunLoop::new(init, boot_svc, deps, rx);
+    let mut loop_state = RunLoop::new(init, boot_svc, deps, rx, state_mirror);
     loop {
         let step = match loop_state.state.clone() {
             ServiceState::Idle => loop_state.handle_idle().await,
@@ -551,9 +575,12 @@ impl RunLoop {
         boot_svc: ServiceConfig,
         deps: SupervisorDeps,
         rx: mpsc::Receiver<SupervisorCommand>,
+        state_mirror: Arc<SyncMutex<ServiceState>>,
     ) -> Self {
         let state = ServiceState::Idle;
-        let state_mirror = Arc::new(SyncMutex::new(state.clone()));
+        // Seed the shared mirror so readers see `Idle` before the
+        // supervisor's first `set_state` call.
+        *state_mirror.lock() = state.clone();
         let (cancel_tx, cancel_rx) = watch::channel(false);
         Self {
             init,
@@ -1109,23 +1136,30 @@ impl RunLoop {
             if handle.name.as_str() == self.init.identity.name.as_str() {
                 continue;
             }
-            let Some(service_snap) = handle.snapshot().await else {
-                continue;
-            };
-            // "Idle" for eviction purposes means "no user-facing work in
-            // flight" — either the supervisor is literally in the Idle
-            // state (not running), or it's healthy but quiescent
-            // (Running/Warming with zero in-flight requests). Without
-            // the in-flight check, an idle-but-still-loaded service
-            // would be treated as busy and the eviction planner would
-            // refuse to displace it, which is exactly the deadlock the
-            // new eviction rule was supposed to break.
+            // Read the peer's state via the shared mirror rather than
+            // `handle.snapshot().await` — a snapshot call queues on the
+            // supervisor's bounded command mailbox, and when this is
+            // itself called from inside `handle_idle_ensure` (which
+            // blocks the target supervisor from draining its own
+            // mailbox), a full mailbox on the peer causes a circular
+            // wait between the eviction planner and the peer's own
+            // in-flight eviction. The mirror is lock-free for readers
+            // and can't back up.
+            let state = handle.peek_state();
+            // "Idle" for eviction purposes means "no user-facing work
+            // in flight on a settled supervisor" — the state is either
+            // literally Idle (not running) or Running with no in-flight
+            // requests. We deliberately exclude Starting and Warming: a
+            // starting/warming service has already paid the cold-start
+            // cost and hasn't had a chance to serve anything yet, so
+            // cutting it off to make room for another cold-start is
+            // pure thrash. If the caller genuinely can't fit without
+            // disturbing a warming peer, it'll get back a NoFit and
+            // can either retry (by which time the peer is Running,
+            // which *is* idle-evictable) or surface the failure.
             let in_flight = self.deps.inflight.current(&handle.name);
-            let idle = in_flight == 0
-                && matches!(
-                    service_snap.state,
-                    ServiceState::Idle | ServiceState::Running | ServiceState::Warming
-                );
+            let idle =
+                in_flight == 0 && matches!(state, ServiceState::Idle | ServiceState::Running);
             let alloc_mb = self
                 .deps
                 .allocations
