@@ -956,7 +956,7 @@ impl RunLoop {
         let my_priority = self.current_svc().priority;
         let victims: Vec<smol_str::SmolStr> = candidates
             .iter()
-            .filter(|c| c.priority < my_priority)
+            .filter(|c| c.is_evictable_by(my_priority))
             .map(|c| c.name.clone())
             .collect();
         if victims.is_empty() {
@@ -1003,15 +1003,20 @@ impl RunLoop {
         let candidates = self.collect_eviction_candidates().await;
 
         let reservations_now = self.deps.allocations.lock().clone();
-        let snap = self.deps.snapshot.read().clone();
-        let free_on_slot = snap.free_bytes(&nofit.slot).unwrap_or(0);
+        // `nofit.available_bytes` is already reservation-adjusted
+        // (`min(snap.free, snap.total - sum_of_reservations)`), so pass
+        // it through verbatim. Using `snap.free_bytes` here would let
+        // running services' pledges hide behind the raw snapshot free
+        // and short-circuit eviction — exactly what happens in the
+        // fake-spawner harness where the snapshot doesn't move as
+        // services start up.
         let to_evict = crate::allocator::eviction::select_for_slot(
             nofit.needed_bytes,
             &nofit.slot,
             self.current_svc().priority,
             &candidates,
             &reservations_now,
-            free_on_slot,
+            nofit.available_bytes,
         );
 
         if to_evict.is_empty() {

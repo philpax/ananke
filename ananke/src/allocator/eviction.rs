@@ -26,6 +26,15 @@ pub struct EvictionCandidate {
     pub allocation_bytes: u64,
 }
 
+impl EvictionCandidate {
+    /// Whether this candidate can be displaced by an incoming request
+    /// at `incoming_priority`. Single source of truth for the rule; every
+    /// other eviction decision must go through this.
+    pub fn is_evictable_by(&self, incoming_priority: u8) -> bool {
+        self.idle || self.priority < incoming_priority
+    }
+}
+
 /// Select the minimum set of services whose eviction would free enough
 /// capacity for `want` on `want_slot` (spec §8.1 step 5).
 ///
@@ -50,7 +59,7 @@ pub fn select_for_slot(
 
     let mut candidates: Vec<&EvictionCandidate> = running
         .iter()
-        .filter(|c| c.idle || c.priority < want_priority)
+        .filter(|c| c.is_evictable_by(want_priority))
         .filter(|c| {
             reservations
                 .get(&c.name)
@@ -121,6 +130,24 @@ mod tests {
             map.insert(SmolStr::new(*n), inner);
         }
         map
+    }
+
+    #[test]
+    fn is_evictable_by_idle_always_yes() {
+        let c = cand("idle", 100, true, 1);
+        assert!(c.is_evictable_by(0));
+        assert!(c.is_evictable_by(50));
+        assert!(c.is_evictable_by(100));
+    }
+
+    #[test]
+    fn is_evictable_by_busy_needs_strictly_higher() {
+        let c = cand("busy", 50, false, 1);
+        assert!(!c.is_evictable_by(0));
+        assert!(!c.is_evictable_by(49));
+        assert!(!c.is_evictable_by(50));
+        assert!(c.is_evictable_by(51));
+        assert!(c.is_evictable_by(100));
     }
 
     #[test]
