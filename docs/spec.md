@@ -183,9 +183,6 @@ start_queue_depth = 10
 
 [[service]]
 # one block per service; see §7
-
-[[persistent_service]]  # optional alternative to `lifecycle = "persistent"`
-# same shape as [[service]] but lifecycle defaults to persistent
 ```
 
 ### 6.3 Inheritance

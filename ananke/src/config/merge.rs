@@ -25,14 +25,6 @@ use crate::{
 };
 
 pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ExpectedError> {
-    // Fold [[persistent_service]] into [[service]] with lifecycle=persistent default.
-    for mut ps in std::mem::take(&mut cfg.persistent_services) {
-        if ps.common().lifecycle.is_none() {
-            ps.common_mut().lifecycle = Some(SmolStr::new("persistent"));
-        }
-        cfg.services.push(ps);
-    }
-
     // Index services by name; require names and disallow duplicates.
     let mut by_name: BTreeMap<SmolStr, RawService> = BTreeMap::new();
     for s in std::mem::take(&mut cfg.services) {

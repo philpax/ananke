@@ -45,8 +45,6 @@ pub struct RawConfig {
     pub defaults: DefaultsConfig,
     #[serde(default, rename = "service")]
     pub services: Vec<RawService>,
-    #[serde(default, rename = "persistent_service")]
-    pub persistent_services: Vec<RawService>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -340,23 +338,6 @@ command = ["/bin/true"]
             panic!("expected Command variant");
         };
         assert_eq!(cmd.command.as_ref().unwrap().as_slice(), ["/bin/true"]);
-    }
-
-    #[test]
-    fn parses_persistent_service_alias() {
-        let toml = r#"
-[[persistent_service]]
-name = "big"
-template = "llama-cpp"
-model = "/m/b.gguf"
-port = 11500
-"#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
-        assert_eq!(cfg.persistent_services.len(), 1);
-        assert_eq!(
-            cfg.persistent_services[0].common().name.as_deref(),
-            Some("big")
-        );
     }
 
     #[test]

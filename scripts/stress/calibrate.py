@@ -139,19 +139,15 @@ def _unwrap(v: Any) -> Any:
 
 
 def llm_service_blocks(source_toml: str) -> dict[str, dict[str, Any]]:
-    """Merge `[[service]]` and `[[persistent_service]]` arrays into one
-    name → service-block dict. The daemon's config parser accepts both
-    top-level array names (the latter is a shortcut for the former with
-    `lifecycle = "persistent"`), and calibrate.py needs to pull from
-    both without caring about the distinction.
+    """Return a name → service-block dict for every `[[service]]` using
+    the `llama-cpp` template.
     """
     doc = tomlkit.parse(source_toml)
     out: dict[str, dict[str, Any]] = {}
-    for key in ("service", "persistent_service"):
-        for s in doc.get(key) or []:
-            if str(s.get("template", "")) != "llama-cpp":
-                continue
-            out[str(s["name"])] = {k: _unwrap(v) for k, v in s.items()}
+    for s in doc.get("service") or []:
+        if str(s.get("template", "")) != "llama-cpp":
+            continue
+        out[str(s["name"])] = {k: _unwrap(v) for k, v in s.items()}
     return out
 
 
