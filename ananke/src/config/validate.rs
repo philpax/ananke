@@ -69,6 +69,7 @@ pub struct DaemonSettings {
     pub data_dir: PathBuf,
     pub shutdown_timeout_ms: u64,
     pub allow_external_management: bool,
+    pub allow_external_services: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -378,6 +379,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             data_dir,
             shutdown_timeout_ms,
             allow_external_management: cfg.daemon.allow_external_management,
+            allow_external_services: cfg.daemon.allow_external_services,
         },
         services: out,
     })

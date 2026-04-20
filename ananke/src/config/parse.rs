@@ -57,6 +57,14 @@ pub struct DaemonConfig {
     pub shutdown_timeout: String,
     #[serde(default)]
     pub allow_external_management: bool,
+    /// Bind per-service reverse proxies on 0.0.0.0 instead of 127.0.0.1
+    /// so direct hits to `<host>:<svc.port>` reach them over the network.
+    /// The OpenAI multiplexed endpoint on `openai_api.listen` always
+    /// honours its own bind address; this controls only the per-service
+    /// proxies (one port per `[[service]]`). Same security posture as
+    /// `allow_external_management`: unauthenticated, trust the perimeter.
+    #[serde(default)]
+    pub allow_external_services: bool,
     /// Inclusive lower bound of the loopback port range handed out to
     /// llama-server children for their private listener. Default: 40000.
     pub private_port_start: Option<u16>,

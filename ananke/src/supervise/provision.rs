@@ -105,12 +105,25 @@ pub async fn provision_service(
         });
     }
 
-    let listen: SocketAddr =
-        format!("127.0.0.1:{}", svc.port)
-            .parse()
-            .map_err(|e: std::net::AddrParseError| {
-                ExpectedError::bind_failed(format!("127.0.0.1:{}", svc.port), e.to_string())
-            })?;
+    // `daemon.allow_external_services = true` opts every per-service
+    // reverse proxy onto 0.0.0.0. Default is loopback-only; the per-
+    // service endpoints are unauthenticated so matching the
+    // `allow_external_management` posture is the right default.
+    let bind_host = if deps
+        .supervisor_deps
+        .config
+        .effective()
+        .daemon
+        .allow_external_services
+    {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
+    let listen_str = format!("{bind_host}:{}", svc.port);
+    let listen: SocketAddr = listen_str.parse().map_err(|e: std::net::AddrParseError| {
+        ExpectedError::bind_failed(listen_str.clone(), e.to_string())
+    })?;
     let shutdown_rx = deps.shutdown_rx.clone();
     let upstream = svc.private_port;
     let name_for_error = svc.name.clone();

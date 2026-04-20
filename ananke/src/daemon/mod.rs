@@ -199,6 +199,12 @@ pub async fn run() -> Result<(), ExpectedError> {
         );
     }
     info!(%mgmt_listen, "management listener bound");
+    if effective.daemon.allow_external_services {
+        warn!(
+            "per-service reverse proxies reachable from the network — no authentication enabled; \
+             trust your network perimeter (e.g. Tailscale) or terminate TLS + auth at a reverse proxy"
+        );
+    }
 
     let retention_task = tokio::spawn(retention::run_loop(db.clone(), shutdown_rx.clone()));
     let persistent_watcher_task = tokio::spawn(crate::supervise::persistent_watcher::run_loop(

@@ -95,6 +95,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             data_dir: std::path::PathBuf::from("/tmp/ananke-test"),
             shutdown_timeout_ms: 5_000,
             allow_external_management: false,
+            allow_external_services: false,
         },
         services: services_rewritten.clone(),
     });

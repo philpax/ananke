@@ -75,6 +75,7 @@ mod tests {
                 data_dir: std::path::PathBuf::new(),
                 shutdown_timeout_ms: 5000,
                 allow_external_management: false,
+                allow_external_services: false,
             },
             services: vec![svc.clone()],
         };

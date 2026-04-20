@@ -159,6 +159,7 @@ mod tests {
                 data_dir: PathBuf::new(),
                 shutdown_timeout_ms: 5_000,
                 allow_external_management: false,
+                allow_external_services: false,
             },
             services: services.clone(),
         };
