@@ -84,22 +84,26 @@ devices.gpu_allow = [0]            # optional subset for gpu-only / hybrid
 
 ### 5.1 Lifecycle modes
 
-- **`on_demand`** (default): idle until a request arrives, start on demand, unload after `idle_timeout` (default 10m) of no traffic. Evictable by higher-priority placements at any time.
-- **`persistent`**: starts with the daemon (see §9.4 for startup ordering), never unloads on a timer. Priority works normally; a persistent service is evictable by a strictly-higher-priority placement. Operators who want true pinning should set `priority = 100`.
+- **`on_demand`** (default): idle until a request arrives, start on demand, unload after `idle_timeout` (default 10m) of no traffic. Evictable per §5.2.
+- **`persistent`**: starts with the daemon (see §9.4 for startup ordering), never unloads on a timer. Still evictable per §5.2 while idle; a background watcher re-ensures every idle persistent service on a short cadence, so it comes back as soon as VRAM permits without requiring a new request.
 - **`oneshot`**: launched via `POST /api/oneshot` rather than config. Consumes an allocation only while running. Exits automatically on TTL expiry or process termination. Not restarted. Declaring `lifecycle = "oneshot"` in a `[[service]]` config block is a validation error — oneshots are API-only.
 
-### 5.2 Priority
+### 5.2 Priority and eviction
 
-`u8` in [0, 100]. Default 50. Tier conventions surfaced in the UI:
+Priority is a `u8` in [0, 100], default 50. It governs **busy** services only: a service currently serving an in-flight request is evictable only by a strictly-higher-priority placement. An **idle** service (no in-flight traffic) is always an eviction candidate regardless of priority — if nothing's using it, displacing it is free.
+
+Within the candidate set the ranking is: idle before busy, lowest priority first, smallest allocation first. Ties are then broken by least-recently-used.
+
+Consequence: priority is only load-bearing when two requests race for the same VRAM window concurrently, or when an incoming request would have to interrupt a busy service. For single-workload setups where nothing runs concurrently, it has no observable effect.
+
+Tier conventions surfaced in the UI:
 
 | Range | Tier | Meaning |
 |---|---|---|
-| 0–20 | Background | Freely evictable |
+| 0–20 | Background | Displaced early when busy services contend |
 | 30–50 | Normal | Default workload |
-| 60–80 | Important | Preferred over normal |
-| 90–100 | Critical | Evicted only by same-or-higher; 100 ≈ pinned |
-
-Eviction order within equal priority: idle before active; least recently used first; smallest allocation first.
+| 60–80 | Important | Preferred over normal in concurrent contention |
+| 90–100 | Critical | Survives contention from all but peers |
 
 ### 5.3 States
 
@@ -409,7 +413,7 @@ Per request:
 2. **Single-device best-fit.** Walk allowed devices, pick the one whose `available` is smallest while still sufficient. GPUs before CPU.
 3. **Multi-GPU layer-aware split** (llama-cpp only; §8.2).
 4. **GPU+CPU hybrid spill** (llama-cpp, `placement = "hybrid"`; §8.2).
-5. **Eviction.** Collect candidates with strictly lower priority and evictable lifecycle. Sort idle-first, then lowest-priority, then smallest allocation. Kill minimum set with drain (§10.3). Retry placement.
+5. **Eviction.** Collect candidates per §5.2: any idle service, plus busy services with strictly lower priority than the incoming request. Sort idle-first, then lowest-priority, then smallest allocation. Kill minimum set with drain (§10.3). Retry placement.
 6. **Queue or reject.** Proxied requests queue up to `start_queue_depth`; other requests reject immediately with `insufficient_vram` / `no_evictable_services` / `start_queue_full`.
 
 ### 8.2 Layer-aware placement

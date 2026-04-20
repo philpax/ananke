@@ -1,4 +1,16 @@
-//! Priority-based eviction planner (spec §8.1 step 5).
+//! Eviction planner (spec §8.1 step 5).
+//!
+//! An idle service (no in-flight requests) is always a valid eviction
+//! target regardless of priority — if nothing's using it, displacing it
+//! is free. A busy service still needs strictly-higher incoming priority
+//! to be displaced, so an in-flight request isn't interrupted by an
+//! equal-priority competitor.
+//!
+//! Priority therefore only matters as (a) a tie-breaker among idle
+//! candidates, and (b) a protection for busy services against peer
+//! competitors. For single-workload setups where nothing runs
+//! concurrently, idle-first scoring does all the useful work and
+//! priority is effectively unused.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +29,9 @@ pub struct EvictionCandidate {
 /// Select the minimum set of services whose eviction would free enough
 /// capacity for `want` on `want_slot` (spec §8.1 step 5).
 ///
-/// Sort order: idle-first, then lowest priority, then smallest
+/// Eligibility: idle candidates are always evictable; busy candidates
+/// require strictly-higher incoming priority. Sort order within the
+/// eligible set is idle-first, then lowest priority, then smallest
 /// allocation. Stops as soon as cumulative freed bytes ≥ want bytes.
 /// Returns empty if no set suffices (caller falls back to the
 /// NoFit path).
@@ -36,7 +50,7 @@ pub fn select_for_slot(
 
     let mut candidates: Vec<&EvictionCandidate> = running
         .iter()
-        .filter(|c| c.priority < want_priority)
+        .filter(|c| c.idle || c.priority < want_priority)
         .filter(|c| {
             reservations
                 .get(&c.name)
@@ -171,7 +185,10 @@ mod tests {
     }
 
     #[test]
-    fn same_priority_not_evictable() {
+    fn busy_same_priority_not_evictable() {
+        // Peer at the same priority with an in-flight request: untouchable
+        // until it idles out or the incoming request carries strictly higher
+        // priority.
         let cands = vec![cand("peer", 70, false, 4 * 1024 * 1024 * 1024)];
         let r = res(&[("peer", 4096)]);
         let sel = select_for_slot(
@@ -183,6 +200,41 @@ mod tests {
             0,
         );
         assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn idle_same_priority_is_evictable() {
+        // Regression for the "persistent Qwen blocks persistent Gemma at
+        // default priority" deadlock. Idle candidates should yield even
+        // without a strict priority advantage.
+        let cands = vec![cand("peer", 70, true, 4 * 1024 * 1024 * 1024)];
+        let r = res(&[("peer", 4096)]);
+        let sel = select_for_slot(
+            4 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
+        assert_eq!(sel, vec![SmolStr::new("peer")]);
+    }
+
+    #[test]
+    fn idle_lower_priority_is_evictable() {
+        // Same as above but the idle candidate is at a lower priority
+        // than the incoming request — still evictable.
+        let cands = vec![cand("idle-low", 20, true, 4 * 1024 * 1024 * 1024)];
+        let r = res(&[("idle-low", 4096)]);
+        let sel = select_for_slot(
+            4 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            70,
+            &cands,
+            &r,
+            0,
+        );
+        assert_eq!(sel, vec![SmolStr::new("idle-low")]);
     }
 
     #[test]
