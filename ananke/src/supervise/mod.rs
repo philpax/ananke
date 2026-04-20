@@ -253,6 +253,7 @@ pub struct SupervisorDeps {
     pub config: Arc<crate::config::manager::ConfigManager>,
     pub events: EventBus,
     pub system: crate::system::SystemDeps,
+    pub inflight: crate::tracking::inflight::InflightTable,
 }
 
 /// Identity fields that don't change across a reload. Everything else a
@@ -1074,7 +1075,20 @@ impl RunLoop {
             let Some(service_snap) = handle.snapshot().await else {
                 continue;
             };
-            let idle = matches!(service_snap.state, ServiceState::Idle);
+            // "Idle" for eviction purposes means "no user-facing work in
+            // flight" — either the supervisor is literally in the Idle
+            // state (not running), or it's healthy but quiescent
+            // (Running/Warming with zero in-flight requests). Without
+            // the in-flight check, an idle-but-still-loaded service
+            // would be treated as busy and the eviction planner would
+            // refuse to displace it, which is exactly the deadlock the
+            // new eviction rule was supposed to break.
+            let in_flight = self.deps.inflight.current(&handle.name);
+            let idle = in_flight == 0
+                && matches!(
+                    service_snap.state,
+                    ServiceState::Idle | ServiceState::Running | ServiceState::Warming
+                );
             let alloc_mb = self
                 .deps
                 .allocations

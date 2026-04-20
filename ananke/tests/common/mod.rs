@@ -126,6 +126,14 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     // supervisor-originated and config-originated events on one channel.
     let config_manager = ConfigManager::in_memory((*effective).clone(), events.clone());
 
+    // One shared inflight table so SupervisorInit's per-service counter
+    // and SupervisorDeps' table agree. Individual supervisors read/write
+    // their own counter via SupervisorInit; the eviction planner reads
+    // counts through SupervisorDeps' table. With two separate tables
+    // the planner would always see zero and idle-evict services mid-
+    // request.
+    let inflight = InflightTable::new();
+
     let deps = ananke::supervise::SupervisorDeps {
         db: db.clone(),
         batcher: batcher.clone(),
@@ -137,6 +145,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         config: config_manager.clone(),
         events: events.clone(),
         system: system.clone(),
+        inflight: inflight.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -146,7 +155,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             allocation: Allocation::from_override(&svc.placement_override),
             service_id,
             last_activity: activity.get_or_init(&svc.name),
-            inflight: ananke::tracking::inflight::InflightTable::new().counter(&svc.name),
+            inflight: inflight.counter(&svc.name),
         };
         let handle = Arc::new(spawn_supervisor(init, svc.clone(), deps.clone()));
         registry.insert(svc.name.clone(), handle.clone());
@@ -162,7 +171,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         rolling,
         observation,
         db,
-        inflight: InflightTable::new(),
+        inflight,
         port_pool: Arc::new(Mutex::new(ananke::oneshot::PortPool::new(18000..19000))),
         oneshots: ananke::oneshot::OneshotRegistry::new(),
         batcher,

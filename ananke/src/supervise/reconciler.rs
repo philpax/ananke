@@ -183,6 +183,7 @@ mod tests {
             config: config.clone(),
             events: events.clone(),
             system: crate::system::SystemDeps::fake().0,
+            inflight: crate::tracking::inflight::InflightTable::new(),
         };
 
         for svc in services {

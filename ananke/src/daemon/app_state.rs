@@ -51,6 +51,7 @@ impl AppState {
             config: self.config.clone(),
             events: self.events.clone(),
             system: self.system.clone(),
+            inflight: self.inflight.clone(),
         }
     }
 }
