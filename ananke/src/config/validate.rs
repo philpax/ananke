@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 
+use ananke_api::AnankeMetadata;
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -93,6 +94,12 @@ pub struct ServiceConfig {
     pub start_queue_depth: usize,
     pub extra_args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// Passthrough entries from `[[service]] metadata.*`. The
+    /// `openai_compat` key (if present) is special-cased into
+    /// `openai_compat` above; every other entry is opaque to the daemon
+    /// and exists only to be echoed back through `/v1/models` and
+    /// `/api/services`.
+    pub metadata: AnankeMetadata,
     pub template_config: TemplateConfig,
 }
 
@@ -465,16 +472,12 @@ fn validate_service(
         other => return Err(fail(format!("service {name}: unknown lifecycle `{other}`"))),
     };
 
-    let openai_compat = common
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("openai_compat"))
-        .and_then(|v| match v {
-            toml::Value::Boolean(b) => Some(*b),
-            _ => None,
-        })
-        // llama-cpp defaults to true; command defaults to false.
-        .unwrap_or(template == Template::LlamaCpp);
+    let metadata = build_ananke_metadata(common.metadata.as_ref())
+        .map_err(|e| fail(format!("service {name} metadata: {e}")))?;
+    // llama-cpp always speaks OpenAI; command services never do. No
+    // config knob — if you need a command service routed through
+    // `/v1/models`, wrap it in a llama-cpp-compatible proxy instead.
+    let openai_compat = template == Template::LlamaCpp;
 
     let dev = common.devices.clone().unwrap_or_default();
     let n_gpu_layers = match &template_config {
@@ -695,6 +698,7 @@ fn validate_service(
         start_queue_depth,
         extra_args: all_extra,
         env,
+        metadata,
         template_config,
     })
 }
@@ -816,6 +820,21 @@ fn check_placeholders(name: &SmolStr, field: &str, argv: &[String]) -> Result<()
 
 fn fail(msg: String) -> ExpectedError {
     ExpectedError::config_unparseable(PathBuf::from("<config>"), msg)
+}
+
+/// Convert the raw `[[service]] metadata.*` table into the JSON-valued
+/// map that [`ServiceConfig`] carries through to the OpenAI and
+/// management API responses. Keeps the TOML→JSON coercion in one place
+/// so it matches `filters.set_params` and doesn't drift.
+fn build_ananke_metadata(
+    raw: Option<&BTreeMap<String, toml::Value>>,
+) -> Result<AnankeMetadata, String> {
+    let Some(m) = raw else {
+        return Ok(AnankeMetadata::new());
+    };
+    m.iter()
+        .map(|(k, v)| toml_value_to_json(v.clone()).map(|j| (k.clone(), j)))
+        .collect()
 }
 
 fn toml_value_to_json(v: toml::Value) -> Result<serde_json::Value, String> {
@@ -1016,6 +1035,7 @@ pub mod test_fixtures {
             start_queue_depth: 10,
             extra_args: Vec::new(),
             env: BTreeMap::new(),
+            metadata: ananke_api::AnankeMetadata::new(),
             template_config: TemplateConfig::LlamaCpp(Box::new(llama_cpp_fixture())),
         }
     }

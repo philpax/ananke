@@ -5,6 +5,7 @@
 //! only `model` in the OpenAPI schema, plus `#[serde(flatten)]` to
 //! capture arbitrary other keys.
 
+use ananke_api::AnankeMetadata;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -14,6 +15,11 @@ pub struct ModelListing {
     pub object: &'static str,
     pub created: u64,
     pub owned_by: &'static str,
+    /// Passthrough entries from `[[service]] metadata.*`. Non-standard
+    /// OpenAI field, elided when empty; strict OpenAI clients ignore it.
+    #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
+    #[schema(value_type = Object)]
+    pub ananke_metadata: AnankeMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -77,19 +77,15 @@ pub fn register(router: Router, state: AppState) -> Router {
 #[utoipa::path(get, path = "/v1/models", responses((status = 200, body = ModelsResponse)))]
 pub async fn list_models(State(state): State<AppState>) -> Response {
     let mut data = Vec::new();
+    let effective = state.config.effective();
     for (name, handle) in state.registry.all() {
-        // Hide services whose template doesn't produce an OpenAI-compatible
-        // server. llama-cpp defaults to compat; `command` services opt in
-        // via `metadata.openai_compat = true`.
-        let compat = state
-            .config
-            .effective()
-            .services
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| s.openai_compat)
-            .unwrap_or(false);
-        if !compat {
+        // Hide services whose template doesn't speak OpenAI. llama-cpp
+        // does; `command` services don't (wrap them in a llama-cpp-
+        // compatible proxy if you need to list one here).
+        let Some(svc) = effective.services.iter().find(|s| s.name == name) else {
+            continue;
+        };
+        if !svc.openai_compat {
             continue;
         }
         let Some(snap) = handle.snapshot().await else {
@@ -105,6 +101,7 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
                     object: "model",
                     created: 0,
                     owned_by: "ananke",
+                    ananke_metadata: svc.metadata.clone(),
                 });
             }
             _ => {}

@@ -51,6 +51,7 @@ fn command_argv_substitutes_port() {
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),
+        metadata: ananke_api::AnankeMetadata::new(),
         template_config: TemplateConfig::Command(CommandConfig {
             command: argv,
             workdir: None,

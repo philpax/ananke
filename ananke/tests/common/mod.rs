@@ -242,6 +242,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),
+        metadata: ananke_api::AnankeMetadata::new(),
         template_config: TemplateConfig::LlamaCpp(Box::new(LlamaCppConfig {
             model: PathBuf::from("/fake/model.gguf"),
             mmproj: None,

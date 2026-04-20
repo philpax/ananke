@@ -385,8 +385,6 @@ devices.gpu_allow = [0]
 
 health.http = "/system_stats"
 drain_timeout = "5s"
-
-metadata.openai_compat = false         # not proxied via /v1/*
 ```
 
 ### 7.3 Placeholders
@@ -673,7 +671,7 @@ Warming resolves when either the grace expires, or observed usage reaches ≥80%
 
 | Endpoint | Method | Behaviour |
 |---|---|---|
-| `/v1/models` | GET | Lists all `starting`, `warming`, `running`, or `idle` services whose template produces an OpenAI-compatible server (all `llama-cpp`; `command` opts in via `metadata.openai_compat = true`). `disabled`, `failed`, and `stopped` services hidden. `starting` is included because requests for such models are accepted (they queue on the start future, §10.4); omitting them would make the listing inconsistent with what's actually routable. Response: `{object: "list", data: [{id, object: "model", created, owned_by: "ananke"}]}`. The management API `/api/services` surface exposes full state for UI purposes. |
+| `/v1/models` | GET | Lists all `starting`, `warming`, `running`, or `idle` services whose template produces an OpenAI-compatible server (every `llama-cpp` service; `command` services are never listed). `disabled`, `failed`, and `stopped` services hidden. `starting` is included because requests for such models are accepted (they queue on the start future, §10.4); omitting them would make the listing inconsistent with what's actually routable. Response: `{object: "list", data: [{id, object: "model", created, owned_by: "ananke", ananke_metadata: {...}}]}` — `ananke_metadata` is a passthrough of the service's `metadata.*` config entries (§7.1), elided when empty. The management API `/api/services` surface exposes full state for UI purposes. |
 | `/v1/chat/completions` | POST | Look up by `model`. Apply `strip_params` then `set_params`. Trigger start if needed. Proxy transparently, preserving SSE for `stream: true`. |
 | `/v1/completions` | POST | As above (legacy). |
 | `/v1/embeddings` | POST | As above, routed to services whose underlying server advertises embeddings. |

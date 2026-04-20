@@ -45,6 +45,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             pid: snap.as_ref().and_then(|s| s.pid),
             // Placeholder: elastic borrower tracking is deferred to a later phase.
             elastic_borrower: None,
+            ananke_metadata: svc_cfg.metadata.clone(),
         });
     }
     (StatusCode::OK, Json(out)).into_response()
@@ -151,6 +152,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         observed_peak_bytes,
         // Placeholder: elastic borrower tracking is deferred to a later phase.
         elastic_borrower: None,
+        ananke_metadata: svc_cfg.metadata.clone(),
     };
     (StatusCode::OK, Json(detail)).into_response()
 }
