@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 use crate::{
     devices::{CpuSnapshot, DeviceSnapshot, GpuProbe, GpuSnapshot, cpu},
     supervise::registry::ServiceRegistry,
-    system::Fs,
+    system::ProcFs,
     tracking::observation::{ObservationTable, read_vm_rss},
 };
 
@@ -35,7 +35,7 @@ pub fn spawn(
     probe: Option<Arc<dyn GpuProbe>>,
     observation: ObservationTable,
     registry: ServiceRegistry,
-    fs: Arc<dyn Fs>,
+    proc: Arc<dyn ProcFs>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -45,9 +45,9 @@ pub fn spawn(
             tokio::select! {
                 _ = shutdown.changed() => { if *shutdown.borrow() { return; } }
                 _ = interval.tick() => {
-                    let next = sample(&probe, fs.as_ref());
+                    let next = sample(&probe, proc.as_ref());
                     *snapshot.write() = next;
-                    sample_observation(&probe, &observation, &registry, fs.as_ref());
+                    sample_observation(&probe, &observation, &registry, proc.as_ref());
                 }
             }
         }
@@ -63,7 +63,7 @@ fn sample_observation(
     probe: &Option<Arc<dyn GpuProbe>>,
     observation: &ObservationTable,
     registry: &ServiceRegistry,
-    fs: &dyn Fs,
+    proc: &dyn ProcFs,
 ) {
     for (name, _handle) in registry.all() {
         // snapshot() is async, so we use the synchronous pid state we have
@@ -88,7 +88,7 @@ fn sample_observation(
 
         // CPU RSS from /proc.
         for pid in &pids {
-            if let Some(rss) = read_vm_rss(fs, *pid) {
+            if let Some(rss) = read_vm_rss(proc, *pid) {
                 total = total.saturating_add(rss);
             }
         }
@@ -99,7 +99,7 @@ fn sample_observation(
     }
 }
 
-fn sample(probe: &Option<Arc<dyn GpuProbe>>, fs: &dyn Fs) -> DeviceSnapshot {
+fn sample(probe: &Option<Arc<dyn GpuProbe>>, proc: &dyn ProcFs) -> DeviceSnapshot {
     let gpus: Vec<GpuSnapshot> = probe
         .as_ref()
         .map(|p| {
@@ -118,7 +118,7 @@ fn sample(probe: &Option<Arc<dyn GpuProbe>>, fs: &dyn Fs) -> DeviceSnapshot {
         })
         .unwrap_or_default();
 
-    let cpu = match cpu::read(fs) {
+    let cpu = match cpu::read(proc) {
         Ok(c) => Some(CpuSnapshot {
             total_bytes: c.total_bytes,
             available_bytes: c.available_bytes,
@@ -149,7 +149,7 @@ mod tests {
             probe::GpuInfo,
         },
         supervise::registry::ServiceRegistry,
-        system::InMemoryFs,
+        system::InMemoryProcFs,
         tracking::observation::ObservationTable,
     };
 
@@ -166,15 +166,15 @@ mod tests {
         }]);
         let snapshot = new_shared();
         let (tx, rx) = watch::channel(false);
-        // Empty InMemoryFs: cpu::read returns an error, which is fine — the
-        // test only asserts on the GPU side of the snapshot.
-        let fs: Arc<dyn Fs> = Arc::new(InMemoryFs::new());
+        // Empty InMemoryProcFs: cpu::read returns an error, which is fine —
+        // the test only asserts on the GPU side of the snapshot.
+        let proc: Arc<dyn ProcFs> = Arc::new(InMemoryProcFs::new());
         let join = spawn(
             snapshot.clone(),
             Some(Arc::new(fake)),
             ObservationTable::new(),
             ServiceRegistry::new(),
-            fs,
+            proc,
             rx,
         );
 

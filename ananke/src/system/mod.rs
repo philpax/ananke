@@ -20,11 +20,14 @@
 use std::sync::Arc;
 
 pub mod fs;
+pub mod proc;
 pub mod process;
 
 pub use fs::{Fs, InMemoryFs, LocalFs, SeekRead};
+#[cfg(any(test, feature = "test-fakes"))]
+pub use proc::InMemoryProcFs;
+pub use proc::{LocalProcFs, Meminfo, ProcFs};
 pub use process::{DynAsyncRead, LocalSpawner, ManagedChild, ProcessSpawner};
-
 #[cfg(any(test, feature = "test-fakes"))]
 pub use process::{FakeChildSnapshot, FakeProcessState, FakeSpawner};
 
@@ -36,15 +39,17 @@ pub use process::{FakeChildSnapshot, FakeProcessState, FakeSpawner};
 #[derive(Clone)]
 pub struct SystemDeps {
     pub fs: Arc<dyn Fs>,
+    pub proc: Arc<dyn ProcFs>,
     pub process_spawner: Arc<dyn ProcessSpawner>,
 }
 
 impl SystemDeps {
-    /// Production bundle: real filesystem, real process spawner with
-    /// `PR_SET_PDEATHSIG`.
+    /// Production bundle: real filesystem, real `/proc` reader, real
+    /// process spawner with `PR_SET_PDEATHSIG`.
     pub fn local() -> Self {
         Self {
             fs: Arc::new(LocalFs),
+            proc: Arc::new(LocalProcFs),
             process_spawner: Arc::new(LocalSpawner),
         }
     }
@@ -52,17 +57,27 @@ impl SystemDeps {
 
 #[cfg(any(test, feature = "test-fakes"))]
 impl SystemDeps {
-    /// Fake bundle: in-memory filesystem, in-memory process spawner.
-    /// Also returns the concrete handles so tests can preload GGUF bytes
-    /// or inspect [`FakeChildSnapshot`] state after a drain.
+    /// Fake bundle: in-memory filesystem, in-memory `/proc`, in-memory
+    /// process spawner. Also returns the concrete handles so tests can
+    /// preload GGUF bytes, stage `/proc` state, or inspect
+    /// [`FakeChildSnapshot`] after a drain.
     pub fn fake() -> (Self, FakeBag) {
         let fs = InMemoryFs::new();
+        let proc = InMemoryProcFs::new();
         let process_spawner = Arc::new(FakeSpawner::new());
         let deps = Self {
             fs: Arc::new(fs.clone()),
+            proc: Arc::new(proc.clone()),
             process_spawner: process_spawner.clone(),
         };
-        (deps, FakeBag { fs, process_spawner })
+        (
+            deps,
+            FakeBag {
+                fs,
+                proc,
+                process_spawner,
+            },
+        )
     }
 }
 
@@ -71,5 +86,6 @@ impl SystemDeps {
 #[cfg(any(test, feature = "test-fakes"))]
 pub struct FakeBag {
     pub fs: InMemoryFs,
+    pub proc: InMemoryProcFs,
     pub process_spawner: Arc<FakeSpawner>,
 }

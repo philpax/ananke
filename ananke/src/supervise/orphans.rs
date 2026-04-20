@@ -1,15 +1,14 @@
 //! Linux-only: startup orphan recovery per spec §9.3. Reads
-//! `/proc/{pid}/cmdline` (through the [`crate::system::Fs`]
-//! abstraction — tests can substitute an in-memory fake) to decide
-//! whether a previously-recorded child is still alive and still ours.
-
-use std::path::Path;
+//! `/proc/{pid}/cmdline` (through [`crate::system::ProcFs`] — tests can
+//! substitute [`crate::system::InMemoryProcFs`] with preloaded cmdlines)
+//! to decide whether a previously-recorded child is still alive and
+//! still ours.
 
 use tracing::{info, warn};
 
 use crate::{
     db::{Database, models::RunningService},
-    system::Fs,
+    system::ProcFs,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,16 +30,11 @@ pub enum OrphanDisposition {
 }
 
 /// Runs orphan recovery against the `running_services` table. Returns a
-/// decision list suitable for logging and test assertion.
-///
-/// `procfs_root` defaults to "/proc"; tests can either override it via a
-/// temp directory (with [`crate::system::LocalFs`]) or populate an
-/// in-memory filesystem at a synthetic root.
-pub async fn reconcile(
-    fs: &dyn Fs,
-    db: &Database,
-    procfs_root: &Path,
-) -> Vec<OrphanDisposition> {
+/// decision list suitable for logging and test assertion. The `proc`
+/// argument is the [`ProcFs`] reader; tests pass an
+/// [`crate::system::InMemoryProcFs`] with preloaded cmdlines rather
+/// than staging a synthetic `/proc` on disk.
+pub async fn reconcile(proc: &dyn ProcFs, db: &Database) -> Vec<OrphanDisposition> {
     let mut handle = db.handle();
     let rows: Vec<RunningService> = RunningService::all()
         .exec(&mut handle)
@@ -53,11 +47,8 @@ pub async fn reconcile(
         let run_id = row.run_id;
         let pid = row.pid as i32;
         let recorded_cmdline = row.command_line.clone();
-        let proc_dir = procfs_root.join(pid.to_string());
-        let cmdline_path = proc_dir.join("cmdline");
-        match fs.read(&cmdline_path) {
-            Ok(raw) => {
-                let live_cmdline = null_sep_to_space(&raw);
+        match proc.cmdline(pid) {
+            Some(live_cmdline) => {
                 if live_cmdline == recorded_cmdline {
                     info!(pid, service_id, run_id, "adopted orphan");
                     out.push(OrphanDisposition::Adopted {
@@ -82,7 +73,7 @@ pub async fn reconcile(
                     });
                 }
             }
-            Err(_) => {
+            None => {
                 info!(pid, service_id, run_id, "dead child; cleaning row");
                 cleanup_row(&mut handle, row).await;
                 out.push(OrphanDisposition::Cleaned {
@@ -96,15 +87,6 @@ pub async fn reconcile(
     out
 }
 
-fn null_sep_to_space(bytes: &[u8]) -> String {
-    let trimmed: Vec<u8> = bytes
-        .iter()
-        .copied()
-        .map(|b| if b == 0 { b' ' } else { b })
-        .collect();
-    String::from_utf8_lossy(&trimmed).trim().to_string()
-}
-
 async fn cleanup_row(db: &mut toasty::Db, row: RunningService) {
     if let Err(e) = row.delete().exec(db).await {
         warn!(error = %e, "delete running_services row failed");
@@ -114,7 +96,7 @@ async fn cleanup_row(db: &mut toasty::Db, row: RunningService) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::InMemoryFs;
+    use crate::system::InMemoryProcFs;
 
     async fn insert_row(db: &Database, service_id: i64, run_id: i64, pid: i32, cmdline: &str) {
         let mut handle = db.handle();
@@ -132,24 +114,14 @@ mod tests {
         .unwrap();
     }
 
-    fn cmdline_entry(fs: &InMemoryFs, procfs: &Path, pid: i32, cmdline: &str) {
-        // /proc/PID/cmdline separates args with NUL.
-        let nul_sep = cmdline.replace(' ', "\0");
-        fs.insert(
-            procfs.join(pid.to_string()).join("cmdline"),
-            nul_sep.as_bytes().to_vec(),
-        );
-    }
-
     #[tokio::test]
     async fn adopts_matching_cmdline() {
         let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
-        let fs = InMemoryFs::new();
-        let procfs = Path::new("/proc");
+        let proc = InMemoryProcFs::new();
         insert_row(&db, svc, 1, 1234, "llama-server -m x").await;
-        cmdline_entry(&fs, procfs, 1234, "llama-server -m x");
-        let out = reconcile(&fs, &db, procfs).await;
+        proc.set_cmdline(1234, "llama-server -m x");
+        let out = reconcile(&proc, &db).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Adopted { .. }));
     }
@@ -158,10 +130,9 @@ mod tests {
     async fn cleans_missing_pid() {
         let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
-        let fs = InMemoryFs::new();
-        let procfs = Path::new("/proc");
+        let proc = InMemoryProcFs::new();
         insert_row(&db, svc, 1, 9999, "llama-server -m x").await;
-        let out = reconcile(&fs, &db, procfs).await;
+        let out = reconcile(&proc, &db).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Cleaned { .. }));
         let mut handle = db.handle();
@@ -173,11 +144,10 @@ mod tests {
     async fn cleans_mismatched_cmdline() {
         let db = Database::open_in_memory().await.unwrap();
         let svc = db.upsert_service("demo", 0).await.unwrap();
-        let fs = InMemoryFs::new();
-        let procfs = Path::new("/proc");
+        let proc = InMemoryProcFs::new();
         insert_row(&db, svc, 1, 4242, "llama-server -m x").await;
-        cmdline_entry(&fs, procfs, 4242, "firefox");
-        let out = reconcile(&fs, &db, procfs).await;
+        proc.set_cmdline(4242, "firefox");
+        let out = reconcile(&proc, &db).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Cleaned { .. }));
     }

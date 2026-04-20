@@ -60,48 +60,30 @@ impl ObservationTable {
     }
 }
 
-/// Read `/proc/<pid>/status` via `fs` and return `VmRSS` in bytes. Returns
-/// `None` when the file is missing (the pid exited) or doesn't contain a
-/// `VmRSS:` line (the kernel is still filling in the entry).
-pub fn read_vm_rss(fs: &dyn crate::system::Fs, pid: u32) -> Option<u64> {
-    let content = fs
-        .read_to_string(std::path::Path::new(&format!("/proc/{pid}/status")))
-        .ok()?;
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb = rest
-                .trim()
-                .trim_end_matches("kB")
-                .trim()
-                .parse::<u64>()
-                .ok()?;
-            return Some(kb * 1024);
-        }
-    }
-    None
+/// Thin rename of [`crate::system::ProcFs::vm_rss`] so the snapshotter
+/// can keep calling `read_vm_rss(proc, pid)` and not have to know which
+/// `/proc` file actually backs it. Returns `None` when the pid has
+/// exited or the status entry isn't populated yet.
+pub fn read_vm_rss(proc: &dyn crate::system::ProcFs, pid: u32) -> Option<u64> {
+    proc.vm_rss(pid)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::InMemoryFs;
+    use crate::system::InMemoryProcFs;
 
     #[test]
-    fn read_vm_rss_goes_through_fs() {
-        let fs = InMemoryFs::new();
-        crate::system::Fs::write(
-            &fs,
-            std::path::Path::new("/proc/4242/status"),
-            b"Name:\tfoo\nVmPeak:\t 1234 kB\nVmRSS:\t 5120 kB\n",
-        )
-        .unwrap();
-        assert_eq!(read_vm_rss(&fs, 4242), Some(5120 * 1024));
+    fn read_vm_rss_goes_through_procfs() {
+        let proc = InMemoryProcFs::new();
+        proc.set_vm_rss(4242, 5120 * 1024);
+        assert_eq!(read_vm_rss(&proc, 4242), Some(5120 * 1024));
     }
 
     #[test]
     fn read_vm_rss_none_when_pid_missing() {
-        let fs = InMemoryFs::new();
-        assert_eq!(read_vm_rss(&fs, 9999), None);
+        let proc = InMemoryProcFs::new();
+        assert_eq!(read_vm_rss(&proc, 9999), None);
     }
 
     #[test]

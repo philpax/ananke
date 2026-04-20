@@ -2,12 +2,10 @@
 
 mod common;
 
-use std::path::Path;
-
 use ananke::{
     db::{Database, models::RunningService},
     supervise::{OrphanDisposition, reconcile},
-    system::InMemoryFs,
+    system::InMemoryProcFs,
 };
 
 #[tokio::test]
@@ -20,9 +18,9 @@ async fn cleans_row_for_dead_pid() {
         .await
         .expect("upsert_service");
 
-    // Insert a running_services row pointing at PID 99999, which is extremely
-    // unlikely to exist. Our in-memory fs has no entry under /proc/99999,
-    // so reconcile must clean the row.
+    // Insert a running_services row pointing at PID 99999. The empty
+    // InMemoryProcFs reports that pid as exited, so reconcile must
+    // clean the row.
     let mut handle = db.handle();
     toasty::create!(RunningService {
         service_id,
@@ -37,8 +35,8 @@ async fn cleans_row_for_dead_pid() {
     .await
     .expect("insert row");
 
-    let fs = InMemoryFs::new();
-    let dispositions = reconcile(&fs, &db, Path::new("/proc")).await;
+    let proc = InMemoryProcFs::new();
+    let dispositions = reconcile(&proc, &db).await;
 
     assert_eq!(dispositions.len(), 1);
     assert!(

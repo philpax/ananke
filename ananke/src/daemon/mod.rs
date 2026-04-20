@@ -55,7 +55,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         }
     };
     let system = crate::system::SystemDeps::local();
-    if let Ok(m) = cpu::read(system.fs.as_ref()) {
+    if let Ok(m) = cpu::read(system.proc.as_ref()) {
         info!(
             total = m.total_bytes,
             avail = m.available_bytes,
@@ -63,8 +63,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         );
     }
 
-    let procfs = PathBuf::from("/proc");
-    for disposition in reconcile(&crate::system::LocalFs, &db, &procfs).await {
+    for disposition in reconcile(system.proc.as_ref(), &db).await {
         info!(?disposition, "orphan reconcile");
     }
 
@@ -81,7 +80,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         probe,
         observation.clone(),
         registry.clone(),
-        system.fs.clone(),
+        system.proc.clone(),
         shutdown_rx.clone(),
     );
 
