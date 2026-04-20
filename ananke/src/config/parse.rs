@@ -15,7 +15,7 @@ use smol_str::SmolStr;
 use crate::errors::ExpectedError;
 
 /// Default concurrency cap on pending start requests waiting for the same
-/// supervisor to finish warming before they are rejected with `QueueFull`.
+/// supervisor to finish starting before they are rejected with `QueueFull`.
 pub const DEFAULT_START_QUEUE_DEPTH: usize = 10;
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -122,7 +122,6 @@ pub struct OpenAiApiConfig {
 pub struct DefaultsConfig {
     pub idle_timeout: Option<String>,
     pub priority: Option<u8>,
-    pub warming_grace: Option<String>,
     pub start_queue_depth: Option<u32>,
 }
 
@@ -230,7 +229,6 @@ pub struct RawServiceCommon {
     pub lifecycle: Option<SmolStr>,
     pub priority: Option<u8>,
     pub idle_timeout: Option<String>,
-    pub warming_grace: Option<String>,
     pub description: Option<String>,
     pub filters: Option<RawFilters>,
     pub metadata: Option<BTreeMap<String, toml::Value>>,

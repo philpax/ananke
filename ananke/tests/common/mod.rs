@@ -221,7 +221,7 @@ pub fn set_model_path(svc: &mut ServiceConfig, path: &std::path::Path) {
 /// Build a minimal on-demand `ServiceConfig` backed by a fake model path.
 ///
 /// `placement_override` is `{Cpu: 100}` so the allocator never blocks.
-/// Health probes hit `/health` with a short interval so warming completes
+/// Health probes hit `/health` with a short interval so startup completes
 /// quickly against the echo server.
 pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
     let mut placement = BTreeMap::new();
@@ -241,7 +241,6 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         placement_policy: PlacementPolicy::CpuOnly,
         gpu_allow: Vec::new(),
         idle_timeout_ms: 60_000,
-        warming_grace_ms: 100,
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,

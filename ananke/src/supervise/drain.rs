@@ -50,25 +50,41 @@ pub async fn drain_pipeline(
     inflight: Arc<AtomicU64>,
     reason: DrainReason,
 ) {
-    info!(?reason, "drain: waiting for in-flight requests");
-    let timed_out = wait_inflight_zero(&inflight, cfg.max_request_duration).await;
-    if timed_out {
-        warn!(
+    let initial_inflight = inflight.load(Ordering::Relaxed);
+    if initial_inflight > 0 {
+        info!(
             ?reason,
-            inflight = inflight.load(Ordering::Relaxed),
-            "drain: max_request_duration elapsed with requests still in flight"
+            inflight = initial_inflight,
+            "drain: waiting for in-flight requests"
         );
-    }
+        let timed_out = wait_inflight_zero(&inflight, cfg.max_request_duration).await;
+        if timed_out {
+            warn!(
+                ?reason,
+                inflight = inflight.load(Ordering::Relaxed),
+                "drain: max_request_duration elapsed with requests still in flight"
+            );
+        }
 
-    info!(?reason, "drain: drain_timeout grace");
-    tokio::time::sleep(cfg.drain_timeout).await;
+        // drain_timeout grace: give tailing SSE packets a chance to flush
+        // after the HTTP body has ended but before we SIGTERM. Only
+        // relevant if we actually had traffic — a drain triggered on a
+        // quiescent service (inflight == 0 from the start) has nothing
+        // to tail and a blanket sleep here just adds 30s to every idle
+        // eviction. See the eviction cascade timings if you're tempted
+        // to make this unconditional.
+        info!(?reason, "drain: drain_timeout grace");
+        tokio::time::sleep(cfg.drain_timeout).await;
 
-    // Extended SSE drain only if there are still requests active — they
-    // are very likely streaming clients (the non-streaming path decrements
-    // the guard on response end).
-    if inflight.load(Ordering::Relaxed) > 0 {
-        info!(?reason, "drain: extended stream drain");
-        let _ = wait_inflight_zero(&inflight, cfg.extended_stream_drain).await;
+        // Extended SSE drain only if there are still requests active —
+        // they are very likely streaming clients (the non-streaming
+        // path decrements the guard on response end).
+        if inflight.load(Ordering::Relaxed) > 0 {
+            info!(?reason, "drain: extended stream drain");
+            let _ = wait_inflight_zero(&inflight, cfg.extended_stream_drain).await;
+        }
+    } else {
+        info!(?reason, "drain: inflight already zero, skipping grace");
     }
 
     info!(?reason, "drain: SIGTERM");
@@ -87,10 +103,7 @@ pub async fn fast_kill(child: &mut dyn ManagedChild, reason: DrainReason) {
 /// Send SIGTERM to `child` and wait up to `grace` for it to exit. Escalates
 /// to SIGKILL on timeout. Shared between `drain_pipeline`, `fast_kill`, and
 /// the supervisor's starting/running abort paths.
-pub async fn sigterm_then_sigkill(
-    child: &mut dyn ManagedChild,
-    grace: Duration,
-) -> SigtermOutcome {
+pub async fn sigterm_then_sigkill(child: &mut dyn ManagedChild, grace: Duration) -> SigtermOutcome {
     let _ = child.sigterm().await;
     match tokio::time::timeout(grace, child.wait()).await {
         Ok(_) => SigtermOutcome::Exited,

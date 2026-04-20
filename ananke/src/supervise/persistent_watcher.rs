@@ -13,7 +13,7 @@
 //! The tick is deliberately slower than the supervisor command
 //! channel is fast, so we don't meaningfully load the registry.
 //! `ensure()` is idempotent once a service is already
-//! Starting/Warming/Running, so racing it against a user-driven
+//! Starting/Running, so racing it against a user-driven
 //! `/v1/chat/completions` causes no harm.
 
 use std::time::Duration;
@@ -57,29 +57,25 @@ async fn re_ensure_persistent(state: &AppState) {
     let effective = state.config.effective();
 
     // Passive: if *any* other service is currently active
-    // (Starting/Warming/Running), defer. The watcher's job is to
+    // (Starting/Running), defer. The watcher's job is to
     // reclaim VRAM that's going unused, not to fight on-demand traffic
     // for it. If an on-demand service idle-drains out, the next tick
     // finds the pool quiet and re-ensures; if the operator stops the
     // on-demand service explicitly, same. This keeps the persistent
     // service's respawn from ping-ponging against every peer start.
-    let any_peer_active = state
-        .registry
-        .all()
-        .into_iter()
-        .any(|(name, handle)| {
-            let is_persistent = effective
-                .services
-                .iter()
-                .any(|s| s.name == name && s.lifecycle == Lifecycle::Persistent);
-            if is_persistent {
-                return false;
-            }
-            matches!(
-                handle.peek_state(),
-                ServiceState::Starting | ServiceState::Warming | ServiceState::Running,
-            )
-        });
+    let any_peer_active = state.registry.all().into_iter().any(|(name, handle)| {
+        let is_persistent = effective
+            .services
+            .iter()
+            .any(|s| s.name == name && s.lifecycle == Lifecycle::Persistent);
+        if is_persistent {
+            return false;
+        }
+        matches!(
+            handle.peek_state(),
+            ServiceState::Starting | ServiceState::Running,
+        )
+    });
     if any_peer_active {
         return;
     }
@@ -143,7 +139,6 @@ mod tests {
         }));
 
         assert!(!dormant(&ServiceState::Starting));
-        assert!(!dormant(&ServiceState::Warming));
         assert!(!dormant(&ServiceState::Running));
         assert!(!dormant(&ServiceState::Draining));
         assert!(!dormant(&ServiceState::Stopped));

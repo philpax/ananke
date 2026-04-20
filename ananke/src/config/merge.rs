@@ -239,7 +239,6 @@ fn merge_common(
     take!(lifecycle);
     take!(priority);
     take!(idle_timeout);
-    take!(warming_grace);
     take!(description);
     take!(drain_timeout);
     take!(extended_stream_drain);

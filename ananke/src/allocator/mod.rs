@@ -91,8 +91,8 @@ pub fn can_fit_after_eviction(
 ///   that are **already running with weights loaded**, this already
 ///   excludes their usage.
 /// - `total - reserved` is what our pledge book says *should* be free if
-///   everyone played by the rules (including services still warming that
-///   haven't loaded weights yet).
+///   everyone played by the rules (including services whose weights are
+///   still loading and have not yet hit their pledged usage).
 ///
 /// Taking the min is conservative: it prevents over-committing to pending
 /// pledges while also respecting physical pressure from external processes
@@ -239,16 +239,16 @@ mod tests {
 
     #[test]
     fn pending_pledges_still_limit_fit() {
-        // A service has pledged 20 GB but is still warming (nvml doesn't yet
-        // show the usage). A new start that would blow the physical limit
-        // must still be rejected.
+        // A service has pledged 20 GB but has not finished loading weights
+        // (nvml doesn't yet show the usage). A new start that would blow
+        // the physical limit must still be rejected.
         let mut want = BTreeMap::new();
         want.insert(DeviceSlot::Gpu(0), mb(6 * 1024));
 
         let mut pending = BTreeMap::new();
         pending.insert(DeviceSlot::Gpu(0), mb(20 * 1024));
         let mut reserved = BTreeMap::new();
-        reserved.insert(SmolStr::new("warming"), pending);
+        reserved.insert(SmolStr::new("pending"), pending);
 
         // Nothing loaded yet → nvml reports 24 GB free. 20 GB pledged means
         // only 4 GB *should* be free. Want 6 GB → no fit.

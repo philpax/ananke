@@ -110,8 +110,7 @@ Tier conventions surfaced in the UI:
 | State | Meaning |
 |---|---|
 | `starting` | Process spawned, waiting for health check |
-| `warming` | Health passed, observed usage < 80% of reservation, within grace |
-| `running` | Healthy and at steady state |
+| `running` | Healthy and serving requests |
 | `draining` | Marked for shutdown, waiting for in-flight requests |
 | `idle` | Configured, not currently running (on_demand, no traffic) |
 | `stopped` | Configured, explicitly stopped via API/CLI |
@@ -122,10 +121,10 @@ Tier conventions surfaced in the UI:
 Valid transitions:
 
 ```
-idle → starting → warming → running → draining → {idle, stopped}
+idle → starting → running → draining → {idle, stopped}
 stopped → starting (explicit start via API/CLI)
 starting → failed (launch/health fail)
-warming|running → evicted (scheduler) → idle
+running → evicted (scheduler) → idle
 * → disabled (auto-disable trigger or user action)
 disabled → idle (re-enable)
 failed → starting (retry backoff elapsed)
@@ -182,7 +181,6 @@ max_request_duration = "10m"
 [defaults]
 idle_timeout = "10m"
 priority = 50
-warming_grace = "60s"
 start_queue_depth = 10
 
 [[service]]
@@ -300,7 +298,6 @@ context = 16384
 lifecycle = "on_demand"                # "on_demand" | "persistent" | "oneshot"
 priority = 50
 idle_timeout = "10m"
-warming_grace = "60s"
 description = "Llama 3.3 70B"
 
 # llama-server passthroughs
@@ -375,7 +372,6 @@ port = 8188
 
 lifecycle = "on_demand"
 priority = 70
-warming_grace = "30s"
 
 allocation.mode = "dynamic"            # "static" | "dynamic"
 allocation.min_vram_gb = 4
@@ -543,7 +539,7 @@ KV quantisation below f16/bf16 requires `flash_attn = true`; enforced at config 
 
 Final estimate: `weights + kv_per_token × context + compute_buffer_mb × 1MB`, then × `safety_factor`.
 
-**Rolling correction.** Observed peak VRAM captured after warming grace. Per-service rolling mean of `observed_peak / base_estimate`:
+**Rolling correction.** Observed peak VRAM captured after the service has been Running long enough for weights to load. Per-service rolling mean of `observed_peak / base_estimate`:
 
 ```
 adjusted_estimate = base_estimate × clamp(rolling_mean, 0.8, 1.5)
@@ -612,7 +608,7 @@ CREATE TABLE running_services (
   spawned_at    INTEGER NOT NULL,        -- unix ms
   command_line  TEXT NOT NULL,           -- argv joined
   allocation    TEXT NOT NULL,           -- JSON: [{device, bytes}]
-  state         TEXT NOT NULL,           -- 'starting' | 'warming' | 'running' | ...
+  state         TEXT NOT NULL,           -- 'starting' | 'running' | ...
   PRIMARY KEY (service_id, run_id)
 );
 ```
@@ -654,14 +650,14 @@ SIGQUIT (Ctrl-\\) is reserved for "emergency stop": skip drain, SIGTERM children
 
 Daemon `tracing` output goes to stderr. Under systemd this is captured by journald via the standard unit wiring; under `cargo run` it appears on the terminal. No file-based daemon log; per-service logs remain in SQLite (§12).
 
-### 9.6 Warming grace
+### 9.6 Weight-loading grace
 
-When a service reaches `running` state (health passed), enter `warming` substate for `warming_grace` duration. During warming:
+A freshly-spawned service whose health probe has passed may still be paging weights into VRAM for tens of seconds — NVML observed usage lags the reservation during this window. While `(now - run.spawned_at) < weight_loading_grace` for a given run:
 
-- Drift detection is suppressed against that device's reservation — a large GGUF can take 30–60s to mmap and page in, during which NVML observed usage lags the reservation. Without this, the balloon resolver would hand the gap to a borrower that would OOM when loading completes.
+- Drift detection is suppressed against that device's reservation. Without this, the balloon resolver would hand the gap to a borrower that would OOM when loading completes.
 - Elastic borrowing into this service's region is paused.
 
-Warming resolves when either the grace expires, or observed usage reaches ≥80% of reservation. UI renders the reservation bar with a distinct hatch pattern during warming.
+Once observed usage reaches ≥80% of reservation, or the grace expires, the service is treated as fully loaded for drift / elastic purposes. There is no separate user-visible `warming` state — the service is `running` throughout, and this grace is purely an internal signal to the drift / balloon subsystems.
 
 ## 10. Proxy
 
@@ -675,7 +671,7 @@ Warming resolves when either the grace expires, or observed usage reaches ≥80%
 
 | Endpoint | Method | Behaviour |
 |---|---|---|
-| `/v1/models` | GET | Lists all `starting`, `warming`, `running`, or `idle` services whose template produces an OpenAI-compatible server (every `llama-cpp` service; `command` services are never listed). `disabled`, `failed`, and `stopped` services hidden. `starting` is included because requests for such models are accepted (they queue on the start future, §10.4); omitting them would make the listing inconsistent with what's actually routable. Response: `{object: "list", data: [{id, object: "model", created, owned_by: "ananke", ananke_metadata: {...}}]}` — `ananke_metadata` is a passthrough of the service's `metadata.*` config entries (§7.1), elided when empty. The management API `/api/services` surface exposes full state for UI purposes. |
+| `/v1/models` | GET | Lists all `starting`, `running`, or `idle` services whose template produces an OpenAI-compatible server (every `llama-cpp` service; `command` services are never listed). `disabled`, `failed`, and `stopped` services hidden. `starting` is included because requests for such models are accepted (they queue on the start future, §10.4); omitting them would make the listing inconsistent with what's actually routable. Response: `{object: "list", data: [{id, object: "model", created, owned_by: "ananke", ananke_metadata: {...}}]}` — `ananke_metadata` is a passthrough of the service's `metadata.*` config entries (§7.1), elided when empty. The management API `/api/services` surface exposes full state for UI purposes. |
 | `/v1/chat/completions` | POST | Look up by `model`. Apply `strip_params` then `set_params`. Trigger start if needed. Proxy transparently, preserving SSE for `stream: true`. |
 | `/v1/completions` | POST | As above (legacy). |
 | `/v1/embeddings` | POST | As above, routed to services whose underlying server advertises embeddings. |
@@ -703,7 +699,7 @@ Worst-case eviction latency for llama-cpp: `max_request_duration + drain_timeout
 
 ### 10.4 Concurrent requests during startup
 
-When a request arrives for an `idle` service, a **start future** is created; the request awaits it. Subsequent requests for the same service while `starting`/`warming` await the same future — no redundant spawns. The future resolves when health passes (all waiters proceed) or start fails (all waiters 503).
+When a request arrives for an `idle` service, a **start future** is created; the request awaits it. Subsequent requests for the same service while `starting` await the same future — no redundant spawns. The future resolves when health passes (all waiters proceed) or start fails (all waiters 503).
 
 Waiter queue per service bounded by `start_queue_depth` (default 10, configurable globally and per-service). If the queue is full when a request arrives, the request is rejected immediately with `503 start_queue_full`. Once the service is running, requests proxy without queueing — the cap applies only during the start transition.
 
@@ -870,7 +866,7 @@ Same-repo layout: backend and frontend share version history, one recipe regener
 
 ### 13.2 Views
 
-**Devices dashboard.** Card per device (GPUs + CPU). Stacked reservation bar, coloured by service; grey blocks for external reservations (labelled with PID/process where known); two-tone (solid min + hatched elastic) for dynamic services; distinct hatch for warming. Observed-usage thin bar below for drift visibility.
+**Devices dashboard.** Card per device (GPUs + CPU). Stacked reservation bar, coloured by service; grey blocks for external reservations (labelled with PID/process where known); two-tone (solid min + hatched elastic) for dynamic services; distinct hatch while a service is still within the weight-loading grace (§9.6). Observed-usage thin bar below for drift visibility.
 
 **Services table.** All services including disabled/tombstoned-but-migrating. Columns: name, template, state, priority, lifecycle, devices, last-active. Disabled rows show reason + Re-enable / View-logs. Row expand: last ~200 log lines, effective (post-merge) config, metadata, request-count and latency-percentile stats pulled from the request-metrics store.
 
@@ -933,7 +929,7 @@ trait GpuProbe: Send + Sync {
 }
 ```
 
-NVML implementation and an in-memory fake. Integration tests drive the fake: GPU loses memory mid-run, external process appears, managed child crashes, asymmetric free space, warming grace behaviour.
+NVML implementation and an in-memory fake. Integration tests drive the fake: GPU loses memory mid-run, external process appears, managed child crashes, asymmetric free space, weight-loading grace behaviour.
 
 Toy HTTP echo service as a `command` template exercises start/stop/evict/route through the real scheduler, real proxy, fake GPU. Validates the pipeline without actual hardware.
 
@@ -965,7 +961,6 @@ In `tests/manual/`: actual llama.cpp launch with a small GGUF, actual ComfyUI ba
 | `openai_api.listen` | `127.0.0.1:8080` | Global |
 | Oneshot port pool | `18000–18999` | Global |
 | `start_queue_depth` | 10 | Global + per-service |
-| `warming_grace` | 60s | Per-service |
 | `min_borrower_runtime` | 60s | Per-service (dynamic) |
 | `drain_timeout` (llama-cpp) | 30s | Per-service |
 | `drain_timeout` (command) | 5s | Per-service |

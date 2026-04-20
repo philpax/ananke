@@ -92,10 +92,7 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
             continue;
         };
         match snap.state {
-            ServiceState::Idle
-            | ServiceState::Starting
-            | ServiceState::Warming
-            | ServiceState::Running => {
+            ServiceState::Idle | ServiceState::Starting | ServiceState::Running => {
                 data.push(ModelListing {
                     id: name.to_string(),
                     object: "model",

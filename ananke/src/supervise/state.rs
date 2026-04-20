@@ -5,7 +5,6 @@ use smol_str::SmolStr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceState {
     Starting,
-    Warming,
     Running,
     Draining,
     Idle,
@@ -31,7 +30,6 @@ impl ServiceState {
         match self {
             ServiceState::Idle => "idle",
             ServiceState::Starting => "starting",
-            ServiceState::Warming => "warming",
             ServiceState::Running => "running",
             ServiceState::Draining => "draining",
             ServiceState::Stopped => "stopped",
@@ -60,7 +58,6 @@ impl DisableReason {
 pub enum Event {
     SpawnRequested,
     HealthPassed,
-    WarmingComplete,
     DrainRequested,
     DrainComplete,
     Stopped,
@@ -95,12 +92,8 @@ pub fn try_transition(from: &ServiceState, event: Event) -> Option<ServiceState>
     use ServiceState::*;
     match (from, event) {
         (Idle, Event::SpawnRequested) => Some(Starting),
-        (Starting, Event::HealthPassed) => Some(Warming),
+        (Starting, Event::HealthPassed) => Some(Running),
         (Starting, Event::LaunchFailed) => Some(Failed { retry_count: 0 }),
-        (Warming, Event::WarmingComplete) => Some(Running),
-        (Warming, Event::HealthTimedOut) => Some(Disabled {
-            reason: DisableReason::HealthTimeout,
-        }),
         (Running, Event::DrainRequested) => Some(Draining),
         (Running, Event::Stopped) => Some(Stopped),
         (Draining, Event::DrainComplete) => Some(Idle),
@@ -117,7 +110,10 @@ pub fn try_transition(from: &ServiceState, event: Event) -> Option<ServiceState>
                 })
             }
         }
-        (Running | Warming, Event::CrashLoop) => Some(Disabled {
+        (Starting, Event::HealthTimedOut) => Some(Disabled {
+            reason: DisableReason::HealthTimeout,
+        }),
+        (Running, Event::CrashLoop) => Some(Disabled {
             reason: DisableReason::CrashLoop,
         }),
         (Disabled { .. }, Event::UserEnable) => Some(Idle),
@@ -141,17 +137,17 @@ mod tests {
     }
 
     #[test]
-    fn starting_to_warming_on_health() {
+    fn starting_to_running_on_health() {
         assert_eq!(
             transition(&ServiceState::Starting, Event::HealthPassed),
-            ServiceState::Warming,
+            ServiceState::Running,
         );
     }
 
     #[test]
-    fn warming_health_timeout_disables_with_reason() {
+    fn starting_health_timeout_disables_with_reason() {
         assert_eq!(
-            transition(&ServiceState::Warming, Event::HealthTimedOut),
+            transition(&ServiceState::Starting, Event::HealthTimedOut),
             ServiceState::Disabled {
                 reason: DisableReason::HealthTimeout,
             },

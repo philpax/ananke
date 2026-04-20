@@ -40,7 +40,6 @@ fn command_argv_substitutes_port() {
         placement_policy: PlacementPolicy::GpuOnly,
         gpu_allow: Vec::new(),
         idle_timeout_ms: 600_000,
-        warming_grace_ms: 30_000,
         drain_timeout_ms: 5_000,
         extended_stream_drain_ms: 5_000,
         max_request_duration_ms: 60_000,

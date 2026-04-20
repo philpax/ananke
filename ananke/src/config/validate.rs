@@ -27,10 +27,6 @@ pub const DEFAULT_HEALTH_PROBE_INTERVAL_MS: u64 = 5_000;
 /// Default per-probe timeout for health checks (3 minutes).
 pub const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 180_000;
 
-/// Default grace window after spawn during which health-probe failures do not
-/// count as hard failures (1 minute).
-pub const DEFAULT_WARMING_GRACE_MS: u64 = 60_000;
-
 /// Default drain timeout before the supervisor escalates to SIGKILL (30 seconds).
 pub const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 30_000;
 
@@ -85,7 +81,6 @@ pub struct ServiceConfig {
     pub gpu_allow: Vec<u32>,
     pub filters: Filters,
     pub idle_timeout_ms: u64,
-    pub warming_grace_ms: u64,
     pub drain_timeout_ms: u64,
     pub extended_stream_drain_ms: u64,
     pub max_request_duration_ms: u64,
@@ -585,14 +580,6 @@ fn validate_service(
         .transpose()
         .map_err(|e| fail(format!("service {name} idle_timeout: {e}")))?
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
-    let warming_grace_ms = common
-        .warming_grace
-        .as_deref()
-        .or(defaults.warming_grace.as_deref())
-        .map(parse_duration_ms)
-        .transpose()
-        .map_err(|e| fail(format!("service {name} warming_grace: {e}")))?
-        .unwrap_or(DEFAULT_WARMING_GRACE_MS);
     let drain_timeout_ms = common
         .drain_timeout
         .as_deref()
@@ -690,7 +677,6 @@ fn validate_service(
         gpu_allow,
         filters,
         idle_timeout_ms,
-        warming_grace_ms,
         drain_timeout_ms,
         extended_stream_drain_ms,
         max_request_duration_ms,
@@ -1026,7 +1012,6 @@ pub mod test_fixtures {
             placement_policy: PlacementPolicy::CpuOnly,
             gpu_allow: Vec::new(),
             idle_timeout_ms: 60_000,
-            warming_grace_ms: 100,
             drain_timeout_ms: 1_000,
             extended_stream_drain_ms: 1_000,
             max_request_duration_ms: 5_000,
