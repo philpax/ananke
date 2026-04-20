@@ -13,14 +13,11 @@
 { pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 
 pkgs.mkShell {
-  # Rust side.
+  # We deliberately don't pin the Rust toolchain here — nixpkgs stable
+  # tends to lag a few minors behind what the workspace's dependency tree
+  # requires (toasty currently needs ≥ 1.94). Bring your own rustc via
+  # the system channel or rustup; this shell supplies everything else.
   nativeBuildInputs = with pkgs; [
-    rustc
-    cargo
-    clippy
-    rustfmt
-    rust-analyzer
-
     pkg-config
   ];
 
@@ -31,9 +28,9 @@ pkgs.mkShell {
   # Stress + calibration scripts run through uv.
   #
   # We deliberately don't pull in llama.cpp here — on NixOS it's installed
-  # system-wide (e.g. via the graphics module), and `target/release/ananke`
-  # spawns whichever `llama-server` is first on PATH. Adding a pinned copy
-  # from nixpkgs would often diverge from the system GPU driver's CUDA
+  # system-wide (e.g. via the graphics module), and the daemon + calibration
+  # harness spawn whichever `llama-server` is first on PATH. Adding a pinned
+  # copy from nixpkgs would often diverge from the system GPU driver's CUDA
   # version, which is worse than "use what the host has".
   packages = with pkgs; [
     uv
@@ -53,8 +50,8 @@ pkgs.mkShell {
     export RUST_BACKTRACE=1
 
     echo "ananke dev shell ready"
-    echo "  rustc:      $(rustc --version 2>/dev/null || echo missing)"
-    echo "  cargo:      $(cargo --version 2>/dev/null || echo missing)"
+    echo "  rustc:      $(rustc --version 2>/dev/null || echo 'missing — install via rustup')"
+    echo "  cargo:      $(cargo --version 2>/dev/null || echo 'missing — install via rustup')"
     echo "  uv:         $(uv --version 2>/dev/null || echo missing)"
     echo "  nvml libs:  ''${LD_LIBRARY_PATH:-<not set>}"
   '';

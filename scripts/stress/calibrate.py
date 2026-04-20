@@ -139,21 +139,32 @@ def _unwrap(v: Any) -> Any:
 
 
 def llm_service_blocks(source_toml: str) -> dict[str, dict[str, Any]]:
+    """Merge `[[service]]` and `[[persistent_service]]` arrays into one
+    name → service-block dict. The daemon's config parser accepts both
+    top-level array names (the latter is a shortcut for the former with
+    `lifecycle = "persistent"`), and calibrate.py needs to pull from
+    both without caring about the distinction.
+    """
     doc = tomlkit.parse(source_toml)
-    services = doc.get("service") or []
-    return {
-        str(s["name"]): {k: _unwrap(v) for k, v in s.items()}
-        for s in services
-        if str(s.get("template", "")) == "llama-cpp"
-    }
+    out: dict[str, dict[str, Any]] = {}
+    for key in ("service", "persistent_service"):
+        for s in doc.get(key) or []:
+            if str(s.get("template", "")) != "llama-cpp":
+                continue
+            out[str(s["name"])] = {k: _unwrap(v) for k, v in s.items()}
+    return out
 
 
 # --- estimate example invocation ------------------------------------------
 
 
-def run_estimator(binary: Path, svc: dict[str, Any], context: int) -> dict[str, Any]:
+def run_estimator(
+    binary: Path, svc: dict[str, Any], context: int, active_devices: int | None = None
+) -> dict[str, Any]:
     """Invoke the `estimate` example against `svc` at the given context
-    and return its parsed JSON output.
+    and return its parsed JSON output. When `active_devices` is set, the
+    estimate's `total_accounted_*` fields reflect that placement
+    (relevant for small single-GPU models vs large dual-GPU + CPU fits).
     """
     args: list[str] = [
         str(binary),
@@ -172,6 +183,8 @@ def run_estimator(binary: Path, svc: dict[str, Any], context: int) -> dict[str, 
         args += ["--override-tensor", str(rule)]
     if svc.get("n_cpu_moe") is not None:
         args += ["--n-cpu-moe", str(svc["n_cpu_moe"])]
+    if active_devices is not None:
+        args += ["--active-devices", str(active_devices)]
     estimation = svc.get("estimation") or {}
     if estimation.get("compute_buffer_mb") is not None:
         args += ["--compute-buffer-mb", str(estimation["compute_buffer_mb"])]
@@ -284,12 +297,20 @@ async def measure_one(
     startup_timeout_s: float,
     log_path: Path,
 ) -> Row:
-    estimate = run_estimator(estimate_bin, svc, context)
+    # active_devices=2 tells the estimate example to report GPU VRAM for
+    # a dual-GPU redline box (the `gpu_vram_mib` output excludes CPU-
+    # resident embeddings and caps cb device count at 2). That matches
+    # what nvidia-smi sums to, so deltas track the real calibration signal.
+    estimate = run_estimator(estimate_bin, svc, context, active_devices=2)
     architecture = str(estimate.get("architecture", ""))
     predicted_weights_mib = int(estimate.get("weights_bytes", 0)) // (1024 * 1024)
     predicted_kv_total_mib = int(estimate.get("kv_total_mib", 0))
     predicted_compute_mib = int(estimate.get("compute_buffer_mb", 0))
-    predicted_total_mib = int(estimate.get("total_accounted_mib", 0))
+    # Prefer the GPU-only field when present; fall back to total_accounted
+    # for older estimate-binary builds that don't emit it.
+    predicted_total_mib = int(
+        estimate.get("gpu_vram_mib", estimate.get("total_accounted_mib", 0))
+    )
 
     def _err(reason: str) -> Row:
         return Row(

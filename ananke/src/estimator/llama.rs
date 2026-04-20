@@ -71,7 +71,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         kv_per_token,
         compute_buffer_mb: inputs
             .compute_buffer_mb
-            .unwrap_or_else(|| super::compute_buffer::default_for(inputs.context)),
+            .unwrap_or_else(|| super::compute_buffer::default_for(arch, inputs.context)),
         per_layer_bytes: Some(per_layer_bytes),
         attention_layers: None,
         non_layer,
@@ -235,7 +235,14 @@ pub(crate) fn collect_non_layer(summary: &GgufSummary) -> NonLayer {
         }
         match name.as_str() {
             "output.weight" => nl.output_head_bytes += tensor.byte_size,
-            "token_embd.weight" => nl.token_embd_bytes += tensor.byte_size,
+            // Gemma 4's `per_layer_token_embd.weight` is a 42-slot embedding
+            // stack (one per transformer block) that llama.cpp keeps on CPU
+            // alongside `token_embd.weight`. For the E4B quant it's ~2.8 GiB
+            // — bucketing it as GPU-resident caused the packer to over-
+            // reserve a small single-GPU fit by ~3 GiB.
+            "token_embd.weight" | "per_layer_token_embd.weight" => {
+                nl.token_embd_bytes += tensor.byte_size
+            }
             _ => nl.other_bytes += tensor.byte_size,
         }
     }
@@ -393,6 +400,39 @@ mod tests {
         assert!(is_llama_family("gemma4"));
     }
 
+    #[test]
+    fn per_layer_token_embd_is_cpu_resident() {
+        // Gemma 4 E-variants carry a large `per_layer_token_embd.weight`
+        // tensor (2.8 GiB for E4B) that llama.cpp keeps on CPU alongside
+        // `token_embd.weight`. Bucketing it as GPU-resident caused the
+        // packer to over-reserve a single-GPU fit by ~3 GiB.
+        let mut tensors = std::collections::BTreeMap::new();
+        tensors.insert(
+            SmolStr::new("token_embd.weight"),
+            tensor("token_embd.weight", 100 * 1024 * 1024),
+        );
+        tensors.insert(
+            SmolStr::new("per_layer_token_embd.weight"),
+            tensor("per_layer_token_embd.weight", 300 * 1024 * 1024),
+        );
+        tensors.insert(
+            SmolStr::new("output_norm.weight"),
+            tensor("output_norm.weight", 1024),
+        );
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors,
+            metadata: std::collections::BTreeMap::new(),
+            block_count: Some(0),
+            architecture: SmolStr::new("gemma4"),
+            shards: vec!["/fake".into()],
+        };
+        let nl = collect_non_layer(&summary);
+        assert_eq!(nl.token_embd_bytes, 400 * 1024 * 1024);
+        assert_eq!(nl.other_bytes, 1024);
+    }
+
     /// Build a gemma4-shaped summary with a given per-layer SWA mask and
     /// head-count-KV array so the KV computation can be exercised end-to-end.
     fn gemma4_summary(is_swa: &[bool], kv_heads: &[u32], sliding_window: u32) -> GgufSummary {
@@ -403,10 +443,7 @@ mod tests {
             SmolStr::new("general.architecture"),
             GgufValue::String("gemma4".into()),
         );
-        metadata.insert(
-            SmolStr::new("gemma4.block_count"),
-            GgufValue::U32(n_layers),
-        );
+        metadata.insert(SmolStr::new("gemma4.block_count"), GgufValue::U32(n_layers));
         metadata.insert(
             SmolStr::new("gemma4.attention.head_count_kv"),
             GgufValue::Array(kv_heads.iter().map(|h| GgufValue::U32(*h)).collect()),

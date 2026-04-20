@@ -30,7 +30,10 @@ pub fn estimate_fallback(summary: &GgufSummary, context: u32) -> Estimate {
     Estimate {
         weights_bytes: weights,
         kv_per_token: 0,
-        compute_buffer_mb: super::compute_buffer::default_for(context),
+        compute_buffer_mb: super::compute_buffer::default_for(
+            summary.architecture.as_str(),
+            context,
+        ),
         per_layer_bytes: None,
         attention_layers: None,
         non_layer: NonLayer {

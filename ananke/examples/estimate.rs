@@ -9,6 +9,7 @@
 //!     [--override-tensor '<regex>=<device>' ...] \
 //!     [--n-cpu-moe N] \
 //!     [--compute-buffer-mb N] \
+//!     [--active-devices N] \
 //!     [--allow-fallback]
 //!
 //! Unknown architectures now hard-reject by default; pass `--allow-fallback`
@@ -41,6 +42,7 @@ struct Args {
     override_tensor: Vec<String>,
     n_cpu_moe: Option<u32>,
     compute_buffer_mb: Option<u32>,
+    active_devices: Option<u64>,
     allow_fallback: bool,
 }
 
@@ -54,6 +56,7 @@ fn parse_args() -> Args {
     let mut override_tensor: Vec<String> = Vec::new();
     let mut n_cpu_moe: Option<u32> = None;
     let mut compute_buffer_mb: Option<u32> = None;
+    let mut active_devices: Option<u64> = None;
     let mut allow_fallback = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -71,6 +74,7 @@ fn parse_args() -> Args {
             }
             "--n-cpu-moe" => n_cpu_moe = it.next().and_then(|s| s.parse().ok()),
             "--compute-buffer-mb" => compute_buffer_mb = it.next().and_then(|s| s.parse().ok()),
+            "--active-devices" => active_devices = it.next().and_then(|s| s.parse().ok()),
             "--allow-fallback" => allow_fallback = true,
             _ => {
                 eprintln!("unknown argument: {arg}");
@@ -91,6 +95,7 @@ fn parse_args() -> Args {
         override_tensor,
         n_cpu_moe,
         compute_buffer_mb,
+        active_devices,
         allow_fallback,
     }
 }
@@ -123,18 +128,37 @@ fn main() {
         .saturating_mul(estimate.context as u64);
 
     // The packer adds `compute_buffer_mb` to every device it lands the
-    // model on: both GPUs, plus the CPU slot when `token_embd` is seeded
-    // there (which happens for every llama-family model). Three is the
-    // typical active-device count and what the daemon's scheduler uses
-    // for an estimator-driven two-GPU placement; keep it fixed here so
-    // the reported total matches what the packer would reserve without
-    // this example having to replicate the full packing algorithm.
-    const TYPICAL_ACTIVE_DEVICES: u64 = 3;
-    let total_bytes = estimate.weights_bytes.saturating_add(kv_total_bytes).saturating_add(
-        (estimate.compute_buffer_mb as u64)
-            .saturating_mul(TYPICAL_ACTIVE_DEVICES)
-            .saturating_mul(1024 * 1024),
-    );
+    // model on. Caller passes `--active-devices N` for the placement
+    // they're modelling (1 for a single-GPU-only fit, 2 for dual-GPU,
+    // 3 for dual-GPU + CPU embedding/offload). Default 3 matches the
+    // typical redline-box placement for large llama-family models.
+    let active_devices = args.active_devices.unwrap_or(3);
+    let cb_total_bytes = (estimate.compute_buffer_mb as u64)
+        .saturating_mul(active_devices)
+        .saturating_mul(1024 * 1024);
+    let total_bytes = estimate
+        .weights_bytes
+        .saturating_add(kv_total_bytes)
+        .saturating_add(cb_total_bytes);
+
+    // "GPU VRAM" estimate: subtract the tensors llama.cpp keeps on CPU
+    // by default (token embeddings — plus the per-layer token embeddings
+    // for gemma4 E-variants) along with any expert layers `n_cpu_moe`
+    // sent to CPU. Matches what an nvidia-smi sum will report, which is
+    // what calibration compares against.
+    let expert_cpu_bytes: u64 = estimate.expert_layer_cpu_bytes.values().sum();
+    let cpu_resident_bytes = estimate
+        .non_layer
+        .token_embd_bytes
+        .saturating_add(expert_cpu_bytes);
+    let gpu_weights_bytes = estimate.weights_bytes.saturating_sub(cpu_resident_bytes);
+    let gpu_total_bytes = gpu_weights_bytes
+        .saturating_add(kv_total_bytes)
+        .saturating_add(
+            (estimate.compute_buffer_mb as u64)
+                .saturating_mul(active_devices.min(2))
+                .saturating_mul(1024 * 1024),
+        );
 
     let out = json!({
         "architecture": estimate.architecture.as_str(),
@@ -160,6 +184,11 @@ fn main() {
         // or per-device compute-buffer doubling; treat as a lower bound.
         "total_accounted_bytes": total_bytes,
         "total_accounted_mib": total_bytes / (1024 * 1024),
+        // GPU-only estimate: what nvidia-smi will report summed across
+        // GPUs. Excludes llama.cpp's CPU-resident embedding tensors and
+        // caps cb device count at 2 (CPU doesn't contribute to GPU VRAM).
+        "gpu_vram_bytes": gpu_total_bytes,
+        "gpu_vram_mib": gpu_total_bytes / (1024 * 1024),
     });
 
     println!("{}", serde_json::to_string_pretty(&out).unwrap());

@@ -58,7 +58,10 @@ const FAMILIES: &[Family] = &[
 pub enum EstimatorError {
     /// `gguf::read` failed (bad magic, IO error, unsupported dtype, …).
     /// The inner string is the reader's own diagnostic.
-    GgufRead { path: std::path::PathBuf, cause: String },
+    GgufRead {
+        path: std::path::PathBuf,
+        cause: String,
+    },
     /// The GGUF parsed cleanly but its `general.architecture` is not in
     /// any per-family estimator's allowlist and the service config
     /// hasn't opted into the coarse fallback.
