@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use tokio::sync::watch;
-use tracing::debug;
+use tracing::info;
 
 use crate::{
     config::Lifecycle,
@@ -66,7 +66,7 @@ async fn re_ensure_persistent(state: &AppState) {
         let h = handle.clone();
         let name = svc_cfg.name.clone();
         tokio::spawn(async move {
-            debug!(service = %name, state = %snap.state.name(), "re-ensuring persistent service");
+            info!(service = %name, dormant_state = %snap.state.name(), "re-ensuring persistent service");
             // Disabled{NoFit} supervisors reject Ensure outright; Enable
             // transitions back to Idle so the next Ensure can run. Enable
             // is a no-op on non-Disabled states so it's safe to fire

@@ -15,7 +15,7 @@ use futures::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::{Frame, SizeHint};
 use serde_json::Value;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     api::openai::{
@@ -170,6 +170,8 @@ async fn forward_json_post(
         Some(m) => m.to_string(),
         None => return errors::bad_request("request body missing `model` field"),
     };
+
+    info!(model = %model, endpoint = path, "openai request received");
 
     let handle = match state.registry.get(&model) {
         Some(h) => h,

@@ -595,6 +595,12 @@ impl RunLoop {
         let prior_state = self.state.clone();
         self.state = new_state;
         *self.state_mirror.lock() = self.state.clone();
+        info!(
+            service = %self.init.identity.name,
+            from = %prior_state.name(),
+            to = %self.state.name(),
+            "state transition"
+        );
         self.deps.events.publish(Event::StateChanged {
             service: self.init.identity.name.clone(),
             from: prior_state.name().to_string(),
@@ -801,6 +807,12 @@ impl RunLoop {
                 &pre_evicted,
             )
         };
+        info!(
+            service = %self.init.identity.name,
+            fit_ok = fit_result.is_ok(),
+            pre_evicted = ?pre_evicted,
+            "fit_result computed"
+        );
         if let Err(nofit) = fit_result
             && let Err(reason) = self.try_eviction_to_fit(&want, &nofit).await
         {
@@ -960,6 +972,12 @@ impl RunLoop {
             .map(|c| c.name.clone())
             .collect();
         if victims.is_empty() {
+            info!(
+                service = %self.init.identity.name,
+                candidates = candidates.len(),
+                my_priority,
+                "eviction selection failed: no evictable candidates for placement"
+            );
             let _ = self.packed_for_spawn.take();
             let reason = self
                 .compute_reservation_map(snap, table)
@@ -977,10 +995,11 @@ impl RunLoop {
             .compute_reservation_map_optimistic(snap, &filtered)
             .map_err(ReservationFailure::message)?;
 
-        warn!(
+        info!(
             service = %self.init.identity.name,
             evict_count = victims.len(),
-            "pack succeeded after pretending lower-priority victims were evicted; draining them"
+            victims = ?victims,
+            "eviction planned (per-layer pack feasible once victims drain)"
         );
         for victim in &victims {
             if let Some(handle) = self.deps.registry.get(victim) {
@@ -1020,13 +1039,26 @@ impl RunLoop {
         );
 
         if to_evict.is_empty() {
+            info!(
+                service = %self.init.identity.name,
+                candidates = candidates.len(),
+                needed_bytes = nofit.needed_bytes,
+                available_bytes = nofit.available_bytes,
+                slot = ?nofit.slot,
+                "eviction selection failed: no evictable candidates cover the deficit"
+            );
             // Clear any computed packed args so they are not used on the next
             // Ensure attempt after this failure.
             let _ = self.packed_for_spawn.take();
             return Err(format!("{nofit}"));
         }
 
-        warn!(service = %self.init.identity.name, evict_count = to_evict.len(), "eviction planned to make room");
+        info!(
+            service = %self.init.identity.name,
+            evict_count = to_evict.len(),
+            victims = ?to_evict,
+            "eviction planned (fit feasible after drain)"
+        );
         for victim in &to_evict {
             if let Some(handle) = self.deps.registry.get(victim) {
                 handle
@@ -1161,6 +1193,7 @@ impl RunLoop {
             }
         };
         let cmdline = format!("{} {}", spawn_cfg.binary, spawn_cfg.args.join(" "));
+        info!(service = %self.init.identity.name, binary = %spawn_cfg.binary, "spawning child");
         let mut child = match self.deps.system.process_spawner.spawn(&spawn_cfg).await {
             Ok(c) => c,
             Err(e) => {
@@ -1415,21 +1448,49 @@ impl RunLoop {
                 WarmingOutcome::ChildExited
             }
             cmd = self.rx.recv() => {
-                if let Some(SupervisorCommand::Shutdown { ack }) = cmd {
-                    info!(service = %self.init.identity.name, "draining during warming");
-                    let _ = self.cancel_tx.send(true);
-                    drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
-                    self.run_shutdown_command().await;
-                    delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
-                    self.deps.allocations.lock().remove(&self.init.identity.name);
-                    self.emit_allocation_changed();
-                    let _ = ack.send(());
-                    return WarmingOutcome::Shutdown;
+                match cmd {
+                    Some(SupervisorCommand::Shutdown { ack }) => {
+                        info!(service = %self.init.identity.name, "draining during warming");
+                        let _ = self.cancel_tx.send(true);
+                        drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                        self.run_shutdown_command().await;
+                        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                        self.deps.allocations.lock().remove(&self.init.identity.name);
+                        self.emit_allocation_changed();
+                        let _ = ack.send(());
+                        WarmingOutcome::Shutdown
+                    }
+                    Some(SupervisorCommand::BeginDrain { reason, ack })
+                    | Some(SupervisorCommand::FastKill { reason, ack }) => {
+                        info!(
+                            service = %self.init.identity.name,
+                            ?reason,
+                            "drain requested during warming; aborting spawn"
+                        );
+                        let _ = self.cancel_tx.send(true);
+                        drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
+                        self.run_shutdown_command().await;
+                        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                        self.deps.allocations.lock().remove(&self.init.identity.name);
+                        self.deps.observation.clear(&self.init.identity.name);
+                        self.emit_allocation_changed();
+                        if let Some(bus) = self.start_bus_carry.take() {
+                            let _ = bus.send(StartOutcome::Err(StartFailure {
+                                kind: StartFailureKind::LaunchFailed,
+                                message: format!("start aborted during warming ({reason:?})"),
+                            }));
+                        }
+                        self.set_state(ServiceState::Idle);
+                        let _ = ack.send(());
+                        WarmingOutcome::ChildExited
+                    }
+                    _ => {
+                        // Snapshot or channel-closed: fall through to warming complete.
+                        let next = transition(&self.state, StateEvent::WarmingComplete);
+                        self.set_state(next);
+                        WarmingOutcome::Complete
+                    }
                 }
-                // Snapshot or channel-closed: fall through to warming complete.
-                let next = transition(&self.state, StateEvent::WarmingComplete);
-                self.set_state(next);
-                WarmingOutcome::Complete
             }
         }
     }
@@ -1631,14 +1692,62 @@ impl RunLoop {
                 StartingOutcome::Continue
             }
             Some(SupervisorCommand::ActivityPing) => StartingOutcome::Continue,
-            // Service is not yet running; drain/kill are no-ops during starting.
-            Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+            // Drain request while the child is still starting: abort the
+            // spawn, release the allocation, and drop back to Idle. The
+            // caller (retry_pack_with_eviction / try_eviction_to_fit /
+            // ShutdownDrain) needs the VRAM; a no-op ack would pretend
+            // it had been freed when it hasn't.
+            Some(SupervisorCommand::BeginDrain { reason, ack }) => {
+                info!(
+                    service = %self.init.identity.name,
+                    ?reason,
+                    "BeginDrain while starting; aborting in-progress spawn"
+                );
+                let _ = self.cancel_tx.send(true);
+                drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
+                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
+                self.deps.observation.clear(&self.init.identity.name);
+                self.emit_allocation_changed();
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::LaunchFailed,
+                        message: format!("start aborted by drain ({reason:?})"),
+                    }));
+                }
+                self.set_state(ServiceState::Idle);
                 let _ = ack.send(());
-                StartingOutcome::Continue
+                StartingOutcome::Break
             }
-            Some(SupervisorCommand::FastKill { ack, .. }) => {
+            Some(SupervisorCommand::FastKill { reason, ack }) => {
+                info!(
+                    service = %self.init.identity.name,
+                    ?reason,
+                    "FastKill while starting; aborting in-progress spawn"
+                );
+                let _ = self.cancel_tx.send(true);
+                drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
+                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.deps
+                    .allocations
+                    .lock()
+                    .remove(&self.init.identity.name);
+                self.deps.observation.clear(&self.init.identity.name);
+                self.emit_allocation_changed();
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::LaunchFailed,
+                        message: format!("start fast-killed ({reason:?})"),
+                    }));
+                }
+                self.set_state(ServiceState::Idle);
                 let _ = ack.send(());
-                StartingOutcome::Continue
+                StartingOutcome::Break
             }
             Some(SupervisorCommand::Enable { ack }) => {
                 // Already starting; not disabled.
