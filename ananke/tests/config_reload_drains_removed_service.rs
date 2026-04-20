@@ -24,9 +24,7 @@ use smol_str::SmolStr;
 async fn wait_running_pid(handle: &SupervisorHandle, timeout_ms: u64) -> u32 {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        if let Some(snap) = handle.snapshot().await
-            && let Some(pid) = snap.pid
-        {
+        if let Some(pid) = handle.peek().pid {
             return pid as u32;
         }
         if tokio::time::Instant::now() >= deadline {

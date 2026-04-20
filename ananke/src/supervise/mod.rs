@@ -52,10 +52,6 @@ pub enum SupervisorCommand {
     Shutdown {
         ack: tokio::sync::oneshot::Sender<()>,
     },
-    /// Request state snapshot for tests / management surface.
-    Snapshot {
-        ack: tokio::sync::oneshot::Sender<SupervisorSnapshot>,
-    },
     /// Ensure the service is started (or starting). Returns a broadcast
     /// receiver the caller can await for the start outcome. If the
     /// start queue is full, returns `EnsureResponse::QueueFull` via the
@@ -139,6 +135,10 @@ pub enum StartFailureKind {
     Oom,
 }
 
+/// The full outward-visible state of a supervisor. Always synthesised from
+/// the shared [`MirroredState`] plus the handle's name — there is no separate
+/// "async snapshot" path anymore, because the supervisor's phase / run_id /
+/// pid all live in one lock-free cell that readers can inspect directly.
 #[derive(Debug, Clone)]
 pub struct SupervisorSnapshot {
     pub name: smol_str::SmolStr,
@@ -147,17 +147,28 @@ pub struct SupervisorSnapshot {
     pub pid: Option<i32>,
 }
 
+/// Shared cell holding every piece of supervisor state that is readable from
+/// outside the task. The supervisor task is the sole writer; `SupervisorHandle`
+/// is a reader. Replaced the old `ServiceState` mirror + dedicated `Snapshot`
+/// mailbox command: one source of truth instead of two locations kept in sync
+/// and one slow async path kept in parallel with one lock-free fast path.
+#[derive(Debug, Clone, Default)]
+struct MirroredState {
+    state: ServiceState,
+    run_id: Option<i64>,
+    pid: Option<i32>,
+}
+
 pub struct SupervisorHandle {
     pub name: smol_str::SmolStr,
     tx: mpsc::Sender<SupervisorCommand>,
     join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    /// Lock-free mirror of the supervisor's current state. Writers: the
-    /// supervisor's own `set_state`. Readers: anyone who just needs the
-    /// state without poking the command channel (eviction planner,
-    /// persistent-respawn watcher, etc.). Going through the mailbox
-    /// for a state peek is what used to deadlock the eviction cascade
-    /// when the mailbox filled up behind serial drains.
-    state_mirror: Arc<SyncMutex<ServiceState>>,
+    /// Sole source of truth for the supervisor's state, shared between the
+    /// task and every handle. Locked reads are non-blocking
+    /// (`parking_lot::Mutex`) and never go through the command channel, so
+    /// it's safe to call these from inside another supervisor's
+    /// `handle_idle_ensure` or the eviction planner.
+    mirror: Arc<SyncMutex<MirroredState>>,
 }
 
 impl SupervisorHandle {
@@ -173,27 +184,22 @@ impl SupervisorHandle {
         }
     }
 
-    /// Non-blocking read of the supervisor's current state. Never goes
-    /// through the command channel, so it's safe to call while holding
-    /// schedulers' allocator lock or inside another supervisor's
-    /// `handle_idle_ensure`. Callers that need the pid/run_id too
-    /// should still use [`snapshot`] — everyone else should prefer
-    /// this.
-    pub fn peek_state(&self) -> ServiceState {
-        self.state_mirror.lock().clone()
+    /// Non-blocking full snapshot of the supervisor's state, pid, and run_id.
+    /// Always succeeds — the data lives in an always-present mirror cell,
+    /// not in the supervisor task's local variables.
+    pub fn peek(&self) -> SupervisorSnapshot {
+        let m = self.mirror.lock();
+        SupervisorSnapshot {
+            name: self.name.clone(),
+            state: m.state.clone(),
+            run_id: m.run_id,
+            pid: m.pid,
+        }
     }
 
-    pub async fn snapshot(&self) -> Option<SupervisorSnapshot> {
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
-        if self
-            .tx
-            .send(SupervisorCommand::Snapshot { ack: ack_tx })
-            .await
-            .is_err()
-        {
-            return None;
-        }
-        ack_rx.await.ok()
+    /// Shorthand for [`Self::peek`] when only the lifecycle phase is needed.
+    pub fn peek_state(&self) -> ServiceState {
+        self.mirror.lock().state.clone()
     }
 
     pub async fn ensure(&self) -> Option<EnsureResponse> {
@@ -203,12 +209,6 @@ impl SupervisorHandle {
             .await
             .ok()?;
         ack_rx.await.ok()
-    }
-
-    /// Fetch the current `run_id` from the supervisor's snapshot. Returns
-    /// `None` if the supervisor is unreachable or not in a running state.
-    pub async fn run_id(&self) -> Option<i64> {
-        self.snapshot().await?.run_id
     }
 
     pub fn ping(&self) {
@@ -319,17 +319,17 @@ pub fn spawn_supervisor(
 ) -> SupervisorHandle {
     let (tx, rx) = mpsc::channel(SUPERVISOR_COMMAND_MAILBOX);
     let name = init.identity.name.clone();
-    // Shared with `RunLoop` so `SupervisorHandle::peek_state` can read the
-    // live state without going through the command channel (which serialises
-    // behind long operations like drain/spawn and would deadlock the eviction
-    // planner if it blocked here).
-    let state_mirror = Arc::new(SyncMutex::new(ServiceState::Idle));
-    let join = tokio::spawn(run(init, boot_svc, deps, rx, state_mirror.clone()));
+    // Shared with `RunLoop`: the supervisor task writes through this cell,
+    // every `SupervisorHandle::peek*` reads from it. No separate in-task
+    // copy of the state lives alongside it — there is exactly one
+    // `{state, run_id, pid}` tuple per supervisor.
+    let mirror = Arc::new(SyncMutex::new(MirroredState::default()));
+    let join = tokio::spawn(run(init, boot_svc, deps, rx, mirror.clone()));
     SupervisorHandle {
         name,
         tx,
         join: tokio::sync::Mutex::new(Some(join)),
-        state_mirror,
+        mirror,
     }
 }
 
@@ -513,11 +513,11 @@ async fn run(
     boot_svc: ServiceConfig,
     deps: SupervisorDeps,
     rx: mpsc::Receiver<SupervisorCommand>,
-    state_mirror: Arc<SyncMutex<ServiceState>>,
+    mirror: Arc<SyncMutex<MirroredState>>,
 ) {
-    let mut loop_state = RunLoop::new(init, boot_svc, deps, rx, state_mirror);
+    let mut loop_state = RunLoop::new(init, boot_svc, deps, rx, mirror);
     loop {
-        let step = match loop_state.state.clone() {
+        let step = match loop_state.read_state() {
             ServiceState::Idle => loop_state.handle_idle().await,
             ServiceState::Starting => loop_state.handle_active_lifecycle().await,
             ServiceState::Failed { retry_count } => loop_state.handle_failed(retry_count).await,
@@ -542,13 +542,14 @@ enum Step {
 
 /// Mutable context threaded through every `handle_*` method. Owns every
 /// binding that outlives a single state's body and is read or mutated across
-/// transitions.
+/// transitions. The lifecycle phase, run_id, and pid all live in the shared
+/// `mirror` cell; there is no local `state` field — readers call
+/// [`Self::read_state`] or [`Self::read_full`].
 struct RunLoop {
     init: SupervisorInit,
     deps: SupervisorDeps,
     rx: mpsc::Receiver<SupervisorCommand>,
-    state: ServiceState,
-    state_mirror: Arc<SyncMutex<ServiceState>>,
+    mirror: Arc<SyncMutex<MirroredState>>,
     cancel_tx: watch::Sender<bool>,
     cancel_rx: watch::Receiver<bool>,
     /// Carries a broadcast sender from Idle through to Starting so waiters can
@@ -575,19 +576,17 @@ impl RunLoop {
         boot_svc: ServiceConfig,
         deps: SupervisorDeps,
         rx: mpsc::Receiver<SupervisorCommand>,
-        state_mirror: Arc<SyncMutex<ServiceState>>,
+        mirror: Arc<SyncMutex<MirroredState>>,
     ) -> Self {
-        let state = ServiceState::Idle;
-        // Seed the shared mirror so readers see `Idle` before the
-        // supervisor's first `set_state` call.
-        *state_mirror.lock() = state.clone();
+        // `MirroredState::default()` already seeds `Idle`; the explicit write
+        // here is defensive in case the caller reused a handle's mirror.
+        *mirror.lock() = MirroredState::default();
         let (cancel_tx, cancel_rx) = watch::channel(false);
         Self {
             init,
             deps,
             rx,
-            state,
-            state_mirror,
+            mirror,
             cancel_tx,
             cancel_rx,
             start_bus_carry: None,
@@ -596,6 +595,11 @@ impl RunLoop {
             base_total_bytes_for_rolling: 0,
             boot_svc,
         }
+    }
+
+    /// Read the current lifecycle phase from the shared mirror.
+    fn read_state(&self) -> ServiceState {
+        self.mirror.lock().state.clone()
     }
 
     /// Resolve the latest `ServiceConfig` for this supervisor's service.
@@ -619,21 +623,52 @@ impl RunLoop {
     }
 
     fn set_state(&mut self, new_state: ServiceState) {
-        let prior_state = self.state.clone();
-        self.state = new_state;
-        *self.state_mirror.lock() = self.state.clone();
+        let prior_state = {
+            let mut m = self.mirror.lock();
+            let prior = m.state.clone();
+            m.state = new_state.clone();
+            prior
+        };
         info!(
             service = %self.init.identity.name,
             from = %prior_state.name(),
-            to = %self.state.name(),
+            to = %new_state.name(),
             "state transition"
         );
         self.deps.events.publish(Event::StateChanged {
             service: self.init.identity.name.clone(),
             from: prior_state.name().to_string(),
-            to: self.state.name().to_string(),
+            to: new_state.name().to_string(),
             at_ms: crate::tracking::now_unix_ms(),
         });
+    }
+
+    /// Stamp `run_id` + `pid` into the shared mirror. Called once per spawn,
+    /// right after `insert_running_row` assigns the run_id, so every
+    /// `SupervisorHandle::peek()` from that point sees the identifiers.
+    fn set_running_ids(&mut self, run_id: i64, pid: i32) {
+        let mut m = self.mirror.lock();
+        m.run_id = Some(run_id);
+        m.pid = Some(pid);
+    }
+
+    /// Clear `run_id` + `pid` from the shared mirror. Called from every
+    /// teardown path (drain complete, child exited, eviction, etc.) alongside
+    /// the `delete_running_row` DB update, so peeks don't keep reporting a
+    /// stale child. Prefer [`Self::end_run`] at call sites that need both.
+    fn clear_running_ids(&mut self) {
+        let mut m = self.mirror.lock();
+        m.run_id = None;
+        m.pid = None;
+    }
+
+    /// Combined teardown: delete the DB `running_services` row and clear the
+    /// mirror's `run_id` + `pid`. Replaces the pattern of calling both in
+    /// sequence at every exit from the running/draining loops — keeping the
+    /// two in one helper means we can't forget one.
+    async fn end_run(&mut self, run_id: i64) {
+        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+        self.clear_running_ids();
     }
 
     /// Publish an `AllocationChanged` event reflecting the current state of
@@ -740,14 +775,6 @@ impl RunLoop {
                 Some(SupervisorCommand::Shutdown { ack }) => {
                     let _ = ack.send(());
                     return Step::Exit;
-                }
-                Some(SupervisorCommand::Snapshot { ack }) => {
-                    let _ = ack.send(SupervisorSnapshot {
-                        name: self.init.identity.name.clone(),
-                        state: self.state.clone(),
-                        run_id: None,
-                        pid: None,
-                    });
                 }
                 Some(SupervisorCommand::Ensure { ack }) => {
                     if self.handle_idle_ensure(ack).await {
@@ -880,7 +907,7 @@ impl RunLoop {
         let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
         self.start_bus_carry = Some(sender);
 
-        let next = transition(&self.state, StateEvent::SpawnRequested);
+        let next = transition(&self.read_state(), StateEvent::SpawnRequested);
         self.set_state(next);
         true
     }
@@ -1161,15 +1188,11 @@ impl RunLoop {
             if handle.name.as_str() == self.init.identity.name.as_str() {
                 continue;
             }
-            // Read the peer's state via the shared mirror rather than
-            // `handle.snapshot().await` — a snapshot call queues on the
-            // supervisor's bounded command mailbox, and when this is
-            // itself called from inside `handle_idle_ensure` (which
-            // blocks the target supervisor from draining its own
-            // mailbox), a full mailbox on the peer causes a circular
-            // wait between the eviction planner and the peer's own
-            // in-flight eviction. The mirror is lock-free for readers
-            // and can't back up.
+            // `peek_state` reads the shared mirror under a parking_lot
+            // mutex — no mailbox hop, no circular wait. When this is
+            // called from inside `handle_idle_ensure` the peer supervisor
+            // may be mid-drain and unable to service commands; reading the
+            // mirror directly is the only safe path.
             let state = handle.peek_state();
             // "Idle" for eviction purposes means "no user-facing work
             // in flight on a settled supervisor" — either literally
@@ -1293,6 +1316,7 @@ impl RunLoop {
             allocation_json,
         )
         .await;
+        self.set_running_ids(run_id, pid);
 
         if let Some(stdout) = child.take_stdout() {
             spawn_pump_stdout(
@@ -1426,7 +1450,7 @@ impl RunLoop {
     ) -> StartingOutcome {
         match outcome {
             Ok(HealthOutcome::Healthy) => {
-                let next = transition(&self.state, StateEvent::HealthPassed);
+                let next = transition(&self.read_state(), StateEvent::HealthPassed);
                 self.set_state(next);
 
                 if let Some(bus) = self.start_bus_carry.take() {
@@ -1474,7 +1498,6 @@ impl RunLoop {
         child: &mut dyn ManagedChild,
         run_id: i64,
     ) -> StartingOutcome {
-        let pid = child.id().unwrap_or(0) as i32;
         loop {
             tokio::select! {
                 exit = child.wait() => {
@@ -1496,13 +1519,13 @@ impl RunLoop {
                     info!(service = %self.init.identity.name, "idle timeout; draining to idle");
                     drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                     self.run_shutdown_command().await;
-                    delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                    self.end_run(run_id).await;
                     self.record_drain_complete();
                     self.set_state(ServiceState::Idle);
                     return StartingOutcome::Break;
                 }
                 cmd = self.rx.recv() => {
-                    match self.on_running_command(cmd, child, run_id, pid).await {
+                    match self.on_running_command(cmd, child, run_id).await {
                         RunningOutcome::Continue => {}
                         RunningOutcome::Break => return StartingOutcome::Break,
                         RunningOutcome::Exit => return StartingOutcome::Exit,
@@ -1532,7 +1555,7 @@ impl RunLoop {
         };
         drain_pipeline(child, &cfg, self.init.inflight.clone(), reason).await;
         self.run_shutdown_command().await;
-        delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+        self.end_run(run_id).await;
         self.record_drain_complete();
     }
 
@@ -1542,29 +1565,19 @@ impl RunLoop {
         cmd: Option<SupervisorCommand>,
         child: &mut dyn ManagedChild,
         run_id: i64,
-        pid: i32,
     ) -> RunningOutcome {
         match cmd {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 info!(service = %self.init.identity.name, "draining");
-                let next = transition(&self.state, StateEvent::DrainRequested);
+                let next = transition(&self.read_state(), StateEvent::DrainRequested);
                 self.set_state(next);
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, RUNNING_SIGTERM_GRACE).await;
                 self.run_shutdown_command().await;
-                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.end_run(run_id).await;
                 self.record_drain_complete();
                 let _ = ack.send(());
                 RunningOutcome::Exit
-            }
-            Some(SupervisorCommand::Snapshot { ack }) => {
-                let _ = ack.send(SupervisorSnapshot {
-                    name: self.init.identity.name.clone(),
-                    state: self.state.clone(),
-                    run_id: Some(run_id),
-                    pid: Some(pid),
-                });
-                RunningOutcome::Continue
             }
             Some(SupervisorCommand::Ensure { ack }) => {
                 let _ = ack.send(EnsureResponse::AlreadyRunning);
@@ -1588,7 +1601,7 @@ impl RunLoop {
                 fast_kill(child, reason).await;
                 self.run_shutdown_command().await;
 
-                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.end_run(run_id).await;
                 self.deps
                     .allocations
                     .lock()
@@ -1626,7 +1639,6 @@ impl RunLoop {
         child: &mut dyn ManagedChild,
         run_id: i64,
     ) -> StartingOutcome {
-        let pid = child.id().unwrap_or(0) as i32;
         match cmd {
             Some(SupervisorCommand::Shutdown { ack }) => {
                 let _ = self.cancel_tx.send(true);
@@ -1639,15 +1651,6 @@ impl RunLoop {
                 self.emit_allocation_changed();
                 let _ = ack.send(());
                 StartingOutcome::Exit
-            }
-            Some(SupervisorCommand::Snapshot { ack }) => {
-                let _ = ack.send(SupervisorSnapshot {
-                    name: self.init.identity.name.clone(),
-                    state: self.state.clone(),
-                    run_id: None,
-                    pid: Some(pid),
-                });
-                StartingOutcome::Continue
             }
             Some(SupervisorCommand::Ensure { ack }) => {
                 // Already in Starting; subscribe to existing bus or report running.
@@ -1679,7 +1682,7 @@ impl RunLoop {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 self.run_shutdown_command().await;
-                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.end_run(run_id).await;
                 self.deps
                     .allocations
                     .lock()
@@ -1705,7 +1708,7 @@ impl RunLoop {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 self.run_shutdown_command().await;
-                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.end_run(run_id).await;
                 self.deps
                     .allocations
                     .lock()
@@ -1733,7 +1736,7 @@ impl RunLoop {
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(child, STARTING_SIGTERM_GRACE).await;
                 self.run_shutdown_command().await;
-                delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
+                self.end_run(run_id).await;
                 self.deps
                     .allocations
                     .lock()
@@ -1764,7 +1767,7 @@ impl RunLoop {
                 // `handle_failed` is only reached in the `Failed` state, for which
                 // `RetryAfterBackoff` is always defined — either bumping retry_count
                 // or promoting to Disabled at the cap.
-                let next = transition(&self.state, StateEvent::RetryAfterBackoff);
+                let next = transition(&self.read_state(), StateEvent::RetryAfterBackoff);
                 let next = if !matches!(next, ServiceState::Disabled { .. }) {
                     // Move back to Idle so the next Ensure triggers a fresh start.
                     ServiceState::Idle
@@ -1779,15 +1782,6 @@ impl RunLoop {
                     Some(SupervisorCommand::Shutdown { ack }) => {
                         let _ = ack.send(());
                         Step::Exit
-                    }
-                    Some(SupervisorCommand::Snapshot { ack }) => {
-                        let _ = ack.send(SupervisorSnapshot {
-                            name: self.init.identity.name.clone(),
-                            state: self.state.clone(),
-                            run_id: None,
-                            pid: None,
-                        });
-                        Step::Continue
                     }
                     Some(SupervisorCommand::Ensure { ack }) => {
                         // Surface a meaningful failure instead of dropping
@@ -1838,14 +1832,6 @@ impl RunLoop {
                     let _ = ack.send(());
                     return Step::Exit;
                 }
-                Some(SupervisorCommand::Snapshot { ack }) => {
-                    let _ = ack.send(SupervisorSnapshot {
-                        name: self.init.identity.name.clone(),
-                        state: self.state.clone(),
-                        run_id: None,
-                        pid: None,
-                    });
-                }
                 Some(SupervisorCommand::Ensure { ack }) => {
                     let _ = ack.send(EnsureResponse::Unavailable(EnsureFailure::ServiceDisabled(
                         "service disabled".into(),
@@ -1861,7 +1847,7 @@ impl RunLoop {
                 }
                 Some(SupervisorCommand::Enable { ack }) => {
                     // Transition back to Idle so the next Ensure can start it.
-                    let next = transition(&self.state, StateEvent::UserEnable);
+                    let next = transition(&self.read_state(), StateEvent::UserEnable);
                     self.set_state(next);
                     let _ = ack.send(EnableResult::Enabled);
                     return Step::Continue;

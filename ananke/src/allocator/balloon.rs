@@ -164,14 +164,14 @@ pub fn spawn_resolver(
                 if name.as_str() == service_name.as_str() {
                     continue;
                 }
-                if let Some(handle) = registry.get(name) {
-                    // Snapshot is cheap; we just need the service to be alive.
-                    if let Some(_snap) = handle.snapshot().await {
-                        // Borrower priority defaults to the service default
-                        // until a real lookup is wired.
-                        candidate_borrower = Some((name.clone(), DEFAULT_SERVICE_PRIORITY));
-                        break;
-                    }
+                if registry.get(name).is_some() {
+                    // Handle presence is enough — the allocation table only
+                    // carries live services, so existence in the registry
+                    // implies a borrower worth considering.
+                    // Borrower priority defaults to the service default until
+                    // a real lookup is wired.
+                    candidate_borrower = Some((name.clone(), DEFAULT_SERVICE_PRIORITY));
+                    break;
                 }
             }
 

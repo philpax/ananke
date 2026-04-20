@@ -2,11 +2,12 @@
 
 use smol_str::SmolStr;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ServiceState {
     Starting,
     Running,
     Draining,
+    #[default]
     Idle,
     Stopped,
     Evicted,

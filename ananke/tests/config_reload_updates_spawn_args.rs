@@ -34,14 +34,14 @@ fn with_context(mut svc: ServiceConfig, ctx: u32) -> ServiceConfig {
 async fn wait_running(handle: &SupervisorHandle, timeout_ms: u64) {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        if let Some(snap) = handle.snapshot().await {
-            // Supervisor State enum's `name()` returns "running" once health
-            // probes have passed. BeginDrain is a no-op during Starting, so
-            // the test needs to wait for the full transition before issuing
-            // the drain.
-            if format!("{:?}", snap.state).to_lowercase().contains("running") {
-                return;
-            }
+        // Supervisor State enum's `name()` returns "running" once health
+        // probes have passed. BeginDrain is a no-op during Starting, so the
+        // test needs to wait for the full transition before issuing the drain.
+        if format!("{:?}", handle.peek_state())
+            .to_lowercase()
+            .contains("running")
+        {
+            return;
         }
         if tokio::time::Instant::now() >= deadline {
             panic!("supervisor never reached Running");

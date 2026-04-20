@@ -33,7 +33,7 @@ pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>)
         EnsureOutcome::Ready {
             was_already_running: false,
         } => {
-            let run_id = handle.run_id().await.unwrap_or(0);
+            let run_id = handle.peek().run_id.unwrap_or(0);
             StartResponse::Started { run_id }
         }
         EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
@@ -85,7 +85,7 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
         EnsureOutcome::Ready {
             was_already_running: false,
         } => {
-            let run_id = handle.run_id().await.unwrap_or(0);
+            let run_id = handle.peek().run_id.unwrap_or(0);
             StartResponse::Started { run_id }
         }
         EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {

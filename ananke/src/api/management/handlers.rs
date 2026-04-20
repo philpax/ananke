@@ -28,16 +28,14 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
     let eff = state.config.effective();
     for svc_cfg in eff.services.iter() {
         let handle = state.registry.get(&svc_cfg.name);
-        // Use the lock-free state mirror rather than sending a Snapshot
-        // command on the supervisor's bounded mailbox: `list_services`
-        // is a read-only endpoint and must stay responsive even while
-        // a supervisor is in the middle of a long drain/spawn. `run_id`
-        // and `pid` aren't in the mirror, so they stay `None` on the
-        // summary — operators can hit `/api/services/{name}` for the
-        // full snapshot when the supervisor is idle enough to answer.
-        let state_name = handle
+        // `peek()` reads the supervisor's lock-free mirror directly — no
+        // mailbox round-trip. `list_services` stays responsive even while
+        // a supervisor is mid-drain or mid-spawn, and `run_id` / `pid`
+        // are always populated for any service with a live child.
+        let peek = handle.as_ref().map(|h| h.peek());
+        let state_name = peek
             .as_ref()
-            .map(|h| h.peek_state().name().to_string())
+            .map(|p| p.state.name().to_string())
             .unwrap_or_else(|| "unknown".into());
         out.push(ServiceSummary {
             name: svc_cfg.name.to_string(),
@@ -45,8 +43,8 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             lifecycle: svc_cfg.lifecycle.as_str().to_string(),
             priority: svc_cfg.priority,
             port: svc_cfg.port,
-            run_id: None,
-            pid: None,
+            run_id: peek.as_ref().and_then(|p| p.run_id),
+            pid: peek.as_ref().and_then(|p| p.pid),
             // Placeholder: elastic borrower tracking is deferred to a later phase.
             elastic_borrower: None,
             ananke_metadata: svc_cfg.metadata.clone(),
@@ -70,10 +68,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
             .into_response();
     };
     let handle = state.registry.get(&svc_cfg.name);
-    let snap = match &handle {
-        Some(h) => h.snapshot().await,
-        None => None,
-    };
+    let snap = handle.as_ref().map(|h| h.peek());
     let placement_override: std::collections::BTreeMap<String, u64> = svc_cfg
         .placement_override
         .iter()

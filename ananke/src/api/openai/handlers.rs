@@ -88,10 +88,7 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
         if !svc.openai_compat {
             continue;
         }
-        let Some(snap) = handle.snapshot().await else {
-            continue;
-        };
-        match snap.state {
+        match handle.peek_state() {
             ServiceState::Idle | ServiceState::Starting | ServiceState::Running => {
                 data.push(ModelListing {
                     id: name.to_string(),
