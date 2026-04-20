@@ -57,17 +57,7 @@ pub fn spawn_watcher(cfg: WatcherConfig) -> tokio::task::JoinHandle<()> {
             handle.begin_drain(DrainReason::TtlExpired).await;
         }
         let now_ms = crate::tracking::now_unix_ms();
-        {
-            use crate::db::models::Oneshot;
-            let mut handle = db.handle();
-            if let Ok(Some(mut row)) = Oneshot::filter_by_id(id.to_string())
-                .first()
-                .exec(&mut handle)
-                .await
-            {
-                let _ = row.update().ended_at(Some(now_ms)).exec(&mut handle).await;
-            }
-        }
+        let _ = db.mark_oneshot_ended(&id, now_ms).await;
         // Leave the record in place with `ended_at_ms` set so callers can
         // still observe the terminal state via `GET /api/oneshot/:id`.
         // Removing it here caused polling clients (stress scenario 05) to

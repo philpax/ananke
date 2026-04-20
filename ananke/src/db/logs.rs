@@ -1,10 +1,11 @@
 //! Log batching writer.
 //!
-//! Contract: `BatcherHandle::push` is fire-and-forget. A single writer task owns
-//! the SQLite connection and commits every 200 ms or every 100 lines, whichever
-//! first. A shutdown signal triggers a final flush. After each successful flush,
-//! every line is broadcast on a `tokio::sync::broadcast` channel so WebSocket
-//! log-tail subscribers receive live output without polling the database.
+//! Contract: `BatcherHandle::push` is fire-and-forget. A single writer task
+//! owns a clone of the `Database` handle and commits every 200 ms or every
+//! 100 lines, whichever first. A shutdown signal triggers a final flush.
+//! After each successful commit every line is broadcast on a
+//! `tokio::sync::broadcast` channel so WebSocket log-tail subscribers
+//! receive live output without polling the database.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -99,7 +100,7 @@ async fn run(
 ) {
     let mut buffer: Vec<LogLine> = Vec::with_capacity(BATCH_LINES);
     let mut seq_counters: HashMap<(i64, i64), i64> = HashMap::new();
-    // Use tokio's time::Instant so paused-time tests work correctly.
+    // tokio's Instant so paused-time tests advance correctly.
     let mut deadline = Instant::now() + BATCH_INTERVAL;
 
     loop {
@@ -138,11 +139,10 @@ async fn run(
 
 /// Write all buffered lines to the database in a single transaction.
 ///
-/// The `seq` counter is per `(service_id, run_id)` and starts at 1, incrementing
-/// monotonically across flush calls so ordering is preserved even across batches.
-/// After a successful commit, each line is sent on `broadcast` as an
-/// `(service_id, ananke_api::LogLine)` tuple so live-tail subscribers see output
-/// without polling the database.
+/// The `seq` counter is per `(service_id, run_id)` and starts at 1,
+/// incrementing monotonically across flush calls so ordering is preserved
+/// even across batches. After a successful commit, each line is sent on
+/// `broadcast` so live-tail subscribers see output without polling.
 async fn flush(
     db: &Database,
     buffer: &mut Vec<LogLine>,
@@ -154,17 +154,10 @@ async fn flush(
     }
     let lines = std::mem::take(buffer);
 
-    let mut handle = db.handle();
-    let mut tx = match handle.transaction().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            warn!(error = %e, "log batch: begin transaction failed");
-            return;
-        }
-    };
-
-    // Build the list of (service_id, api_line) pairs alongside DB inserts so
-    // broadcast sends happen only after a successful commit.
+    // Allocate sequence numbers + build the rows to insert and the
+    // messages to broadcast in one pass. Broadcast only fires after the
+    // commit succeeds.
+    let mut rows: Vec<ServiceLog> = Vec::with_capacity(lines.len());
     let mut to_broadcast: Vec<(i64, ananke_api::LogLine)> = Vec::with_capacity(lines.len());
 
     for line in lines {
@@ -177,29 +170,24 @@ async fn flush(
             run_id: line.run_id,
             seq: *counter,
         };
-        let res = toasty::create!(ServiceLog {
+        rows.push(ServiceLog {
             service_id: line.service_id,
             run_id: line.run_id,
-            seq: *counter,
             timestamp_ms: line.timestamp_ms,
+            seq: *counter,
             stream: line.stream.as_str().to_string(),
             line: line.line,
-        })
-        .exec(&mut tx)
-        .await;
-        if let Err(e) = res {
-            warn!(error = %e, "log batch: insert failed");
-        }
+        });
         to_broadcast.push((line.service_id, api_line));
     }
 
-    if let Err(e) = tx.commit().await {
-        warn!(error = %e, "log batch: commit failed");
+    if let Err(e) = db.insert_log_batch(&rows).await {
+        warn!(error = %e, "log batch: insert failed");
         return;
     }
 
-    // Only broadcast after a successful commit; errors from send are benign —
-    // they just mean no subscribers are listening.
+    // Errors from send are benign — no subscribers just means no
+    // listeners.
     for item in to_broadcast {
         let _ = broadcast.send(item);
     }
@@ -212,9 +200,8 @@ mod tests {
     use super::*;
     use crate::db::Database;
 
-    async fn count_logs(db: &Database) -> usize {
-        let mut handle = db.handle();
-        ServiceLog::all().exec(&mut handle).await.unwrap().len()
+    async fn count_logs(db: &Database, service_id: i64) -> usize {
+        db.fetch_service_logs(service_id).await.unwrap().len()
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -234,7 +221,7 @@ mod tests {
         }
         h.flush().await;
 
-        assert_eq!(count_logs(&db).await, BATCH_LINES);
+        assert_eq!(count_logs(&db, svc).await, BATCH_LINES);
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -254,7 +241,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(250)).await;
         h.flush().await;
 
-        assert_eq!(count_logs(&db).await, 1);
+        assert_eq!(count_logs(&db, svc).await, 1);
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -274,8 +261,7 @@ mod tests {
         }
         h.flush().await;
 
-        let mut handle = db.handle();
-        let mut rows: Vec<ServiceLog> = ServiceLog::all().exec(&mut handle).await.unwrap();
+        let mut rows = db.fetch_service_logs(svc).await.unwrap();
         rows.sort_by_key(|r| r.timestamp_ms);
         let seqs: Vec<i64> = rows.into_iter().map(|r| r.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3]);

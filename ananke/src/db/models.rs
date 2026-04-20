@@ -1,40 +1,36 @@
-//! Database models. Schema is owned by these derives; toasty's
-//! `Db::push_schema()` issues the CREATE TABLE / CREATE INDEX statements
-//! derived from them at bootstrap.
+//! Database row types. Plain Rust structs with `from_row` helpers; no ORM.
+//!
+//! Kept here rather than inlined into queries so the row shape and its mapping
+//! from `rusqlite::Row` are defined in one place and every caller reads the
+//! same definition.
 
-#[derive(Debug, toasty::Model)]
+use rusqlite::Row;
+
+#[derive(Debug, Clone)]
 pub struct Service {
-    // `u64` on the auto PK because toasty 0.4's SQLite backend emits
-    // `BIGINT PRIMARY KEY AUTOINCREMENT` for `i64`, which SQLite rejects —
-    // only `INTEGER PRIMARY KEY AUTOINCREMENT` is legal. `u64` maps to
-    // `INTEGER` under the SQLite driver.
-    #[key]
-    #[auto]
-    pub service_id: u64,
-
-    #[unique]
+    pub service_id: i64,
     pub name: String,
-
     pub created_at: i64,
-
     pub deleted_at: Option<i64>,
 }
 
-#[derive(Debug, toasty::Model)]
-pub struct ServiceConfigVersion {
-    #[key]
-    pub service_id: i64,
-    #[key]
-    pub version: i64,
-    pub effective_config: String,
-    pub recorded_at: i64,
+impl Service {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            service_id: row.get(0)?,
+            name: row.get(1)?,
+            created_at: row.get(2)?,
+            deleted_at: row.get(3)?,
+        })
+    }
+
+    /// Columns in the order `from_row` expects.
+    pub const COLUMNS: &'static str = "service_id, name, created_at, deleted_at";
 }
 
-#[derive(Debug, toasty::Model)]
+#[derive(Debug, Clone)]
 pub struct RunningService {
-    #[key]
     pub service_id: i64,
-    #[key]
     pub run_id: i64,
     pub pid: i64,
     pub spawned_at: i64,
@@ -43,46 +39,44 @@ pub struct RunningService {
     pub state: String,
 }
 
-#[derive(Debug, toasty::Model)]
+impl RunningService {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            service_id: row.get(0)?,
+            run_id: row.get(1)?,
+            pid: row.get(2)?,
+            spawned_at: row.get(3)?,
+            command_line: row.get(4)?,
+            allocation: row.get(5)?,
+            state: row.get(6)?,
+        })
+    }
+
+    pub const COLUMNS: &'static str =
+        "service_id, run_id, pid, spawned_at, command_line, allocation, state";
+}
+
+#[derive(Debug, Clone)]
 pub struct ServiceLog {
-    #[key]
     pub service_id: i64,
-    #[key]
     pub run_id: i64,
-    #[key]
-    pub seq: i64,
-    #[index]
     pub timestamp_ms: i64,
+    pub seq: i64,
     pub stream: String,
     pub line: String,
 }
 
-#[derive(Debug, toasty::Model)]
-pub struct AllocationEvent {
-    // `u64` on the auto PK: see the note on `Service::service_id`.
-    #[key]
-    #[auto]
-    pub event_id: u64,
+impl ServiceLog {
+    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            service_id: row.get(0)?,
+            run_id: row.get(1)?,
+            timestamp_ms: row.get(2)?,
+            seq: row.get(3)?,
+            stream: row.get(4)?,
+            line: row.get(5)?,
+        })
+    }
 
-    #[index]
-    pub service_id: i64,
-    pub run_id: i64,
-    pub event_type: String,
-    pub device: String,
-    pub bytes: i64,
-    pub at: i64,
-}
-
-#[derive(Debug, toasty::Model)]
-pub struct Oneshot {
-    #[key]
-    pub id: String,
-
-    #[index]
-    pub service_id: i64,
-    pub submitted_at: i64,
-    pub started_at: Option<i64>,
-    pub ended_at: Option<i64>,
-    pub exit_code: Option<i32>,
-    pub ttl_ms: i64,
+    pub const COLUMNS: &'static str = "service_id, run_id, timestamp_ms, seq, stream, line";
 }

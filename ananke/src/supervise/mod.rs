@@ -1801,8 +1801,7 @@ async fn insert_running_row(
 ) {
     use crate::db::models::RunningService;
 
-    let mut handle = db.handle();
-    if let Err(e) = toasty::create!(RunningService {
+    let row = RunningService {
         service_id,
         run_id,
         pid,
@@ -1810,28 +1809,15 @@ async fn insert_running_row(
         command_line,
         allocation,
         state: "starting".to_string(),
-    })
-    .exec(&mut handle)
-    .await
-    {
+    };
+    if let Err(e) = db.insert_running(&row).await {
         warn!(error = %e, "running_services insert failed");
     }
 }
 
 /// Delete the `running_services` row for `(service_id, run_id)` if present.
 async fn delete_running_row(db: &Database, service_id: i64, run_id: i64) {
-    use crate::db::models::RunningService;
-
-    let mut handle = db.handle();
-    let filter = RunningService::fields()
-        .service_id()
-        .eq(service_id)
-        .and(RunningService::fields().run_id().eq(run_id));
-    if let Err(e) = RunningService::filter(filter)
-        .delete()
-        .exec(&mut handle)
-        .await
-    {
+    if let Err(e) = db.delete_running(service_id, run_id).await {
         warn!(error = %e, "running_services delete failed");
     }
 }

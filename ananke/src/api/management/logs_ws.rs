@@ -82,13 +82,5 @@ async fn serve_logs(
 }
 
 async fn resolve_service_id(state: &AppState, name: &str) -> Option<i64> {
-    use crate::db::models::Service;
-    let mut handle = state.db.handle();
-    Service::filter_by_name(name.to_string())
-        .first()
-        .exec(&mut handle)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.service_id as i64)
+    state.db.resolve_service_id(name).await.ok().flatten()
 }

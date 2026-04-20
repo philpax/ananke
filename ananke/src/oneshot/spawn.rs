@@ -116,18 +116,10 @@ pub async fn spawn_oneshot(
         .upsert_service(&svc.name, now_ms)
         .await
         .map_err(|e| e.to_string())?;
-    {
-        use crate::db::models::Oneshot;
-        let mut handle = state.db.handle();
-        let _ = toasty::create!(Oneshot {
-            id: id.to_string(),
-            service_id,
-            submitted_at: now_ms,
-            ttl_ms: ttl_ms as i64,
-        })
-        .exec(&mut handle)
+    let _ = state
+        .db
+        .insert_oneshot(id.as_ref(), service_id, now_ms, ttl_ms as i64)
         .await;
-    }
 
     let init = crate::supervise::SupervisorInit {
         identity: crate::supervise::ServiceIdentity::from_service(&svc),

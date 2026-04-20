@@ -51,9 +51,6 @@ libc.workspace = true
 nvml-wrapper.workspace = true
 nix.workspace = true
 
-# rusqlite retained only for the pragma side-channel in `src/db/pragma.rs`
-# (auto_vacuum / incremental_vacuum). No non-db code imports it.
-toasty.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]

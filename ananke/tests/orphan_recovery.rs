@@ -21,8 +21,7 @@ async fn cleans_row_for_dead_pid() {
     // Insert a running_services row pointing at PID 99999. The empty
     // InMemoryProcFs reports that pid as exited, so reconcile must
     // clean the row.
-    let mut handle = db.handle();
-    toasty::create!(RunningService {
+    db.insert_running(&RunningService {
         service_id,
         run_id: 1,
         pid: 99999,
@@ -31,7 +30,6 @@ async fn cleans_row_for_dead_pid() {
         allocation: "{}".to_string(),
         state: "running".to_string(),
     })
-    .exec(&mut handle)
     .await
     .expect("insert row");
 
@@ -48,8 +46,8 @@ async fn cleans_row_for_dead_pid() {
         dispositions[0]
     );
 
-    let remaining: Vec<RunningService> = RunningService::all()
-        .exec(&mut handle)
+    let remaining = db
+        .list_running()
         .await
         .expect("query running_services");
     assert!(remaining.is_empty(), "stale row should have been deleted");

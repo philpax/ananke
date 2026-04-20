@@ -83,26 +83,17 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         .collect();
 
     let recent_logs: Vec<LogLine> = {
-        use crate::db::models::{Service, ServiceLog};
-        let mut handle = state.db.handle();
-        let svc_id_opt: Option<u64> = Service::filter_by_name(name.clone())
-            .first()
-            .exec(&mut handle)
-            .await
-            .ok()
-            .flatten()
-            .map(|s| s.service_id);
+        let svc_id_opt = state.db.resolve_service_id(&name).await.ok().flatten();
         match svc_id_opt {
             Some(svc_id) => {
-                let mut rows: Vec<ServiceLog> =
-                    ServiceLog::filter(ServiceLog::fields().service_id().eq(svc_id as i64))
-                        .exec(&mut handle)
-                        .await
-                        .unwrap_or_default();
+                let mut rows = state
+                    .db
+                    .fetch_service_logs(svc_id)
+                    .await
+                    .unwrap_or_default();
                 // Sort newest first by (timestamp_ms DESC, seq DESC) and
-                // truncate to 200 — toasty does not compose multi-column
-                // ordering yet, so we sort in memory. The index on
-                // `timestamp_ms` keeps the candidate set cheap to fetch.
+                // truncate to 200. The index on (service_id, run_id,
+                // timestamp_ms) keeps the candidate set cheap to fetch.
                 rows.sort_by(|a, b| {
                     b.timestamp_ms
                         .cmp(&a.timestamp_ms)

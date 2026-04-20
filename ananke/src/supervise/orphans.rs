@@ -6,10 +6,7 @@
 
 use tracing::{info, warn};
 
-use crate::{
-    db::{Database, models::RunningService},
-    system::ProcFs,
-};
+use crate::{db::Database, system::ProcFs};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrphanDisposition {
@@ -35,18 +32,14 @@ pub enum OrphanDisposition {
 /// [`crate::system::InMemoryProcFs`] with preloaded cmdlines rather
 /// than staging a synthetic `/proc` on disk.
 pub async fn reconcile(proc: &dyn ProcFs, db: &Database) -> Vec<OrphanDisposition> {
-    let mut handle = db.handle();
-    let rows: Vec<RunningService> = RunningService::all()
-        .exec(&mut handle)
-        .await
-        .unwrap_or_default();
+    let rows = db.list_running().await.unwrap_or_default();
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let service_id = row.service_id;
         let run_id = row.run_id;
         let pid = row.pid as i32;
-        let recorded_cmdline = row.command_line.clone();
+        let recorded_cmdline = row.command_line;
         match proc.cmdline(pid) {
             Some(live_cmdline) => {
                 if live_cmdline == recorded_cmdline {
@@ -65,7 +58,7 @@ pub async fn reconcile(proc: &dyn ProcFs, db: &Database) -> Vec<OrphanDispositio
                         live = %live_cmdline,
                         "unrelated process at recorded pid; cleaning row"
                     );
-                    cleanup_row(&mut handle, row).await;
+                    cleanup_row(db, service_id, run_id).await;
                     out.push(OrphanDisposition::Cleaned {
                         pid,
                         service_id,
@@ -75,7 +68,7 @@ pub async fn reconcile(proc: &dyn ProcFs, db: &Database) -> Vec<OrphanDispositio
             }
             None => {
                 info!(pid, service_id, run_id, "dead child; cleaning row");
-                cleanup_row(&mut handle, row).await;
+                cleanup_row(db, service_id, run_id).await;
                 out.push(OrphanDisposition::Cleaned {
                     pid,
                     service_id,
@@ -87,8 +80,8 @@ pub async fn reconcile(proc: &dyn ProcFs, db: &Database) -> Vec<OrphanDispositio
     out
 }
 
-async fn cleanup_row(db: &mut toasty::Db, row: RunningService) {
-    if let Err(e) = row.delete().exec(db).await {
+async fn cleanup_row(db: &Database, service_id: i64, run_id: i64) {
+    if let Err(e) = db.delete_running(service_id, run_id).await {
         warn!(error = %e, "delete running_services row failed");
     }
 }
@@ -96,11 +89,10 @@ async fn cleanup_row(db: &mut toasty::Db, row: RunningService) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::InMemoryProcFs;
+    use crate::{db::models::RunningService, system::InMemoryProcFs};
 
     async fn insert_row(db: &Database, service_id: i64, run_id: i64, pid: i32, cmdline: &str) {
-        let mut handle = db.handle();
-        toasty::create!(RunningService {
+        db.insert_running(&RunningService {
             service_id,
             run_id,
             pid: pid as i64,
@@ -109,7 +101,6 @@ mod tests {
             allocation: "{}".to_string(),
             state: "running".to_string(),
         })
-        .exec(&mut handle)
         .await
         .unwrap();
     }
@@ -135,9 +126,7 @@ mod tests {
         let out = reconcile(&proc, &db).await;
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0], OrphanDisposition::Cleaned { .. }));
-        let mut handle = db.handle();
-        let rows: Vec<RunningService> = RunningService::all().exec(&mut handle).await.unwrap();
-        assert!(rows.is_empty());
+        assert!(db.list_running().await.unwrap().is_empty());
     }
 
     #[tokio::test]

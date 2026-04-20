@@ -10,7 +10,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde::{Deserialize, Serialize};
 
-use crate::{daemon::app_state::AppState, db::models::ServiceLog};
+use crate::daemon::app_state::AppState;
 
 const DEFAULT_LIMIT: u32 = 200;
 const MAX_LIMIT: u32 = 1000;
@@ -64,17 +64,14 @@ pub async fn get_logs(
         None => None,
     };
 
-    let mut db = state.db.handle();
-    let mut rows: Vec<ServiceLog> =
-        ServiceLog::filter(ServiceLog::fields().service_id().eq(service_id))
-            .exec(&mut db)
-            .await
-            .unwrap_or_default();
+    let mut rows = state
+        .db
+        .fetch_service_logs(service_id)
+        .await
+        .unwrap_or_default();
 
-    // Apply filters in memory. We keep the toasty filter narrow because
-    // toasty's DSL does not yet compose the full predicate we need; at
-    // worst we hydrate the whole service's log buffer (bounded by retention
-    // to 50k lines) and filter.
+    // Apply filters in memory. The retention cap bounds this at 50k lines
+    // per service.
     rows.retain(|r| {
         q.since.is_none_or(|s| r.timestamp_ms >= s)
             && q.until.is_none_or(|u| r.timestamp_ms <= u)
@@ -117,15 +114,7 @@ pub async fn get_logs(
 }
 
 async fn resolve_service_id(state: &AppState, name: &str) -> Option<i64> {
-    use crate::db::models::Service;
-    let mut handle = state.db.handle();
-    Service::filter_by_name(name.to_string())
-        .first()
-        .exec(&mut handle)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.service_id as i64)
+    state.db.resolve_service_id(name).await.ok().flatten()
 }
 
 fn encode_cursor(c: &Cursor) -> String {

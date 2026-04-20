@@ -95,13 +95,7 @@ mod tests {
         tokio::task::yield_now().await;
         batcher.flush().await;
 
-        let mut handle = db.handle();
-        let mut rows: Vec<crate::db::models::ServiceLog> = crate::db::models::ServiceLog::filter(
-            crate::db::models::ServiceLog::fields().service_id().eq(svc),
-        )
-        .exec(&mut handle)
-        .await
-        .unwrap();
+        let mut rows = db.fetch_service_logs(svc).await.unwrap();
         rows.sort_by_key(|r| r.seq);
         let lines: Vec<String> = rows.into_iter().map(|r| r.line).collect();
         assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
