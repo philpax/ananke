@@ -57,12 +57,13 @@ fn main() {
                 let value = summary.metadata.get(k);
                 let scalar = value.and_then(|v| v.as_u32());
                 let array = value.and_then(|v| v.as_u32_array());
-                match (scalar, array.as_deref()) {
-                    (Some(s), Some(a)) if a.len() == 1 && a[0] == s => {
+                let bools = value.and_then(|v| v.as_bool_array());
+                match (scalar, array.as_deref(), bools.as_deref()) {
+                    (Some(s), Some(a), _) if a.len() == 1 && a[0] == s => {
                         println!("  {k} = {s}");
                     }
-                    (Some(s), _) => println!("  {k} = {s}"),
-                    (None, Some(a)) => {
+                    (Some(s), _, _) => println!("  {k} = {s}"),
+                    (None, Some(a), _) => {
                         let preview: Vec<String> = a.iter().take(8).map(|v| v.to_string()).collect();
                         let tail = if a.len() > 8 { ", …" } else { "" };
                         println!(
@@ -72,7 +73,19 @@ fn main() {
                             a.len()
                         );
                     }
-                    (None, None) => println!("  {k} = <non-integer>"),
+                    (None, None, Some(b)) => {
+                        let preview: Vec<&str> = b.iter().take(8).map(|v| if *v { "T" } else { "F" }).collect();
+                        let tail = if b.len() > 8 { ", …" } else { "" };
+                        println!(
+                            "  {k} = [{}{}] (bools, len={}, {}/{} true)",
+                            preview.join(","),
+                            tail,
+                            b.len(),
+                            b.iter().filter(|v| **v).count(),
+                            b.len(),
+                        );
+                    }
+                    (None, None, None) => println!("  {k} = <non-integer>"),
                 }
             }
         }

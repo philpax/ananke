@@ -181,4 +181,22 @@ impl GgufValue {
             other => other.as_u32().map(|v| vec![v]),
         }
     }
+
+    /// Interpret this value as a per-layer bool mask. Used by Gemma 4's
+    /// `{arch}.attention.sliding_window_pattern`, which is `true` for
+    /// SWA layers and `false` for full-attention layers. A scalar bool
+    /// coerces to a one-element vector; anything else returns `None`.
+    pub fn as_bool_array(&self) -> Option<Vec<bool>> {
+        match self {
+            GgufValue::Array(items) => items
+                .iter()
+                .map(|v| match v {
+                    GgufValue::Bool(b) => Some(*b),
+                    _ => None,
+                })
+                .collect(),
+            GgufValue::Bool(b) => Some(vec![*b]),
+            _ => None,
+        }
+    }
 }

@@ -32,6 +32,17 @@ pub const MOE_FAMILY: &[&str] = &[
     // weight estimate entirely, leading to 400 MiB predicted vs 27 GiB
     // observed (a 67× under-reservation).
     "glm4moe",
+    // Qwen 3.5+ MoE is a hybrid: every `full_attention_interval`-th layer
+    // runs full attention (with KV cache); the others run a linear-
+    // attention / gated-delta-net SSM that carries constant per-layer
+    // state instead of context-dependent KV. Every layer still has the
+    // standard `blk.N.ffn_{gate,up,down}_exps.weight` tensors so the
+    // MoE weight accounting applies as-is; the attention interval drops
+    // KV by ~`1 / interval`. The SSM state bytes are small (<100 MiB
+    // total across all recurrent layers for typical sizes) and are
+    // absorbed by the compute-buffer headroom rather than modelled
+    // explicitly.
+    "qwen35moe",
 ];
 
 pub fn is_moe(arch: &str) -> bool {
@@ -116,11 +127,25 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
     let cache_k = inputs.cache_type_k.unwrap_or("f16");
     let cache_v = inputs.cache_type_v.unwrap_or("f16");
 
-    let kv_per_token = if n_layers > 0 && n_kv_heads > 0 {
+    // Hybrid families (qwen35moe, and any future sibling) expose
+    // `{arch}.full_attention_interval = N`: only every `N`-th layer runs
+    // full attention, the rest use a recurrent SSM that carries constant
+    // per-layer state instead of context-dependent KV. Scale the KV
+    // down to just the full-attention layers. Absent / 1 = every layer
+    // has KV (the common case).
+    let full_attention_interval = summary
+        .metadata
+        .get(&*format!("{arch}.full_attention_interval"))
+        .and_then(|v| v.as_u32())
+        .unwrap_or(1)
+        .max(1);
+    let kv_layer_count = (n_layers / full_attention_interval) as u64;
+
+    let kv_per_token = if kv_layer_count > 0 && n_kv_heads > 0 {
         let per_layer_bytes_kv = n_kv_heads
             * ((key_length as f64 * kv::kv_bytes_per_element(cache_k))
                 + (value_length as f64 * kv::kv_bytes_per_element(cache_v))) as u64;
-        n_layers as u64 * per_layer_bytes_kv
+        kv_layer_count * per_layer_bytes_kv
     } else {
         0
     };
@@ -166,6 +191,86 @@ pub(crate) fn is_expert_tensor(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qwen35moe_kv_scales_with_full_attention_interval() {
+        use std::path::Path;
+
+        use crate::{
+            estimator::types::EstimatorInputs,
+            gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
+        };
+
+        let mut tensors = std::collections::BTreeMap::new();
+        for layer in 0..8u32 {
+            let name = format!("blk.{layer}.attn_q.weight");
+            tensors.insert(
+                SmolStr::new(&name),
+                GgufTensor {
+                    name: SmolStr::new(&name),
+                    dtype: GgufType::F16,
+                    shape: vec![512 * 1024],
+                    byte_size: 1024 * 1024,
+                    shard_idx: 0,
+                    offset: 0,
+                },
+            );
+        }
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("qwen35moe".into()),
+        );
+        metadata.insert(SmolStr::new("qwen35moe.block_count"), GgufValue::U32(8));
+        metadata.insert(
+            SmolStr::new("qwen35moe.attention.head_count_kv"),
+            GgufValue::U32(4),
+        );
+        metadata.insert(
+            SmolStr::new("qwen35moe.attention.key_length"),
+            GgufValue::U32(128),
+        );
+        metadata.insert(
+            SmolStr::new("qwen35moe.attention.value_length"),
+            GgufValue::U32(128),
+        );
+        // Every 4th layer is full-attention → 2 layers × KV; the other 6
+        // are recurrent and contribute no KV.
+        metadata.insert(
+            SmolStr::new("qwen35moe.full_attention_interval"),
+            GgufValue::U32(4),
+        );
+
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors,
+            metadata,
+            block_count: Some(8),
+            architecture: SmolStr::new("qwen35moe"),
+            shards: vec!["/fake".into()],
+        };
+
+        let empty: Vec<String> = Vec::new();
+        let inputs = EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context: 4096,
+            cache_type_k: None,
+            cache_type_v: None,
+            override_tensor: &empty,
+            n_cpu_moe: None,
+            compute_buffer_mb: None,
+            allow_fallback: false,
+        };
+
+        let e = estimate(&summary, &inputs);
+        // Per-layer KV: 4 heads × (128 + 128) × 2 bytes (f16) = 2048 bytes/token.
+        // With interval=4 we only count 2 layers → kv_per_token = 4096.
+        // Without the interval handling we'd naively multiply by 8 → 16384.
+        assert_eq!(e.kv_per_token, 4096);
+    }
 
     #[test]
     fn expert_pattern_matches() {
