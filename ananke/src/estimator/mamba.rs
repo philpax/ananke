@@ -25,10 +25,6 @@ const DEFAULT_CONV_KERNEL: u64 = 4;
 /// Size in bytes of one SSM state element (f32).
 const STATE_ELEMENT_BYTES: u64 = std::mem::size_of::<f32>() as u64;
 
-/// Default estimator compute-buffer overhead in MiB when the service config
-/// does not override it. Matches other estimator families.
-const DEFAULT_COMPUTE_BUFFER_MB: u32 = 400;
-
 /// Default context length when the service config does not set one. Mirrors
 /// llama.cpp's default.
 const DEFAULT_CONTEXT: u32 = 4096;
@@ -81,7 +77,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         kv_per_token,
         compute_buffer_mb: inputs
             .compute_buffer_mb
-            .unwrap_or(DEFAULT_COMPUTE_BUFFER_MB),
+            .unwrap_or_else(|| super::compute_buffer::default_for(context)),
         per_layer_bytes: Some(per_layer),
         attention_layers: None,
         non_layer,

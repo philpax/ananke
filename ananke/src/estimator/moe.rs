@@ -134,7 +134,9 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: inputs.compute_buffer_mb.unwrap_or(400),
+        compute_buffer_mb: inputs
+            .compute_buffer_mb
+            .unwrap_or_else(|| super::compute_buffer::default_for(inputs.context)),
         per_layer_bytes: Some(per_layer_total),
         attention_layers: None,
         non_layer,

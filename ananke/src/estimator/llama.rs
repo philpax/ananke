@@ -16,6 +16,22 @@ use super::{
 };
 use crate::gguf::GgufSummary;
 
+/// Llama-family architectures that use sliding-window attention, and the
+/// length of the SWA pattern (`N-1` SWA layers per `1` global-attention
+/// layer in each group of `N`). Returns `None` for architectures that
+/// use full attention everywhere.
+///
+/// Gemma 2 / Gemma 3 GGUFs advertise `{arch}.attention.sliding_window`
+/// but *not* the pattern length; llama.cpp hardcodes the group size
+/// because the HF config isn't round-tripped. The 1-global-per-6 ratio
+/// comes from Gemma's reference: "1 global : 5 local per group".
+pub fn sliding_window_pattern_for(arch: &str) -> Option<u32> {
+    match arch {
+        "gemma2" | "gemma3" => Some(6),
+        _ => None,
+    }
+}
+
 pub const LLAMA_FAMILY: &[&str] = &[
     "llama", "qwen2", "qwen3", "mistral", "gemma", "gemma2", "gemma3", "phi3", "glm4",
     // NVIDIA Nemotron ("deci") is a Llama derivative with a compressed attention
@@ -42,11 +58,18 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         + non_layer.token_embd_bytes
         + non_layer.other_bytes;
 
-    let n_kv_heads = summary
+    // `{arch}.attention.head_count_kv` may be a scalar (constant across
+    // layers) or an array of length `n_layers` (per-layer, e.g. Nvidia's
+    // `deci` / Nemotron which aggressively varies attention capacity
+    // across blocks). `as_u32_array` coerces both shapes into a vector so
+    // the sum below is the total KV-head count across the whole model —
+    // which is what multiplies the per-head bytes for `kv_per_token`.
+    let kv_heads_per_layer: Vec<u32> = summary
         .metadata
         .get(&*format!("{arch}.attention.head_count_kv"))
-        .and_then(|v| v.as_u32())
-        .unwrap_or(0) as u64;
+        .and_then(|v| v.as_u32_array())
+        .unwrap_or_default();
+    let total_kv_heads: u64 = kv_heads_per_layer.iter().map(|&h| h as u64).sum();
     let key_length = summary
         .metadata
         .get(&*format!("{arch}.attention.key_length"))
@@ -64,18 +87,72 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
     let bytes_k = kv::kv_bytes_per_element(cache_k);
     let bytes_v = kv::kv_bytes_per_element(cache_v);
 
-    let kv_per_token = if n_layers > 0 && n_kv_heads > 0 {
-        let per_layer_bytes_kv =
-            n_kv_heads * ((key_length as f64 * bytes_k) + (value_length as f64 * bytes_v)) as u64;
-        n_layers as u64 * per_layer_bytes_kv
+    // Per-head KV bytes are constant; the total for the model is
+    // `sum(heads_per_layer) × per_head`. When the metadata is a scalar,
+    // `as_u32_array` returns a one-element vector so we multiply by
+    // n_layers ourselves.
+    let per_head_bytes =
+        ((key_length as f64 * bytes_k) + (value_length as f64 * bytes_v)) as u64;
+    let full_layers_kv = if kv_heads_per_layer.len() == 1 {
+        // Scalar → one entry in the vector; broadcast across layers.
+        n_layers as u64 * kv_heads_per_layer[0] as u64
+    } else if !kv_heads_per_layer.is_empty() {
+        total_kv_heads
     } else {
         0
+    };
+
+    // Sliding-window attention: gemma2/gemma3 use a pattern of N-1 local
+    // (SWA, bounded to `sliding_window` tokens) + 1 global per group.
+    // Llama.cpp hardcodes the pattern length because gemma GGUFs don't
+    // expose it; see `sliding_window_pattern_for`. Other llama-family
+    // members either don't use SWA (pattern returns None) or expose
+    // enough metadata to do so in the future.
+    let sliding_window = summary
+        .metadata
+        .get(&*format!("{arch}.attention.sliding_window"))
+        .and_then(|v| v.as_u32());
+    let swa_pattern = sliding_window_pattern_for(arch);
+    let kv_per_token = match (sliding_window, swa_pattern) {
+        (Some(window), Some(pattern)) if pattern > 0 && n_layers > 0 => {
+            // In a model with pattern `p`, layers with index `i % p ==
+            // p - 1` run global attention (full context); the rest use
+            // SWA and cache at most `window` tokens per layer.
+            let global_layers = (n_layers / pattern) as u64;
+            let swa_layers = n_layers as u64 - global_layers;
+            // `kv_per_token × context` needs to equal the real total
+            // bytes, so fold the SWA cap into an effective per-token
+            // cost. When `context ≤ window` the SWA layers still scale
+            // linearly with context so the cap is a no-op.
+            let swa_fraction = if inputs.context == 0 || inputs.context as u64 <= window as u64 {
+                1.0
+            } else {
+                window as f64 / inputs.context as f64
+            };
+            let scalar = if kv_heads_per_layer.len() == 1 {
+                kv_heads_per_layer[0] as u64
+            } else if !kv_heads_per_layer.is_empty() {
+                // Variable-per-layer KV + SWA is a combination we haven't
+                // seen in the wild yet. Use the layer-count average and
+                // let rolling correction catch any residual.
+                full_layers_kv.saturating_div(n_layers as u64)
+            } else {
+                0
+            };
+            let global_kv = global_layers * scalar * per_head_bytes;
+            let swa_kv =
+                (swa_layers * scalar * per_head_bytes) as f64 * swa_fraction;
+            global_kv + swa_kv as u64
+        }
+        _ => full_layers_kv * per_head_bytes,
     };
 
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: inputs.compute_buffer_mb.unwrap_or(400),
+        compute_buffer_mb: inputs
+            .compute_buffer_mb
+            .unwrap_or_else(|| super::compute_buffer::default_for(inputs.context)),
         per_layer_bytes: Some(per_layer_bytes),
         attention_layers: None,
         non_layer,

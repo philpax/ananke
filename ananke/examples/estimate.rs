@@ -121,8 +121,19 @@ fn main() {
     let kv_total_bytes = estimate
         .kv_per_token
         .saturating_mul(estimate.context as u64);
+
+    // The packer adds `compute_buffer_mb` to every device it lands the
+    // model on: both GPUs, plus the CPU slot when `token_embd` is seeded
+    // there (which happens for every llama-family model). Three is the
+    // typical active-device count and what the daemon's scheduler uses
+    // for an estimator-driven two-GPU placement; keep it fixed here so
+    // the reported total matches what the packer would reserve without
+    // this example having to replicate the full packing algorithm.
+    const TYPICAL_ACTIVE_DEVICES: u64 = 3;
     let total_bytes = estimate.weights_bytes.saturating_add(kv_total_bytes).saturating_add(
-        (estimate.compute_buffer_mb as u64).saturating_mul(1024 * 1024),
+        (estimate.compute_buffer_mb as u64)
+            .saturating_mul(TYPICAL_ACTIVE_DEVICES)
+            .saturating_mul(1024 * 1024),
     );
 
     let out = json!({

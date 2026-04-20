@@ -169,4 +169,16 @@ impl GgufValue {
             _ => None,
         }
     }
+
+    /// Interpret this value as a per-layer u32 series. Used for architectures
+    /// (Nvidia's `deci`, among others) that store metadata like
+    /// `{arch}.attention.head_count_kv` as an array with one entry per
+    /// transformer block rather than a single scalar. A scalar coerces to
+    /// a one-element vector so the caller can treat both shapes uniformly.
+    pub fn as_u32_array(&self) -> Option<Vec<u32>> {
+        match self {
+            GgufValue::Array(items) => items.iter().map(|v| v.as_u32()).collect(),
+            other => other.as_u32().map(|v| vec![v]),
+        }
+    }
 }

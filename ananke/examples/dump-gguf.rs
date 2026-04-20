@@ -21,6 +21,73 @@ fn main() {
         summary.shards.len(),
         summary.total_tensor_bytes as f64 / 1024.0_f64.powi(3)
     );
+
+    // Surface the metadata keys the estimator cares about — if any of
+    // these are missing under the arch's canonical prefix the KV math
+    // silently collapses to zero (we hit this with nemotron's "deci"
+    // arch). Loop over whatever prefixes show up in the metadata table
+    // so the operator sees the actual keys rather than assumptions.
+    println!();
+    println!("attention + context metadata (both scalar and array shapes):");
+    let prefixes_of_interest = [
+        "attention.head_count_kv",
+        "attention.head_count",
+        "attention.key_length",
+        "attention.value_length",
+        "attention.key_length_swa",
+        "attention.value_length_swa",
+        "attention.sliding_window",
+        "attention.sliding_window_pattern",
+        "attention.shared_kv_layers",
+        "attention.layer_types",
+        "full_attention_interval",
+        "context_length",
+        "embedding_length",
+        "block_count",
+    ];
+    let keys: Vec<_> = summary.metadata.keys().cloned().collect();
+    for suffix in prefixes_of_interest {
+        for k in &keys {
+            if k.ends_with(suffix) {
+                // Some keys are u32 scalars (head_count, context_length);
+                // others are u32 arrays (sliding_window_pattern as a
+                // per-layer mask, head_count_kv on variable-KV families).
+                // Print both interpretations so the operator sees what's
+                // actually in the GGUF.
+                let value = summary.metadata.get(k);
+                let scalar = value.and_then(|v| v.as_u32());
+                let array = value.and_then(|v| v.as_u32_array());
+                match (scalar, array.as_deref()) {
+                    (Some(s), Some(a)) if a.len() == 1 && a[0] == s => {
+                        println!("  {k} = {s}");
+                    }
+                    (Some(s), _) => println!("  {k} = {s}"),
+                    (None, Some(a)) => {
+                        let preview: Vec<String> = a.iter().take(8).map(|v| v.to_string()).collect();
+                        let tail = if a.len() > 8 { ", …" } else { "" };
+                        println!(
+                            "  {k} = [{}{}] (len={})",
+                            preview.join(","),
+                            tail,
+                            a.len()
+                        );
+                    }
+                    (None, None) => println!("  {k} = <non-integer>"),
+                }
+            }
+        }
+    }
+    // Dump every metadata key that mentions attention / sliding / window
+    // verbatim. Useful for chasing architecture-specific metadata names
+    // (gemma3's SWA pattern, nemotron's per-layer attention, etc.).
+    println!();
+    println!("all attention-related keys:");
+    for k in &keys {
+        let lk = k.to_lowercase();
+        if lk.contains("attention") || lk.contains("sliding") || lk.contains("window") {
+            println!("  {k}");
+        }
+    }
     println!();
 
     let n_layers = summary.block_count.unwrap_or(0);
