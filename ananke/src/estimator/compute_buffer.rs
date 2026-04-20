@@ -16,11 +16,14 @@
 //!   because only a few experts run per token.
 //! - Hybrid MoE + SSM (qwen35moe): SSM state scales with `ssm_d_*`
 //!   constants, not context, so the slope is small.
-//! - Tiny models (gemma-4-E4B): fixed CUDA+cuBLAS overhead dominates;
-//!   base can be smaller than the fat-model default.
+//! - Gemma 4 E-variants (detected by `per_layer_token_embd.weight`):
+//!   small hidden + per-layer embeddings on CPU; fits under a much
+//!   lower curve than the fat-model gemma4 default.
 //!
 //! Operators can still override per service via
 //! `estimation.compute_buffer_mb`, which short-circuits this table.
+
+use crate::gguf::GgufSummary;
 
 /// Per-architecture knobs: `base + slope × (ctx / 1024)` MiB per device.
 #[derive(Debug, Clone, Copy)]
@@ -32,8 +35,20 @@ struct Tuning {
 /// Lookup table for arch-specific tuning. The `_` arm is the llama-family
 /// default, empirically the most conservative across the sweep. Add a row
 /// here when calibration shows a given arch needs a different curve.
-fn tuning_for(arch: &str) -> Tuning {
+fn tuning_for(summary: &GgufSummary) -> Tuning {
+    let arch = summary.architecture.as_str();
     match arch {
+        // Gemma 4 E-variants (detected by `per_layer_token_embd.weight`):
+        // small hidden + per-layer embeddings on CPU, so neither the
+        // attention scratch nor the CUDA context take up as much room
+        // as the fat-model gemma4 default. E4B actual at 262k was
+        // ~2.5 GiB; the (2000, 7) curve for regular gemma4 over-reserves
+        // it by 2 GiB otherwise.
+        "gemma4" if is_gemma_e_variant(summary) => Tuning {
+            base: 1000,
+            slope: 6,
+        },
+
         // Gemma family has large hidden, a few full-attention layers
         // buried under an SWA-heavy majority, and big attention scratch
         // even at 2k context. gemma-4-31B-it under-reserved by 2.4 GiB
@@ -93,24 +108,64 @@ fn tuning_for(arch: &str) -> Tuning {
     }
 }
 
-/// Default per-device compute-buffer reservation for `arch` at `context`
-/// tokens. Operators can override per service via
+/// Default per-device compute-buffer reservation for `summary` at
+/// `context` tokens. Operators can override per service via
 /// `estimation.compute_buffer_mb`.
-pub fn default_for(arch: &str, context: u32) -> u32 {
-    let t = tuning_for(arch);
+pub fn default_for(summary: &GgufSummary, context: u32) -> u32 {
+    let t = tuning_for(summary);
     t.base
         .saturating_add(t.slope.saturating_mul(context / 1024))
 }
 
+/// Does `summary` look like a Gemma 4 E-variant (E4B and siblings)?
+/// Detection is keyed on `per_layer_token_embd.weight`, the per-block
+/// input-embedding stack that only E-variants carry.
+fn is_gemma_e_variant(summary: &GgufSummary) -> bool {
+    summary.tensors.contains_key("per_layer_token_embd.weight")
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use smol_str::SmolStr;
+
     use super::*;
+    use crate::gguf::types::{GgufSummary, GgufTensor, GgufType};
+
+    fn summary_for(arch: &str) -> GgufSummary {
+        GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+            block_count: None,
+            architecture: SmolStr::new(arch),
+            shards: vec!["/fake".into()],
+        }
+    }
+
+    fn gemma4_e_variant_summary() -> GgufSummary {
+        let mut s = summary_for("gemma4");
+        s.tensors.insert(
+            SmolStr::new("per_layer_token_embd.weight"),
+            GgufTensor {
+                name: SmolStr::new("per_layer_token_embd.weight"),
+                dtype: GgufType::F32,
+                shape: vec![1, 1],
+                byte_size: 1024 * 1024,
+                shard_idx: 0,
+                offset: 0,
+            },
+        );
+        s
+    }
 
     #[test]
     fn llama_family_default_tuning() {
-        let cb = default_for("qwen3", 2048);
-        assert_eq!(cb, 700 + 8 * 2);
-        assert_eq!(default_for("qwen3", 32768), 700 + 8 * 32);
+        let s = summary_for("qwen3");
+        assert_eq!(default_for(&s, 2048), 700 + 8 * 2);
+        assert_eq!(default_for(&s, 32768), 700 + 8 * 32);
     }
 
     #[test]
@@ -118,8 +173,8 @@ mod tests {
         // gemma-4-31B's full-attention layers drive a big attention
         // scratch allocation even at small context — the gemma tuning
         // has to start well above the llama default to cover it.
-        let gemma_2k = default_for("gemma4", 2048);
-        let llama_2k = default_for("qwen3", 2048);
+        let gemma_2k = default_for(&summary_for("gemma4"), 2048);
+        let llama_2k = default_for(&summary_for("qwen3"), 2048);
         assert!(
             gemma_2k > llama_2k,
             "gemma base should exceed llama default at 2k (gemma={gemma_2k} llama={llama_2k})"
@@ -127,9 +182,23 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_e_variant_uses_smaller_curve() {
+        // E-variants ship a `per_layer_token_embd.weight` tensor and
+        // have a small hidden size; the fat-model gemma4 tuning over-
+        // reserves them by ~2 GiB at 262k otherwise.
+        let regular = default_for(&summary_for("gemma4"), 262144);
+        let e_variant = default_for(&gemma4_e_variant_summary(), 262144);
+        assert!(
+            e_variant < regular,
+            "E-variant cb should be strictly lower than regular gemma4 \
+             (e={e_variant} regular={regular})"
+        );
+    }
+
+    #[test]
     fn moe_tuning_is_flatter_than_dense() {
-        let dense_32k = default_for("qwen3", 32768);
-        let moe_32k = default_for("gpt-oss", 32768);
+        let dense_32k = default_for(&summary_for("qwen3"), 32768);
+        let moe_32k = default_for(&summary_for("gpt-oss"), 32768);
         assert!(
             moe_32k < dense_32k,
             "MoE compute buffer should be flatter than dense at long context; \
@@ -141,9 +210,9 @@ mod tests {
     fn qwen35moe_sits_between_moe_only_and_dense() {
         // Hybrid SSM+MoE: full-attention layers are a minority but they
         // do cost more per 1k context than pure-MoE's near-flat curve.
-        let moe_only_262k = default_for("gpt-oss", 262144);
-        let qwen35moe_262k = default_for("qwen35moe", 262144);
-        let dense_262k = default_for("qwen3", 262144);
+        let moe_only_262k = default_for(&summary_for("gpt-oss"), 262144);
+        let qwen35moe_262k = default_for(&summary_for("qwen35moe"), 262144);
+        let dense_262k = default_for(&summary_for("qwen3"), 262144);
         assert!(
             moe_only_262k <= qwen35moe_262k && qwen35moe_262k <= dense_262k,
             "qwen35moe should land between MoE-only and dense at 262k \
@@ -155,14 +224,15 @@ mod tests {
     fn unknown_arch_falls_back_to_llama_default() {
         // Matches the conservative dense-family curve so unknown archs
         // that slip through the fallback still over-reserve safely.
-        assert_eq!(default_for("brand-new-arch", 8192), 700 + 8 * 8);
+        assert_eq!(default_for(&summary_for("brand-new-arch"), 8192), 700 + 8 * 8);
     }
 
     #[test]
     fn absent_context_floors_to_base() {
-        assert_eq!(default_for("qwen3", 0), 700);
-        assert_eq!(default_for("gpt-oss", 512), 600);
-        assert_eq!(default_for("gemma4", 0), 2000);
-        assert_eq!(default_for("qwen35moe", 0), 900);
+        assert_eq!(default_for(&summary_for("qwen3"), 0), 700);
+        assert_eq!(default_for(&summary_for("gpt-oss"), 512), 600);
+        assert_eq!(default_for(&summary_for("gemma4"), 0), 2000);
+        assert_eq!(default_for(&summary_for("qwen35moe"), 0), 900);
+        assert_eq!(default_for(&gemma4_e_variant_summary(), 0), 1000);
     }
 }

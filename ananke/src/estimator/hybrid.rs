@@ -35,7 +35,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         kv_per_token: 0, // conservative; refined when real jamba metadata arrives.
         compute_buffer_mb: inputs
             .compute_buffer_mb
-            .unwrap_or_else(|| super::compute_buffer::default_for(arch, inputs.context)),
+            .unwrap_or_else(|| super::compute_buffer::default_for(summary, inputs.context)),
         per_layer_bytes: Some(per_layer),
         attention_layers: None,
         non_layer,
