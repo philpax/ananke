@@ -112,8 +112,9 @@ pub enum EnsureResponse {
     },
     /// Start queue is full; reject with 503.
     QueueFull,
-    /// Service is disabled or stopped; cannot start.
-    Unavailable { reason: String },
+    /// Service cannot be started right now; the variant carries the
+    /// semantic reason so callers don't have to sniff the message.
+    Unavailable(EnsureFailure),
 }
 
 #[derive(Debug, Clone)]
@@ -328,8 +329,58 @@ pub enum EnsureOutcome {
     Failed(EnsureFailure),
 }
 
+/// Why `compute_reservation_map` couldn't produce a reservation for the
+/// next spawn. Each variant carries the structured inner error it wraps
+/// so callers can inspect the specific cause without parsing a message.
+#[derive(Debug, Clone)]
+enum ReservationFailure {
+    /// Service config is missing something required to even try estimation
+    /// (e.g. no model path on a llama-cpp service). Not recoverable by
+    /// eviction — the service needs a config fix first.
+    Misconfigured(MisconfiguredKind),
+    /// The estimator refused or failed on this GGUF. Carries the concrete
+    /// [`estimator::EstimatorError`] so callers can tell an unknown-arch
+    /// from a GGUF-read failure.
+    EstimatorError(crate::estimator::EstimatorError),
+    /// The packer couldn't lay the model down given current reservations.
+    /// Carries the structured [`placement::PackError`] — the supervisor
+    /// branches on this specifically to retry with eviction.
+    PackFailed(crate::allocator::placement::PackError),
+}
+
+/// Concrete ways a service's config can prevent the estimator from even
+/// running. Expands over time as new check surfaces are added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MisconfiguredKind {
+    /// Llama-cpp service without a `model` path. Should have been caught
+    /// at config validation but the supervisor double-checks defensively.
+    NoModelPath,
+}
+
+impl std::fmt::Display for MisconfiguredKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoModelPath => f.write_str("no model path configured"),
+        }
+    }
+}
+
+impl ReservationFailure {
+    /// Flatten to the string the proxy / OpenAI layer shows operators.
+    /// The shape matches the pre-enum behaviour so log scrapes keep
+    /// working; inspectors should match on the enum instead.
+    fn message(self) -> String {
+        match self {
+            Self::Misconfigured(k) => k.to_string(),
+            Self::EstimatorError(e) => format!("estimator: {e}"),
+            Self::PackFailed(p) => format!("placement: {p}"),
+        }
+    }
+}
+
 /// Semantic bucket of an [`EnsureOutcome::Failed`]. Callers map these onto
 /// their own error-response surface (OpenAI error JSON, proxy error body).
+#[derive(Debug, Clone)]
 pub enum EnsureFailure {
     /// The start fit-check rejected or the child got OOM-killed.
     InsufficientVram(String),
@@ -359,12 +410,8 @@ pub async fn await_ensure(
         Some(EnsureResponse::QueueFull) => {
             return EnsureOutcome::Failed(EnsureFailure::StartQueueFull);
         }
-        Some(EnsureResponse::Unavailable { reason }) => {
-            return EnsureOutcome::Failed(if reason.starts_with("no fit") {
-                EnsureFailure::InsufficientVram(reason)
-            } else {
-                EnsureFailure::ServiceDisabled(reason)
-            });
+        Some(EnsureResponse::Unavailable(failure)) => {
+            return EnsureOutcome::Failed(failure);
         }
         None => {
             return EnsureOutcome::Failed(EnsureFailure::StartFailed(
@@ -647,7 +694,7 @@ impl RunLoop {
 
         let (want, pre_evicted) = match self.compute_reservation_map(&snap, &table) {
             Ok(w) => (w, Vec::new()),
-            Err(reason) if reason.starts_with("placement:") => {
+            Err(ReservationFailure::PackFailed(_)) => {
                 // Pack couldn't lay the model down given current reservations
                 // (e.g. an in-between layer didn't fit on any allowed GPU).
                 // Retry with lower-priority services treated as evicted; if
@@ -656,15 +703,17 @@ impl RunLoop {
                 match self.retry_pack_with_eviction(&snap, &table).await {
                     Ok((want, victims)) => (want, victims),
                     Err(retry_reason) => {
-                        let _ = ack.send(EnsureResponse::Unavailable {
-                            reason: retry_reason,
-                        });
+                        let _ = ack.send(EnsureResponse::Unavailable(
+                            EnsureFailure::InsufficientVram(retry_reason),
+                        ));
                         return false;
                     }
                 }
             }
-            Err(reason) => {
-                let _ = ack.send(EnsureResponse::Unavailable { reason });
+            Err(other) => {
+                let _ = ack.send(EnsureResponse::Unavailable(EnsureFailure::ServiceDisabled(
+                    other.message(),
+                )));
                 return false;
             }
         };
@@ -690,7 +739,9 @@ impl RunLoop {
         if let Err(nofit) = fit_result
             && let Err(reason) = self.try_eviction_to_fit(&want, &nofit).await
         {
-            let _ = ack.send(EnsureResponse::Unavailable { reason });
+            let _ = ack.send(EnsureResponse::Unavailable(
+                EnsureFailure::InsufficientVram(reason),
+            ));
             return false;
         }
 
@@ -717,13 +768,15 @@ impl RunLoop {
 
     /// Determine the reservation map for an Ensure. On the llama-cpp path this
     /// runs the estimator + packer and caches `Packed` on `self` for the
-    /// eventual `render_argv` call. The returned `Err(String)` is the reason
-    /// an `EnsureResponse::Unavailable` should carry.
+    /// eventual `render_argv` call. Typed `Err` so the caller can branch on
+    /// pack failures (retry with eviction) vs config / estimator failures
+    /// (surface verbatim).
     fn compute_reservation_map(
         &mut self,
         snap: &crate::devices::DeviceSnapshot,
         table: &crate::allocator::AllocationTable,
-    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, ReservationFailure>
+    {
         self.compute_reservation_map_inner(snap, table, false)
     }
 
@@ -735,7 +788,8 @@ impl RunLoop {
         &mut self,
         snap: &crate::devices::DeviceSnapshot,
         table: &crate::allocator::AllocationTable,
-    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, ReservationFailure>
+    {
         self.compute_reservation_map_inner(snap, table, true)
     }
 
@@ -744,7 +798,8 @@ impl RunLoop {
         snap: &crate::devices::DeviceSnapshot,
         table: &crate::allocator::AllocationTable,
         optimistic: bool,
-    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, String> {
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, ReservationFailure>
+    {
         let current = self.current_svc();
         let svc = &current;
         if matches!(svc.template(), crate::config::Template::Command) {
@@ -778,10 +833,11 @@ impl RunLoop {
         }
 
         // Estimator + placement path.
-        let inputs = crate::estimator::EstimatorInputs::from_service(svc)
-            .ok_or_else(|| "no model path configured".to_string())?;
+        let inputs = crate::estimator::EstimatorInputs::from_service(svc).ok_or(
+            ReservationFailure::Misconfigured(MisconfiguredKind::NoModelPath),
+        )?;
         let mut est = crate::estimator::estimate_from_path(self.deps.system.fs.as_ref(), &inputs)
-            .map_err(|e| format!("estimator: {e}"))?;
+            .map_err(ReservationFailure::EstimatorError)?;
         // Apply rolling correction to weights_bytes.
         let rc = self.deps.rolling.get(&svc.name);
         est.weights_bytes = (est.weights_bytes as f64 * rc.rolling_mean) as u64;
@@ -791,7 +847,7 @@ impl RunLoop {
         } else {
             crate::allocator::placement::pack(&est, svc, snap, table)
         }
-        .map_err(|e| format!("placement: {e}"))?;
+        .map_err(ReservationFailure::PackFailed)?;
         // Convert Allocation bytes (per-DeviceId, in bytes) to the
         // BTreeMap<DeviceSlot, u64> in MB that can_fit + insert expects.
         let want_mb: std::collections::BTreeMap<crate::config::DeviceSlot, u64> = packed
@@ -843,6 +899,7 @@ impl RunLoop {
             let reason = self
                 .compute_reservation_map(snap, table)
                 .err()
+                .map(ReservationFailure::message)
                 .unwrap_or_else(|| "placement: unknown failure".into());
             return Err(reason);
         }
@@ -851,7 +908,9 @@ impl RunLoop {
         for v in &victims {
             filtered.remove(v);
         }
-        let want = self.compute_reservation_map_optimistic(snap, &filtered)?;
+        let want = self
+            .compute_reservation_map_optimistic(snap, &filtered)
+            .map_err(ReservationFailure::message)?;
 
         warn!(
             service = %self.init.identity.name,
@@ -1565,9 +1624,9 @@ impl RunLoop {
                     });
                 }
                 Some(SupervisorCommand::Ensure { ack }) => {
-                    let _ = ack.send(EnsureResponse::Unavailable {
-                        reason: "service disabled".into(),
-                    });
+                    let _ = ack.send(EnsureResponse::Unavailable(EnsureFailure::ServiceDisabled(
+                        "service disabled".into(),
+                    )));
                 }
                 Some(SupervisorCommand::ActivityPing) => {}
                 // Service is disabled; drain/kill are no-ops.

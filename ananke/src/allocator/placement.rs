@@ -38,14 +38,31 @@ pub struct CommandArgs {
     pub override_tensor: Vec<String>,
 }
 
-#[derive(Debug)]
-pub struct PackError {
-    pub reason: String,
+/// Structured packer failure modes. Each variant carries the numbers the
+/// operator needs to understand the overflow — no more string-matching
+/// on the message to figure out what went wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackError {
+    /// A specific block-layer's bytes didn't fit on any GPU the service
+    /// was allowed to use, and CPU spill was disabled.
+    LayerDoesNotFit { layer_index: u32, bytes: u64 },
+    /// The estimator returned no per-layer breakdown (fallback path on
+    /// an unknown architecture) and the weights can't fit on any
+    /// allowed device.
+    WeightsDoNotFit,
 }
 
 impl std::fmt::Display for PackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.reason)
+        match self {
+            Self::LayerDoesNotFit { layer_index, bytes } => {
+                write!(
+                    f,
+                    "layer {layer_index} ({bytes} bytes) does not fit on any allowed GPU"
+                )
+            }
+            Self::WeightsDoNotFit => f.write_str("weights do not fit on any allowed device"),
+        }
     }
 }
 
@@ -224,10 +241,9 @@ impl<'a> Packer<'a> {
                     self.layers_on_cpu += 1;
                 }
                 None => {
-                    return Err(PackError {
-                        reason: format!(
-                            "layer {idx} ({bytes} bytes) does not fit on any allowed GPU"
-                        ),
+                    return Err(PackError::LayerDoesNotFit {
+                        layer_index: idx as u32,
+                        bytes,
                     });
                 }
             }
@@ -276,8 +292,7 @@ impl<'a> Packer<'a> {
             } else {
                 free.min(via_pledge)
             };
-            let raw = available
-                .saturating_sub(*self.per_device.get(&slot).unwrap_or(&0));
+            let raw = available.saturating_sub(*self.per_device.get(&slot).unwrap_or(&0));
             self.gpu_remaining
                 .insert(*gpu, raw.saturating_sub(gpu_headroom_each));
         }
@@ -304,9 +319,7 @@ impl<'a> Packer<'a> {
             *self.per_device.entry(DeviceSlot::Cpu).or_default() += bytes;
             Ok(())
         } else {
-            Err(PackError {
-                reason: "weights do not fit on any allowed device".into(),
-            })
+            Err(PackError::WeightsDoNotFit)
         }
     }
 
@@ -566,7 +579,11 @@ mod tests {
         let packed = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc).unwrap();
         let split = packed.args.tensor_split.as_ref().unwrap();
         assert_eq!(split.len(), 2);
-        assert_eq!(split, &vec![1u32, 1u32], "layers should split 1/1 across GPUs");
+        assert_eq!(
+            split,
+            &vec![1u32, 1u32],
+            "layers should split 1/1 across GPUs"
+        );
         assert_eq!(packed.args.ngl, Some(2));
     }
 
