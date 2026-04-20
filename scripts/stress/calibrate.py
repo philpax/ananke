@@ -252,11 +252,20 @@ def build_llama_server_argv(
     return args, env
 
 
-async def wait_healthy(base_url: str, timeout_s: float) -> float | None:
+async def wait_healthy(
+    base_url: str, timeout_s: float, proc: subprocess.Popen[bytes] | None = None
+) -> float | None:
+    """Poll `{base_url}/health` until it reports 200 or `timeout_s` elapses.
+    If `proc` is passed, also bail out the moment the child exits — OOMs
+    near the VRAM ceiling otherwise eat the full startup budget waiting
+    on a dead socket.
+    """
     start = time.monotonic()
     deadline = start + timeout_s
     async with httpx.AsyncClient(timeout=2.0) as client:
         while time.monotonic() < deadline:
+            if proc is not None and proc.poll() is not None:
+                return None
             try:
                 resp = await client.get(f"{base_url}/health")
                 if resp.status_code == 200:
@@ -358,8 +367,10 @@ async def measure_one(
     )
 
     try:
-        time_to_healthy = await wait_healthy(base_url, startup_timeout_s)
+        time_to_healthy = await wait_healthy(base_url, startup_timeout_s, proc)
         if time_to_healthy is None:
+            if proc.poll() is not None:
+                return _err(f"llama-server exited rc={proc.returncode} before healthy")
             return _err(f"never healthy within {startup_timeout_s}s")
 
         # Let KV + compute buffers stabilise before reading nvml.
