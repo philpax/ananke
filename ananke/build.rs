@@ -43,7 +43,7 @@ fn main() {
 
     // `npm ci` only when `node_modules` is absent; routine builds skip it.
     if !frontend.join("node_modules").exists() {
-        run("npm", &["ci"], &frontend, "npm ci");
+        run("npm", &["ci", "--legacy-peer-deps"], &frontend, "npm ci");
     }
 
     run("npm", &["run", "build"], &frontend, "npm run build");
