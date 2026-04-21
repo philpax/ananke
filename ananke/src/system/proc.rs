@@ -34,8 +34,8 @@ pub struct Meminfo {
 /// synthesised text.
 pub trait ProcFs: Send + Sync {
     /// Parse `/proc/meminfo`, returning MemTotal + MemAvailable in bytes.
-    /// `MemAvailable` (spec §4.2) is preferred over `MemFree` so page
-    /// cache reclaim doesn't bias the scheduler.
+    /// `MemAvailable` is preferred over `MemFree` so page cache reclaim
+    /// doesn't bias the scheduler.
     fn meminfo(&self) -> io::Result<Meminfo>;
 
     /// `VmRSS` from `/proc/<pid>/status` in bytes. `None` when the pid

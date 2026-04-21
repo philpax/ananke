@@ -6,7 +6,7 @@
 # ones exercised by the scenarios you want to run.
 
 [endpoint]
-management = "http://127.0.0.1:17777"
+management = "http://127.0.0.1:7071"
 openai = "http://127.0.0.1:7070"
 
 [roles]

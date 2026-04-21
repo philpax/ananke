@@ -1,4 +1,4 @@
-//! Linux-only: startup orphan recovery per spec §9.3. Reads
+//! Linux-only: startup orphan recovery. Reads
 //! `/proc/{pid}/cmdline` (through [`crate::system::ProcFs`] — tests can
 //! substitute [`crate::system::InMemoryProcFs`] with preloaded cmdlines)
 //! to decide whether a previously-recorded child is still alive and

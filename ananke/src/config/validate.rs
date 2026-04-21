@@ -333,7 +333,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     if !mgmt_socket_addr.ip().is_loopback() && !cfg.daemon.allow_external_management {
         return Err(fail(
             "daemon.management_listen is non-loopback but daemon.allow_external_management is false; \
-             see §11 of the spec before enabling this — the management API has no authentication".into(),
+             the management API has no authentication".into(),
         ));
     }
     let management_port = management_addr

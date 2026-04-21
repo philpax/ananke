@@ -15,8 +15,8 @@ use crate::{
 };
 
 /// Number of per-layer-equivalents added to every active backend as slop
-/// tolerance for tensor-split rounding (spec §8.2.5). Bumped if empirical
-/// overruns show tensor_split's remainder exceeds one layer's worth.
+/// tolerance for tensor-split rounding. Bumped if empirical overruns
+/// show tensor_split's remainder exceeds one layer's worth.
 const ONE_LAYER_FUDGE_MULTIPLIER: u64 = 1;
 
 /// `-ngl` value meaning "offload every layer to the GPU". Used when we
@@ -416,7 +416,7 @@ impl<'a> Packer<'a> {
         }
     }
 
-    /// Step 5: one-layer fudge for tensor-split slop (spec §8.2.5).
+    /// Step 5: one-layer fudge for tensor-split slop.
     fn add_one_layer_fudge(&mut self) {
         let n_layers = self.per_layer.len() as u32;
         if n_layers == 0 || self.per_layer.is_empty() {

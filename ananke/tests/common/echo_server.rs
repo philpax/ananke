@@ -1,4 +1,4 @@
-//! Phase 2 echo server: adds spawn counter, /sink, and configurable /v1/* bodies.
+//! Test-harness echo server: spawn counter, /sink, and configurable /v1/* bodies.
 
 // Not every integration test binary uses every symbol in this module.
 #![allow(dead_code)]

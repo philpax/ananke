@@ -67,7 +67,7 @@ class Matrix:
         endpoint = data.get("endpoint", {})
         mgmt = os.environ.get(
             "ANANKE_ENDPOINT",
-            endpoint.get("management", "http://127.0.0.1:17777"),
+            endpoint.get("management", "http://127.0.0.1:7071"),
         )
         openai = os.environ.get(
             "ANANKE_OPENAI_ENDPOINT",

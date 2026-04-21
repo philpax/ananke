@@ -303,9 +303,9 @@ async def measure_one(
     log_path: Path,
 ) -> Row:
     # active_devices=2 tells the estimate example to report GPU VRAM for
-    # a dual-GPU redline box (the `gpu_vram_mib` output excludes CPU-
-    # resident embeddings and caps cb device count at 2). That matches
-    # what nvidia-smi sums to, so deltas track the real calibration signal.
+    # a dual-GPU host (the `gpu_vram_mib` output excludes CPU-resident
+    # embeddings and caps cb device count at 2). That matches what
+    # nvidia-smi sums to, so deltas track the real calibration signal.
     estimate = run_estimator(estimate_bin, svc, context, active_devices=2)
     architecture = str(estimate.get("architecture", ""))
     predicted_weights_mib = int(estimate.get("weights_bytes", 0)) // (1024 * 1024)
@@ -552,7 +552,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--source-config",
-        default=os.environ.get("ANANKE_CONFIG", "/tmp/ananke-redline/config.toml"),
+        default=os.environ.get("ANANKE_CONFIG", "/tmp/ananke-stress/config.toml"),
         help="config file to read service blocks from",
     )
     p.add_argument("--services", nargs="+", help="subset of llama-cpp service names to sweep")

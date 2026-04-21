@@ -22,7 +22,7 @@ the required roles.
 
 ## Prerequisites
 
-- A running ananke daemon, reachable at `http://127.0.0.1:17777` by default.
+- A running ananke daemon, reachable at `http://127.0.0.1:7071` by default.
   Override via `ANANKE_ENDPOINT` env.
 - [`uv`](https://docs.astral.sh/uv/) for Python environment management.
 - A `matrix.toml` next to `lib.py` (see below).

@@ -1,4 +1,4 @@
-//! Full drain pipeline per spec §10.3. Sends SIGTERM via the child's
+//! Full drain pipeline. Sends SIGTERM via the child's
 //! `ManagedChild::sigterm` and escalates to SIGKILL on timeout. The
 //! [`ProcessSpawner`](crate::system::ProcessSpawner) abstraction means the
 //! same pipeline works against real children under `LocalSpawner` and

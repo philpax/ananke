@@ -17,9 +17,9 @@ pub fn is_hybrid(arch: &str) -> bool {
 }
 
 pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate {
-    // For phase 3, treat hybrid like llama-family but with no KV cache
-    // modelled (safer over-estimate side) and no per-layer type
-    // differentiation (future work).
+    // Treat hybrid like llama-family but with no KV cache modelled
+    // (safer over-estimate side) and no per-layer type differentiation
+    // (future work).
     let arch = summary.architecture.as_str();
     let n_layers = summary.block_count.unwrap_or(0);
 

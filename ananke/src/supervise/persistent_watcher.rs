@@ -1,9 +1,9 @@
 //! Background loop that re-ensures every persistent service sitting in
 //! a dormant state (Idle / Evicted / Disabled{NoFit}).
 //!
-//! Per spec §5.1, a persistent service "auto-respawns when VRAM
-//! permits" — the corollary of making persistent services evictable
-//! while idle. The cheapest implementation is a short poll: tick every
+//! A persistent service auto-respawns when VRAM permits — the corollary
+//! of making persistent services evictable while idle. The cheapest
+//! implementation is a short poll: tick every
 //! `TICK` seconds, snapshot each persistent supervisor, and fire
 //! `enable()` + `ensure()` on anything dormant. If the ensure itself
 //! hits `NoFit` (capacity still not available), it drops the service

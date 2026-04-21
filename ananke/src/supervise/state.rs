@@ -1,4 +1,4 @@
-//! Service state machine per spec §5.3.
+//! Service state machine.
 
 use smol_str::SmolStr;
 

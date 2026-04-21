@@ -2,7 +2,7 @@
 //!
 //! No conventional KV cache. State cost derived from mamba.ssm.*
 //! metadata. flash_attn and cache_type_* don't apply and validation
-//! rejects them for this architecture (spec §6.5).
+//! rejects them for this architecture.
 
 use std::collections::BTreeMap;
 

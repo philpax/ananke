@@ -1,4 +1,4 @@
-//! `override_tensor` rule application (spec §8.2.4).
+//! `override_tensor` rule application.
 //!
 //! The user declares `override_tensor = ["<regex>=<device>", ...]`; llama.cpp
 //! takes the same rules via `-ot`. We must mirror the placement accounting so

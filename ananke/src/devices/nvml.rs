@@ -17,7 +17,7 @@ pub struct NvmlProbe {
 
 impl NvmlProbe {
     pub fn init() -> Result<Self, String> {
-        // Unset CUDA_VISIBLE_DEVICES so NVML sees every GPU regardless of ambient env (spec §4.3).
+        // Unset CUDA_VISIBLE_DEVICES so NVML sees every GPU regardless of ambient env.
         // SAFETY: single-threaded at init time; no other threads are reading env vars.
         unsafe { std::env::remove_var("CUDA_VISIBLE_DEVICES") };
 

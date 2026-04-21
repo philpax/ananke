@@ -1,4 +1,4 @@
-//! Fallback estimator for unknown architectures (spec §8.3).
+//! Fallback estimator for unknown architectures.
 
 use std::collections::BTreeMap;
 

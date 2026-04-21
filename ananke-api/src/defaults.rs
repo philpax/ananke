@@ -1,11 +1,8 @@
 //! Default ports and endpoints shared between the `ananke` daemon and the
 //! `anankectl` CLI. Keeping them in the shared crate ensures a change to the
 //! daemon's default listen addresses shows up in the CLI's default endpoint
-//! at the same time.
-//!
-//! These values also mirror the deployment defaults used by the NixOS
-//! module that packages `ananke`, so a zero-configuration binary and a
-//! zero-configuration systemd unit agree out of the box.
+//! at the same time, and gives packaging (systemd units, Docker images,
+//! etc.) one place to read from when generating default manifests.
 
 /// Default listen address for the OpenAI-compatible API
 /// (`/v1/chat/completions`, `/v1/models`, etc.).

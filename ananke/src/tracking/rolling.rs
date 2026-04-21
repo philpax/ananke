@@ -1,4 +1,4 @@
-//! Per-service rolling correction (spec §8.3).
+//! Per-service rolling correction.
 
 use std::{collections::BTreeMap, sync::Arc};
 

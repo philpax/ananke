@@ -134,12 +134,12 @@ pub fn estimate_from_path(
     );
 
     // Apply user-declared override_tensor rules BEFORE mmproj so matched
-    // tensors leave the layer/non-layer budget cleanly (spec §8.2.4).
+    // tensors leave the layer/non-layer budget cleanly.
     if !inputs.override_tensor.is_empty() {
         override_tensor::parse_and_apply(&mut est, &summary, inputs.override_tensor);
     }
 
-    // Add mmproj bytes to GPU 0 weights (per spec §8.3).
+    // Add mmproj bytes to GPU 0 weights.
     if let Some(mmproj) = inputs.mmproj {
         match gguf::read(fs, mmproj) {
             Ok(proj) => {

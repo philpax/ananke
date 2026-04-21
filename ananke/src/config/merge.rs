@@ -1,6 +1,6 @@
 //! Resolve `extends` inheritance and `*_append` concatenation before validation.
 //!
-//! Rules (spec §6.3):
+//! Rules:
 //! - Scalars: child overrides parent.
 //! - Sub-tables: deep-merge field-by-field.
 //! - Arrays: child replaces parent outright.

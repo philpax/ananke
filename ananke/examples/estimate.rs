@@ -131,7 +131,8 @@ fn main() {
     // model on. Caller passes `--active-devices N` for the placement
     // they're modelling (1 for a single-GPU-only fit, 2 for dual-GPU,
     // 3 for dual-GPU + CPU embedding/offload). Default 3 matches the
-    // typical redline-box placement for large llama-family models.
+    // common "two GPUs plus CPU-resident embeddings" layout for large
+    // llama-family models.
     let active_devices = args.active_devices.unwrap_or(3);
     let cb_total_bytes = (estimate.compute_buffer_mb as u64)
         .saturating_mul(active_devices)

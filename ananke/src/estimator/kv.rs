@@ -1,9 +1,9 @@
-//! KV cache bytes-per-element table (spec §8.3).
+//! KV cache bytes-per-element table.
 
 use crate::gguf::GgufType;
 
 /// Approximate bytes per element for llama.cpp's accepted
-/// `--cache-type-k` / `--cache-type-v` values. Matches spec §8.3 table.
+/// `--cache-type-k` / `--cache-type-v` values.
 pub fn kv_bytes_per_element(cache_type: &str) -> f64 {
     match cache_type {
         "f32" => 4.0,

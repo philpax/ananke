@@ -7,10 +7,10 @@ use tracing::{info, warn};
 
 use crate::{db::Database, errors::ExpectedError};
 
-/// Drop log rows older than this before the cap check (spec §12).
+/// Drop log rows older than this before the cap check.
 const RETENTION_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// Per-service row cap; oldest rows beyond this are deleted (spec §12).
+/// Per-service row cap; oldest rows beyond this are deleted.
 const MAX_ROWS_PER_SERVICE: usize = 50_000;
 
 /// Cadence for both the retention trim and the incremental vacuum.
@@ -20,8 +20,8 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// size this releases up to ~4 MiB per tick.
 const INCREMENTAL_VACUUM_PAGES: u64 = 1000;
 
-/// Per-service log retention: 7 days or 50,000 lines, whichever tighter
-/// (spec §12). Runs once when called; call from a daily scheduled task.
+/// Per-service log retention: 7 days or 50,000 lines, whichever tighter.
+/// Runs once when called; call from a daily scheduled task.
 pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, ExpectedError> {
     let cutoff_ms = now_ms - RETENTION_WINDOW.as_millis() as i64;
 

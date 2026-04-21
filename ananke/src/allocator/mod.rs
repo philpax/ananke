@@ -1,10 +1,9 @@
 //! Pure feasibility check for service placement.
 //!
-//! Phase 2 has no eviction: the allocator either admits a service whose
-//! declared `placement_override` fits live free bytes minus existing
-//! reservations, or reports `NoFit` with a specific slot and shortfall.
-//! Future phases replace the in-crate caller with an eviction-capable
-//! one but keep this function as the innermost yes/no.
+//! The core `can_fit` function is an inner yes/no: does this service fit
+//! given the live free bytes minus existing reservations? Eviction and
+//! packing decisions live in sibling modules ([`eviction`], [`placement`])
+//! that call this as the final admission gate.
 
 pub mod balloon;
 pub mod eviction;

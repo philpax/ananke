@@ -15,8 +15,8 @@
 pkgs.mkShell {
   # We deliberately don't pin the Rust toolchain here — nixpkgs stable
   # tends to lag a few minors behind what the workspace's dependency tree
-  # requires (toasty currently needs ≥ 1.94). Bring your own rustc via
-  # the system channel or rustup; this shell supplies everything else.
+  # requires. Bring your own rustc via the system channel or rustup;
+  # this shell supplies everything else.
   nativeBuildInputs = with pkgs; [
     pkg-config
   ];

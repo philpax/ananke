@@ -88,7 +88,7 @@ impl Database {
         .map_err(|e| self.db_err(e))
     }
 
-    /// Reparent a `service_id` from `old_name` to `new_name`. Spec §6.4.
+    /// Reparent a `service_id` from `old_name` to `new_name`.
     ///
     /// - If `old_name` has a live row and `new_name` does not: rename.
     /// - If both exist: tombstone `old_name` (the new service keeps its own id).
@@ -236,7 +236,7 @@ impl Database {
     }
 
     /// Record a oneshot's submission. Idempotent on the id — repeated
-    /// calls with the same id are a no-op, matching spec §9.5.
+    /// calls with the same id are a no-op.
     pub async fn insert_oneshot(
         &self,
         id: &str,

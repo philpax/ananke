@@ -1,8 +1,8 @@
 //! Template dispatch and rendering.
 //!
-//! Phase 1-3 hard-coded `llama-cpp`. Phase 4 introduces `command` as a
-//! peer template; shared logic moves here so future templates don't
-//! keep leaking into `supervise::spawn`.
+//! `llama-cpp` and `command` are peer templates; shared logic
+//! (placeholder substitution, argv assembly) lives here so future
+//! templates don't leak into `supervise::spawn`.
 
 pub mod placeholders;
 

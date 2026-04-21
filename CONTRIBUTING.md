@@ -9,7 +9,9 @@ Both components share the general conventions below. The Rust- and TypeScript-sp
 
 ### Platform scope
 
-v1 targets Linux only — the daemon depends on NVML, `/proc`, and `prctl`, none of which have direct equivalents elsewhere. Linux-specific code is fine today; write it directly rather than introducing cross-platform shims that don't yet have a second platform to justify them. When a second platform does land, follow the cross-platform guidance under "User experience as a primary driver" and keep OS-specific logic behind `#[cfg(...)]` boundaries.
+v1 targets Linux only — the daemon depends on NVML, `/proc`, and `prctl`, none of which have direct equivalents elsewhere. Linux-specific code is fine; don't invent cross-platform shims on speculation.
+
+The one thing that does sit behind a trait is **every outside-world capability the daemon reaches for** (filesystem, child-process spawner, `/proc` reader, GPU probe, …). That isn't for portability — it's for testability: tests substitute in-memory or fake implementations so the suite stays deterministic. See the `crate::system` module and the testing section below. When a second platform does land, the same traits absorb the second implementation behind `#[cfg(target_os = …)]`; until then, the Linux impl is the only one.
 
 ### Dev shell
 
@@ -25,18 +27,13 @@ live in a separate NixOS module.
 
 ### Task automation
 
-A top-level `justfile` is the canonical entry point for project-wide tasks: regenerating types, running both linters together, release flows, etc. It is not yet present — add it when the first cross-cutting recipe appears, and put future cross-cutting recipes there rather than inventing parallel scripts. Component-local invocations (`cargo …`, `npm run …`) stay where they are; `just` is for things that span the two halves or encode a multi-step flow.
+There is no top-level task runner today — `cargo …` for the Rust side and `npm run …` inside `frontend/` are invoked directly. Add one (e.g. a `justfile` or equivalent) only if a cross-cutting recipe emerges that genuinely spans both halves or encodes a multi-step flow; don't reach for one just to alias single-command invocations.
 
 ### The Rust ↔ TypeScript boundary
 
-All types that cross the wire between the Rust backend and the TypeScript frontend are **generated, not hand-written**. This is a hard rule, because hand-maintained duplicate type definitions are the single biggest source of silent drift in two-language projects.
+All types that cross the wire between the Rust backend and the TypeScript frontend should be **generated, not hand-written**. Hand-maintained duplicate type definitions are the single biggest source of silent drift in two-language projects.
 
-The pipeline is not yet wired up — implement it when the first API handler lands, and keep it as the only way cross-boundary types enter the frontend:
-
-- Rust handlers are annotated with `utoipa`. The daemon serves the live schema at `/api/openapi.json`.
-- `just gen-types` runs `openapi-typescript` to produce `frontend/src/api/types.ts` and `orval` to produce typed React Query hooks in `frontend/src/api/client.ts`.
-- CI enforces that the generated files are up to date. A PR that changes an API handler without regenerating fails.
-- The frontend never declares an inline TypeScript type to describe an API payload; always import from the generated module.
+Today the shared DTOs live in the `ananke-api` crate (hand-written, consumed by the Rust daemon directly). Handlers are annotated with `utoipa` and the daemon serves the live schema at `/api/openapi.json`. The generated-TypeScript pipeline is not yet wired: when it lands, `openapi-typescript` will produce `frontend/src/api/types.ts` and `orval` will produce typed React Query hooks in `frontend/src/api/client.ts`, with CI enforcing that generated output is up to date. The frontend should never declare an inline TypeScript type to describe an API payload — always import from the generated module.
 
 ## General conventions
 
@@ -154,14 +151,14 @@ Within each module, organize code as follows:
 ### State machines
 
 - Model each state machine as an explicit `enum` with named variants, even if only one field differs between them. Favour an exhaustive `match` + a `transition` helper over scattered `if let` chains.
-- Where a subsystem transitions through phases that own different local state (e.g. `Idle`, `Starting`, `Warming`, `Running`), extract each phase body into its own async function and pass a typed context struct. This is the pragmatic version of the typestate pattern for actor-style loops; it keeps invariants local without requiring full type-parameterised phases.
+- Where a subsystem transitions through phases that own different local state (e.g. `Idle`, `Starting`, `Running`, `Draining`), extract each phase body into its own async function and pass a typed context struct. This is the pragmatic version of the typestate pattern for actor-style loops; it keeps invariants local without requiring full type-parameterised phases.
 - Invalid transitions should be unrepresentable at the boundary where they're consumed. If `transition()` returns `Option<State>`, the caller should never `.unwrap()` it in production — either enumerate the legal inputs ahead of time or make the caller total.
 
 ### Platform coupling
 
-- Files that depend on Linux-specific facilities (NVML, `/proc`, `prctl`, `signal`) must say so in their module-level docstring on the first line: `//! Linux-only: reads /proc/{pid}/cmdline.` The convention is explicit enough that a second-platform port knows exactly what to replace.
-- Prefer isolating platform coupling behind a small trait with a Linux impl (as `devices::GpuProbe` does for NVML) rather than threading `#[cfg(linux)]` through business logic.
-- When the second platform lands, gate the Linux impl with `#[cfg(target_os = "linux")]` and add the alternative under a sibling gate; keep the trait definition platform-neutral.
+- Files that depend on Linux-specific facilities (NVML, `/proc`, `prctl`, `signal`) must say so in their module-level docstring on the first line: `//! Linux-only: reads /proc/{pid}/cmdline.` The convention is explicit enough that a second-platform port — or a reviewer — knows exactly what the contract is.
+- Isolate outside-world coupling behind a small trait on `crate::system` (as `devices::GpuProbe` does for NVML, `system::Fs` for the filesystem, `system::ProcessSpawner` for child lifecycle, `system::ProcFs` for `/proc` reads). The trait is there so tests can substitute an in-memory or fake implementation; a second OS implementation is a nice-to-have that falls out of the same shape.
+- When a second platform does land, gate the Linux impl with `#[cfg(target_os = "linux")]` and add the alternative under a sibling gate; the trait definition stays platform-neutral.
 
 ### Memory and performance
 
@@ -177,10 +174,10 @@ The Rust stack is chosen; don't silently introduce alternatives when one of thes
 - **Async runtime**: `tokio` (multi-threaded).
 - **HTTP**: `hyper` for the proxy data plane; `axum` for the management and OpenAI-compatible routing surface.
 - **OpenAPI generation**: `utoipa` annotations on handlers, served at `/api/openapi.json`.
-- **GPU probing**: `nvml-wrapper` (behind a `GpuProbe` trait so ROCm/XPU can slot in later).
+- **GPU probing**: `nvml-wrapper` behind a `GpuProbe` trait — `FakeGpuProbe` in tests, with space for ROCm/XPU impls if someone wants them.
 - **Config watching**: `notify`.
 - **TOML**: `toml_edit` for parse-preserving read/write (needed so the config editor keeps comments and formatting).
-- **Database**: `toasty` over SQLite; keep a raw-SQL migration fallback path.
+- **Database**: direct `rusqlite` with versioned SQL migrations under `ananke/src/db/migrations/` applied at boot.
 - **Logging**: `tracing` to stderr; journald captures it under systemd.
 - **Child supervision**: `nix` for `prctl(PR_SET_PDEATHSIG)` and related Linux-specific calls.
 - **GGUF**: start with the `gguf` crate; fall back to a small custom reader if it can't enumerate the tensor table or handle sharded files.

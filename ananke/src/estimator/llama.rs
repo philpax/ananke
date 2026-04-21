@@ -2,7 +2,7 @@
 //!
 //! Applies to: llama, qwen2, qwen3, mistral, gemma(1/2/3), phi3, glm4.
 //!
-//! Per spec §8.3: weights = Σ per-layer tensor bytes + non-layer bytes;
+//! weights = Σ per-layer tensor bytes + non-layer bytes;
 //! kv_per_token = n_layers × n_kv_heads ×
 //!                (key_length × bytes(cache_k) + value_length × bytes(cache_v)).
 

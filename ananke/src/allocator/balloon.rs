@@ -1,4 +1,4 @@
-//! Per-dynamic-service balloon resolver (spec §8.4).
+//! Per-dynamic-service balloon resolver.
 //!
 //! Each dynamic service gets one resolver task. The task samples observed
 //! VRAM every `SAMPLE_INTERVAL`, maintains a rolling window, and takes
@@ -22,8 +22,7 @@ use crate::{
 const WINDOW_SIZE: usize = 6;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
-/// If the dynamic service exceeds `max_mb * 110 %` for this long, fast-kill it
-/// (spec §8.4).
+/// If the dynamic service exceeds `max_mb * 110 %` for this long, fast-kill it.
 const OVER_CEILING_GRACE: Duration = Duration::from_secs(30);
 
 /// Headroom above `max_mb` tolerated before `OVER_CEILING_GRACE` applies, as
@@ -131,7 +130,7 @@ pub fn spawn_resolver(
             }
             window.push_back(observed);
 
-            // Spec §8.4: if observed > max_mb by >10% for >30 s, fast-kill self.
+            // If observed > max_mb by >10% for >30 s, fast-kill self.
             let ceiling = cfg.max_mb * 1024 * 1024 * OVER_CEILING_PERMILLE / 1000;
             if observed > ceiling {
                 if let Some(since) = exceeded_since {
@@ -155,8 +154,8 @@ pub fn spawn_resolver(
             }
 
             // Look for a borrower currently holding an allocation on the same
-            // device. For phase 4, priority is the service default for all
-            // borrowers; a later phase can wire real priority through the
+            // device. For now, priority is the service default for all
+            // borrowers; a follow-up can wire real priority through the
             // registry.
             let reservations = allocations.lock().clone();
             let mut candidate_borrower: Option<(SmolStr, u8)> = None;

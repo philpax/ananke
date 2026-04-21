@@ -1,4 +1,4 @@
-//! Eviction planner (spec §8.1 step 5).
+//! Eviction planner.
 //!
 //! An idle service (no in-flight requests) is always a valid eviction
 //! target regardless of priority — if nothing's using it, displacing it
@@ -36,7 +36,7 @@ impl EvictionCandidate {
 }
 
 /// Select the minimum set of services whose eviction would free enough
-/// capacity for `want` on `want_slot` (spec §8.1 step 5).
+/// capacity for `want` on `want_slot`.
 ///
 /// Eligibility: idle candidates are always evictable; busy candidates
 /// require strictly-higher incoming priority. Sort order within the
