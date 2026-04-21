@@ -1777,7 +1777,14 @@ impl RunLoop {
                     self.set_state(ServiceState::Failed { retry_count: 0 });
                     return StartingOutcome::Break;
                 }
-                _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.current_svc().idle_timeout_ms)) => {
+                // Persistent services ignore the idle timeout entirely — by
+                // definition they stay loaded until evicted or shut down.
+                // Without this guard, a persistent service that respawns
+                // without receiving traffic would idle-time-out on entry to
+                // Running (its `last_activity` stamp is stale), drain to
+                // Idle, then get re-ensured by `persistent_watcher` in an
+                // endless ~15 s loop.
+                _ = tokio::time::sleep_until(idle_deadline_for(&self.init.last_activity, self.current_svc().idle_timeout_ms)), if self.current_svc().lifecycle != crate::config::Lifecycle::Persistent => {
                     // Re-check the stamp; a recent ping may have extended the deadline.
                     let now = tokio::time::Instant::now();
                     let last = *self.init.last_activity.lock();
