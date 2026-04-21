@@ -532,9 +532,11 @@ const IDLE_DEADLINE_SKEW_MS: u64 = 100;
 /// for it to idle. Each tick is a cheap atomic-load precheck against the
 /// watched peers' inflight counters (see `retry_queued_ensure`); only when
 /// a peer has actually gone idle do we run the full estimator + packer.
-/// 100 ms means a queued request wakes up within a frame of the peer
-/// finishing its response.
-const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// 250 ms is fast enough that a queued request wakes up within a quarter
+/// second of the peer finishing its response, while keeping the tick
+/// noise low enough that the logs aren't drowned when a queued ensure
+/// is waiting for a peer that's loading.
+const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 async fn run(
     init: SupervisorInit,
@@ -905,6 +907,24 @@ impl RunLoop {
                 // Retry with lower-priority services treated as evicted; if
                 // pack succeeds, drain those victims and carry them through
                 // to the feasibility check.
+                //
+                // Before attempting eviction, check the "persistent yields to
+                // active non-persistent" rule: a persistent service about to
+                // evict a peer stands down if any non-persistent peer is
+                // Starting or Running. The watcher will re-fire on its own
+                // cadence when the pool quiets.
+                if self.should_yield_to_active_nonpersistent() {
+                    info!(
+                        service = %self.init.identity.name,
+                        "persistent ensure yielding to active non-persistent peer"
+                    );
+                    let _ = ack.send(EnsureResponse::Unavailable(
+                        EnsureFailure::InsufficientVram(
+                            "persistent service yielding to active non-persistent peer".into(),
+                        ),
+                    ));
+                    return false;
+                }
                 info!(
                     service = %self.init.identity.name,
                     reason = %msg,
@@ -1039,11 +1059,29 @@ impl RunLoop {
     /// is what keeps a 30-second wait from producing 60+ GGUF reads and
     /// 180+ info log lines.
     async fn retry_queued_ensure(&mut self) -> bool {
+        // Same yield rule as `handle_idle_ensure`: a persistent service
+        // queued behind a busy peer stands down the moment any
+        // non-persistent peer enters Starting/Running. Without this, a
+        // watcher-driven queued ensure would wait for the peer to finish
+        // loading and then immediately evict it — exactly the pathology
+        // we're trying to avoid.
+        if self.should_yield_to_active_nonpersistent() {
+            info!(
+                service = %self.init.identity.name,
+                "queued persistent ensure yielding to active non-persistent peer"
+            );
+            self.fail_queue(
+                StartFailureKind::NoFit,
+                "persistent service yielding to active non-persistent peer".into(),
+            );
+            return false;
+        }
+
         if !self.queued_watch.is_empty()
             && self
                 .queued_watch
                 .iter()
-                .all(|name| self.deps.inflight.current(name) > 0)
+                .all(|name| self.peer_still_busy_for_precheck(name))
         {
             return false;
         }
@@ -1392,6 +1430,21 @@ impl RunLoop {
         want: &std::collections::BTreeMap<crate::config::DeviceSlot, u64>,
         nofit: &crate::allocator::NoFit,
     ) -> Result<(), RetryPackFailure> {
+        // Matching the check in `handle_idle_ensure` and
+        // `retry_queued_ensure`: a persistent service about to evict
+        // peers yields when a non-persistent peer is actively loading or
+        // running. Covers the case where the initial pack succeeds but
+        // `can_fit` reports a deficit that would otherwise trigger
+        // eviction here.
+        if self.should_yield_to_active_nonpersistent() {
+            info!(
+                service = %self.init.identity.name,
+                "persistent ensure yielding to active non-persistent peer (post-pack fit)"
+            );
+            return Err(RetryPackFailure::NotPossible(
+                "persistent service yielding to active non-persistent peer".into(),
+            ));
+        }
         let candidates = self.collect_eviction_candidates().await;
 
         let reservations_now = self.deps.allocations.lock().clone();
@@ -1543,6 +1596,63 @@ impl RunLoop {
             });
         }
         out
+    }
+
+    /// The "persistent yields to active non-persistent" predicate: this
+    /// service is `Persistent` and at least one peer service with
+    /// `Lifecycle::OnDemand` is currently in `Starting` or `Running`.
+    ///
+    /// Callers use this to stand down from an eviction-requiring start
+    /// rather than snipe a peer that's in the middle of loading or
+    /// running. The persistent watcher will retry on its own cadence
+    /// when the pool quiets, so there's no reclamation-deadline pressure.
+    fn should_yield_to_active_nonpersistent(&self) -> bool {
+        if self.current_svc().lifecycle != crate::config::Lifecycle::Persistent {
+            return false;
+        }
+        let lifecycle_by_name: std::collections::BTreeMap<_, _> = {
+            let eff = self.deps.config.effective();
+            eff.services
+                .iter()
+                .map(|s| (s.name.clone(), s.lifecycle))
+                .collect()
+        };
+        for (_, handle) in self.deps.registry.all() {
+            if handle.name.as_str() == self.init.identity.name.as_str() {
+                continue;
+            }
+            let lifecycle = lifecycle_by_name
+                .get(&handle.name)
+                .copied()
+                .unwrap_or(crate::config::Lifecycle::OnDemand);
+            if lifecycle == crate::config::Lifecycle::Persistent {
+                continue;
+            }
+            if matches!(
+                handle.peek_state(),
+                ServiceState::Starting | ServiceState::Running,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// True if a named peer is currently "still busy" for the purpose of
+    /// the queued-ensure retry precheck. A peer counts as busy when it
+    /// has in-flight work OR is in `Starting` (loading, not yet eligible
+    /// for eviction). Without the `Starting`-aware branch the 250 ms tick
+    /// would re-run the full estimator + packer every tick while a peer
+    /// loads, because `inflight == 0` during startup.
+    fn peer_still_busy_for_precheck(&self, name: &smol_str::SmolStr) -> bool {
+        if self.deps.inflight.current(name) > 0 {
+            return true;
+        }
+        self.deps
+            .registry
+            .get(name.as_str())
+            .map(|h| matches!(h.peek_state(), ServiceState::Starting))
+            .unwrap_or(false)
     }
 
     /// The whole Starting → Running → (Draining|Idle|Failed|Disabled)
