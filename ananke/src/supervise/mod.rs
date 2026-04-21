@@ -1049,10 +1049,11 @@ impl RunLoop {
         let candidates = self.collect_eviction_candidates().await;
         let my_priority = self.current_svc().priority;
 
-        // LRU-first ordering over evictable peers. Services that have never
-        // been pinged sort as "most LRU" (effectively infinite age), so a
-        // persistent service sitting in Running with no traffic is a
-        // first-class victim candidate.
+        // LRU-first ordering over evictable peers. `collect_eviction_candidates`
+        // already excludes zero-allocation peers, so everything in `candidates`
+        // holds real VRAM. Services that have never been pinged sort as "most
+        // LRU" (effectively infinite age), so a persistent service sitting in
+        // Running with no traffic is a first-class victim candidate.
         let now = tokio::time::Instant::now();
         let mut ranked: Vec<(&crate::allocator::eviction::EvictionCandidate, u128)> = candidates
             .iter()
@@ -1222,8 +1223,12 @@ impl RunLoop {
         Ok(())
     }
 
-    /// Enumerate every other service as an eviction candidate. Skips self so
-    /// we don't deadlock snapshotting our own supervisor.
+    /// Enumerate every other service that currently holds a VRAM reservation
+    /// and could plausibly be displaced. Skips self so we don't deadlock
+    /// snapshotting our own supervisor, and skips peers with no allocation
+    /// — an empty slot in the registry has nothing to give up, so it isn't
+    /// an eviction candidate, it's just a registered service that hasn't
+    /// started yet.
     async fn collect_eviction_candidates(
         &self,
     ) -> Vec<crate::allocator::eviction::EvictionCandidate> {
@@ -1242,6 +1247,17 @@ impl RunLoop {
             if handle.name.as_str() == self.init.identity.name.as_str() {
                 continue;
             }
+            let alloc_mb = self
+                .deps
+                .allocations
+                .lock()
+                .get(&handle.name)
+                .cloned()
+                .unwrap_or_default();
+            let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
+            if bytes == 0 {
+                continue;
+            }
             // `peek_state` reads the shared mirror under a parking_lot
             // mutex — no mailbox hop, no circular wait. When this is
             // called from inside `handle_idle_ensure` the peer supervisor
@@ -1257,14 +1273,6 @@ impl RunLoop {
             let in_flight = self.deps.inflight.current(&handle.name);
             let idle =
                 in_flight == 0 && matches!(state, ServiceState::Idle | ServiceState::Running);
-            let alloc_mb = self
-                .deps
-                .allocations
-                .lock()
-                .get(&handle.name)
-                .cloned()
-                .unwrap_or_default();
-            let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
             let priority = priority_by_name
                 .get(&handle.name)
                 .copied()
