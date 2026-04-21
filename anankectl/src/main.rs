@@ -14,7 +14,7 @@ struct Cli {
         long,
         global = true,
         env = "ANANKE_ENDPOINT",
-        default_value = "http://127.0.0.1:17777"
+        default_value = ananke_api::defaults::MANAGEMENT_ENDPOINT
     )]
     endpoint: String,
 

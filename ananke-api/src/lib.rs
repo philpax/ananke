@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 pub mod config;
+pub mod defaults;
 pub mod devices;
 pub mod errors;
 pub mod events;

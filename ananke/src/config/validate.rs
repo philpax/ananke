@@ -323,7 +323,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .map_err(|e| fail(format!("daemon.shutdown_timeout: {e}")))?;
 
     let management_addr = if cfg.daemon.management_listen.is_empty() {
-        "127.0.0.1:7777".into()
+        ananke_api::defaults::MANAGEMENT_LISTEN.into()
     } else {
         cfg.daemon.management_listen.clone()
     };
@@ -344,7 +344,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .openai_api
         .listen
         .clone()
-        .unwrap_or_else(|| "127.0.0.1:8080".into());
+        .unwrap_or_else(|| ananke_api::defaults::OPENAI_LISTEN.into());
 
     let private_port_range =
         PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;

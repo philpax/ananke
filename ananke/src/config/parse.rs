@@ -75,7 +75,7 @@ pub struct DaemonConfig {
 }
 
 fn default_management_listen() -> String {
-    "127.0.0.1:7777".into()
+    ananke_api::defaults::MANAGEMENT_LISTEN.into()
 }
 
 fn default_shutdown_timeout() -> String {

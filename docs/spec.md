@@ -167,14 +167,14 @@ Data directory (SQLite DB, one-shot history) follows the same pattern under `$XD
 
 ```toml
 [daemon]
-management_listen = "127.0.0.1:7777"   # management API + web UI
+management_listen = "127.0.0.1:7071"   # management API + web UI
 data_dir = "~/.local/share/ananke"     # SQLite + state
 
 [devices]
 # see §4
 
 [openai_api]
-listen = "127.0.0.1:8080"
+listen = "127.0.0.1:7070"
 enabled = true
 max_request_duration = "10m"
 
@@ -957,8 +957,8 @@ In `tests/manual/`: actual llama.cpp launch with a small GGUF, actual ComfyUI ba
 
 | Setting | Default | Scope |
 |---|---|---|
-| `daemon.management_listen` | `127.0.0.1:7777` | Global |
-| `openai_api.listen` | `127.0.0.1:8080` | Global |
+| `daemon.management_listen` | `127.0.0.1:7071` | Global |
+| `openai_api.listen` | `127.0.0.1:7070` | Global |
 | Oneshot port pool | `18000–18999` | Global |
 | `start_queue_depth` | 10 | Global + per-service |
 | `min_borrower_runtime` | 60s | Per-service (dynamic) |
