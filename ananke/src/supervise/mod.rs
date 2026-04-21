@@ -413,8 +413,10 @@ impl ReservationFailure {
 enum RetryPackFailure {
     /// Every current candidate is busy at our priority or below; none is
     /// evictable right now, but each will be once its in-flight request
-    /// finishes. Callers should queue and retry rather than reject.
-    WaitForBusy,
+    /// finishes. `busy_peers` is the set the caller should watch: when any
+    /// of their inflight counters drops to zero, the queue is woken up to
+    /// retry the pack.
+    WaitForBusy { busy_peers: Vec<smol_str::SmolStr> },
     /// Pack is infeasible no matter what: either there is no peer to evict,
     /// all peers are higher priority, or the optimistic pack still fails
     /// after treating every evictable peer as gone. Reject outright.
@@ -527,9 +529,12 @@ const RUN_ID_MASK: i64 = 0x7FFF_FFFF;
 const IDLE_DEADLINE_SKEW_MS: u64 = 100;
 
 /// Poll interval while a supervisor is queued behind a busy peer waiting
-/// for it to idle. Short enough that the caller isn't stuck behind a stale
-/// retry for long; long enough not to thrash the packer.
-const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// for it to idle. Each tick is a cheap atomic-load precheck against the
+/// watched peers' inflight counters (see `retry_queued_ensure`); only when
+/// a peer has actually gone idle do we run the full estimator + packer.
+/// 100 ms means a queued request wakes up within a frame of the peer
+/// finishing its response.
+const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 async fn run(
     init: SupervisorInit,
@@ -583,6 +588,13 @@ struct RunLoop {
     /// caller (via `EnsureResponse::Waiting`) and resolves to `Ok` once the
     /// fit succeeds or to `Err` on shutdown / disable / hard-reject.
     pending_ensure_bus: Option<broadcast::Sender<StartOutcome>>,
+    /// Busy peers we're waiting on for the queued Ensure. The poll-tick
+    /// branch of the Idle loop does a cheap atomic-load check against
+    /// these peers' inflight counters and skips the expensive estimator-
+    /// plus-packer path entirely while they're all still above zero.
+    /// Updated every time the retry returns `WaitForBusy` with a
+    /// potentially different set of peers.
+    queued_watch: Vec<smol_str::SmolStr>,
     /// Carries the placement-derived `CommandArgs` from Idle (where they are
     /// computed) into Starting (where `render_argv` consumes them).
     packed_for_spawn: Option<Packed>,
@@ -619,6 +631,7 @@ impl RunLoop {
             cancel_rx,
             start_bus_carry: None,
             pending_ensure_bus: None,
+            queued_watch: Vec::new(),
             packed_for_spawn: None,
             oom_attempts: 0,
             base_total_bytes_for_rolling: 0,
@@ -909,14 +922,14 @@ impl RunLoop {
                         ));
                         return false;
                     }
-                    Err(RetryPackFailure::WaitForBusy) => {
+                    Err(RetryPackFailure::WaitForBusy { busy_peers }) => {
                         // Park the caller on a broadcast bus and stay in
                         // Idle. The Idle loop's poll-tick branch retries
                         // the ensure periodically via `retry_queued_ensure`;
                         // Shutdown/Disable/another Ensure that arrive
                         // while we're queued flow through the normal
                         // command-recv arm and drain the bus appropriately.
-                        return self.enter_queue(ack);
+                        return self.enter_queue(ack, busy_peers);
                     }
                 }
             }
@@ -967,8 +980,8 @@ impl RunLoop {
                     ));
                     return false;
                 }
-                Err(RetryPackFailure::WaitForBusy) => {
-                    return self.enter_queue(ack);
+                Err(RetryPackFailure::WaitForBusy { busy_peers }) => {
+                    return self.enter_queue(ack, busy_peers);
                 }
             }
         }
@@ -995,15 +1008,21 @@ impl RunLoop {
     }
 
     /// Park an Ensure whose fit is blocked by a busy peer. Creates the shared
-    /// broadcast bus, replies `Waiting` to the caller, and stashes the sender
-    /// on `self.pending_ensure_bus` so the Idle loop's poll-tick branch can
+    /// broadcast bus, replies `Waiting` to the caller, records the busy peers
+    /// for the cheap poll-tick precheck, and stashes the sender on
+    /// `self.pending_ensure_bus` so the Idle loop's poll-tick branch can
     /// later retry the fit. Always returns `false` — the supervisor stays in
     /// Idle until either a retry succeeds or a command drains the bus.
-    fn enter_queue(&mut self, ack: tokio::sync::oneshot::Sender<EnsureResponse>) -> bool {
+    fn enter_queue(
+        &mut self,
+        ack: tokio::sync::oneshot::Sender<EnsureResponse>,
+        busy_peers: Vec<smol_str::SmolStr>,
+    ) -> bool {
         let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
         let bus_rx = sender.subscribe();
         let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
         self.pending_ensure_bus = Some(sender);
+        self.queued_watch = busy_peers;
         false
     }
 
@@ -1012,7 +1031,23 @@ impl RunLoop {
     /// `start_bus_carry` and transitions to Starting. On hard-fail, drains
     /// the bus with `Err` and clears the queue. On continued soft-wait,
     /// leaves the queue in place for the next tick.
+    ///
+    /// Cheap precheck up front: if every peer in `queued_watch` still has
+    /// inflight > 0, nothing actionable has changed since last tick and we
+    /// skip the expensive estimator + packer path entirely. Only when at
+    /// least one watched peer has gone idle do we run the full retry. This
+    /// is what keeps a 30-second wait from producing 60+ GGUF reads and
+    /// 180+ info log lines.
     async fn retry_queued_ensure(&mut self) -> bool {
+        if !self.queued_watch.is_empty()
+            && self
+                .queued_watch
+                .iter()
+                .all(|name| self.deps.inflight.current(name) > 0)
+        {
+            return false;
+        }
+
         let snap = self.deps.snapshot.read().clone();
         let table = self.deps.allocations.lock().clone();
 
@@ -1021,7 +1056,10 @@ impl RunLoop {
             Err(ReservationFailure::PackFailed(_)) => {
                 match self.retry_pack_with_eviction(&snap, &table).await {
                     Ok((want, victims)) => (want, victims),
-                    Err(RetryPackFailure::WaitForBusy) => return false,
+                    Err(RetryPackFailure::WaitForBusy { busy_peers }) => {
+                        self.queued_watch = busy_peers;
+                        return false;
+                    }
                     Err(RetryPackFailure::NotPossible(reason)) => {
                         self.fail_queue(StartFailureKind::LaunchFailed, reason);
                         return false;
@@ -1054,9 +1092,12 @@ impl RunLoop {
                     self.fail_queue(StartFailureKind::LaunchFailed, reason);
                     return false;
                 }
-                // Still waiting for the busy peer; keep the queue in place
-                // and let the next poll tick try again.
-                Err(RetryPackFailure::WaitForBusy) => return false,
+                // Still waiting for the busy peer; refresh the watch set
+                // so next tick skips until something changes.
+                Err(RetryPackFailure::WaitForBusy { busy_peers }) => {
+                    self.queued_watch = busy_peers;
+                    return false;
+                }
             }
         }
 
@@ -1072,6 +1113,7 @@ impl RunLoop {
         if let Some(sender) = self.pending_ensure_bus.take() {
             self.start_bus_carry = Some(sender);
         }
+        self.queued_watch.clear();
         let next = transition(&self.read_state(), StateEvent::SpawnRequested);
         self.set_state(next);
         true
@@ -1081,6 +1123,7 @@ impl RunLoop {
     /// pending state. Called on hard-reject, shutdown, disable, or any
     /// other terminal interrupt while queued.
     fn fail_queue(&mut self, kind: StartFailureKind, message: String) {
+        self.queued_watch.clear();
         if let Some(sender) = self.pending_ensure_bus.take() {
             let _ = sender.send(StartOutcome::Err(StartFailure { kind, message }));
         }
@@ -1246,20 +1289,24 @@ impl RunLoop {
             // caller can queue vs reject appropriately:
             //   - there IS a busy peer at our priority or lower, so waiting
             //     for it to idle would make it evictable → `WaitForBusy`
+            //     (returning the set of peers to watch so the queue loop
+            //     can skip expensive retries while they're all still busy).
             //   - all peers are higher priority, or there are none → hard
-            //     reject with the pack reason
-            let wait_worthy = candidates
+            //     reject with the pack reason.
+            let busy_peers: Vec<smol_str::SmolStr> = candidates
                 .iter()
-                .any(|c| !c.idle && c.priority <= my_priority);
+                .filter(|c| !c.idle && c.priority <= my_priority)
+                .map(|c| c.name.clone())
+                .collect();
             let _ = self.packed_for_spawn.take();
-            if wait_worthy {
+            if !busy_peers.is_empty() {
                 info!(
                     service = %self.init.identity.name,
-                    candidates = candidates.len(),
+                    busy_peers = ?busy_peers,
                     my_priority,
                     "no evictable candidates yet; waiting for busy peer to idle"
                 );
-                return Err(RetryPackFailure::WaitForBusy);
+                return Err(RetryPackFailure::WaitForBusy { busy_peers });
             }
             info!(
                 service = %self.init.identity.name,
@@ -1368,20 +1415,22 @@ impl RunLoop {
             // Same distinction as `retry_pack_with_eviction`: is there a busy
             // peer we could evict once it idles, or are we genuinely stuck?
             let my_priority = self.current_svc().priority;
-            let wait_worthy = candidates
+            let busy_peers: Vec<smol_str::SmolStr> = candidates
                 .iter()
-                .any(|c| !c.idle && c.priority <= my_priority);
+                .filter(|c| !c.idle && c.priority <= my_priority)
+                .map(|c| c.name.clone())
+                .collect();
             let _ = self.packed_for_spawn.take();
-            if wait_worthy {
+            if !busy_peers.is_empty() {
                 info!(
                     service = %self.init.identity.name,
-                    candidates = candidates.len(),
+                    busy_peers = ?busy_peers,
                     needed_bytes = nofit.needed_bytes,
                     available_bytes = nofit.available_bytes,
                     slot = ?nofit.slot,
                     "no evictable candidates yet; waiting for busy peer to idle"
                 );
-                return Err(RetryPackFailure::WaitForBusy);
+                return Err(RetryPackFailure::WaitForBusy { busy_peers });
             }
             info!(
                 service = %self.init.identity.name,
