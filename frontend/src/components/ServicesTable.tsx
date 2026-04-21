@@ -18,6 +18,12 @@ export function ServicesTable({ selected, onSelect }: Props) {
       <section className="text-red-600">Services: {error.message}</section>
     );
 
+  const sorted = [...data].sort((a, b) => {
+    const rankDiff = stateRank(a.state) - stateRank(b.state);
+    if (rankDiff !== 0) return rankDiff;
+    return a.name.localeCompare(b.name);
+  });
+
   return (
     <section>
       <h2 className="text-lg font-semibold mb-2">Services</h2>
@@ -34,7 +40,7 @@ export function ServicesTable({ selected, onSelect }: Props) {
             </tr>
           </thead>
           <tbody>
-            {data.map((s) => (
+            {sorted.map((s) => (
               <ServiceRow
                 key={s.name}
                 svc={s}
@@ -144,6 +150,21 @@ function Btn({
       {children}
     </button>
   );
+}
+
+// Sort key for table rows. Active states float to the top (a user watching
+// the dashboard cares most about what's running now); in-transit states
+// follow; idle is mid-pack; terminal / operator-intervention states sink.
+function stateRank(state: string): number {
+  if (state === "running") return 0;
+  if (state === "starting") return 1;
+  if (state === "draining") return 2;
+  if (state === "idle") return 3;
+  if (state === "evicted") return 4;
+  if (state === "stopped") return 5;
+  if (state === "failed") return 6;
+  if (state.startsWith("disabled")) return 7;
+  return 8;
 }
 
 function StateBadge({ state }: { state: string }) {
