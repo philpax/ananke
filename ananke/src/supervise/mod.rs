@@ -406,6 +406,21 @@ impl ReservationFailure {
     }
 }
 
+/// Outcome of the retry-with-eviction pack attempt. The supervisor branches
+/// on the `WaitForBusy` variant to queue the request (poll until a busy peer
+/// idles out) rather than 503'ing immediately.
+#[derive(Debug, Clone)]
+enum RetryPackFailure {
+    /// Every current candidate is busy at our priority or below; none is
+    /// evictable right now, but each will be once its in-flight request
+    /// finishes. Callers should queue and retry rather than reject.
+    WaitForBusy,
+    /// Pack is infeasible no matter what: either there is no peer to evict,
+    /// all peers are higher priority, or the optimistic pack still fails
+    /// after treating every evictable peer as gone. Reject outright.
+    NotPossible(String),
+}
+
 /// Semantic bucket of an [`EnsureOutcome::Failed`]. Callers map these onto
 /// their own error-response surface (OpenAI error JSON, proxy error body).
 #[derive(Debug, Clone)]
@@ -511,6 +526,11 @@ const RUN_ID_MASK: i64 = 0x7FFF_FFFF;
 /// our deadline extend the idle window rather than immediately draining.
 const IDLE_DEADLINE_SKEW_MS: u64 = 100;
 
+/// Poll interval while a supervisor is queued behind a busy peer waiting
+/// for it to idle. Short enough that the caller isn't stuck behind a stale
+/// retry for long; long enough not to thrash the packer.
+const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 async fn run(
     init: SupervisorInit,
     boot_svc: ServiceConfig,
@@ -558,6 +578,11 @@ struct RunLoop {
     /// Carries a broadcast sender from Idle through to Starting so waiters can
     /// be notified of the outcome once the child passes the health probe.
     start_bus_carry: Option<broadcast::Sender<StartOutcome>>,
+    /// When Some, the supervisor is parked in Idle waiting for a busy peer
+    /// to idle out so we can evict it. The bus is shared with the original
+    /// caller (via `EnsureResponse::Waiting`) and resolves to `Ok` once the
+    /// fit succeeds or to `Err` on shutdown / disable / hard-reject.
+    pending_ensure_bus: Option<broadcast::Sender<StartOutcome>>,
     /// Carries the placement-derived `CommandArgs` from Idle (where they are
     /// computed) into Starting (where `render_argv` consumes them).
     packed_for_spawn: Option<Packed>,
@@ -593,6 +618,7 @@ impl RunLoop {
             cancel_tx,
             cancel_rx,
             start_bus_carry: None,
+            pending_ensure_bus: None,
             packed_for_spawn: None,
             oom_attempts: 0,
             base_total_bytes_for_rolling: 0,
@@ -772,39 +798,77 @@ impl RunLoop {
 
     /// For on_demand services we wait here for an Ensure. Persistent services
     /// have the daemon call ensure() synthetically at boot.
+    ///
+    /// The poll-tick branch of the select is only armed while a queued Ensure
+    /// is parked on `pending_ensure_bus` (busy peer waiting to idle); when no
+    /// queue is pending, the loop is a pure command-recv.
     async fn handle_idle(&mut self) -> Step {
         loop {
-            match self.rx.recv().await {
-                Some(SupervisorCommand::Shutdown { ack }) => {
-                    let _ = ack.send(());
-                    return Step::Exit;
-                }
-                Some(SupervisorCommand::Ensure { ack }) => {
-                    if self.handle_idle_ensure(ack).await {
+            tokio::select! {
+                _ = tokio::time::sleep(QUEUE_POLL_INTERVAL), if self.pending_ensure_bus.is_some() => {
+                    if self.retry_queued_ensure().await {
                         return Step::Continue;
                     }
                 }
-                Some(SupervisorCommand::ActivityPing) => {}
-                // Service is not running; drain/kill commands are no-ops.
-                Some(SupervisorCommand::BeginDrain { ack, .. }) => {
-                    let _ = ack.send(());
+                cmd = self.rx.recv() => {
+                    match cmd {
+                        Some(SupervisorCommand::Shutdown { ack }) => {
+                            self.fail_queue(
+                                StartFailureKind::Disabled,
+                                "supervisor shutting down".into(),
+                            );
+                            let _ = ack.send(());
+                            return Step::Exit;
+                        }
+                        Some(SupervisorCommand::Ensure { ack }) => {
+                            // If there's already a queued Ensure, subscribe
+                            // the new caller to the same bus (coalesce) up to
+                            // `start_queue_depth`. Otherwise go through the
+                            // normal fit path.
+                            if let Some(sender) = self.pending_ensure_bus.as_ref() {
+                                if sender.receiver_count() >= self.current_svc().start_queue_depth {
+                                    let _ = ack.send(EnsureResponse::QueueFull);
+                                } else {
+                                    let rx = sender.subscribe();
+                                    let _ = ack.send(EnsureResponse::Waiting { rx });
+                                }
+                            } else if self.handle_idle_ensure(ack).await {
+                                return Step::Continue;
+                            }
+                        }
+                        Some(SupervisorCommand::ActivityPing) => {}
+                        // Service is not running; drain/kill commands are no-ops.
+                        Some(SupervisorCommand::BeginDrain { ack, .. }) => {
+                            let _ = ack.send(());
+                        }
+                        Some(SupervisorCommand::FastKill { ack, .. }) => {
+                            let _ = ack.send(());
+                        }
+                        Some(SupervisorCommand::Enable { ack }) => {
+                            // Idle is already enabled.
+                            let _ = ack.send(EnableResult::NotDisabled);
+                        }
+                        Some(SupervisorCommand::Disable { ack }) => {
+                            // Transition idle service directly to Disabled.
+                            self.fail_queue(
+                                StartFailureKind::Disabled,
+                                "service disabled by operator".into(),
+                            );
+                            self.set_state(ServiceState::Disabled {
+                                reason: DisableReason::UserDisabled,
+                            });
+                            let _ = ack.send(DisableResult::Disabled);
+                            return Step::Continue;
+                        }
+                        None => {
+                            self.fail_queue(
+                                StartFailureKind::Disabled,
+                                "supervisor channel closed".into(),
+                            );
+                            return Step::Exit;
+                        }
+                    }
                 }
-                Some(SupervisorCommand::FastKill { ack, .. }) => {
-                    let _ = ack.send(());
-                }
-                Some(SupervisorCommand::Enable { ack }) => {
-                    // Idle is already enabled.
-                    let _ = ack.send(EnableResult::NotDisabled);
-                }
-                Some(SupervisorCommand::Disable { ack }) => {
-                    // Transition idle service directly to Disabled.
-                    self.set_state(ServiceState::Disabled {
-                        reason: DisableReason::UserDisabled,
-                    });
-                    let _ = ack.send(DisableResult::Disabled);
-                    return Step::Continue;
-                }
-                None => return Step::Exit,
             }
         }
     }
@@ -835,7 +899,7 @@ impl RunLoop {
                 );
                 match self.retry_pack_with_eviction(&snap, &table).await {
                     Ok((want, victims)) => (want, victims),
-                    Err(retry_reason) => {
+                    Err(RetryPackFailure::NotPossible(retry_reason)) => {
                         // Reason is already logged by `retry_pack_with_eviction`
                         // (either "optimistic pack failed" or "no evictable
                         // candidates"), so no second log here — the consuming
@@ -844,6 +908,15 @@ impl RunLoop {
                             EnsureFailure::InsufficientVram(retry_reason),
                         ));
                         return false;
+                    }
+                    Err(RetryPackFailure::WaitForBusy) => {
+                        // Park the caller on a broadcast bus and stay in
+                        // Idle. The Idle loop's poll-tick branch retries
+                        // the ensure periodically via `retry_queued_ensure`;
+                        // Shutdown/Disable/another Ensure that arrive
+                        // while we're queued flow through the normal
+                        // command-recv arm and drain the bus appropriately.
+                        return self.enter_queue(ack);
                     }
                 }
             }
@@ -885,13 +958,19 @@ impl RunLoop {
             pre_evicted = ?pre_evicted,
             "fit_result computed"
         );
-        if let Err(nofit) = fit_result
-            && let Err(reason) = self.try_eviction_to_fit(&want, &nofit).await
-        {
-            let _ = ack.send(EnsureResponse::Unavailable(
-                EnsureFailure::InsufficientVram(reason),
-            ));
-            return false;
+        if let Err(nofit) = fit_result {
+            match self.try_eviction_to_fit(&want, &nofit).await {
+                Ok(()) => {}
+                Err(RetryPackFailure::NotPossible(reason)) => {
+                    let _ = ack.send(EnsureResponse::Unavailable(
+                        EnsureFailure::InsufficientVram(reason),
+                    ));
+                    return false;
+                }
+                Err(RetryPackFailure::WaitForBusy) => {
+                    return self.enter_queue(ack);
+                }
+            }
         }
 
         // Reserve in the allocation table before spawning. Capture the total
@@ -913,6 +992,98 @@ impl RunLoop {
         let next = transition(&self.read_state(), StateEvent::SpawnRequested);
         self.set_state(next);
         true
+    }
+
+    /// Park an Ensure whose fit is blocked by a busy peer. Creates the shared
+    /// broadcast bus, replies `Waiting` to the caller, and stashes the sender
+    /// on `self.pending_ensure_bus` so the Idle loop's poll-tick branch can
+    /// later retry the fit. Always returns `false` — the supervisor stays in
+    /// Idle until either a retry succeeds or a command drains the bus.
+    fn enter_queue(&mut self, ack: tokio::sync::oneshot::Sender<EnsureResponse>) -> bool {
+        let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
+        let bus_rx = sender.subscribe();
+        let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
+        self.pending_ensure_bus = Some(sender);
+        false
+    }
+
+    /// Retry a queued Ensure. Called from the Idle loop's poll-tick when
+    /// `pending_ensure_bus` is Some. On success, promotes the queued bus to
+    /// `start_bus_carry` and transitions to Starting. On hard-fail, drains
+    /// the bus with `Err` and clears the queue. On continued soft-wait,
+    /// leaves the queue in place for the next tick.
+    async fn retry_queued_ensure(&mut self) -> bool {
+        let snap = self.deps.snapshot.read().clone();
+        let table = self.deps.allocations.lock().clone();
+
+        let (want, pre_evicted) = match self.compute_reservation_map(&snap, &table) {
+            Ok(w) => (w, Vec::new()),
+            Err(ReservationFailure::PackFailed(_)) => {
+                match self.retry_pack_with_eviction(&snap, &table).await {
+                    Ok((want, victims)) => (want, victims),
+                    Err(RetryPackFailure::WaitForBusy) => return false,
+                    Err(RetryPackFailure::NotPossible(reason)) => {
+                        self.fail_queue(StartFailureKind::LaunchFailed, reason);
+                        return false;
+                    }
+                }
+            }
+            Err(other) => {
+                self.fail_queue(StartFailureKind::Disabled, other.message());
+                return false;
+            }
+        };
+
+        // Feasibility re-check on the post-eviction table, mirroring the
+        // shape of `handle_idle_ensure`'s fit branch.
+        let fit_result = if pre_evicted.is_empty() {
+            crate::allocator::can_fit(&want, &snap, &table, Some(&self.init.identity.name))
+        } else {
+            crate::allocator::can_fit_after_eviction(
+                &want,
+                &snap,
+                &table,
+                Some(&self.init.identity.name),
+                &pre_evicted,
+            )
+        };
+        if let Err(nofit) = fit_result {
+            match self.try_eviction_to_fit(&want, &nofit).await {
+                Ok(()) => {}
+                Err(RetryPackFailure::NotPossible(reason)) => {
+                    self.fail_queue(StartFailureKind::LaunchFailed, reason);
+                    return false;
+                }
+                // Still waiting for the busy peer; keep the queue in place
+                // and let the next poll tick try again.
+                Err(RetryPackFailure::WaitForBusy) => return false,
+            }
+        }
+
+        // Commit the reservation + promote the queued bus to the start
+        // carry, then transition to Starting. `handle_active_lifecycle`
+        // will pick it up from here.
+        self.base_total_bytes_for_rolling = want.values().sum::<u64>() * 1024 * 1024;
+        self.deps
+            .allocations
+            .lock()
+            .insert(self.init.identity.name.clone(), want);
+        self.emit_allocation_changed();
+        if let Some(sender) = self.pending_ensure_bus.take() {
+            self.start_bus_carry = Some(sender);
+        }
+        let next = transition(&self.read_state(), StateEvent::SpawnRequested);
+        self.set_state(next);
+        true
+    }
+
+    /// Drain the queued Ensure bus with an error outcome and clear the
+    /// pending state. Called on hard-reject, shutdown, disable, or any
+    /// other terminal interrupt while queued.
+    fn fail_queue(&mut self, kind: StartFailureKind, message: String) {
+        if let Some(sender) = self.pending_ensure_bus.take() {
+            let _ = sender.send(StartOutcome::Err(StartFailure { kind, message }));
+        }
     }
 
     /// Determine the reservation map for an Ensure. On the llama-cpp path this
@@ -1044,7 +1215,7 @@ impl RunLoop {
             std::collections::BTreeMap<crate::config::DeviceSlot, u64>,
             Vec<smol_str::SmolStr>,
         ),
-        String,
+        RetryPackFailure,
     > {
         let candidates = self.collect_eviction_candidates().await;
         let my_priority = self.current_svc().priority;
@@ -1071,19 +1242,37 @@ impl RunLoop {
         ranked.sort_by_key(|(_, age)| std::cmp::Reverse(*age));
 
         if ranked.is_empty() {
+            // No peer is currently evictable. Distinguish two cases so the
+            // caller can queue vs reject appropriately:
+            //   - there IS a busy peer at our priority or lower, so waiting
+            //     for it to idle would make it evictable → `WaitForBusy`
+            //   - all peers are higher priority, or there are none → hard
+            //     reject with the pack reason
+            let wait_worthy = candidates
+                .iter()
+                .any(|c| !c.idle && c.priority <= my_priority);
+            let _ = self.packed_for_spawn.take();
+            if wait_worthy {
+                info!(
+                    service = %self.init.identity.name,
+                    candidates = candidates.len(),
+                    my_priority,
+                    "no evictable candidates yet; waiting for busy peer to idle"
+                );
+                return Err(RetryPackFailure::WaitForBusy);
+            }
             info!(
                 service = %self.init.identity.name,
                 candidates = candidates.len(),
                 my_priority,
                 "eviction selection failed: no evictable candidates for placement"
             );
-            let _ = self.packed_for_spawn.take();
             let reason = self
                 .compute_reservation_map(snap, table)
                 .err()
                 .map(ReservationFailure::message)
                 .unwrap_or_else(|| "placement: unknown failure".into());
-            return Err(reason);
+            return Err(RetryPackFailure::NotPossible(reason));
         }
 
         // Greedy LRU-first fill: walk peers in LRU order, extending the
@@ -1125,7 +1314,7 @@ impl RunLoop {
                 evictable_count = victims.len(),
                 "optimistic pack failed even with all evictable peers treated as gone"
             );
-            return Err(reason);
+            return Err(RetryPackFailure::NotPossible(reason));
         };
 
         info!(
@@ -1146,13 +1335,16 @@ impl RunLoop {
     }
 
     /// Try to make room by draining lower-priority services, then re-check
-    /// `can_fit`. Returns `Ok(())` on success (caller proceeds to reserve),
-    /// `Err(reason)` if eviction can't help (caller should unavailable-reply).
+    /// `can_fit`. `Ok(())` means the caller can proceed to reserve;
+    /// `Err(RetryPackFailure::WaitForBusy)` means eviction couldn't pick a
+    /// victim right now but a busy same-or-lower-priority peer exists, so
+    /// the caller should queue and retry; `Err(RetryPackFailure::NotPossible)`
+    /// means no amount of waiting will help.
     async fn try_eviction_to_fit(
         &mut self,
         want: &std::collections::BTreeMap<crate::config::DeviceSlot, u64>,
         nofit: &crate::allocator::NoFit,
-    ) -> Result<(), String> {
+    ) -> Result<(), RetryPackFailure> {
         let candidates = self.collect_eviction_candidates().await;
 
         let reservations_now = self.deps.allocations.lock().clone();
@@ -1173,6 +1365,24 @@ impl RunLoop {
         );
 
         if to_evict.is_empty() {
+            // Same distinction as `retry_pack_with_eviction`: is there a busy
+            // peer we could evict once it idles, or are we genuinely stuck?
+            let my_priority = self.current_svc().priority;
+            let wait_worthy = candidates
+                .iter()
+                .any(|c| !c.idle && c.priority <= my_priority);
+            let _ = self.packed_for_spawn.take();
+            if wait_worthy {
+                info!(
+                    service = %self.init.identity.name,
+                    candidates = candidates.len(),
+                    needed_bytes = nofit.needed_bytes,
+                    available_bytes = nofit.available_bytes,
+                    slot = ?nofit.slot,
+                    "no evictable candidates yet; waiting for busy peer to idle"
+                );
+                return Err(RetryPackFailure::WaitForBusy);
+            }
             info!(
                 service = %self.init.identity.name,
                 candidates = candidates.len(),
@@ -1181,10 +1391,7 @@ impl RunLoop {
                 slot = ?nofit.slot,
                 "eviction selection failed: no evictable candidates cover the deficit"
             );
-            // Clear any computed packed args so they are not used on the next
-            // Ensure attempt after this failure.
-            let _ = self.packed_for_spawn.take();
-            return Err(format!("{nofit}"));
+            return Err(RetryPackFailure::NotPossible(format!("{nofit}")));
         }
 
         info!(
@@ -1218,7 +1425,9 @@ impl RunLoop {
             &to_evict,
         ) {
             let _ = self.packed_for_spawn.take();
-            return Err(format!("eviction insufficient: {again}"));
+            return Err(RetryPackFailure::NotPossible(format!(
+                "eviction insufficient: {again}"
+            )));
         }
         Ok(())
     }
