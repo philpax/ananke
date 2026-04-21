@@ -53,6 +53,9 @@ nix.workspace = true
 
 rusqlite.workspace = true
 
+rust-embed.workspace = true
+mime_guess.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true
 pretty_assertions.workspace = true

@@ -38,5 +38,7 @@ pub fn register(router: Router, state: AppState) -> Router {
 }
 
 pub fn router(state: AppState) -> Router {
-    register(Router::new(), state)
+    // Mount the embedded frontend as the last-resort fallback so `/api/*`,
+    // `/v1/*`, and the WebSocket routes keep first dibs on every request.
+    crate::api::frontend::register(register(Router::new(), state))
 }
