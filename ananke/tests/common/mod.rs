@@ -1,6 +1,5 @@
 //! Shared helpers for integration tests.
 #![cfg(feature = "test-fakes")]
-
 // Not every integration test binary uses every symbol from this module.
 #![allow(dead_code)]
 
