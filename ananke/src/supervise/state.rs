@@ -11,8 +11,12 @@ pub enum ServiceState {
     Idle,
     Stopped,
     Evicted,
-    Failed { retry_count: u8 },
-    Disabled { reason: DisableReason },
+    Failed {
+        retry_count: u8,
+    },
+    Disabled {
+        reason: DisableReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

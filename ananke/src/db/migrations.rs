@@ -53,10 +53,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 /// Ensure the version tracker exists and apply any pending migrations.
 /// Returns the versions that were applied this call (empty on a
 /// fully-up-to-date database).
-pub fn apply_pending(
-    conn: &mut Connection,
-    now_ms: i64,
-) -> Result<Vec<u32>, rusqlite::Error> {
+pub fn apply_pending(conn: &mut Connection, now_ms: i64) -> Result<Vec<u32>, rusqlite::Error> {
     conn.execute_batch(BOOTSTRAP_SQL)?;
 
     let applied: HashSet<u32> = {
@@ -109,7 +106,8 @@ mod tests {
             assert!(
                 m.version > last,
                 "migration {} ({}): versions must strictly increase",
-                m.version, m.name
+                m.version,
+                m.name
             );
             assert!(
                 seen.insert(m.version),

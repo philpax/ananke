@@ -116,7 +116,9 @@ async fn persistent_yields_when_nonpersistent_peer_is_running() {
                 "yield message expected, got: {msg}"
             );
         }
-        other => panic!("expected Unavailable(InsufficientVram) from yielded persistent ensure, got {other:?}"),
+        other => panic!(
+            "expected Unavailable(InsufficientVram) from yielded persistent ensure, got {other:?}"
+        ),
     }
 
     // Step 3: the allocation table must be unchanged — on_demand keeps

@@ -32,7 +32,9 @@ fn mark_ended_keeps_record_visible_with_terminal_fields() {
     let r = OneshotRegistry::new();
     r.insert(make_record("os_1"));
 
-    let updated = r.mark_ended("os_1", 12345, Some(0)).expect("record present");
+    let updated = r
+        .mark_ended("os_1", 12345, Some(0))
+        .expect("record present");
     assert_eq!(updated.ended_at_ms, Some(12345));
     assert_eq!(updated.exit_code, Some(0));
 

@@ -114,7 +114,11 @@ impl DeviceSnapshot {
         use crate::config::validate::DeviceSlot;
         match slot {
             DeviceSlot::Cpu => self.cpu.as_ref().map(|c| c.total_bytes),
-            DeviceSlot::Gpu(id) => self.gpus.iter().find(|g| g.id == *id).map(|g| g.total_bytes),
+            DeviceSlot::Gpu(id) => self
+                .gpus
+                .iter()
+                .find(|g| g.id == *id)
+                .map(|g| g.total_bytes),
         }
     }
 }

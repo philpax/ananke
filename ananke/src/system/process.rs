@@ -17,11 +17,7 @@
 //! observe the effects of a config reload on process state without waiting
 //! on wall-clock or racing with OS cleanup.
 
-use std::{
-    io,
-    pin::Pin,
-    process::ExitStatus,
-};
+use std::{io, pin::Pin, process::ExitStatus};
 
 use async_trait::async_trait;
 use tokio::io::AsyncRead;
@@ -41,8 +37,7 @@ pub type DynAsyncRead = Pin<Box<dyn AsyncRead + Send + Unpin + 'static>>;
 /// inside `SupervisorDeps` and every supervisor borrows it.
 #[async_trait]
 pub trait ProcessSpawner: Send + Sync + 'static {
-    async fn spawn(&self, cfg: &SpawnConfig)
-        -> Result<Box<dyn ManagedChild>, ExpectedError>;
+    async fn spawn(&self, cfg: &SpawnConfig) -> Result<Box<dyn ManagedChild>, ExpectedError>;
 }
 
 /// Handle to a running child process. Dropped handles are expected to
@@ -76,11 +71,12 @@ pub trait ManagedChild: Send + 'static {
 // Production impl: tokio::process + nix signals.
 // ---------------------------------------------------------------------------
 
+use std::ffi::OsString;
+
 use nix::{
     sys::{prctl, signal::Signal as NixSignal},
     unistd::Pid,
 };
-use std::ffi::OsString;
 use tokio::process::{ChildStderr, ChildStdout, Command};
 
 /// Spawn real children via `tokio::process`. Sets `PR_SET_PDEATHSIG =
@@ -89,10 +85,7 @@ pub struct LocalSpawner;
 
 #[async_trait]
 impl ProcessSpawner for LocalSpawner {
-    async fn spawn(
-        &self,
-        cfg: &SpawnConfig,
-    ) -> Result<Box<dyn ManagedChild>, ExpectedError> {
+    async fn spawn(&self, cfg: &SpawnConfig) -> Result<Box<dyn ManagedChild>, ExpectedError> {
         let mut cmd = Command::new(&cfg.binary);
         cmd.args(cfg.args.iter().map(OsString::from));
         cmd.env_clear();
@@ -312,10 +305,7 @@ mod fake {
 
     #[async_trait]
     impl ProcessSpawner for FakeSpawner {
-        async fn spawn(
-            &self,
-            cfg: &SpawnConfig,
-        ) -> Result<Box<dyn ManagedChild>, ExpectedError> {
+        async fn spawn(&self, cfg: &SpawnConfig) -> Result<Box<dyn ManagedChild>, ExpectedError> {
             let (tx, rx) = watch::channel(false);
             let (slot, ignore_sigterm) = {
                 let mut inner = self.inner.lock();

@@ -232,7 +232,10 @@ mod tests {
     fn unknown_arch_falls_back_to_llama_default() {
         // Matches the conservative dense-family curve so unknown archs
         // that slip through the fallback still over-reserve safely.
-        assert_eq!(default_for(&summary_for("brand-new-arch"), 8192), 700 + 8 * 8);
+        assert_eq!(
+            default_for(&summary_for("brand-new-arch"), 8192),
+            700 + 8 * 8
+        );
     }
 
     #[test]

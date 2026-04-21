@@ -46,9 +46,6 @@ async fn cleans_row_for_dead_pid() {
         dispositions[0]
     );
 
-    let remaining = db
-        .list_running()
-        .await
-        .expect("query running_services");
+    let remaining = db.list_running().await.expect("query running_services");
     assert!(remaining.is_empty(), "stale row should have been deleted");
 }

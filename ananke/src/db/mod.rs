@@ -40,9 +40,8 @@ impl Database {
                 ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
             })?;
         }
-        let mut conn = Connection::open(path).map_err(|e| {
-            ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
-        })?;
+        let mut conn = Connection::open(path)
+            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
         migrations::apply_pending(&mut conn, crate::tracking::now_unix_ms())
             .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
         Ok(Self {
@@ -209,11 +208,7 @@ impl Database {
     }
 
     /// Delete a running_services row on drain / orphan cleanup.
-    pub async fn delete_running(
-        &self,
-        service_id: i64,
-        run_id: i64,
-    ) -> Result<(), ExpectedError> {
+    pub async fn delete_running(&self, service_id: i64, run_id: i64) -> Result<(), ExpectedError> {
         let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM running_services WHERE service_id = ?1 AND run_id = ?2",

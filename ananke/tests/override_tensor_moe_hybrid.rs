@@ -46,8 +46,8 @@ fn override_tensor_rules_propagate_to_command_args() {
 
     let svc = moe_svc_with_override_tensor(path.to_path_buf());
     let inputs = estimator::EstimatorInputs::from_service(&svc).unwrap();
-    let est = estimator::estimate_from_path(&fs, &inputs)
-        .expect("estimate must succeed on MoE GGUF");
+    let est =
+        estimator::estimate_from_path(&fs, &inputs).expect("estimate must succeed on MoE GGUF");
 
     // Snapshot with one GPU that has ample free memory.
     let snap = DeviceSnapshot {

@@ -12,11 +12,7 @@ mod common;
 
 use std::{sync::Arc, time::Duration};
 
-use ananke::{
-    config::EffectiveConfig,
-    supervise::SupervisorHandle,
-    system::FakeProcessState,
-};
+use ananke::{config::EffectiveConfig, supervise::SupervisorHandle, system::FakeProcessState};
 use ananke_api::Event;
 use common::{build_harness, minimal_llama_service};
 use smol_str::SmolStr;

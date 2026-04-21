@@ -10,8 +10,7 @@ fn main() {
     let path = env::args()
         .nth(1)
         .expect("usage: dump-gguf <path-to-first-shard.gguf>");
-    let summary =
-        gguf::read(&LocalFs, std::path::Path::new(&path)).expect("gguf read failed");
+    let summary = gguf::read(&LocalFs, std::path::Path::new(&path)).expect("gguf read failed");
 
     println!(
         "architecture: {}  block_count: {:?}  tensors: {}  shards: {}  total: {:.2} GiB",
@@ -64,17 +63,17 @@ fn main() {
                     }
                     (Some(s), _, _) => println!("  {k} = {s}"),
                     (None, Some(a), _) => {
-                        let preview: Vec<String> = a.iter().take(8).map(|v| v.to_string()).collect();
+                        let preview: Vec<String> =
+                            a.iter().take(8).map(|v| v.to_string()).collect();
                         let tail = if a.len() > 8 { ", …" } else { "" };
-                        println!(
-                            "  {k} = [{}{}] (len={})",
-                            preview.join(","),
-                            tail,
-                            a.len()
-                        );
+                        println!("  {k} = [{}{}] (len={})", preview.join(","), tail, a.len());
                     }
                     (None, None, Some(b)) => {
-                        let preview: Vec<&str> = b.iter().take(8).map(|v| if *v { "T" } else { "F" }).collect();
+                        let preview: Vec<&str> = b
+                            .iter()
+                            .take(8)
+                            .map(|v| if *v { "T" } else { "F" })
+                            .collect();
                         let tail = if b.len() > 8 { ", …" } else { "" };
                         println!(
                             "  {k} = [{}{}] (bools, len={}, {}/{} true)",

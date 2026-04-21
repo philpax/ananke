@@ -69,8 +69,7 @@ async fn pump<R: AsyncBufReadExt + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-    use std::pin::Pin;
+    use std::{io::Cursor, pin::Pin};
 
     use super::*;
     use crate::db::{Database, logs::spawn as spawn_batcher};

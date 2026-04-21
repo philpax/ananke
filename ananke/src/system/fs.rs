@@ -139,15 +139,17 @@ impl Fs for InMemoryFs {
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
-        self.inner.write().insert(path.to_path_buf(), bytes.to_vec());
+        self.inner
+            .write()
+            .insert(path.to_path_buf(), bytes.to_vec());
         Ok(())
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         let mut guard = self.inner.write();
-        let bytes = guard.remove(from).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, from.display().to_string())
-        })?;
+        let bytes = guard
+            .remove(from)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, from.display().to_string()))?;
         guard.insert(to.to_path_buf(), bytes);
         Ok(())
     }
