@@ -2,38 +2,25 @@ import { useLogs, useServiceDetail } from "../api/hooks.ts";
 import type { LogLine } from "../api/client.ts";
 import { formatBytes, serviceProxyUrl } from "../util.ts";
 
-export function ServiceDetailPanel({ name }: { name: string | null }) {
+// Detail block rendered inline inside the services table (in an extra
+// `<td colSpan>` row below the service). Assumes its caller has already
+// decided to show it; queries are always enabled.
+export function ServiceDetailInline({ name }: { name: string }) {
   const { data: detail, error, isPending } = useServiceDetail(name);
   const { data: logs } = useLogs(name);
 
-  if (name === null)
-    return (
-      <section className="opacity-60 border border-dashed border-gray-300 rounded p-4">
-        Select a service to see detail + recent logs.
-      </section>
-    );
-  if (isPending)
-    return <section className="opacity-60">Loading {name}…</section>;
-  if (error)
-    return <section className="text-red-600">Detail: {error.message}</section>;
+  if (isPending) return <div className="opacity-60">Loading {name}…</div>;
+  if (error) return <div className="text-red-600">Detail: {error.message}</div>;
 
   const proxyUrl = serviceProxyUrl(detail.port);
 
   return (
-    <section>
-      <h2 className="text-lg font-semibold mb-2">
-        <span className="font-mono">{detail.name}</span>
-        <span className="ml-2 text-sm text-gray-500">{detail.state}</span>
-      </h2>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm mb-3">
+    <div>
+      <dl className="grid grid-cols-[auto_1fr] md:grid-cols-[auto_1fr_auto_1fr] gap-x-4 gap-y-1 text-sm mb-3">
         <dt className="text-gray-500">Template</dt>
         <dd>{detail.template}</dd>
-        <dt className="text-gray-500">Lifecycle</dt>
-        <dd>{detail.lifecycle}</dd>
-        <dt className="text-gray-500">Priority</dt>
-        <dd className="tabular-nums">{detail.priority}</dd>
         <dt className="text-gray-500">Port</dt>
-        <dd>
+        <dd className="break-all">
           <a
             className="text-blue-700 hover:underline"
             href={proxyUrl}
@@ -49,18 +36,6 @@ export function ServiceDetailPanel({ name }: { name: string | null }) {
         </dd>
         <dt className="text-gray-500">Idle timeout</dt>
         <dd className="tabular-nums">{detail.idle_timeout_ms} ms</dd>
-        {detail.run_id !== null && detail.run_id !== undefined && (
-          <>
-            <dt className="text-gray-500">run_id</dt>
-            <dd className="tabular-nums">{detail.run_id}</dd>
-          </>
-        )}
-        {detail.pid !== null && detail.pid !== undefined && (
-          <>
-            <dt className="text-gray-500">pid</dt>
-            <dd className="tabular-nums">{detail.pid}</dd>
-          </>
-        )}
         {detail.rolling_mean !== null && detail.rolling_mean !== undefined && (
           <>
             <dt className="text-gray-500">Rolling mean</dt>
@@ -78,7 +53,7 @@ export function ServiceDetailPanel({ name }: { name: string | null }) {
       </dl>
 
       <LogsView logs={logs?.logs ?? []} />
-    </section>
+    </div>
   );
 }
 

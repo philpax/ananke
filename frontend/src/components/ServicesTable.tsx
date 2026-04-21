@@ -1,13 +1,13 @@
+import { useState } from "react";
+
 import { useLifecycle, useServices } from "../api/hooks.ts";
 import type { ServiceSummary } from "../api/client.ts";
 import { serviceProxyUrl } from "../util.ts";
+import { ServiceDetailInline } from "./ServiceDetail.tsx";
 
-type Props = {
-  selected: string | null;
-  onSelect: (name: string) => void;
-};
+const COLUMN_COUNT = 6;
 
-export function ServicesTable({ selected, onSelect }: Props) {
+export function ServicesTable() {
   const { data, error, isPending } = useServices();
   const lifecycle = useLifecycle();
 
@@ -44,8 +44,6 @@ export function ServicesTable({ selected, onSelect }: Props) {
               <ServiceRow
                 key={s.name}
                 svc={s}
-                isSelected={selected === s.name}
-                onSelect={() => onSelect(s.name)}
                 onLifecycle={(action) =>
                   lifecycle.mutate({ action, name: s.name })
                 }
@@ -70,62 +68,72 @@ type LifecycleAction = "start" | "stop" | "restart" | "enable" | "disable";
 
 function ServiceRow({
   svc,
-  isSelected,
-  onSelect,
   onLifecycle,
   pending,
 }: {
   svc: ServiceSummary;
-  isSelected: boolean;
-  onSelect: () => void;
   onLifecycle: (action: LifecycleAction) => void;
   pending: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const proxyUrl = serviceProxyUrl(svc.port);
+
   return (
-    <tr
-      className={
-        "border-t cursor-pointer hover:bg-gray-50 " +
-        (isSelected ? "bg-blue-50" : "")
-      }
-      onClick={onSelect}
-    >
-      <td className="p-2 font-mono">
-        <a
-          className="text-blue-700 hover:underline"
-          href={proxyUrl}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {svc.name}
-        </a>
-        <div className="text-xs text-gray-500">:{svc.port}</div>
-      </td>
-      <td className="p-2">
-        <StateBadge state={svc.state} />
-      </td>
-      <td className="p-2">{svc.lifecycle}</td>
-      <td className="p-2 tabular-nums">{svc.priority}</td>
-      <td className="p-2 tabular-nums text-xs">{svc.pid ?? "—"}</td>
-      <td className="p-2 whitespace-nowrap">
-        <Btn onClick={() => onLifecycle("start")} disabled={pending}>
-          Start
-        </Btn>
-        <Btn onClick={() => onLifecycle("stop")} disabled={pending}>
-          Stop
-        </Btn>
-        <Btn onClick={() => onLifecycle("restart")} disabled={pending}>
-          Restart
-        </Btn>
-        <Btn onClick={() => onLifecycle("enable")} disabled={pending}>
-          Enable
-        </Btn>
-        <Btn onClick={() => onLifecycle("disable")} disabled={pending}>
-          Disable
-        </Btn>
-      </td>
-    </tr>
+    <>
+      <tr
+        className={
+          "border-t cursor-pointer hover:bg-gray-50 " +
+          (expanded ? "bg-blue-50" : "")
+        }
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <td className="p-2 font-mono">
+          <span className="inline-block w-3 text-gray-400 text-xs">
+            {expanded ? "▾" : "▸"}
+          </span>{" "}
+          <a
+            className="text-blue-700 hover:underline"
+            href={proxyUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {svc.name}
+          </a>
+          <div className="text-xs text-gray-500 pl-4">:{svc.port}</div>
+        </td>
+        <td className="p-2">
+          <StateBadge state={svc.state} />
+        </td>
+        <td className="p-2">{svc.lifecycle}</td>
+        <td className="p-2 tabular-nums">{svc.priority}</td>
+        <td className="p-2 tabular-nums text-xs">{svc.pid ?? "—"}</td>
+        <td className="p-2 whitespace-nowrap">
+          <Btn onClick={() => onLifecycle("start")} disabled={pending}>
+            Start
+          </Btn>
+          <Btn onClick={() => onLifecycle("stop")} disabled={pending}>
+            Stop
+          </Btn>
+          <Btn onClick={() => onLifecycle("restart")} disabled={pending}>
+            Restart
+          </Btn>
+          <Btn onClick={() => onLifecycle("enable")} disabled={pending}>
+            Enable
+          </Btn>
+          <Btn onClick={() => onLifecycle("disable")} disabled={pending}>
+            Disable
+          </Btn>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="bg-blue-50/50">
+          <td colSpan={COLUMN_COUNT} className="p-3 border-t">
+            <ServiceDetailInline name={svc.name} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
