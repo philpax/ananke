@@ -14,6 +14,7 @@
 //! With the yield rule in place, a persistent service's ensure returns
 //! `Unavailable` when a non-persistent peer is loading or running, and
 //! the watcher simply re-fires on its own cadence once the pool quiets.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

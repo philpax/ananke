@@ -1,5 +1,6 @@
 //! Integration test: a MoE service with `override_tensor` rules passes those
 //! rules through to `CommandArgs.override_tensor` after `placement::pack`.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

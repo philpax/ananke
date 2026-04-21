@@ -1,3 +1,4 @@
+#![cfg(feature = "test-fakes")]
 mod common;
 
 use axum::{body::to_bytes, http::StatusCode};

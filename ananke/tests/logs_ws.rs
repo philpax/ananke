@@ -1,4 +1,5 @@
 //! Integration tests for the `GET /api/services/{name}/logs/stream` WebSocket endpoint.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

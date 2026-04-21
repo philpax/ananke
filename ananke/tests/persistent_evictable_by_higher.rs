@@ -1,3 +1,4 @@
+#![cfg(feature = "test-fakes")]
 use std::collections::BTreeMap;
 
 use ananke::{

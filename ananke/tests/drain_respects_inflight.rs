@@ -1,6 +1,7 @@
 //! The drain pipeline must wait for `inflight` to reach zero before it
 //! issues SIGTERM. Uses [`FakeSpawner`] so the test is deterministic (no
 //! real process, no real signals, virtual tokio time only).
+#![cfg(feature = "test-fakes")]
 
 use std::{
     sync::{

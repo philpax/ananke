@@ -6,6 +6,7 @@
 //!
 //! Uses `FakeSpawner` so the assertion is on the fake child's recorded
 //! state rather than a real process lifecycle.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

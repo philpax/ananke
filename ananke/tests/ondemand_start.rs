@@ -1,4 +1,5 @@
 //! Integration test: an idle on-demand service starts on the first request.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

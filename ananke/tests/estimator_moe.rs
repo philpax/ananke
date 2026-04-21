@@ -1,5 +1,6 @@
 //! Integration test: MoE estimator reads a synthetic qwen3moe GGUF and
 //! correctly identifies expert layers.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

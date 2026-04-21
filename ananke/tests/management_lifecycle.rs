@@ -1,4 +1,5 @@
 //! Integration tests for the management lifecycle endpoints.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

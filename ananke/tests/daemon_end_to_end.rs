@@ -1,4 +1,5 @@
 //! End-to-end test: proxy forwards a plain request to the echo server.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

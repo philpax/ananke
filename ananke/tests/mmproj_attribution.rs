@@ -1,5 +1,6 @@
 //! Integration test: when a llama-cpp service has an mmproj path set, the
 //! estimator adds the mmproj file's tensor bytes to `weights_bytes`.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

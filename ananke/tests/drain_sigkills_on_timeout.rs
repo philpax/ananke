@@ -1,6 +1,7 @@
 //! If SIGTERM is ignored, the drain pipeline must escalate to SIGKILL
 //! after the configured grace period. Uses [`FakeSpawner::ignoring_sigterm`]
 //! so the escalation can be exercised without real signal plumbing.
+#![cfg(feature = "test-fakes")]
 
 use std::{
     sync::{Arc, atomic::AtomicU64},

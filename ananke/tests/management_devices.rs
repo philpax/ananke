@@ -1,4 +1,5 @@
 //! Integration tests for the management API's device endpoint.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

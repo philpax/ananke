@@ -1,3 +1,4 @@
+#![cfg(feature = "test-fakes")]
 use ananke::oneshot::PortPool;
 
 #[test]

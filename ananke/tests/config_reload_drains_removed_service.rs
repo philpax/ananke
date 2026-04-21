@@ -7,6 +7,7 @@
 //! against `FakeProcessState` transitions — no OS pids, no real signals,
 //! no sleeps on real wall-clock. A regression that forgets to drain the
 //! removed service leaves its child in `Running` rather than `SigTerm`.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

@@ -3,6 +3,7 @@
 //! Five requests arrive while the service is idle. All five should receive 200
 //! because the supervisor fans them out onto a single broadcast channel rather
 //! than starting five separate processes or returning 503.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

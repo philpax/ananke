@@ -1,4 +1,5 @@
 //! Integration test: orphan recovery cleans stale rows for non-existent PIDs.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

@@ -4,6 +4,7 @@
 //! This test calls `placement::pack` directly rather than going through the
 //! daemon, because the fake spawn_child doesn't invoke llama-server and the
 //! allocations are therefore never reported back.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

@@ -8,6 +8,7 @@
 //! deadline was already in the past). The Idle state transition then
 //! triggered `persistent_watcher` to re-ensure, producing an endless
 //! ~15-second spawn/idle/respawn loop visible in the journal.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

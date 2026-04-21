@@ -4,6 +4,7 @@
 //! requests are fired while the service is idle. At most 2 callers can wait on
 //! the in-flight start; the rest must receive 503 start_queue_full. We assert
 //! that at least 2 responses are 200 and at least 1 is 503.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

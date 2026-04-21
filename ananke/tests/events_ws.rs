@@ -1,4 +1,5 @@
 //! Integration tests for the `/api/events` WebSocket endpoint.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

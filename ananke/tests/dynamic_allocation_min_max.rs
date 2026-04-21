@@ -1,3 +1,4 @@
+#![cfg(feature = "test-fakes")]
 use ananke::config::{AllocationMode, parse_toml, resolve_inheritance, validate};
 
 #[test]

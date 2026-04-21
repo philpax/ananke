@@ -1,4 +1,5 @@
 //! Integration tests for the fallback estimator + its opt-in gate.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

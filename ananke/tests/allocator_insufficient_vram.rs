@@ -1,4 +1,5 @@
 //! Integration test: the allocator returns 503 when there is insufficient memory.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

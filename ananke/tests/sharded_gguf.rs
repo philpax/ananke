@@ -1,5 +1,6 @@
 //! Integration test: the sharded GGUF reader aggregates tensors from two shard
 //! files when `split.count = 2` and `split.no` is set in each shard.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

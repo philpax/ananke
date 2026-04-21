@@ -1,4 +1,5 @@
 //! Integration tests for the GET /api/services/{name}/logs endpoint.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

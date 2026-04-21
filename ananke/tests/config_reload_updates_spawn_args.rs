@@ -9,6 +9,7 @@
 //!
 //! Uses `FakeSpawner` so the assertion operates on recorded argv rather
 //! than any real `llama-server` process.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

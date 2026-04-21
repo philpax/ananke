@@ -1,5 +1,6 @@
 //! Integration test: llama-family estimator reads a synthetic GGUF and
 //! produces positive weights and KV estimates.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

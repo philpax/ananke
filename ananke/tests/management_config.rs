@@ -1,4 +1,5 @@
 //! Integration tests for the GET/PUT /api/config and POST /api/config/validate endpoints.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

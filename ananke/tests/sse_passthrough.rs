@@ -1,4 +1,5 @@
 //! End-to-end test: proxy streams SSE events without buffering.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

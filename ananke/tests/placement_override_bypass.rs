@@ -1,6 +1,7 @@
 //! Integration test: a service with `placement_override` set bypasses the
 //! estimator entirely. The request still succeeds (the echo server stands in
 //! for llama-server).
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

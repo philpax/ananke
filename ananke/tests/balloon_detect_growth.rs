@@ -1,3 +1,4 @@
+#![cfg(feature = "test-fakes")]
 use std::collections::VecDeque;
 
 use ananke::allocator::balloon::detect_growth;

@@ -1,6 +1,7 @@
 //! Integration test: a service without a `placement_override` can start when
 //! the model path points at a valid GGUF and the snapshot has adequate free
 //! memory. The estimator + placement engine selects CPU placement.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

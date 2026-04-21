@@ -8,6 +8,7 @@
 //! now "idle is always evictable regardless of priority", and every
 //! call site funnels through `EvictionCandidate::is_evictable_by` so
 //! the two spots where the predicate lived can't drift again.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 

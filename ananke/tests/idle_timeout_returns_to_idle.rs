@@ -7,6 +7,7 @@
 //! `tokio::time::Instant` (see `tracking::activity`) is what makes this
 //! possible — previously the supervisor mixed wall-clock activity pings
 //! with tokio time arithmetic and the test had to sleep real seconds.
+#![cfg(feature = "test-fakes")]
 
 mod common;
 
