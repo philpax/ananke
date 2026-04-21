@@ -31,6 +31,24 @@ struct Cursor {
     seq: i64,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/services/{name}/logs",
+    params(
+        ("name" = String, Path, description = "Service name"),
+        ("since" = Option<i64>, Query, description = "Earliest timestamp_ms, inclusive"),
+        ("until" = Option<i64>, Query, description = "Latest timestamp_ms, inclusive"),
+        ("run" = Option<i64>, Query, description = "Restrict to one run_id"),
+        ("stream" = Option<String>, Query, description = "\"stdout\" or \"stderr\""),
+        ("limit" = Option<u32>, Query, description = "Max rows to return (≤1000, default 200)"),
+        ("before" = Option<String>, Query, description = "Opaque cursor from a prior response"),
+    ),
+    responses(
+        (status = 200, body = LogsResponse),
+        (status = 400, body = ApiError),
+        (status = 404, body = ApiError)
+    )
+)]
 pub async fn get_logs(
     State(state): State<AppState>,
     Path(name): Path<String>,

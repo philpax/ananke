@@ -19,6 +19,16 @@ use crate::{
     },
 };
 
+#[utoipa::path(
+    post,
+    path = "/api/services/{name}/start",
+    params(("name" = String, Path, description = "Service name")),
+    responses(
+        (status = 202, body = StartResponse),
+        (status = 404, body = ApiError),
+        (status = 503, body = ApiError)
+    )
+)]
 pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     info!(service = %name, "management start requested");
     let Some((svc, handle)) = resolve(&state, &name) else {
@@ -60,6 +70,15 @@ pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>)
     (StatusCode::ACCEPTED, Json(body)).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/services/{name}/stop",
+    params(("name" = String, Path, description = "Service name")),
+    responses(
+        (status = 202, body = StopResponse),
+        (status = 404, body = ApiError)
+    )
+)]
 pub async fn post_stop(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     info!(service = %name, "management stop requested");
     let Some((_svc, handle)) = resolve(&state, &name) else {
@@ -70,6 +89,16 @@ pub async fn post_stop(State(state): State<AppState>, Path(name): Path<String>) 
     (StatusCode::ACCEPTED, Json(StopResponse::Drained)).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/services/{name}/restart",
+    params(("name" = String, Path, description = "Service name")),
+    responses(
+        (status = 202, body = StartResponse),
+        (status = 404, body = ApiError),
+        (status = 503, body = ApiError)
+    )
+)]
 pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     info!(service = %name, "management restart requested");
     let Some((svc, handle)) = resolve(&state, &name) else {
@@ -112,6 +141,15 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
     (StatusCode::ACCEPTED, Json(body)).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/services/{name}/enable",
+    params(("name" = String, Path, description = "Service name")),
+    responses(
+        (status = 200, body = EnableResponse),
+        (status = 404, body = ApiError)
+    )
+)]
 pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     info!(service = %name, "management enable requested");
     let Some((_svc, handle)) = resolve(&state, &name) else {
@@ -125,6 +163,15 @@ pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>
     (StatusCode::OK, Json(body)).into_response()
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/services/{name}/disable",
+    params(("name" = String, Path, description = "Service name")),
+    responses(
+        (status = 200, body = DisableResponse),
+        (status = 404, body = ApiError)
+    )
+)]
 pub async fn post_disable(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     info!(service = %name, "management disable requested");
     let Some((_svc, handle)) = resolve(&state, &name) else {

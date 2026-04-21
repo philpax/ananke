@@ -10,11 +10,28 @@ use axum::{
 
 use crate::{config::manager::ApplyError, daemon::app_state::AppState};
 
+#[utoipa::path(
+    get,
+    path = "/api/config",
+    responses((status = 200, body = ConfigResponse))
+)]
 pub async fn get_config(State(state): State<AppState>) -> Response {
     let (content, hash) = state.config.raw();
     (StatusCode::OK, Json(ConfigResponse { content, hash })).into_response()
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/config",
+    request_body(content = String, description = "Raw TOML config"),
+    responses(
+        (status = 202),
+        (status = 412, body = ApiError),
+        (status = 422, body = ConfigValidateResponse),
+        (status = 428, body = ApiError),
+        (status = 500, body = ApiError)
+    )
+)]
 pub async fn put_config(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -67,6 +84,12 @@ pub async fn put_config(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/config/validate",
+    request_body = ConfigValidateRequest,
+    responses((status = 200, body = ConfigValidateResponse))
+)]
 pub async fn post_validate(
     State(state): State<AppState>,
     Json(req): Json<ConfigValidateRequest>,
