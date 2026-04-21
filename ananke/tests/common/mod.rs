@@ -147,6 +147,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         events: events.clone(),
         system: system.clone(),
         inflight: inflight.clone(),
+        activity: activity.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {

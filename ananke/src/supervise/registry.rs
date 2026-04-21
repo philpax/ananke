@@ -102,6 +102,7 @@ mod tests {
             events,
             system: crate::system::SystemDeps::fake().0,
             inflight: crate::tracking::inflight::InflightTable::new(),
+            activity: crate::tracking::activity::ActivityTable::new(),
         };
         let handle = Arc::new(spawn_supervisor(init, svc.clone(), deps));
 

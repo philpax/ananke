@@ -271,6 +271,9 @@ pub struct SupervisorDeps {
     pub events: EventBus,
     pub system: crate::system::SystemDeps,
     pub inflight: crate::tracking::inflight::InflightTable,
+    /// Global activity table. Exposed on `SupervisorDeps` so the eviction
+    /// planner can rank peers by LRU when picking a minimum victim set.
+    pub activity: crate::tracking::activity::ActivityTable,
 }
 
 /// Identity fields that don't change across a reload. Everything else a
@@ -1014,14 +1017,24 @@ impl RunLoop {
         Ok(want_mb)
     }
 
-    /// Pack failed against the current allocation table. Try again pretending
-    /// every lower-priority service has been evicted; if pack now succeeds,
-    /// actually drain those victims and return the new reservation plus the
-    /// committed victim list so the caller can use
-    /// `can_fit_after_eviction` for the final feasibility check. (Going
-    /// through the normal `try_eviction_to_fit` loop here would fail:
-    /// `collect_eviction_candidates` polls each supervisor's snapshot, but
-    /// the ones we just begin_drained are blocked inside their drain.)
+    /// Pack failed against the current allocation table. Walk evictable peers
+    /// in least-recently-used order (oldest activity first), adding one at
+    /// a time to the victim set until the optimistic pack succeeds. The
+    /// minimum number of LRU-first peers we need to drain, no more — a busy
+    /// service whose cold peers already cover the demand never gets touched.
+    ///
+    /// Choosing LRU over "single biggest victim" is deliberate: among idle
+    /// peers the disruption cost is near-zero (no one is using them), so
+    /// evicting two cold services to preserve one warm one is the right
+    /// trade. If the warm service happens to be the one with the most
+    /// VRAM, we leave it alone and evict multiple LRU peers to cover the
+    /// deficit.
+    ///
+    /// (Going through `try_eviction_to_fit` here instead wouldn't work:
+    /// `collect_eviction_candidates` reads peer state through the mirror,
+    /// which is fine, but that helper is sized for the
+    /// "fit-but-missing-headroom" case and doesn't re-run the packer after
+    /// each eviction; this one does.)
     async fn retry_pack_with_eviction(
         &mut self,
         snap: &crate::devices::DeviceSnapshot,
@@ -1035,12 +1048,28 @@ impl RunLoop {
     > {
         let candidates = self.collect_eviction_candidates().await;
         let my_priority = self.current_svc().priority;
-        let victims: Vec<smol_str::SmolStr> = candidates
+
+        // LRU-first ordering over evictable peers. Services that have never
+        // been pinged sort as "most LRU" (effectively infinite age), so a
+        // persistent service sitting in Running with no traffic is a
+        // first-class victim candidate.
+        let now = tokio::time::Instant::now();
+        let mut ranked: Vec<(&crate::allocator::eviction::EvictionCandidate, u128)> = candidates
             .iter()
             .filter(|c| c.is_evictable_by(my_priority))
-            .map(|c| c.name.clone())
+            .map(|c| {
+                let age_ms = self
+                    .deps
+                    .activity
+                    .last(&c.name)
+                    .map(|t| now.saturating_duration_since(t).as_millis())
+                    .unwrap_or(u128::MAX);
+                (c, age_ms)
+            })
             .collect();
-        if victims.is_empty() {
+        ranked.sort_by_key(|(_, age)| std::cmp::Reverse(*age));
+
+        if ranked.is_empty() {
             info!(
                 service = %self.init.identity.name,
                 candidates = candidates.len(),
@@ -1056,29 +1085,54 @@ impl RunLoop {
             return Err(reason);
         }
 
-        let mut filtered = table.clone();
-        for v in &victims {
-            filtered.remove(v);
-        }
-        let want = match self.compute_reservation_map_optimistic(snap, &filtered) {
-            Ok(w) => w,
-            Err(e) => {
-                let reason = e.message();
-                warn!(
-                    service = %self.init.identity.name,
-                    reason = %reason,
-                    victim_count = victims.len(),
-                    "optimistic pack failed even with all evictable peers treated as gone"
-                );
-                return Err(reason);
+        // Greedy LRU-first fill: walk peers in LRU order, extending the
+        // victim set one at a time, and re-run the optimistic packer after
+        // every addition. Stop as soon as the pack succeeds — that's the
+        // minimum LRU-first victim set that covers the layout.
+        let mut victims: Vec<smol_str::SmolStr> = Vec::new();
+        let mut winning_want: Option<std::collections::BTreeMap<crate::config::DeviceSlot, u64>> =
+            None;
+        for (cand, _) in &ranked {
+            victims.push(cand.name.clone());
+            let mut filtered = table.clone();
+            for v in &victims {
+                filtered.remove(v);
             }
+            if let Ok(w) = self.compute_reservation_map_optimistic(snap, &filtered) {
+                winning_want = Some(w);
+                break;
+            }
+        }
+
+        let Some(want) = winning_want else {
+            // Even with every evictable peer treated as gone the packer
+            // still can't lay out the model. Report the last pack error
+            // so the operator sees the actual deficit (which GPU, what
+            // bytes), not a generic "no fit".
+            let mut filtered = table.clone();
+            for v in &victims {
+                filtered.remove(v);
+            }
+            let reason = self
+                .compute_reservation_map_optimistic(snap, &filtered)
+                .err()
+                .map(ReservationFailure::message)
+                .unwrap_or_else(|| "placement: unknown failure".into());
+            warn!(
+                service = %self.init.identity.name,
+                reason = %reason,
+                evictable_count = victims.len(),
+                "optimistic pack failed even with all evictable peers treated as gone"
+            );
+            return Err(reason);
         };
 
         info!(
             service = %self.init.identity.name,
             evict_count = victims.len(),
             victims = ?victims,
-            "eviction planned (per-layer pack feasible once victims drain)"
+            evictable_considered = ranked.len(),
+            "eviction planned (LRU-first minimum victim set)"
         );
         for victim in &victims {
             if let Some(handle) = self.deps.registry.get(victim) {

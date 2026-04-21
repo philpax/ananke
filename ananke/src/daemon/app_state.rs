@@ -52,6 +52,7 @@ impl AppState {
             events: self.events.clone(),
             system: self.system.clone(),
             inflight: self.inflight.clone(),
+            activity: self.activity.clone(),
         }
     }
 }
