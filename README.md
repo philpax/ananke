@@ -1,25 +1,25 @@
-# Ananke
+# ananke
 
-Ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple Large Language Model (LLM) services and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
+ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple Large Language Model (LLM) services and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
 
 ## Core Concepts
 
 ### Service Lifecycles
 
-Ananke manages when services are loaded into memory:
+ananke manages when services are loaded into memory:
 
 - **On-Demand (Default)**: Services are loaded only when a request arrives. They are unloaded after a configurable `idle_timeout` (default: 10m) to free up VRAM.
 - **Persistent**: Services stay loaded in memory indefinitely, ensuring zero-latency startup for critical models.
 
 ### Resource Allocation & VRAM
 
-Ananke is designed to oversubscribe GPU memory by dynamically managing which models are active:
+ananke is designed to oversubscribe GPU memory by dynamically managing which models are active:
 
-- **LlamaCpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. Ananke uses an internal GGUF-aware estimator to track usage, preventing the "silent fallback" issues where models load on CPU without warning.
+- **LlamaCpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage, preventing the "silent fallback" issues where models load on CPU without warning.
 - **Command Services**: Support two allocation modes:
   - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
   - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
-- **Eviction**: When VRAM is exhausted, Ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
+- **Eviction**: When VRAM is exhausted, ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
 
 ### Placement Policies
 
@@ -29,7 +29,7 @@ Ananke is designed to oversubscribe GPU memory by dynamically managing which mod
 
 ### Service States
 
-Ananke tracks each service through a state machine:
+ananke tracks each service through a state machine:
 
 | State      | Description                                                                                                                                    |
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -68,9 +68,9 @@ Binaries are located in `target/release/ananke` and `target/release/anankectl`.
 
 ### Configuration Resolution
 
-Ananke searches for its configuration file in the following priority:
+ananke searches for its configuration file in the following priority:
 
-1. `ANANKE_CONFIG` environment variable.
+1. `ananke_CONFIG` environment variable.
 2. `--config` CLI argument.
 3. `$XDG_CONFIG_HOME/ananke/config.toml`
 4. `~/.config/ananke/config.toml`
@@ -81,12 +81,12 @@ Ananke searches for its configuration file in the following priority:
 Both the Management API (`management_listen`) and per-service reverse proxies (`allow_external_services`) are **unauthenticated**. If you bind them to non-loopback addresses:
 
 - Trust your network perimeter (e.g., Tailscale, a private VLAN).
-- Terminate TLS and authentication at a reverse proxy in front of Ananke.
+- Terminate TLS and authentication at a reverse proxy in front of ananke.
 - Never expose these ports directly to the public internet.
 
 ## Configuration Guide
 
-Ananke uses a TOML configuration.
+ananke uses a TOML configuration.
 
 ### Daemon Settings
 
@@ -181,7 +181,7 @@ name = "comfyui"
 template = "command"
 port = 8188
 lifecycle = "on_demand"
-# {port} is replaced by the private loopback port assigned by Ananke
+# {port} is replaced by the private loopback port assigned by ananke
 command = ["/bin/bash", "start_comfy.sh", "--port", "{port}"]
 shutdown_command = ["/bin/bash", "stop_comfy.sh"]
 
@@ -195,7 +195,7 @@ http = "/system_stats"
 timeout = "30s"
 ```
 
-The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. Ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
+The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
 
 ### Advanced Service Options
 
@@ -262,7 +262,7 @@ model = "/models/gemma-4-31B.gguf"
 
 ## Oneshot API
 
-For temporary inference tasks that don't need a persistent config entry, Ananke supports spawning short-lived services via the API:
+For temporary inference tasks that don't need a persistent config entry, ananke supports spawning short-lived services via the API:
 
 ```bash
 # Submit from a TOML file
@@ -299,7 +299,7 @@ placement = "gpu-only"
 
 ## Config Hot-Reload
 
-Ananke watches its config file for changes and automatically reloads when modifications are detected. The reload process:
+ananke watches its config file for changes and automatically reloads when modifications are detected. The reload process:
 
 1. Parses and validates the new config.
 2. Preflights GGUF models (catching dtype/shard issues before traffic hits them).
@@ -322,7 +322,7 @@ The management API exposes a WebSocket endpoint at `/api/events` that delivers r
 
 ## Using `anankectl`
 
-The CLI tool allows real-time management of the daemon. The base URL is set via `--endpoint` or the `ANANKE_ENDPOINT` environment variable.
+The CLI tool allows real-time management of the daemon. The base URL is set via `--endpoint` or the `ananke_ENDPOINT` environment variable.
 
 ```bash
 # Service Management
@@ -374,9 +374,9 @@ A smaller Go proxy with built-in VRAM awareness. It's a good fit if you:
 
 Like llama-swap, it requires you to declare the VRAM each model will consume ahead of time.
 
-### How Ananke Compares
+### How ananke Compares
 
-| Feature             | Ananke                      | llama-swap            | Large Model Proxy           |
+| Feature             | ananke                      | llama-swap            | Large Model Proxy           |
 | ------------------- | --------------------------- | --------------------- | --------------------------- |
 | Language            | Rust                        | Go                    | Go                          |
 | VRAM estimation     | **Automatic** (GGUF-aware)  | Manual (user-managed) | Manual (declared per model) |
@@ -392,7 +392,7 @@ Like llama-swap, it requires you to declare the VRAM each model will consume ahe
 | State machine       | Full lifecycle tracking     | Implicit              | Implicit                    |
 | Security warnings   | Documented                  | Documented            | Documented                  |
 
-**Choose Ananke if:** You want automatic VRAM estimation (no manual declarations needed), robust state management with a full lifecycle state machine, and a polished CLI/API for programmatic management. Ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
+**Choose ananke if:** You want automatic VRAM estimation (no manual declarations needed), robust state management with a full lifecycle state machine, and a polished CLI/API for programmatic management. ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
 
 **Choose llama-swap if:** You need maximum flexibility with upstream servers, want a battle-tested solution with a large community, and are comfortable managing model placement manually.
 
