@@ -182,6 +182,39 @@ The Rust stack is chosen; don't silently introduce alternatives when one of thes
 - **Child supervision**: `nix` for `prctl(PR_SET_PDEATHSIG)` and related Linux-specific calls.
 - **GGUF**: start with the `gguf` crate; fall back to a small custom reader if it can't enumerate the tensor table or handle sharded files.
 
+### Adding a new model architecture
+
+When a new model family ships with a `general.architecture` value that ananke does not yet recognise, the daemon rejects it with `UnknownArchitecture` and the service stays disabled until the operator sets `estimation.allow_fallback = true` (which skips KV modelling and estimates weights-only). Adding proper support takes three steps:
+
+1. **Dump the GGUF metadata.** Run the `dump-gguf` example against the first shard:
+
+   ```bash
+   cargo run --example dump-gguf -- /path/to/model-00001-of-NNNN.gguf
+   ```
+
+   The output shows the architecture name, block count, tensor categories, and every attention-related metadata key. This is the ground truth for what the estimator needs to read.
+
+2. **Choose the right family module.** The estimator dispatches on `general.architecture` through four family modules in `ananke/src/estimator/`:
+
+   - **`llama`** — dense transformer models with standard `blk.N.*` tensor layout and `{arch}.attention.*` metadata keys. Covers: llama, qwen2, qwen3, mistral, gemma, gemma2, gemma3, phi3, glm4, deci, gemma4, gemma3n.
+   - **`moe`** — mixture-of-experts models with `blk.N.ffn_{gate,up,down}_exps.weight` tensors. Covers: llama4, qwen3moe, qwen3vlmoe, deepseek2, mixtral, gpt-oss, glm4moe, qwen35moe. The MoE estimator also handles `full_attention_interval` via `hybrid::kv_for_hybrid()` for hybrid MoE+SSM models.
+   - **`hybrid`** — models that mix attention with recurrent SSM layers (no MoE). Every `full_attention_interval`-th layer runs full attention with KV cache; the rest use SSM with constant per-layer state. Covers: jamba, qwen35.
+   - **`mamba`** — pure SSM models (no attention). Covers: mamba.
+
+   Pick the module that matches the tensor layout. If the new architecture uses standard `blk.N.*` tensors with `{arch}.attention.*` metadata, it goes in `llama`. If it has `_exps` expert tensors, it goes in `moe`. If it has SSM tensors (`ssm_*`) and a `full_attention_interval` metadata key but no MoE tensors, it goes in `hybrid`.
+
+3. **Register and test.**
+
+   a. Add the architecture name to the family's constant array (`LLAMA_FAMILY`, `MOE_FAMILY`, `HYBRID_FAMILY`, or `MAMBA_FAMILY`).
+
+   b. If the architecture needs a custom compute-buffer tuning curve, add a match arm in `ananke/src/estimator/compute_buffer.rs::tuning_for()`. The formula is `base + slope * (ctx / 1024)` MiB per device. Use the pattern from existing entries: calibrate against actual llama.cpp measurements at several context lengths, pick a base that covers the worst case, and keep the slope as low as the data allows.
+
+   c. Add a unit test in the family module that exercises the key behaviour (KV computation, layer collection, expert detection, etc.). Use `synth_gguf::Builder` from `ananke/tests/common/mod.rs` to construct a fake GGUF summary, or write one inline with the same pattern.
+
+   d. Run the full test suite: `cargo test --workspace --all-features` and `cargo clippy --all-targets --all-features -- -D warnings`.
+
+**Reference implementation:** the `dump-gguf` example at `ananke/examples/dump-gguf.rs` is the canonical tool for gathering GGUF metadata. The llama.cpp source (ask the operator where it lives) is the ground truth for tensor naming, metadata keys, and architecture classification. When in doubt about how a tensor is routed at runtime, check `llama-arch.cpp` (`LLM_TENSOR_NAMES`, `LLM_ARCH_NAMES`, `llm_arch_is_hybrid`), `llama-model.cpp` (hparams loading), and `llama-memory*.cpp` (KV cache vs recurrent state).
+
 ## TypeScript code style
 
 The same correctness-first mindset that governs the Rust side applies here: TypeScript's type system is strong enough to encode most of the same invariants, and it should be pushed to do so. "Just cast it" is not an acceptable answer.

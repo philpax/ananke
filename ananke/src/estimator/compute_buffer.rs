@@ -89,6 +89,15 @@ fn tuning_for(summary: &GgufSummary) -> Tuning {
             slope: 7,
         },
 
+        // Hybrid dense + SSM (Qwen 3.5+ dense, e.g. qwen3.6-27b).
+        // Same 1-in-N full-attention pattern as qwen35moe but with
+        // standard dense FFNs and smaller KV (256-dim K/V vs 128+128
+        // in the MoE variant). The SSM state is absorbed by the base.
+        "qwen35" => Tuning {
+            base: 800,
+            slope: 6,
+        },
+
         // Pure Mamba / SSM: no standard KV cache, so the compute buffer
         // is almost flat in context. Recurrent state lives in the per-
         // layer tensors, which the weights accounting already covers.

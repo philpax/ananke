@@ -11,7 +11,6 @@ use std::{cmp::Reverse, collections::BTreeMap};
 use smol_str::SmolStr;
 
 use super::{
-    kv,
     llama::{collect_non_layer, layer_index},
     types::{Estimate, EstimatorInputs},
 };
@@ -107,48 +106,10 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         + non_layer.token_embd_bytes
         + non_layer.other_bytes;
 
-    // KV: same formula as llama-family.
-    let n_kv_heads = summary
-        .metadata
-        .get(&*format!("{arch}.attention.head_count_kv"))
-        .and_then(|v| v.as_u32())
-        .unwrap_or(0) as u64;
-    let key_length = summary
-        .metadata
-        .get(&*format!("{arch}.attention.key_length"))
-        .and_then(|v| v.as_u32())
-        .unwrap_or(128) as u64;
-    let value_length = summary
-        .metadata
-        .get(&*format!("{arch}.attention.value_length"))
-        .and_then(|v| v.as_u32())
-        .unwrap_or(128) as u64;
-
-    let cache_k = inputs.cache_type_k.unwrap_or("f16");
-    let cache_v = inputs.cache_type_v.unwrap_or("f16");
-
-    // Hybrid families (qwen35moe, and any future sibling) expose
-    // `{arch}.full_attention_interval = N`: only every `N`-th layer runs
-    // full attention, the rest use a recurrent SSM that carries constant
-    // per-layer state instead of context-dependent KV. Scale the KV
-    // down to just the full-attention layers. Absent / 1 = every layer
-    // has KV (the common case).
-    let full_attention_interval = summary
-        .metadata
-        .get(&*format!("{arch}.full_attention_interval"))
-        .and_then(|v| v.as_u32())
-        .unwrap_or(1)
-        .max(1);
-    let kv_layer_count = (n_layers / full_attention_interval) as u64;
-
-    let kv_per_token = if kv_layer_count > 0 && n_kv_heads > 0 {
-        let per_layer_bytes_kv = n_kv_heads
-            * ((key_length as f64 * kv::kv_bytes_per_element(cache_k))
-                + (value_length as f64 * kv::kv_bytes_per_element(cache_v))) as u64;
-        kv_layer_count * per_layer_bytes_kv
-    } else {
-        0
-    };
+    // Hybrid families (qwen35moe) expose `full_attention_interval`:
+    // only every N-th layer runs full attention; the rest are SSM.
+    // Reuse the shared hybrid KV logic.
+    let kv_per_token = super::hybrid::kv_for_hybrid(summary, arch, n_layers, inputs);
 
     let expert_layers: Vec<u32> = per_layer_exp
         .iter()
