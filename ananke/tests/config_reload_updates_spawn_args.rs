@@ -59,7 +59,9 @@ async fn reload_context_change_takes_effect_on_next_spawn() {
     let handle = Arc::clone(h.supervisors.first().unwrap());
 
     // First start: argv should carry the boot-time context (4096).
-    let _ = handle.ensure(ananke::supervise::EnsureSource::UserRequest).await;
+    let _ = handle
+        .ensure(ananke::supervise::EnsureSource::UserRequest)
+        .await;
     wait_running(&handle, 5_000).await;
     let first_argv = h
         .process_spawner
@@ -97,7 +99,9 @@ async fn reload_context_change_takes_effect_on_next_spawn() {
 
     // Second start: the supervisor must render argv from the live config,
     // so context=16384.
-    let _ = handle.ensure(ananke::supervise::EnsureSource::UserRequest).await;
+    let _ = handle
+        .ensure(ananke::supervise::EnsureSource::UserRequest)
+        .await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         let kids = h.process_spawner.children();

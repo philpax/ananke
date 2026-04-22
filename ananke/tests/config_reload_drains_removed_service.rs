@@ -53,8 +53,12 @@ async fn removing_service_from_config_drains_its_child_and_drops_registry() {
     // Drive both supervisors to Running so the fake spawner records two
     // live children. `ensure()` awaits a successful start or unavailable
     // reply; the echo server satisfies the health probe in either case.
-    let _ = alpha_handle.ensure(ananke::supervise::EnsureSource::UserRequest).await;
-    let _ = beta_handle.ensure(ananke::supervise::EnsureSource::UserRequest).await;
+    let _ = alpha_handle
+        .ensure(ananke::supervise::EnsureSource::UserRequest)
+        .await;
+    let _ = beta_handle
+        .ensure(ananke::supervise::EnsureSource::UserRequest)
+        .await;
 
     let alpha_pid = wait_running_pid(&alpha_handle, 5_000).await;
     let beta_pid = wait_running_pid(&beta_handle, 5_000).await;

@@ -105,7 +105,9 @@ async fn re_ensure_persistent(state: &AppState) {
             // is a no-op on non-Disabled states so it's safe to fire
             // unconditionally.
             let _ = h.enable().await;
-            let _ = h.ensure(crate::supervise::EnsureSource::BackgroundWatcher).await;
+            let _ = h
+                .ensure(crate::supervise::EnsureSource::BackgroundWatcher)
+                .await;
         });
     }
 }
