@@ -73,8 +73,8 @@ pub fn kv_for_hybrid(
     let kv_layer_count = (n_layers / full_attention_interval) as u64;
 
     if kv_layer_count > 0 && n_kv_heads > 0 {
-        let per_layer_bytes_kv = n_kv_heads
-            * ((key_length as f64 * bytes_k) + (value_length as f64 * bytes_v)) as u64;
+        let per_layer_bytes_kv =
+            n_kv_heads * ((key_length as f64 * bytes_k) + (value_length as f64 * bytes_v)) as u64;
         kv_layer_count * per_layer_bytes_kv
     } else {
         0
@@ -162,7 +162,10 @@ mod tests {
             SmolStr::new("general.architecture"),
             GgufValue::String(arch.into()),
         );
-        metadata.insert(SmolStr::new(format!("{arch}.block_count")), GgufValue::U32(n_layers));
+        metadata.insert(
+            SmolStr::new(format!("{arch}.block_count")),
+            GgufValue::U32(n_layers),
+        );
         metadata.insert(
             SmolStr::new(format!("{arch}.attention.head_count_kv")),
             GgufValue::U32(4),
