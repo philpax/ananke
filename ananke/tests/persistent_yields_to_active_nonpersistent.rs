@@ -22,7 +22,7 @@ use ananke::{
     api::openai,
     config::{DeviceSlot, Lifecycle},
     devices::{CpuSnapshot, DeviceSnapshot},
-    supervise::{EnsureFailure, EnsureResponse},
+    supervise::{EnsureFailure, EnsureResponse, EnsureSource},
 };
 use axum::{
     body::Body,
@@ -106,7 +106,7 @@ async fn persistent_yields_when_nonpersistent_peer_is_running() {
         .get("persistent")
         .expect("persistent supervisor registered");
     let resp = persistent_handle
-        .ensure()
+        .ensure(EnsureSource::BackgroundWatcher)
         .await
         .expect("ensure command delivered");
 

@@ -146,7 +146,9 @@ pub async fn spawn_oneshot(
 
     let handle2 = handle.clone();
     tokio::spawn(async move {
-        let _ = handle2.ensure().await;
+        let _ = handle2
+            .ensure(crate::supervise::EnsureSource::UserRequest)
+            .await;
     });
 
     // The TTL watcher uses a dedicated watch channel. The sender is moved

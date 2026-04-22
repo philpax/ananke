@@ -47,6 +47,21 @@ use crate::{
     tracking::{observation::ObservationTable, rolling::RollingTable},
 };
 
+/// Distinguishes who initiated an `Ensure` command. The yield rule that
+/// prevents a persistent service from evicting a running on-demand peer
+/// applies only to background-watcher re-ensures; user-driven requests must
+/// be allowed to evict idle non-persistent peers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnsureSource {
+    /// Initiated by an incoming user request (e.g. an OpenAI API call or a
+    /// boot-time provision that reflects explicit operator intent).
+    UserRequest,
+    /// Initiated by the background persistent-service watcher, which reclaims
+    /// idle VRAM but must not fight active on-demand traffic for it.
+    #[default]
+    BackgroundWatcher,
+}
+
 #[derive(Debug)]
 pub enum SupervisorCommand {
     Shutdown {
@@ -58,6 +73,7 @@ pub enum SupervisorCommand {
     /// single-shot `ack`.
     Ensure {
         ack: tokio::sync::oneshot::Sender<EnsureResponse>,
+        source: EnsureSource,
     },
     /// Record that a request was served; resets the idle timer.
     ActivityPing,
@@ -202,10 +218,13 @@ impl SupervisorHandle {
         self.mirror.lock().state.clone()
     }
 
-    pub async fn ensure(&self) -> Option<EnsureResponse> {
+    pub async fn ensure(&self, source: EnsureSource) -> Option<EnsureResponse> {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(SupervisorCommand::Ensure { ack: ack_tx })
+            .send(SupervisorCommand::Ensure {
+                ack: ack_tx,
+                source,
+            })
             .await
             .ok()?;
         ack_rx.await.ok()
@@ -445,7 +464,7 @@ pub async fn await_ensure(
     handle: &SupervisorHandle,
     max_request_duration: Duration,
 ) -> EnsureOutcome {
-    let rx = match handle.ensure().await {
+    let rx = match handle.ensure(EnsureSource::UserRequest).await {
         Some(EnsureResponse::AlreadyRunning) => {
             return EnsureOutcome::Ready {
                 was_already_running: true,
@@ -590,6 +609,10 @@ struct RunLoop {
     /// caller (via `EnsureResponse::Waiting`) and resolves to `Ok` once the
     /// fit succeeds or to `Err` on shutdown / disable / hard-reject.
     pending_ensure_bus: Option<broadcast::Sender<StartOutcome>>,
+    /// The source of the currently parked Ensure (matches the original
+    /// `EnsureSource` that entered the queue). Consulted by
+    /// `retry_queued_ensure` for the yield-to-nonpersistent check.
+    pending_ensure_source: EnsureSource,
     /// Busy peers we're waiting on for the queued Ensure. The poll-tick
     /// branch of the Idle loop does a cheap atomic-load check against
     /// these peers' inflight counters and skips the expensive estimator-
@@ -633,6 +656,7 @@ impl RunLoop {
             cancel_rx,
             start_bus_carry: None,
             pending_ensure_bus: None,
+            pending_ensure_source: EnsureSource::default(),
             queued_watch: Vec::new(),
             packed_for_spawn: None,
             oom_attempts: 0,
@@ -835,7 +859,7 @@ impl RunLoop {
                             let _ = ack.send(());
                             return Step::Exit;
                         }
-                        Some(SupervisorCommand::Ensure { ack }) => {
+                        Some(SupervisorCommand::Ensure { ack, source }) => {
                             // If there's already a queued Ensure, subscribe
                             // the new caller to the same bus (coalesce) up to
                             // `start_queue_depth`. Otherwise go through the
@@ -847,7 +871,7 @@ impl RunLoop {
                                     let rx = sender.subscribe();
                                     let _ = ack.send(EnsureResponse::Waiting { rx });
                                 }
-                            } else if self.handle_idle_ensure(ack).await {
+                            } else if self.handle_idle_ensure(ack, source).await {
                                 return Step::Continue;
                             }
                         }
@@ -895,6 +919,7 @@ impl RunLoop {
     async fn handle_idle_ensure(
         &mut self,
         ack: tokio::sync::oneshot::Sender<EnsureResponse>,
+        source: EnsureSource,
     ) -> bool {
         let snap = self.deps.snapshot.read().clone();
         let table = self.deps.allocations.lock().clone();
@@ -911,9 +936,11 @@ impl RunLoop {
                 // Before attempting eviction, check the "persistent yields to
                 // active non-persistent" rule: a persistent service about to
                 // evict a peer stands down if any non-persistent peer is
-                // Starting or Running. The watcher will re-fire on its own
-                // cadence when the pool quiets.
-                if self.should_yield_to_active_nonpersistent() {
+                // Starting or Running — but only when the ensure originated
+                // from the background watcher, not from a user request. A
+                // user explicitly asking for a persistent service should be
+                // allowed to evict idle on-demand peers.
+                if self.should_yield_to_active_nonpersistent(source) {
                     info!(
                         service = %self.init.identity.name,
                         "persistent ensure yielding to active non-persistent peer"
@@ -949,7 +976,7 @@ impl RunLoop {
                         // Shutdown/Disable/another Ensure that arrive
                         // while we're queued flow through the normal
                         // command-recv arm and drain the bus appropriately.
-                        return self.enter_queue(ack, busy_peers);
+                        return self.enter_queue(ack, busy_peers, source);
                     }
                 }
             }
@@ -992,7 +1019,7 @@ impl RunLoop {
             "fit_result computed"
         );
         if let Err(nofit) = fit_result {
-            match self.try_eviction_to_fit(&want, &nofit).await {
+            match self.try_eviction_to_fit(&want, &nofit, source).await {
                 Ok(()) => {}
                 Err(RetryPackFailure::NotPossible(reason)) => {
                     let _ = ack.send(EnsureResponse::Unavailable(
@@ -1001,7 +1028,7 @@ impl RunLoop {
                     return false;
                 }
                 Err(RetryPackFailure::WaitForBusy { busy_peers }) => {
-                    return self.enter_queue(ack, busy_peers);
+                    return self.enter_queue(ack, busy_peers, source);
                 }
             }
         }
@@ -1037,11 +1064,13 @@ impl RunLoop {
         &mut self,
         ack: tokio::sync::oneshot::Sender<EnsureResponse>,
         busy_peers: Vec<smol_str::SmolStr>,
+        source: EnsureSource,
     ) -> bool {
         let sender = tokio::sync::broadcast::channel::<StartOutcome>(16).0;
         let bus_rx = sender.subscribe();
         let _ = ack.send(EnsureResponse::Waiting { rx: bus_rx });
         self.pending_ensure_bus = Some(sender);
+        self.pending_ensure_source = source;
         self.queued_watch = busy_peers;
         false
     }
@@ -1059,13 +1088,14 @@ impl RunLoop {
     /// is what keeps a 30-second wait from producing 60+ GGUF reads and
     /// 180+ info log lines.
     async fn retry_queued_ensure(&mut self) -> bool {
-        // Same yield rule as `handle_idle_ensure`: a persistent service
-        // queued behind a busy peer stands down the moment any
-        // non-persistent peer enters Starting/Running. Without this, a
-        // watcher-driven queued ensure would wait for the peer to finish
-        // loading and then immediately evict it — exactly the pathology
-        // we're trying to avoid.
-        if self.should_yield_to_active_nonpersistent() {
+        // Same yield rule as `handle_idle_ensure`: a background-watcher-driven
+        // persistent ensure queued behind a busy peer stands down the moment
+        // any non-persistent peer enters Starting/Running. Without this check,
+        // the watcher would wait for the peer to finish loading and then
+        // immediately evict it — the exact opposite of what it should do.
+        // User-driven ensures are exempt: they may proceed to eviction.
+        let source = self.pending_ensure_source;
+        if self.should_yield_to_active_nonpersistent(source) {
             info!(
                 service = %self.init.identity.name,
                 "queued persistent ensure yielding to active non-persistent peer"
@@ -1124,7 +1154,7 @@ impl RunLoop {
             )
         };
         if let Err(nofit) = fit_result {
-            match self.try_eviction_to_fit(&want, &nofit).await {
+            match self.try_eviction_to_fit(&want, &nofit, source).await {
                 Ok(()) => {}
                 Err(RetryPackFailure::NotPossible(reason)) => {
                     self.fail_queue(StartFailureKind::LaunchFailed, reason);
@@ -1429,14 +1459,13 @@ impl RunLoop {
         &mut self,
         want: &std::collections::BTreeMap<crate::config::DeviceSlot, u64>,
         nofit: &crate::allocator::NoFit,
+        source: EnsureSource,
     ) -> Result<(), RetryPackFailure> {
         // Matching the check in `handle_idle_ensure` and
-        // `retry_queued_ensure`: a persistent service about to evict
-        // peers yields when a non-persistent peer is actively loading or
-        // running. Covers the case where the initial pack succeeds but
-        // `can_fit` reports a deficit that would otherwise trigger
-        // eviction here.
-        if self.should_yield_to_active_nonpersistent() {
+        // `retry_queued_ensure`: a background-watcher-driven persistent
+        // ensure yields when a non-persistent peer is actively loading or
+        // running. User-driven ensures may proceed to eviction.
+        if self.should_yield_to_active_nonpersistent(source) {
             info!(
                 service = %self.init.identity.name,
                 "persistent ensure yielding to active non-persistent peer (post-pack fit)"
@@ -1606,7 +1635,13 @@ impl RunLoop {
     /// rather than snipe a peer that's in the middle of loading or
     /// running. The persistent watcher will retry on its own cadence
     /// when the pool quiets, so there's no reclamation-deadline pressure.
-    fn should_yield_to_active_nonpersistent(&self) -> bool {
+    fn should_yield_to_active_nonpersistent(&self, source: EnsureSource) -> bool {
+        // User-driven requests are allowed to evict idle on-demand peers
+        // regardless of their running state; only background watcher re-ensures
+        // should stand down when a non-persistent peer is active.
+        if source == EnsureSource::UserRequest {
+            return false;
+        }
         if self.current_svc().lifecycle != crate::config::Lifecycle::Persistent {
             return false;
         }
@@ -2016,7 +2051,7 @@ impl RunLoop {
                 let _ = ack.send(());
                 RunningOutcome::Exit
             }
-            Some(SupervisorCommand::Ensure { ack }) => {
+            Some(SupervisorCommand::Ensure { ack, .. }) => {
                 let _ = ack.send(EnsureResponse::AlreadyRunning);
                 RunningOutcome::Continue
             }
@@ -2089,7 +2124,7 @@ impl RunLoop {
                 let _ = ack.send(());
                 StartingOutcome::Exit
             }
-            Some(SupervisorCommand::Ensure { ack }) => {
+            Some(SupervisorCommand::Ensure { ack, .. }) => {
                 // Already in Starting; subscribe to existing bus or report running.
                 if let Some(sender) = self.start_bus_carry.as_ref() {
                     if sender.receiver_count() >= self.current_svc().start_queue_depth {
@@ -2220,7 +2255,7 @@ impl RunLoop {
                         let _ = ack.send(());
                         Step::Exit
                     }
-                    Some(SupervisorCommand::Ensure { ack }) => {
+                    Some(SupervisorCommand::Ensure { ack, .. }) => {
                         // Surface a meaningful failure instead of dropping
                         // the ack: the client would otherwise see
                         // "supervisor unreachable", which doesn't tell them
@@ -2269,7 +2304,7 @@ impl RunLoop {
                     let _ = ack.send(());
                     return Step::Exit;
                 }
-                Some(SupervisorCommand::Ensure { ack }) => {
+                Some(SupervisorCommand::Ensure { ack, .. }) => {
                     let _ = ack.send(EnsureResponse::Unavailable(EnsureFailure::ServiceDisabled(
                         "service disabled".into(),
                     )));

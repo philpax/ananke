@@ -101,7 +101,9 @@ pub async fn provision_service(
     if matches!(svc.lifecycle, Lifecycle::Persistent) {
         let h = handle.clone();
         tokio::spawn(async move {
-            let _ = h.ensure().await;
+            let _ = h
+                .ensure(crate::supervise::EnsureSource::BackgroundWatcher)
+                .await;
         });
     }
 
