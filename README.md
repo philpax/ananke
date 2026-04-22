@@ -15,7 +15,7 @@ ananke manages when services are loaded into memory:
 
 ananke is designed to oversubscribe GPU memory by dynamically managing which models are active:
 
-- **LlamaCpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage, preventing the "silent fallback" issues where models load on CPU without warning.
+- **llama.cpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage, preventing the "silent fallback" issues where models load on CPU without warning.
 - **Command Services**: Support two allocation modes:
   - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
   - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
@@ -137,7 +137,7 @@ reserved_gb = 8                  # Reserve 8GB of CPU RAM
 
 Services are defined as an array of `[[service]]` blocks.
 
-#### LlamaCpp Template
+#### llama.cpp Template
 
 Used for GGUF models via llama.cpp.
 
