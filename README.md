@@ -5,35 +5,41 @@ Ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple Large L
 ## Core Concepts
 
 ### Service Lifecycles
+
 Ananke manages when services are loaded into memory:
+
 - **On-Demand (Default)**: Services are loaded only when a request arrives. They are unloaded after a configurable `idle_timeout` (default: 10m) to free up VRAM.
 - **Persistent**: Services stay loaded in memory indefinitely, ensuring zero-latency startup for critical models.
 
 ### Resource Allocation & VRAM
+
 Ananke is designed to oversubscribe GPU memory by dynamically managing which models are active:
+
 - **LlamaCpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. Ananke uses an internal GGUF-aware estimator to track usage, preventing the "silent fallback" issues where models load on CPU without warning.
 - **Command Services**: Support two allocation modes:
-    - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
-    - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
+  - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
+  - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
 - **Eviction**: When VRAM is exhausted, Ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
 
 ### Placement Policies
+
 - `gpu-only`: Service must reside entirely on GPU.
 - `cpu-only`: Service resides entirely on CPU.
 - `hybrid`: Allows a mix of GPU and CPU (e.g., using `override_tensor` for specific CPU offloading).
 
 ### Service States
+
 Ananke tracks each service through a state machine:
 
-| State | Description |
-|---|---|
-| `idle` | Service is unloaded, waiting for requests |
-| `starting` | Service is launching, waiting for health check |
-| `running` | Service is healthy and accepting traffic |
-| `draining` | Service is shutting down, waiting for inflight requests |
-| `stopped` | Service was explicitly stopped |
-| `evicted` | Service was displaced by a higher-priority model |
-| `failed` | Service failed to start (with retry backoff, up to 3 attempts) |
+| State      | Description                                                                                                                                    |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idle`     | Service is unloaded, waiting for requests                                                                                                      |
+| `starting` | Service is launching, waiting for health check                                                                                                 |
+| `running`  | Service is healthy and accepting traffic                                                                                                       |
+| `draining` | Service is shutting down, waiting for inflight requests                                                                                        |
+| `stopped`  | Service was explicitly stopped                                                                                                                 |
+| `evicted`  | Service was displaced by a higher-priority model                                                                                               |
+| `failed`   | Service failed to start (with retry backoff, up to 3 attempts)                                                                                 |
 | `disabled` | Service is permanently disabled (reason: `launch_failed`, `health_timeout`, `oom`, `crash_loop`, `no_fit`, `config_error`, or `user_disabled`) |
 
 ## Components
@@ -45,20 +51,25 @@ Ananke tracks each service through a state machine:
 ## Getting Started
 
 ### Prerequisites
+
 - Rust toolchain
 - NVIDIA GPU (for CUDA support)
 - `nvml-wrapper` (required for GPU detection and VRAM tracking)
 
 ### Installation
+
 ```bash
 git clone <repository-url>
 cd ananke
 cargo build --release
 ```
+
 Binaries are located in `target/release/ananke` and `target/release/anankectl`.
 
 ### Configuration Resolution
+
 Ananke searches for its configuration file in the following priority:
+
 1. `ANANKE_CONFIG` environment variable.
 2. `--config` CLI argument.
 3. `$XDG_CONFIG_HOME/ananke/config.toml`
@@ -78,6 +89,7 @@ Both the Management API (`management_listen`) and per-service reverse proxies (`
 Ananke uses a TOML configuration.
 
 ### Daemon Settings
+
 ```toml
 [daemon]
 management_listen = "0.0.0.0:7071"
@@ -88,6 +100,7 @@ shutdown_timeout = "120s"         # Max time to wait for services to drain
 ```
 
 ### OpenAI API Settings
+
 ```toml
 [openai_api]
 listen = "0.0.0.0:7070"
@@ -96,6 +109,7 @@ max_request_duration = "10m"     # Max wall-clock duration per proxied request
 ```
 
 ### Global Defaults
+
 These values apply to all services unless overridden per-service:
 
 ```toml
@@ -105,6 +119,7 @@ priority = 50                    # Default eviction priority
 ```
 
 ### Device Configuration
+
 Control which GPUs are used and how much VRAM is reserved for the system:
 
 ```toml
@@ -119,10 +134,13 @@ reserved_gb = 8                  # Reserve 8GB of CPU RAM
 ```
 
 ### Service Configuration
+
 Services are defined as an array of `[[service]]` blocks.
 
 #### LlamaCpp Template
+
 Used for GGUF models via llama.cpp.
+
 ```toml
 [[service]]
 name = "gemma-4"
@@ -154,7 +172,9 @@ top_p = 0.95
 ```
 
 #### Command Template
+
 Used for arbitrary binaries or Docker wrappers.
+
 ```toml
 [[service]]
 name = "comfyui"
@@ -178,6 +198,7 @@ timeout = "30s"
 The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. Ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
 
 ### Advanced Service Options
+
 - **Filters**: Modify requests before they reach the model.
   ```toml
   [service.filters]
@@ -197,6 +218,7 @@ The `shutdown_command` field is particularly useful for external processes (like
   ```
 
 ### Service Inheritance
+
 Services can inherit configuration from other services using `extends`. This is useful for sharing common settings across related models:
 
 ```toml
@@ -226,6 +248,7 @@ model = "/models/gemma-4-31B.gguf"
 - Cross-template inheritance is an error.
 
 ### Service Migration
+
 When renaming a service, use `migrate_from` to preserve database history:
 
 ```toml
@@ -277,6 +300,7 @@ placement = "gpu-only"
 ## Config Hot-Reload
 
 Ananke watches its config file for changes and automatically reloads when modifications are detected. The reload process:
+
 1. Parses and validates the new config.
 2. Preflights GGUF models (catching dtype/shard issues before traffic hits them).
 3. Spawns added services and drains removed ones.
@@ -288,13 +312,13 @@ Failed reloads are silently ignored — the previous valid config remains in eff
 
 The management API exposes a WebSocket endpoint at `/api/events` that delivers real-time state changes:
 
-| Event | Description |
-|---|---|
-| `state_changed` | Service entered a new state (e.g., `idle` → `starting`) |
-| `allocation_changed` | VRAM reservation changed for a service |
-| `config_reloaded` | Config was reloaded, with list of changed services |
-| `estimator_drift` | VRAM estimator detected significant drift from actual usage |
-| `overflow` | Event buffer overflow (some events were dropped) |
+| Event                | Description                                                 |
+| -------------------- | ----------------------------------------------------------- |
+| `state_changed`      | Service entered a new state (e.g., `idle` → `starting`)     |
+| `allocation_changed` | VRAM reservation changed for a service                      |
+| `config_reloaded`    | Config was reloaded, with list of changed services          |
+| `estimator_drift`    | VRAM estimator detected significant drift from actual usage |
+| `overflow`           | Event buffer overflow (some events were dropped)            |
 
 ## Using `anankectl`
 
@@ -331,7 +355,9 @@ anankectl oneshot kill <id>     # Cancel a running oneshot
 If you're looking for model management tools, you may also want to consider:
 
 ### llama-swap ([mostlygeek/llama-swap](https://github.com/mostlygeek/llama-swap))
+
 A well-established Go proxy with 3.5k+ stars. It's excellent if you want to:
+
 - Set up your services ahead of time and know exactly which device each model runs on.
 - Support diverse upstream servers beyond llama.cpp (vLLM, tabbyAPI, stable-diffusion.cpp).
 - Use a built-in web UI for model management.
@@ -339,7 +365,9 @@ A well-established Go proxy with 3.5k+ stars. It's excellent if you want to:
 llama-swap excels at simplicity: one binary, one YAML config, and a DSL matrix for concurrent model loading. However, it does not track VRAM usage — you must manually ensure models fit together on your GPU.
 
 ### Large Model Proxy ([perk11/large-model-proxy](https://github.com/perk11/large-model-proxy))
+
 A smaller Go proxy with built-in VRAM awareness. It's a good fit if you:
+
 - Want resource-aware loading with manual VRAM/RAM declarations per service.
 - Prefer a web dashboard for monitoring service status and connections.
 - Need straightforward LRU-based eviction when resources are exhausted.
@@ -348,21 +376,21 @@ Like llama-swap, it requires you to declare the VRAM each model will consume ahe
 
 ### How Ananke Compares
 
-| Feature | Ananke | llama-swap | Large Model Proxy |
-|---|---|---|---|
-| Language | Rust | Go | Go |
-| VRAM estimation | **Automatic** (GGUF-aware) | Manual (user-managed) | Manual (declared per model) |
-| Service templates | `llama-cpp`, `command` | Any upstream server | Any command |
-| Eviction strategy | Priority-based | LRU (via matrix) | LRU |
-| Config hot-reload | Yes, with preflight | Yes | No |
-| CLI tool | `anankectl` (comprehensive) | Basic HTTP API | Basic HTTP API |
-| Management API | REST + WebSocket events | REST | REST + Web Dashboard |
-| Service inheritance | `extends` with deep merge | Macros | No |
-| Temporary services | Oneshot API with TTL | TTL per model | TTL per model |
-| GPU/CPU hybrid | `hybrid` placement | No | No |
-| Health checks | Configurable HTTP probes | Optional | Optional |
-| State machine | Full lifecycle tracking | Implicit | Implicit |
-| Security warnings | Documented | Documented | Documented |
+| Feature             | Ananke                      | llama-swap            | Large Model Proxy           |
+| ------------------- | --------------------------- | --------------------- | --------------------------- |
+| Language            | Rust                        | Go                    | Go                          |
+| VRAM estimation     | **Automatic** (GGUF-aware)  | Manual (user-managed) | Manual (declared per model) |
+| Service templates   | `llama-cpp`, `command`      | Any upstream server   | Any command                 |
+| Eviction strategy   | Priority-based              | LRU (via matrix)      | LRU                         |
+| Config hot-reload   | Yes, with preflight         | Yes                   | No                          |
+| CLI tool            | `anankectl` (comprehensive) | Basic HTTP API        | Basic HTTP API              |
+| Management API      | REST + WebSocket events     | REST                  | REST + Web Dashboard        |
+| Service inheritance | `extends` with deep merge   | Macros                | No                          |
+| Temporary services  | Oneshot API with TTL        | TTL per model         | TTL per model               |
+| GPU/CPU hybrid      | `hybrid` placement          | No                    | No                          |
+| Health checks       | Configurable HTTP probes    | Optional              | Optional                    |
+| State machine       | Full lifecycle tracking     | Implicit              | Implicit                    |
+| Security warnings   | Documented                  | Documented            | Documented                  |
 
 **Choose Ananke if:** You want automatic VRAM estimation (no manual declarations needed), robust state management with a full lifecycle state machine, and a polished CLI/API for programmatic management. Ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
 
@@ -373,38 +401,40 @@ Like llama-swap, it requires you to declare the VRAM each model will consume ahe
 ## API Reference
 
 ### OpenAI API
+
 Available at `http://<host>:7070/v1`.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/v1/models` | GET | List available models and their states |
-| `/v1/chat/completions` | POST | Chat completions (proxy to upstream) |
-| `/v1/completions` | POST | Legacy completions (proxy to upstream) |
-| `/v1/embeddings` | POST | Embeddings (proxy to upstream) |
+| Endpoint               | Method | Description                            |
+| ---------------------- | ------ | -------------------------------------- |
+| `/v1/models`           | GET    | List available models and their states |
+| `/v1/chat/completions` | POST   | Chat completions (proxy to upstream)   |
+| `/v1/completions`      | POST   | Legacy completions (proxy to upstream) |
+| `/v1/embeddings`       | POST   | Embeddings (proxy to upstream)         |
 
 Other standard OpenAI endpoints return appropriate HTTP 501 "not implemented" responses.
 
 ### Management API
+
 Available at `http://<host>:7071`. Used by `anankectl` to orchestrate the daemon.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/services` | GET | List all services |
-| `/api/services/:name` | GET | Get service detail (with recent logs) |
-| `/api/services/:name/start` | POST | Start a service |
-| `/api/services/:name/stop` | POST | Stop a service |
-| `/api/services/:name/restart` | POST | Restart a service |
-| `/api/services/:name/enable` | POST | Enable a disabled service |
-| `/api/services/:name/disable` | POST | Disable a service |
-| `/api/services/:name/logs` | GET | Get recent logs for a service |
-| `/api/services/:name/logs/stream` | GET (WS) | Stream logs for a service |
-| `/api/devices` | GET | Device/VRAM status |
-| `/api/config` | GET | Get current config (with ETag hash) |
-| `/api/config` | PUT | Atomically update config |
-| `/api/config/validate` | POST | Validate TOML without persisting |
-| `/api/oneshot` | POST | Spawn a short-lived service |
-| `/api/oneshot` | GET | List oneshot services |
-| `/api/oneshot/:id` | GET | Get oneshot status |
-| `/api/oneshot/:id` | DELETE | Delete a oneshot service |
-| `/api/events` | GET (WS) | WebSocket for real-time events |
-| `/api/openapi.json` | GET | OpenAPI spec |
+| Endpoint                          | Method   | Description                           |
+| --------------------------------- | -------- | ------------------------------------- |
+| `/api/services`                   | GET      | List all services                     |
+| `/api/services/:name`             | GET      | Get service detail (with recent logs) |
+| `/api/services/:name/start`       | POST     | Start a service                       |
+| `/api/services/:name/stop`        | POST     | Stop a service                        |
+| `/api/services/:name/restart`     | POST     | Restart a service                     |
+| `/api/services/:name/enable`      | POST     | Enable a disabled service             |
+| `/api/services/:name/disable`     | POST     | Disable a service                     |
+| `/api/services/:name/logs`        | GET      | Get recent logs for a service         |
+| `/api/services/:name/logs/stream` | GET (WS) | Stream logs for a service             |
+| `/api/devices`                    | GET      | Device/VRAM status                    |
+| `/api/config`                     | GET      | Get current config (with ETag hash)   |
+| `/api/config`                     | PUT      | Atomically update config              |
+| `/api/config/validate`            | POST     | Validate TOML without persisting      |
+| `/api/oneshot`                    | POST     | Spawn a short-lived service           |
+| `/api/oneshot`                    | GET      | List oneshot services                 |
+| `/api/oneshot/:id`                | GET      | Get oneshot status                    |
+| `/api/oneshot/:id`                | DELETE   | Delete a oneshot service              |
+| `/api/events`                     | GET (WS) | WebSocket for real-time events        |
+| `/api/openapi.json`               | GET      | OpenAPI spec                          |
