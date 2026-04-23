@@ -1918,6 +1918,15 @@ impl RunLoop {
                 let next = transition(&self.read_state(), StateEvent::HealthPassed);
                 self.set_state(next);
 
+                // Reset the idle window at the moment the service becomes
+                // ready. Without this, a stale `last_activity` (left over
+                // from the request that preceded the most recent drain) can
+                // make the idle deadline already elapsed on the first poll
+                // of `run_running_loop`'s select, racing the waiter's
+                // post-`await_ensure` ping and draining the freshly-spawned
+                // child before it can serve the request that started it.
+                *self.init.last_activity.lock() = tokio::time::Instant::now();
+
                 if let Some(bus) = self.start_bus_carry.take() {
                     let _ = bus.send(StartOutcome::Ok);
                 }
