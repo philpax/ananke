@@ -126,21 +126,51 @@ function ServiceRow({
         <td className="p-2 tabular-nums">{svc.priority}</td>
         <td className="p-2 tabular-nums text-xs">{svc.pid ?? "—"}</td>
         <td className="p-2 whitespace-nowrap">
-          <Btn onClick={() => onLifecycle("start")} disabled={pending}>
-            Start
-          </Btn>
-          <Btn onClick={() => onLifecycle("stop")} disabled={pending}>
-            Stop
-          </Btn>
-          <Btn onClick={() => onLifecycle("restart")} disabled={pending}>
-            Restart
-          </Btn>
-          <Btn onClick={() => onLifecycle("enable")} disabled={pending}>
-            Enable
-          </Btn>
-          <Btn onClick={() => onLifecycle("disable")} disabled={pending}>
-            Disable
-          </Btn>
+          {["idle", "stopped", "failed", "evicted"].includes(svc.state) && (
+            <Btn
+              variant="start"
+              onClick={() => onLifecycle("start")}
+              disabled={pending}
+            >
+              Start
+            </Btn>
+          )}
+          {["running", "starting", "draining"].includes(svc.state) && (
+            <>
+              <Btn
+                variant="stop"
+                onClick={() => onLifecycle("stop")}
+                disabled={pending}
+              >
+                Stop
+              </Btn>
+              <Btn
+                variant="restart"
+                onClick={() => onLifecycle("restart")}
+                disabled={pending}
+              >
+                Restart
+              </Btn>
+            </>
+          )}
+          {svc.state.startsWith("disabled") && (
+            <Btn
+              variant="enable"
+              onClick={() => onLifecycle("enable")}
+              disabled={pending}
+            >
+              Enable
+            </Btn>
+          )}
+          {!svc.state.startsWith("disabled") && (
+            <Btn
+              variant="disable"
+              onClick={() => onLifecycle("disable")}
+              disabled={pending}
+            >
+              Disable
+            </Btn>
+          )}
         </td>
       </tr>
       {expanded && (
@@ -158,14 +188,30 @@ function Btn({
   children,
   onClick,
   disabled,
+  variant = "default",
 }: {
   children: React.ReactNode;
   onClick: () => void;
   disabled: boolean;
+  variant?: "start" | "stop" | "restart" | "enable" | "disable" | "default";
 }) {
+  const styles = {
+    default:
+      "border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50",
+    start:
+      "border-green-300 dark:border-green-800 text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/40",
+    stop: "border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40",
+    restart:
+      "border-orange-300 dark:border-orange-800 text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 hover:bg-orange-100 dark:hover:bg-orange-900/40",
+    enable:
+      "border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40",
+    disable:
+      "border-gray-400 dark:border-gray-600 text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700",
+  };
+
   return (
     <button
-      className="mr-1 px-2 py-0.5 text-xs border border-gray-300 dark:border-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-700/50 disabled:opacity-40 disabled:cursor-not-allowed"
+      className={`mr-1 px-2 py-0.5 text-xs border rounded disabled:opacity-40 disabled:cursor-not-allowed ${styles[variant]}`}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
