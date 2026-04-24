@@ -1,52 +1,11 @@
 # ananke
 
+> [!WARNING]  
+> This codebase is somewhere between "copilot" and "auto" on the [ai-declaration.md](https://ai-declaration.md/en/0.1.2/) scale. It was extruded from a spec that was authored by Claude on my guidance. Since then, I have been steadily adjusting it and fixing bugs that I encounter.
+>
+> I would not recommend that you use this unless you are able to diagnose and fix issues yourself. It won't destroy your system, but it may also not behave as expected. This was built to solve a problem I have; it'll take some time before I can be confident in saying that it can solve your problem, too.
+
 ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple Large Language Model (LLM) services and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
-
-## Core Concepts
-
-### Service Lifecycles
-
-ananke manages when services are loaded into memory:
-
-- **On-Demand (Default)**: Services are loaded only when a request arrives. They are unloaded after a configurable `idle_timeout` (default: 10m) to free up VRAM.
-- **Persistent**: Services stay loaded in memory indefinitely, ensuring zero-latency startup for critical models.
-
-### Resource Allocation & VRAM
-
-ananke is designed to oversubscribe GPU memory by dynamically managing which models are active:
-
-- **llama.cpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage, preventing the "silent fallback" issues where models load on CPU without warning.
-- **Command Services**: Support two allocation modes:
-  - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
-  - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
-- **Eviction**: When VRAM is exhausted, ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
-
-### Placement Policies
-
-- `gpu-only`: Service must reside entirely on GPU.
-- `cpu-only`: Service resides entirely on CPU.
-- `hybrid`: Allows a mix of GPU and CPU (e.g., using `override_tensor` for specific CPU offloading).
-
-### Service States
-
-ananke tracks each service through a state machine:
-
-| State      | Description                                                                                                                                    |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `idle`     | Service is unloaded, waiting for requests                                                                                                      |
-| `starting` | Service is launching, waiting for health check                                                                                                 |
-| `running`  | Service is healthy and accepting traffic                                                                                                       |
-| `draining` | Service is shutting down, waiting for inflight requests                                                                                        |
-| `stopped`  | Service was explicitly stopped                                                                                                                 |
-| `evicted`  | Service was displaced by a higher-priority model                                                                                               |
-| `failed`   | Service failed to start (with retry backoff, up to 3 attempts)                                                                                 |
-| `disabled` | Service is permanently disabled (reason: `launch_failed`, `health_timeout`, `oom`, `crash_loop`, `no_fit`, `config_error`, or `user_disabled`) |
-
-## Components
-
-- `ananke`: The core daemon responsible for supervision, resource allocation, and proxying.
-- `ananke-api`: The API layer providing the OpenAI-compatible interface and management endpoints.
-- `anankectl`: A CLI tool for managing the daemon and its services.
 
 ## Getting Started
 
@@ -59,12 +18,50 @@ ananke tracks each service through a state machine:
 ### Installation
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/philpax/ananke.git
 cd ananke
-cargo build --release
+cargo build
 ```
 
-Binaries are located in `target/release/ananke` and `target/release/anankectl`.
+Binaries are located in `target/debug/ananke` and `target/debug/anankectl`.
+
+### Quick Start
+
+Create a minimal config at `~/.config/ananke/config.toml`:
+
+```toml
+[openai_api]
+listen = "127.0.0.1:7070"
+
+[daemon]
+management_listen = "127.0.0.1:7071"
+
+[devices]
+gpu_ids = [0]
+
+[[service]]
+name = "my-model"
+template = "llama-cpp"
+port = 8200
+model = "/path/to/model.gguf"
+lifecycle = "on_demand"
+```
+
+Start the daemon:
+
+```bash
+ananke
+```
+
+Send a request:
+
+```bash
+curl http://127.0.0.1:7070/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "my-model", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+ananke will automatically load the model on first request, serve the response, then unload it after 10 minutes of idle time to free VRAM.
 
 ### Configuration Resolution
 
@@ -76,13 +73,11 @@ ananke searches for its configuration file in the following priority:
 4. `~/.config/ananke/config.toml`
 5. `/etc/ananke/config.toml`
 
-## Security Note
+## Components
 
-Both the Management API (`management_listen`) and per-service reverse proxies (`allow_external_services`) are **unauthenticated**. If you bind them to non-loopback addresses:
-
-- Trust your network perimeter (e.g., Tailscale, a private VLAN).
-- Terminate TLS and authentication at a reverse proxy in front of ananke.
-- Never expose these ports directly to the public internet.
+- `ananke`: The core daemon responsible for supervision, resource allocation, and proxying.
+- `ananke-api`: The API layer providing the OpenAI-compatible interface and management endpoints.
+- `anankectl`: A CLI tool for managing the daemon and its services.
 
 ## Configuration Guide
 
@@ -98,6 +93,12 @@ allow_external_services = true   # Allow public access to individual model ports
 data_dir = "./data"
 shutdown_timeout = "120s"         # Max time to wait for services to drain
 ```
+
+> **Security Note:** Both the Management API (`management_listen`) and per-service reverse proxies (`allow_external_services`) are **unauthenticated**. If you bind them to non-loopback addresses:
+>
+> - Trust your network perimeter (e.g., Tailscale, a private VLAN).
+> - Terminate TLS and authentication at a reverse proxy in front of ananke.
+> - Never expose these ports directly to the public internet.
 
 ### OpenAI API Settings
 
@@ -136,6 +137,36 @@ reserved_gb = 8                  # Reserve 8GB of CPU RAM
 ### Service Configuration
 
 Services are defined as an array of `[[service]]` blocks.
+
+#### Service Lifecycles
+
+Each service runs in one of two modes:
+
+- **On-Demand (Default)**: Loaded only when a request arrives. Unloaded after a configurable `idle_timeout` (default: 10m) to free up VRAM.
+- **Persistent**: Stays loaded in memory indefinitely, ensuring zero-latency startup for critical models.
+
+```toml
+[[service]]
+name = "my-model"
+template = "llama-cpp"
+lifecycle = "on_demand"   # or "persistent"
+```
+
+#### Resource Allocation & VRAM
+
+ananke oversubscribes GPU memory by dynamically managing which models are active:
+
+- **llama.cpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage.
+- **Command Services**: Support two allocation modes:
+  - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
+  - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
+- **Eviction**: When VRAM is exhausted, ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
+
+#### Placement Policies
+
+- `gpu-only`: Service must reside entirely on GPU.
+- `cpu-only`: Service resides entirely on CPU.
+- `hybrid`: Allows a mix of GPU and CPU (e.g., using `override_tensor` for specific CPU offloading).
 
 #### llama.cpp Template
 
@@ -260,6 +291,21 @@ port = 8200
 model = "/models/gemma-4-31B.gguf"
 ```
 
+### Service States
+
+ananke tracks each service through a state machine:
+
+| State      | Description                                                                                                                                    |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idle`     | Service is unloaded, waiting for requests                                                                                                      |
+| `starting` | Service is launching, waiting for health check                                                                                                 |
+| `running`  | Service is healthy and accepting traffic                                                                                                       |
+| `draining` | Service is shutting down, waiting for inflight requests                                                                                        |
+| `stopped`  | Service was explicitly stopped                                                                                                                 |
+| `evicted`  | Service was displaced by a higher-priority model                                                                                               |
+| `failed`   | Service failed to start (with retry backoff, up to 3 attempts)                                                                                 |
+| `disabled` | Service is permanently disabled (reason: `launch_failed`, `health_timeout`, `oom`, `crash_loop`, `no_fit`, `config_error`, or `user_disabled`) |
+
 ## Oneshot API
 
 For temporary inference tasks that don't need a persistent config entry, ananke supports spawning short-lived services via the API:
@@ -306,7 +352,7 @@ ananke watches its config file for changes and automatically reloads when modifi
 3. Spawns added services and drains removed ones.
 4. Publishes a `config_reloaded` event via the WebSocket endpoint.
 
-Failed reloads are silently ignored — the previous valid config remains in effect.
+Failed reloads are silently ignored - the previous valid config remains in effect.
 
 ## Real-Time Events
 
@@ -358,45 +404,40 @@ If you're looking for model management tools, you may also want to consider:
 
 A well-established Go proxy with 3.5k+ stars. It's excellent if you want to:
 
-- Set up your services ahead of time and know exactly which device each model runs on.
 - Support diverse upstream servers beyond llama.cpp (vLLM, tabbyAPI, stable-diffusion.cpp).
-- Use a built-in web UI for model management.
+- Use a built-in web UI for interacting with your models.
+- Define concurrent model combinations with a solver-based DSL matrix.
 
-llama-swap excels at simplicity: one binary, one YAML config, and a DSL matrix for concurrent model loading. However, it does not track VRAM usage — you must manually ensure models fit together on your GPU.
+llama-swap uses a matrix of valid model sets with a solver that picks the cheapest eviction when a new model is requested. It does not track VRAM - you must manually ensure models fit together on your GPU.
 
 ### Large Model Proxy ([perk11/large-model-proxy](https://github.com/perk11/large-model-proxy))
 
-A smaller Go proxy with built-in VRAM awareness. It's a good fit if you:
+A smaller Go proxy with resource pool management. It's a good fit if you:
 
-- Want resource-aware loading with manual VRAM/RAM declarations per service.
-- Prefer a web dashboard for monitoring service status and connections.
-- Need straightforward LRU-based eviction when resources are exhausted.
+- Want resource-aware loading with manual VRAM/RAM declarations per service into shared pools.
+- Need straightforward LRU-based eviction when the resource pool is exhausted.
 
 Like llama-swap, it requires you to declare the VRAM each model will consume ahead of time.
 
 ### How ananke Compares
 
-| Feature             | ananke                      | llama-swap            | Large Model Proxy           |
-| ------------------- | --------------------------- | --------------------- | --------------------------- |
-| Language            | Rust                        | Go                    | Go                          |
-| VRAM estimation     | **Automatic** (GGUF-aware)  | Manual (user-managed) | Manual (declared per model) |
-| Service templates   | `llama-cpp`, `command`      | Any upstream server   | Any command                 |
-| Eviction strategy   | Priority-based              | LRU (via matrix)      | LRU                         |
-| Config hot-reload   | Yes, with preflight         | Yes                   | No                          |
-| CLI tool            | `anankectl` (comprehensive) | Basic HTTP API        | Basic HTTP API              |
-| Management API      | REST + WebSocket events     | REST                  | REST + Web Dashboard        |
-| Service inheritance | `extends` with deep merge   | Macros                | No                          |
-| Temporary services  | Oneshot API with TTL        | TTL per model         | TTL per model               |
-| GPU/CPU hybrid      | `hybrid` placement          | No                    | No                          |
-| Health checks       | Configurable HTTP probes    | Optional              | Optional                    |
-| State machine       | Full lifecycle tracking     | Implicit              | Implicit                    |
-| Security warnings   | Documented                  | Documented            | Documented                  |
+| Feature             | ananke                      | llama-swap                          | Large Model Proxy                     |
+| ------------------- | --------------------------- | ----------------------------------- | ------------------------------------- |
+| Language            | Rust                        | Go                                  | Go                                    |
+| VRAM estimation     | **Automatic** (GGUF-aware)  | None (user-managed)                 | Manual (declared per model in pools)  |
+| Service templates   | `llama-cpp`, `command`      | Any upstream server                 | Any command                           |
+| Eviction strategy   | Priority-based              | Solver-based (cheapest eviction)    | LRU                                   |
+| Config hot-reload   | Yes, with preflight         | Yes                                 | No                                    |
+| CLI tool            | `anankectl` (comprehensive) | Basic HTTP API                      | Basic HTTP API                        |
+| Management API      | REST + WebSocket events     | REST + Web UI                       | REST + Web Dashboard                  |
+| Service inheritance | `extends` with deep merge   | Macros                              | No                                    |
+| Temporary services  | Oneshot API with TTL        | TTL per model                       | TTL per model                         |
 
-**Choose ananke if:** You want automatic VRAM estimation (no manual declarations needed), robust state management with a full lifecycle state machine, and a polished CLI/API for programmatic management. ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
+**Choose ananke if:** You want automatic VRAM estimation (no manual declarations needed) and a CLI/API for programmatic management. ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
 
-**Choose llama-swap if:** You need maximum flexibility with upstream servers, want a battle-tested solution with a large community, and are comfortable managing model placement manually.
+**Choose llama-swap if:** You need maximum flexibility with upstream servers, want a battle-tested solution with a large community, and prefer a solver-based matrix for defining which models can run concurrently.
 
-**Choose Large Model Proxy if:** You want a lightweight, simple proxy with manual VRAM declarations and a web dashboard, and don't need advanced features like service inheritance or real-time event streaming.
+**Choose Large Model Proxy if:** You want a lightweight proxy with resource pools, manual VRAM declarations, and don't need advanced features like service inheritance or real-time event streaming.
 
 ## API Reference
 
