@@ -5,7 +5,7 @@
 >
 > I would not recommend that you use this unless you are able to diagnose and fix issues yourself. It won't destroy your system, but it may also not behave as expected. This was built to solve a problem I have; it'll take some time before I can be confident in saying that it can solve your problem, too.
 
-ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple Large Language Model (LLM) services and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
+ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple LLMs and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
 
 ## Getting Started
 
