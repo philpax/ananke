@@ -30,22 +30,22 @@ export function ServicesTable() {
     <section>
       <h2 className="text-lg font-semibold mb-2 dark:text-white">Services</h2>
       <div className="overflow-x-auto">
-        <table className="min-w-full text-sm border border-gray-300 dark:border-gray-800">
+        <table className="min-w-full text-sm border border-gray-300 dark:border-gray-800 table-fixed">
           <thead className="bg-gray-100 dark:bg-gray-900/50 text-left">
             <tr>
-              <th className="p-2 border-b border-gray-300 dark:border-gray-700">
+              <th className="p-2 border-b border-gray-300 dark:border-gray-700 w-1/4">
                 Name
               </th>
-              <th className="p-2 border-b border-gray-300 dark:border-gray-700">
+              <th className="p-2 border-b border-gray-300 dark:border-gray-700 w-20">
                 State
               </th>
-              <th className="p-2 border-b border-gray-300 dark:border-gray-700">
+              <th className="p-2 border-b border-gray-300 dark:border-gray-700 w-32">
                 Lifecycle
               </th>
-              <th className="p-2 border-b border-gray-300 dark:border-gray-700">
+              <th className="p-2 border-b border-gray-300 dark:border-gray-700 w-20">
                 Priority
               </th>
-              <th className="p-2 border-b border-gray-300 dark:border-gray-700">
+              <th className="p-2 border-b border-gray-300 dark:border-gray-700 w-24">
                 PID
               </th>
               <th className="p-2 border-b border-gray-300 dark:border-gray-700">
@@ -102,7 +102,7 @@ function ServiceRow({
         }`}
         onClick={() => setExpanded((v) => !v)}
       >
-        <td className="p-2 font-mono">
+        <td className="p-2 font-mono truncate">
           <span className="inline-block w-3 text-gray-400 dark:text-gray-500 text-xs">
             {expanded ? "▾" : "▸"}
           </span>{" "}
