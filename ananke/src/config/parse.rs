@@ -241,6 +241,22 @@ pub struct RawServiceCommon {
     pub extended_stream_drain: Option<String>,
     pub max_request_duration: Option<String>,
     pub start_queue_depth: Option<usize>,
+    pub tracking: Option<RawTracking>,
+}
+
+/// `[service.tracking]` block. Optional per-service hints that adjust how
+/// the snapshotter attributes observed VRAM/RSS to the service.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawTracking {
+    /// Cgroup v2 path (e.g. `/system.slice/ananke-comfyui.slice`) under
+    /// which the service's actual workload pids live. Used by services
+    /// whose workload runs in a container and is therefore reparented
+    /// out of the daemon's process tree, so descendant-pid attribution
+    /// can't reach it. Pids whose `/proc/<pid>/cgroup` path equals this
+    /// value or sits inside its subtree are summed into the service's
+    /// observed peak.
+    pub cgroup_parent: Option<SmolStr>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]

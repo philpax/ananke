@@ -1806,6 +1806,10 @@ impl RunLoop {
         self.deps
             .observation
             .register(&self.init.identity.name, pid as u32);
+        self.deps.observation.set_cgroup_parent(
+            &self.init.identity.name,
+            current.tracking.cgroup_parent.clone(),
+        );
         let spawn_time = Instant::now();
         let run_id = crate::tracking::now_unix_ms() & RUN_ID_MASK;
         let allocation_json = serde_json::to_string(

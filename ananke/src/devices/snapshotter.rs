@@ -17,7 +17,10 @@ use tracing::{debug, warn};
 use crate::{
     devices::{CpuSnapshot, DeviceSnapshot, GpuProbe, GpuSnapshot, cpu},
     supervise::registry::ServiceRegistry,
-    system::ProcFs,
+    system::{
+        ProcFs,
+        proc::{descendants_from_map, parent_map, pids_in_cgroup_subtree},
+    },
     tracking::observation::{ObservationTable, read_vm_rss},
 };
 
@@ -56,47 +59,101 @@ pub fn spawn(
 
 /// Sample per-service observed memory peaks.
 ///
-/// For each service with a known PID, aggregates NVML VRAM usage (summed
-/// across all GPUs for that PID) and `/proc/<pid>/status` VmRSS, then
-/// calls `observation.update_peak` with the total.
+/// For each service with a known root PID, builds the full attribution
+/// pid set from three sources and sums NVML VRAM + `/proc/<pid>/status`
+/// VmRSS across the union:
+///
+/// 1. **Registered pids** — the immediate child the supervisor spawned.
+/// 2. **Transitive descendants** — every pid whose parent chain leads
+///    back to a registered pid. Catches wrapper scripts that fork
+///    workers without `exec`.
+/// 3. **Cgroup-resident pids** — every pid in the v2 subtree declared by
+///    `[service.tracking].cgroup_parent`. Catches containerised
+///    workloads (Docker, etc.) where the actual workload is reparented
+///    out of the daemon's process tree, so pid lineage breaks.
+///
+/// The parent map is built once per tick and reused across services so
+/// the per-tick cost stays at one `/proc` walk regardless of service
+/// count.
 fn sample_observation(
     probe: &Option<Arc<dyn GpuProbe>>,
     observation: &ObservationTable,
     registry: &ServiceRegistry,
     proc: &dyn ProcFs,
 ) {
+    let parents = parent_map(proc);
+    // Cache GPU compute-app lists per device id so a service iterating
+    // multiple roots doesn't pay for a fresh NVML probe per pid.
+    let gpu_processes: Vec<(u32, Vec<crate::devices::GpuProcess>)> = match probe {
+        Some(p) => p
+            .list()
+            .into_iter()
+            .map(|info| (info.id, p.processes(info.id)))
+            .collect(),
+        None => Vec::new(),
+    };
+
     for (name, _handle) in registry.all() {
-        // snapshot() is async, so we use the synchronous pid state we have
-        // via a best-effort approach: query the observation table's pids directly
-        // by iterating known PIDs registered at spawn time.
-        let pids = observation.pids(&name);
-        if pids.is_empty() {
+        let registered = observation.pids(&name);
+        let cgroup_parent = observation.cgroup_parent(&name);
+        if registered.is_empty() && cgroup_parent.is_none() {
             continue;
         }
-        let mut total: u64 = 0;
-
-        // GPU VRAM from NVML — sum across all GPUs.
-        if let Some(p) = probe {
-            for gpu in p.list() {
-                for proc in p.processes(gpu.id) {
-                    if pids.contains(&proc.pid) {
-                        total = total.saturating_add(proc.used_bytes);
-                    }
-                }
-            }
-        }
-
-        // CPU RSS from /proc.
-        for pid in &pids {
-            if let Some(rss) = read_vm_rss(proc, *pid) {
-                total = total.saturating_add(rss);
-            }
-        }
-
+        let pid_set = attributed_pid_set(&registered, cgroup_parent.as_deref(), &parents, proc);
+        let total = sum_attributed_bytes(&pid_set, &gpu_processes, proc);
         if total > 0 {
             observation.update_peak(&name, total);
         }
     }
+}
+
+/// Build the pid set the snapshotter should attribute to a single service:
+/// registered pids ∪ transitive descendants ∪ cgroup-resident pids.
+///
+/// Public-to-the-crate so the snapshotter tests can assert on it directly
+/// without standing up a full supervisor + registry.
+fn attributed_pid_set(
+    registered: &[u32],
+    cgroup_parent: Option<&str>,
+    parents: &std::collections::BTreeMap<u32, u32>,
+    proc: &dyn ProcFs,
+) -> std::collections::BTreeSet<u32> {
+    let mut pid_set: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for pid in registered {
+        for descendant in descendants_from_map(parents, *pid) {
+            pid_set.insert(descendant);
+        }
+    }
+    if let Some(parent) = cgroup_parent {
+        for pid in pids_in_cgroup_subtree(proc, parent) {
+            pid_set.insert(pid);
+        }
+    }
+    pid_set
+}
+
+/// Sum NVML-reported VRAM and `/proc/<pid>/status` RSS for every pid in
+/// `pid_set`. `gpu_processes` is the per-tick cache populated once in
+/// `sample_observation`.
+fn sum_attributed_bytes(
+    pid_set: &std::collections::BTreeSet<u32>,
+    gpu_processes: &[(u32, Vec<crate::devices::GpuProcess>)],
+    proc: &dyn ProcFs,
+) -> u64 {
+    let mut total: u64 = 0;
+    for (_id, processes) in gpu_processes {
+        for gp in processes {
+            if pid_set.contains(&gp.pid) {
+                total = total.saturating_add(gp.used_bytes);
+            }
+        }
+    }
+    for pid in pid_set {
+        if let Some(rss) = read_vm_rss(proc, *pid) {
+            total = total.saturating_add(rss);
+        }
+    }
+    total
 }
 
 fn sample(probe: &Option<Arc<dyn GpuProbe>>, proc: &dyn ProcFs) -> DeviceSnapshot {
@@ -185,5 +242,83 @@ mod tests {
 
         tx.send(true).unwrap();
         let _ = join.await;
+    }
+
+    /// Pid attribution must include transitive descendants of every
+    /// registered pid, so a wrapper script that fork+execs a worker is
+    /// covered without configuring `tracking.cgroup_parent`.
+    #[test]
+    fn attribution_includes_descendants() {
+        let proc = InMemoryProcFs::new();
+        // Tree: 100 (registered) → 200 (worker) → 300 (sub-worker).
+        proc.set_parent(200, 100);
+        proc.set_parent(300, 200);
+        // Unrelated pid 999 must not be picked up.
+        proc.set_parent(999, 1);
+        let parents = parent_map(&proc);
+        let set = attributed_pid_set(&[100], None, &parents, &proc);
+        let mut pids: Vec<u32> = set.into_iter().collect();
+        pids.sort();
+        assert_eq!(pids, vec![100, 200, 300]);
+    }
+
+    /// Cgroup attribution catches pids that are NOT in the registered
+    /// parent chain (e.g. a Docker container reparented to
+    /// `containerd-shim`). Both sources are unioned.
+    #[test]
+    fn attribution_unions_cgroup_pids() {
+        let proc = InMemoryProcFs::new();
+        // Registered pid + one descendant.
+        proc.set_parent(50, 10);
+        // Containerised python lives in a cgroup under the declared parent.
+        // It has *no* parent link to pid 10 (containerd-shim is its host
+        // parent in reality; modelling it as parented to init is sufficient).
+        proc.set_parent(700, 1);
+        proc.set_cgroup(700, "/system.slice/ananke-comfyui.slice/docker-abc.scope");
+        // Sibling cgroup that must NOT match.
+        proc.set_parent(701, 1);
+        proc.set_cgroup(701, "/system.slice/other.scope");
+
+        let parents = parent_map(&proc);
+        let set = attributed_pid_set(
+            &[10],
+            Some("/system.slice/ananke-comfyui.slice"),
+            &parents,
+            &proc,
+        );
+        let mut pids: Vec<u32> = set.into_iter().collect();
+        pids.sort();
+        assert_eq!(pids, vec![10, 50, 700]);
+    }
+
+    /// VRAM and RSS sums correctly across the union: NVML reports a pid
+    /// only the cgroup branch knows about, RSS comes from a descendant.
+    #[test]
+    fn sum_attributed_bytes_combines_nvml_and_rss() {
+        use crate::devices::GpuProcess;
+        let proc = InMemoryProcFs::new();
+        proc.set_vm_rss(50, 1_000_000_000); // 1 GB RSS on a descendant.
+        let pid_set: std::collections::BTreeSet<u32> = [10, 50, 700].into_iter().collect();
+        let gpu_processes = vec![(
+            0u32,
+            vec![GpuProcess {
+                pid: 700,
+                used_bytes: 10_000_000_000, // 10 GB on the container pid.
+                name: "python".into(),
+            }],
+        )];
+        let total = sum_attributed_bytes(&pid_set, &gpu_processes, &proc);
+        assert_eq!(total, 10_000_000_000 + 1_000_000_000);
+    }
+
+    /// A service with neither a registered pid nor a cgroup_parent is a
+    /// no-op (idle service that hasn't been started yet); the helper
+    /// returns an empty set without panicking.
+    #[test]
+    fn attribution_empty_when_no_inputs() {
+        let proc = InMemoryProcFs::new();
+        let parents = parent_map(&proc);
+        let set = attributed_pid_set(&[], None, &parents, &proc);
+        assert!(set.is_empty());
     }
 }

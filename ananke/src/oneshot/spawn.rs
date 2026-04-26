@@ -104,6 +104,7 @@ pub async fn spawn_oneshot(
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),
+        tracking: crate::config::TrackingSettings::default(),
         metadata: ananke_api::AnankeMetadata::new(),
         template_config,
     };

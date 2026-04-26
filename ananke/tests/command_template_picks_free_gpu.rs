@@ -56,6 +56,7 @@ fn comfy_like_service(name: &str, port: u16) -> ServiceConfig {
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),
+        tracking: ananke::config::TrackingSettings::default(),
         metadata: ananke_api::AnankeMetadata::new(),
         template_config: TemplateConfig::Command(CommandConfig {
             command: vec!["comfyui-start".into(), "--port".into(), "{port}".into()],

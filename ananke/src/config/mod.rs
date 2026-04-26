@@ -16,7 +16,7 @@ pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
     AllocationMode, CommandConfig, DaemonSettings, DeviceSlot, EffectiveConfig, Filters,
     HealthSettings, Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, Template,
-    TemplateConfig, validate,
+    TemplateConfig, TrackingSettings, validate,
 };
 
 /// Load, parse, merge, validate, and preflight a config file from disk.

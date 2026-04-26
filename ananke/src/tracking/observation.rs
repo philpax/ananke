@@ -16,6 +16,12 @@ pub struct ObservationTable {
 struct ObservedState {
     peak_bytes: u64,
     pids: Vec<u32>,
+    /// Cgroup v2 path under which this service's actual workload pids
+    /// live, when the operator declared one in `[service.tracking]`.
+    /// Set once at supervisor spawn alongside `register`; the snapshotter
+    /// reads it to widen the per-service pid set with cgroup-resident
+    /// pids that aren't descendants of the registered child.
+    cgroup_parent: Option<SmolStr>,
 }
 
 impl ObservationTable {
@@ -29,6 +35,15 @@ impl ObservationTable {
         if !entry.pids.contains(&pid) {
             entry.pids.push(pid);
         }
+    }
+
+    /// Record (or clear) the cgroup parent path for a service. The
+    /// snapshotter consults this when sampling so containerised pids that
+    /// aren't process-tree descendants of the registered child still get
+    /// attributed correctly.
+    pub fn set_cgroup_parent(&self, service: &SmolStr, parent: Option<SmolStr>) {
+        let mut guard = self.inner.write();
+        guard.entry(service.clone()).or_default().cgroup_parent = parent;
     }
 
     pub fn update_peak(&self, service: &SmolStr, bytes: u64) {
@@ -53,6 +68,10 @@ impl ObservationTable {
             .get(service)
             .map(|s| s.pids.clone())
             .unwrap_or_default()
+    }
+
+    pub fn cgroup_parent(&self, service: &SmolStr) -> Option<SmolStr> {
+        self.inner.read().get(service)?.cgroup_parent.clone()
     }
 
     pub fn clear(&self, service: &SmolStr) {
