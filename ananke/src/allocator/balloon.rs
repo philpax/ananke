@@ -499,6 +499,13 @@ fn reconcile_pledge(
     if !should_update_pledge(current_mb, desired_mb, cfg.min_mb) {
         return;
     }
+    debug!(
+        service = %service_name,
+        slot = ?slot,
+        previous_mb = ?current_mb,
+        desired_mb,
+        "balloon: reconciling pledge to observed peak"
+    );
     row.insert(slot, desired_mb);
 
     let reservations: std::collections::BTreeMap<String, u64> = row

@@ -101,6 +101,15 @@ fn sample_observation(
         }
         let pid_set = attributed_pid_set(&registered, cgroup_parent.as_deref(), &parents, proc);
         let (vram, rss) = attributed_bytes_split(&pid_set, &gpu_processes, proc);
+        debug!(
+            service = %name,
+            registered_pids = ?registered,
+            cgroup_parent = ?cgroup_parent.as_deref(),
+            pid_set_len = pid_set.len(),
+            vram_mb = vram / (1024 * 1024),
+            rss_mb = rss / (1024 * 1024),
+            "observation attribution sample"
+        );
         if vram + rss > 0 {
             observation.update_peak(&name, vram, rss);
         }
