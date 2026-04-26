@@ -28,8 +28,7 @@ use ananke::{
     supervise::{SupervisorHandle, registry::ServiceRegistry},
     tracking::observation::ObservationTable,
 };
-use parking_lot::Mutex;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use smol_str::SmolStr;
 use tokio::sync::watch;
 
