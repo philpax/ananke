@@ -100,9 +100,9 @@ fn sample_observation(
             continue;
         }
         let pid_set = attributed_pid_set(&registered, cgroup_parent.as_deref(), &parents, proc);
-        let total = sum_attributed_bytes(&pid_set, &gpu_processes, proc);
-        if total > 0 {
-            observation.update_peak(&name, total);
+        let (vram, rss) = attributed_bytes_split(&pid_set, &gpu_processes, proc);
+        if vram + rss > 0 {
+            observation.update_peak(&name, vram, rss);
         }
     }
 }
@@ -133,27 +133,33 @@ fn attributed_pid_set(
 }
 
 /// Sum NVML-reported VRAM and `/proc/<pid>/status` RSS for every pid in
-/// `pid_set`. `gpu_processes` is the per-tick cache populated once in
-/// `sample_observation`.
-fn sum_attributed_bytes(
+/// `pid_set`, returning the two components separately. `gpu_processes`
+/// is the per-tick cache populated once in `sample_observation`.
+///
+/// Splitting matters because the dynamic-allocation pledge only models
+/// VRAM — combining VRAM and RSS into a single peak and pledging that
+/// would inflate the GPU pledge with python's interpreter RSS and
+/// produce false over-commit signals.
+fn attributed_bytes_split(
     pid_set: &std::collections::BTreeSet<u32>,
     gpu_processes: &[(u32, Vec<crate::devices::GpuProcess>)],
     proc: &dyn ProcFs,
-) -> u64 {
-    let mut total: u64 = 0;
+) -> (u64, u64) {
+    let mut vram: u64 = 0;
     for (_id, processes) in gpu_processes {
         for gp in processes {
             if pid_set.contains(&gp.pid) {
-                total = total.saturating_add(gp.used_bytes);
+                vram = vram.saturating_add(gp.used_bytes);
             }
         }
     }
+    let mut rss: u64 = 0;
     for pid in pid_set {
-        if let Some(rss) = read_vm_rss(proc, *pid) {
-            total = total.saturating_add(rss);
+        if let Some(r) = read_vm_rss(proc, *pid) {
+            rss = rss.saturating_add(r);
         }
     }
-    total
+    (vram, rss)
 }
 
 fn sample(probe: &Option<Arc<dyn GpuProbe>>, proc: &dyn ProcFs) -> DeviceSnapshot {
@@ -291,10 +297,11 @@ mod tests {
         assert_eq!(pids, vec![10, 50, 700]);
     }
 
-    /// VRAM and RSS sums correctly across the union: NVML reports a pid
-    /// only the cgroup branch knows about, RSS comes from a descendant.
+    /// VRAM and RSS sums correctly across the union and stay separated
+    /// in the return value — combining them in the snapshotter would
+    /// inflate the dynamic pledge by python's interpreter RSS.
     #[test]
-    fn sum_attributed_bytes_combines_nvml_and_rss() {
+    fn attributed_bytes_split_keeps_vram_and_rss_apart() {
         use crate::devices::GpuProcess;
         let proc = InMemoryProcFs::new();
         proc.set_vm_rss(50, 1_000_000_000); // 1 GB RSS on a descendant.
@@ -303,12 +310,13 @@ mod tests {
             0u32,
             vec![GpuProcess {
                 pid: 700,
-                used_bytes: 10_000_000_000, // 10 GB on the container pid.
+                used_bytes: 10_000_000_000, // 10 GB VRAM on the container pid.
                 name: "python".into(),
             }],
         )];
-        let total = sum_attributed_bytes(&pid_set, &gpu_processes, &proc);
-        assert_eq!(total, 10_000_000_000 + 1_000_000_000);
+        let (vram, rss) = attributed_bytes_split(&pid_set, &gpu_processes, &proc);
+        assert_eq!(vram, 10_000_000_000);
+        assert_eq!(rss, 1_000_000_000);
     }
 
     /// A service with neither a registered pid nor a cgroup_parent is a

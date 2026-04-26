@@ -14,8 +14,13 @@ use tracing::{debug, info, warn};
 
 use crate::{
     allocator::AllocationTable,
-    config::validate::{DEFAULT_SERVICE_PRIORITY, DeviceSlot},
+    config::{
+        Lifecycle,
+        manager::ConfigManager,
+        validate::{DEFAULT_SERVICE_PRIORITY, DeviceSlot},
+    },
     daemon::events::EventBus,
+    devices::snapshotter::SharedSnapshot,
     supervise::{drain::DrainReason, registry::ServiceRegistry, slot_to_key},
     tracking::observation::ObservationTable,
 };
@@ -149,6 +154,13 @@ pub struct ResolverDeps {
     pub registry: ServiceRegistry,
     pub allocations: std::sync::Arc<Mutex<AllocationTable>>,
     pub events: EventBus,
+    /// Live snapshot used to compute per-GPU pledge totals against
+    /// physical capacity — the contention resolver only fires when a GPU
+    /// the service holds is actually over-pledged.
+    pub snapshot: SharedSnapshot,
+    /// Live `ConfigManager` so the contention resolver can look up a
+    /// peer's lifecycle to apply the persistent-vs-on-demand tie-break.
+    pub config: std::sync::Arc<ConfigManager>,
     pub shutdown: watch::Receiver<bool>,
 }
 
@@ -166,6 +178,7 @@ pub fn spawn_resolver(
     service_name: SmolStr,
     cfg: BalloonConfig,
     svc_priority: u8,
+    svc_lifecycle: Lifecycle,
     deps: ResolverDeps,
 ) -> tokio::task::JoinHandle<()> {
     let ResolverDeps {
@@ -173,6 +186,8 @@ pub fn spawn_resolver(
         registry,
         allocations,
         events,
+        snapshot,
+        config,
         mut shutdown,
     } = deps;
     tokio::spawn(async move {
@@ -191,7 +206,11 @@ pub fn spawn_resolver(
                 _ = tick.tick() => {}
             }
 
-            let observed = observation.read_peak(&service_name);
+            // VRAM-only peak: the dynamic pledge models GPU bytes, not
+            // the python interpreter's RSS. Combining the two used to
+            // inflate the pledge with multi-GB CPU footprint and trigger
+            // false over-commit signals during normal SDXL inference.
+            let observed = observation.read_peak_vram(&service_name);
             if window.len() == WINDOW_SIZE {
                 window.pop_front();
             }
@@ -222,49 +241,76 @@ pub fn spawn_resolver(
                 exceeded_since = None;
             }
 
-            // Look for a borrower currently holding an allocation on the same
-            // device. For now, priority is the service default for all
-            // borrowers; a follow-up can wire real priority through the
-            // registry.
-            let reservations = allocations.lock().clone();
-            let mut candidate_borrower: Option<(SmolStr, u8)> = None;
-            for name in reservations.keys() {
-                if name.as_str() == service_name.as_str() {
-                    continue;
-                }
-                if registry.get(name).is_some() {
-                    // Handle presence is enough — the allocation table only
-                    // carries live services, so existence in the registry
-                    // implies a borrower worth considering.
-                    // Borrower priority defaults to the service default until
-                    // a real lookup is wired.
-                    candidate_borrower = Some((name.clone(), DEFAULT_SERVICE_PRIORITY));
-                    break;
-                }
-            }
-
+            // Contention resolver. Pre-condition for firing:
+            // 1. Growth detected in the recent sample window.
+            // 2. A GPU the service holds is over-committed (sum of all
+            //    pledges on the GPU exceeds total capacity). Without (2),
+            //    growth into declared headroom is exactly what the
+            //    headroom is for, and `pledge_from_window`'s reconcile
+            //    has already updated peers' fit view via the pledge
+            //    book — peers won't over-book, no runtime intervention
+            //    needed. Acting on growth alone produced spurious
+            //    self-evictions in the first version of the resolver.
+            //
+            // When the gate fires, we identify a peer to resolve against
+            // using priority + lifecycle: strict numeric priority always
+            // wins; at tied priority, on-demand yields to persistent.
             let floor = cfg.min_mb * 1024 * 1024 + cfg.margin_bytes;
             if detect_growth(&window, floor) {
-                if let Some((borrower, borrower_priority)) = candidate_borrower {
-                    info!(
+                let reservations = allocations.lock().clone();
+                let snap_now = snapshot.read().clone();
+                let overcommitted = overcommitted_gpus_for(&service_name, &reservations, &snap_now);
+                if overcommitted.is_empty() {
+                    debug!(
                         service = %service_name,
-                        borrower = %borrower,
-                        "balloon: growth detected; resolving contention",
+                        observed,
+                        "balloon: growth detected but no GPU is over-committed; deferring to pledge book",
                     );
-                    if svc_priority > borrower_priority {
-                        // We outrank the borrower; evict it.
-                        if let Some(handle) = registry.get(&borrower) {
-                            handle.fast_kill(DrainReason::Eviction).await;
+                } else {
+                    let cfg_snapshot = config.effective();
+                    let resolution = resolve_contention(
+                        &service_name,
+                        svc_priority,
+                        svc_lifecycle,
+                        &reservations,
+                        &overcommitted,
+                        &registry,
+                        &cfg_snapshot.services,
+                    );
+                    drop(cfg_snapshot);
+                    match resolution {
+                        ContentionAction::EvictPeer { peer } => {
+                            info!(
+                                service = %service_name,
+                                peer = %peer,
+                                gpus = ?overcommitted,
+                                "balloon: over-committed GPU; evicting lower-ranked peer",
+                            );
+                            if let Some(handle) = registry.get(&peer) {
+                                handle.fast_kill(DrainReason::Eviction).await;
+                            }
+                            window.clear();
                         }
-                    } else {
-                        // Borrower outranks or ties us; yield by fast-killing self.
-                        if let Some(handle) = registry.get(&service_name) {
-                            handle.fast_kill(DrainReason::Eviction).await;
+                        ContentionAction::YieldSelf { to } => {
+                            info!(
+                                service = %service_name,
+                                to = %to,
+                                gpus = ?overcommitted,
+                                "balloon: over-committed GPU; yielding to higher-ranked peer",
+                            );
+                            if let Some(handle) = registry.get(&service_name) {
+                                handle.fast_kill(DrainReason::Eviction).await;
+                            }
+                            return;
                         }
-                        return;
+                        ContentionAction::NoCandidate => {
+                            debug!(
+                                service = %service_name,
+                                gpus = ?overcommitted,
+                                "balloon: over-committed GPU but no peer to resolve against",
+                            );
+                        }
                     }
-                    // Reset window after action so transient spikes don't re-trigger immediately.
-                    window.clear();
                 }
             } else {
                 debug!(
@@ -276,6 +322,142 @@ pub fn spawn_resolver(
             }
         }
     })
+}
+
+/// Outcome of the contention resolver's peer pick.
+#[derive(Debug, PartialEq, Eq)]
+enum ContentionAction {
+    /// We outrank a peer on the over-committed GPU; evict it.
+    EvictPeer { peer: SmolStr },
+    /// A peer outranks us; yield by fast-killing self.
+    YieldSelf { to: SmolStr },
+    /// GPU is over-committed but no peer is a valid contention partner
+    /// (e.g. we're alone on it, or every peer is itself this service).
+    NoCandidate,
+}
+
+/// GPUs the named service holds an allocation on whose pledge sum
+/// exceeds total physical VRAM. Empty when growth is just filling
+/// declared headroom that exists.
+fn overcommitted_gpus_for(
+    service_name: &SmolStr,
+    reservations: &AllocationTable,
+    snapshot: &crate::devices::DeviceSnapshot,
+) -> Vec<u32> {
+    // GPUs we hold any pledge on.
+    let mine: std::collections::BTreeSet<u32> = reservations
+        .get(service_name)
+        .map(|row| {
+            row.keys()
+                .filter_map(|s| match s {
+                    DeviceSlot::Gpu(id) => Some(*id),
+                    DeviceSlot::Cpu => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if mine.is_empty() {
+        return Vec::new();
+    }
+    // Per-GPU total pledged across every service.
+    let mut by_gpu: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    for row in reservations.values() {
+        for (slot, mb) in row {
+            if let DeviceSlot::Gpu(id) = slot {
+                *by_gpu.entry(*id).or_default() += mb * 1024 * 1024;
+            }
+        }
+    }
+    by_gpu
+        .into_iter()
+        .filter(|(id, _)| mine.contains(id))
+        .filter_map(|(id, pledged_bytes)| {
+            let total = snapshot.gpus.iter().find(|g| g.id == id)?.total_bytes;
+            (pledged_bytes > total).then_some(id)
+        })
+        .collect()
+}
+
+/// Pick a contention peer on one of `overcommitted_gpus` and decide whose
+/// turn it is to leave. Pure-data over the inputs so unit tests can drive
+/// every branch without spawning supervisors.
+fn resolve_contention(
+    service_name: &SmolStr,
+    svc_priority: u8,
+    svc_lifecycle: Lifecycle,
+    reservations: &AllocationTable,
+    overcommitted_gpus: &[u32],
+    registry: &ServiceRegistry,
+    services: &[crate::config::ServiceConfig],
+) -> ContentionAction {
+    let lifecycle_of = |name: &SmolStr| -> Lifecycle {
+        services
+            .iter()
+            .find(|s| s.name.as_str() == name.as_str())
+            .map(|s| s.lifecycle)
+            .unwrap_or(Lifecycle::OnDemand)
+    };
+    let priority_of = |name: &SmolStr| -> u8 {
+        services
+            .iter()
+            .find(|s| s.name.as_str() == name.as_str())
+            .map(|s| s.priority)
+            .unwrap_or(DEFAULT_SERVICE_PRIORITY)
+    };
+    for peer_name in reservations.keys() {
+        if peer_name.as_str() == service_name.as_str() {
+            continue;
+        }
+        // Peer must hold a pledge on at least one over-committed GPU.
+        let peer_row = match reservations.get(peer_name) {
+            Some(r) => r,
+            None => continue,
+        };
+        let intersects = overcommitted_gpus
+            .iter()
+            .any(|id| peer_row.get(&DeviceSlot::Gpu(*id)).copied().unwrap_or(0) > 0);
+        if !intersects {
+            continue;
+        }
+        if registry.get(peer_name).is_none() {
+            continue;
+        }
+        let peer_priority = priority_of(peer_name);
+        let peer_lifecycle = lifecycle_of(peer_name);
+        if svc_priority > peer_priority {
+            return ContentionAction::EvictPeer {
+                peer: peer_name.clone(),
+            };
+        }
+        if svc_priority < peer_priority {
+            return ContentionAction::YieldSelf {
+                to: peer_name.clone(),
+            };
+        }
+        // Tied numeric priority — lifecycle breaks the tie.
+        match (svc_lifecycle, peer_lifecycle) {
+            (Lifecycle::OnDemand, Lifecycle::Persistent) => {
+                return ContentionAction::YieldSelf {
+                    to: peer_name.clone(),
+                };
+            }
+            (Lifecycle::Persistent, Lifecycle::OnDemand) => {
+                return ContentionAction::EvictPeer {
+                    peer: peer_name.clone(),
+                };
+            }
+            // Both same lifecycle — fall through to the historical default:
+            // the dynamic side (us, by definition of running this resolver)
+            // yields. Avoids two persistent peers oscillating; in practice
+            // only one of them is dynamic, so this branch is rare.
+            _ => {
+                return ContentionAction::YieldSelf {
+                    to: peer_name.clone(),
+                };
+            }
+        }
+    }
+    ContentionAction::NoCandidate
 }
 
 /// Update the pledge book row for a dynamic service so it reflects the
@@ -486,5 +668,233 @@ mod tests {
             4 * 1024 + 300,
             2 * 1024
         ));
+    }
+
+    // overcommitted_gpus_for ---------------------------------------------
+
+    fn snap_one_gpu(id: u32, total_gb: u64) -> crate::devices::DeviceSnapshot {
+        crate::devices::DeviceSnapshot {
+            gpus: vec![crate::devices::GpuSnapshot {
+                id,
+                name: format!("GPU {id}"),
+                total_bytes: total_gb * 1024 * 1024 * 1024,
+                free_bytes: 0,
+            }],
+            cpu: None,
+            taken_at_ms: 0,
+        }
+    }
+
+    fn alloc_table(entries: &[(&str, u32, u64)]) -> AllocationTable {
+        let mut t = AllocationTable::new();
+        for (name, gpu, mb) in entries {
+            t.entry(SmolStr::new(*name))
+                .or_default()
+                .insert(DeviceSlot::Gpu(*gpu), *mb);
+        }
+        t
+    }
+
+    /// 10 GB pledge + 12 GB pledge on a 24 GB GPU = 22 GB used pledge.
+    /// Not over-committed, even though the dynamic service has been
+    /// growing — the contention path must NOT fire.
+    #[test]
+    fn overcommit_no_when_fits() {
+        let snap = snap_one_gpu(1, 24);
+        let table = alloc_table(&[("comfy", 1, 10 * 1024), ("qwen", 1, 12 * 1024)]);
+        let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
+        assert!(
+            gpus.is_empty(),
+            "22/24 GB pledged should not be over-committed"
+        );
+    }
+
+    /// 14 GB + 12 GB = 26 GB on a 24 GB GPU. Over-committed by 2 GB.
+    /// Physical OOM is imminent; the contention path should fire.
+    #[test]
+    fn overcommit_yes_when_pledge_exceeds_total() {
+        let snap = snap_one_gpu(1, 24);
+        let table = alloc_table(&[("comfy", 1, 14 * 1024), ("qwen", 1, 12 * 1024)]);
+        let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
+        assert_eq!(gpus, vec![1]);
+    }
+
+    /// Over-commit only counts on GPUs the service holds. If the service
+    /// is on GPU 1 and an unrelated peer over-commits GPU 2, this
+    /// service's resolver shouldn't fire.
+    #[test]
+    fn overcommit_filters_to_held_gpus() {
+        let snap = crate::devices::DeviceSnapshot {
+            gpus: vec![
+                crate::devices::GpuSnapshot {
+                    id: 1,
+                    name: "GPU 1".into(),
+                    total_bytes: 24 * 1024 * 1024 * 1024,
+                    free_bytes: 0,
+                },
+                crate::devices::GpuSnapshot {
+                    id: 2,
+                    name: "GPU 2".into(),
+                    total_bytes: 24 * 1024 * 1024 * 1024,
+                    free_bytes: 0,
+                },
+            ],
+            cpu: None,
+            taken_at_ms: 0,
+        };
+        // We're on GPU 1 and fine; an unrelated peer is over-committing GPU 2.
+        let table = alloc_table(&[
+            ("comfy", 1, 4 * 1024),
+            ("a", 2, 20 * 1024),
+            ("b", 2, 10 * 1024),
+        ]);
+        let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
+        assert!(
+            gpus.is_empty(),
+            "over-commit on a GPU we don't hold isn't our problem"
+        );
+    }
+
+    /// A service with no allocation has nothing to defend; never reports
+    /// over-commit.
+    #[test]
+    fn overcommit_empty_when_service_has_no_allocation() {
+        let snap = snap_one_gpu(1, 24);
+        let table = alloc_table(&[("a", 1, 30 * 1024)]); // someone else over-pledged
+        let gpus = overcommitted_gpus_for(&SmolStr::new("ghost"), &table, &snap);
+        assert!(gpus.is_empty());
+    }
+
+    // resolve_contention --------------------------------------------------
+
+    fn svc(name: &str, priority: u8, lifecycle: Lifecycle) -> crate::config::ServiceConfig {
+        let mut s = crate::config::validate::test_fixtures::minimal_service(name);
+        s.priority = priority;
+        s.lifecycle = lifecycle;
+        s
+    }
+
+    /// Strict numeric priority always wins: an on-demand requester at
+    /// priority 70 evicts a tied-lifecycle peer at priority 50.
+    #[test]
+    fn resolve_strict_priority_wins() {
+        let services = vec![
+            svc("hi-prio", 70, Lifecycle::OnDemand),
+            svc("low-prio", 50, Lifecycle::Persistent),
+        ];
+        let table = alloc_table(&[("hi-prio", 1, 14 * 1024), ("low-prio", 1, 12 * 1024)]);
+        let registry = with_handles(&["hi-prio", "low-prio"]);
+        let action = resolve_contention(
+            &SmolStr::new("hi-prio"),
+            70,
+            Lifecycle::OnDemand,
+            &table,
+            &[1],
+            &registry,
+            &services,
+        );
+        assert_eq!(
+            action,
+            ContentionAction::EvictPeer {
+                peer: SmolStr::new("low-prio"),
+            }
+        );
+    }
+
+    /// At tied numeric priority, on-demand requester yields to a
+    /// persistent peer (the lifecycle tie-break). Reproduces the user's
+    /// scenario: ComfyUI (on-demand) vs Qwen (persistent), both priority 50.
+    #[test]
+    fn resolve_on_demand_yields_to_persistent_at_tied_priority() {
+        let services = vec![
+            svc("comfy", 50, Lifecycle::OnDemand),
+            svc("qwen", 50, Lifecycle::Persistent),
+        ];
+        let table = alloc_table(&[("comfy", 1, 10 * 1024), ("qwen", 1, 12 * 1024)]);
+        let registry = with_handles(&["comfy", "qwen"]);
+        let action = resolve_contention(
+            &SmolStr::new("comfy"),
+            50,
+            Lifecycle::OnDemand,
+            &table,
+            &[1],
+            &registry,
+            &services,
+        );
+        assert_eq!(
+            action,
+            ContentionAction::YieldSelf {
+                to: SmolStr::new("qwen")
+            }
+        );
+    }
+
+    /// Reverse: a persistent dynamic service (rare but possible) at tied
+    /// priority evicts an on-demand peer.
+    #[test]
+    fn resolve_persistent_evicts_on_demand_at_tied_priority() {
+        let services = vec![
+            svc("dyn-persistent", 50, Lifecycle::Persistent),
+            svc("on-demand-peer", 50, Lifecycle::OnDemand),
+        ];
+        let table = alloc_table(&[
+            ("dyn-persistent", 1, 14 * 1024),
+            ("on-demand-peer", 1, 12 * 1024),
+        ]);
+        let registry = with_handles(&["dyn-persistent", "on-demand-peer"]);
+        let action = resolve_contention(
+            &SmolStr::new("dyn-persistent"),
+            50,
+            Lifecycle::Persistent,
+            &table,
+            &[1],
+            &registry,
+            &services,
+        );
+        assert_eq!(
+            action,
+            ContentionAction::EvictPeer {
+                peer: SmolStr::new("on-demand-peer"),
+            }
+        );
+    }
+
+    /// No peer holds an allocation on the over-committed GPU → NoCandidate
+    /// (the resolver leaves the situation alone; the kernel will OOM
+    /// whichever side is allocating, which is semantically correct).
+    #[test]
+    fn resolve_no_candidate_when_alone_on_overcommit_gpu() {
+        let services = vec![svc("comfy", 50, Lifecycle::OnDemand)];
+        let table = alloc_table(&[("comfy", 1, 26 * 1024)]); // self-overcommitting somehow
+        let registry = with_handles(&["comfy"]);
+        let action = resolve_contention(
+            &SmolStr::new("comfy"),
+            50,
+            Lifecycle::OnDemand,
+            &table,
+            &[1],
+            &registry,
+            &services,
+        );
+        assert_eq!(action, ContentionAction::NoCandidate);
+    }
+
+    /// Synthesise a minimal `ServiceRegistry` with present-but-dead
+    /// handles for the named services. The contention resolver only
+    /// checks registry membership (`registry.get(...).is_some()`), not
+    /// handle health, so this is sufficient for the unit-level pure-data
+    /// tests.
+    fn with_handles(names: &[&str]) -> ServiceRegistry {
+        // We can't construct a real SupervisorHandle here without the full
+        // supervisor stack; build a registry with synthetic entries by
+        // taking handles from a tiny side-helper that spawns a no-op
+        // supervisor. For the pure-data scope of these tests, presence is
+        // all that matters, so just clone the same handle into each slot.
+        let registry = ServiceRegistry::new();
+        let handle = std::sync::Arc::new(crate::supervise::SupervisorHandle::stub_for_test());
+        for n in names {
+            registry.insert(SmolStr::new(*n), handle.clone());
+        }
+        registry
     }
 }

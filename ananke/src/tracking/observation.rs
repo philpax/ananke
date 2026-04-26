@@ -14,7 +14,18 @@ pub struct ObservationTable {
 
 #[derive(Debug, Clone, Default)]
 struct ObservedState {
+    /// High-water mark of `vram_bytes + rss_bytes`. Surfaced to the
+    /// `/api/services` endpoint and event stream as the operator-facing
+    /// "observed footprint" of the service.
     peak_bytes: u64,
+    /// High-water mark of GPU VRAM bytes alone, attributed across every
+    /// pid in the per-service pid set. Tracked separately because the
+    /// dynamic-allocation pledge only models VRAM — pledging combined
+    /// VRAM+RSS would inflate the pledge with the python interpreter's
+    /// RSS and falsely trip the over-commit check (regression: an SDXL
+    /// inference's 8 GB VRAM + 12 GB RSS used to pledge as 20 GB on the
+    /// GPU and trigger a self-eviction that wasn't justified).
+    peak_vram_bytes: u64,
     pids: Vec<u32>,
     /// Cgroup v2 path under which this service's actual workload pids
     /// live, when the operator declared one in `[service.tracking]`.
@@ -46,19 +57,39 @@ impl ObservationTable {
         guard.entry(service.clone()).or_default().cgroup_parent = parent;
     }
 
-    pub fn update_peak(&self, service: &SmolStr, bytes: u64) {
+    /// Record an observation of the service's combined footprint
+    /// (`vram + rss`) and its VRAM component. Both peaks update
+    /// monotonically; `vram_bytes` may be zero on a CPU-only service.
+    pub fn update_peak(&self, service: &SmolStr, vram_bytes: u64, rss_bytes: u64) {
         let mut guard = self.inner.write();
         let entry = guard.entry(service.clone()).or_default();
-        if bytes > entry.peak_bytes {
-            entry.peak_bytes = bytes;
+        let total = vram_bytes.saturating_add(rss_bytes);
+        if total > entry.peak_bytes {
+            entry.peak_bytes = total;
+        }
+        if vram_bytes > entry.peak_vram_bytes {
+            entry.peak_vram_bytes = vram_bytes;
         }
     }
 
+    /// Combined `vram + rss` peak. The frontend / `/api/services`
+    /// surfaces this as the operator-facing observed footprint.
     pub fn read_peak(&self, service: &SmolStr) -> u64 {
         self.inner
             .read()
             .get(service)
             .map(|s| s.peak_bytes)
+            .unwrap_or(0)
+    }
+
+    /// VRAM-only peak. The dynamic-allocation balloon resolver pledges
+    /// against this, never the combined `read_peak` — see the comment
+    /// on `ObservedState::peak_vram_bytes` for why.
+    pub fn read_peak_vram(&self, service: &SmolStr) -> u64 {
+        self.inner
+            .read()
+            .get(service)
+            .map(|s| s.peak_vram_bytes)
             .unwrap_or(0)
     }
 
@@ -109,18 +140,40 @@ mod tests {
     fn peak_is_monotonic() {
         let t = ObservationTable::new();
         let svc = SmolStr::new("demo");
-        t.update_peak(&svc, 100);
-        t.update_peak(&svc, 50);
-        t.update_peak(&svc, 200);
+        // Combined peak walks up: vram+rss = 100, 50, 200.
+        t.update_peak(&svc, 60, 40);
+        t.update_peak(&svc, 30, 20);
+        t.update_peak(&svc, 120, 80);
         assert_eq!(t.read_peak(&svc), 200);
+        // VRAM-only peak tracks separately (60 → 30 doesn't lower it).
+        assert_eq!(t.read_peak_vram(&svc), 120);
+    }
+
+    /// Observed combined peak and VRAM-only peak don't interfere: a tick
+    /// with high RSS but low VRAM doesn't lift the VRAM peak (so the
+    /// dynamic pledge stays modest), and a tick with high VRAM but low
+    /// RSS lifts the VRAM peak even when the combined peak doesn't move.
+    #[test]
+    fn vram_and_combined_peaks_track_independently() {
+        let t = ObservationTable::new();
+        let svc = SmolStr::new("demo");
+        // Tick 1: 4 GB VRAM + 6 GB RSS. Combined 10 GB, VRAM 4 GB.
+        t.update_peak(&svc, 4 * 1024 * 1024 * 1024, 6 * 1024 * 1024 * 1024);
+        assert_eq!(t.read_peak(&svc), 10 * 1024 * 1024 * 1024);
+        assert_eq!(t.read_peak_vram(&svc), 4 * 1024 * 1024 * 1024);
+        // Tick 2: 8 GB VRAM + 1 GB RSS. Combined 9 GB (won't move), VRAM 8 GB.
+        t.update_peak(&svc, 8 * 1024 * 1024 * 1024, 1024 * 1024 * 1024);
+        assert_eq!(t.read_peak(&svc), 10 * 1024 * 1024 * 1024);
+        assert_eq!(t.read_peak_vram(&svc), 8 * 1024 * 1024 * 1024);
     }
 
     #[test]
     fn clear_resets() {
         let t = ObservationTable::new();
         let svc = SmolStr::new("demo");
-        t.update_peak(&svc, 100);
+        t.update_peak(&svc, 50, 50);
         t.clear(&svc);
         assert_eq!(t.read_peak(&svc), 0);
+        assert_eq!(t.read_peak_vram(&svc), 0);
     }
 }

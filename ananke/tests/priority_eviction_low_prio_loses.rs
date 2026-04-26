@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use ananke::{
     allocator::eviction::{EvictionCandidate, select_for_slot},
-    config::validate::DeviceSlot,
+    config::{Lifecycle, validate::DeviceSlot},
 };
 use smol_str::SmolStr;
 
@@ -17,6 +17,7 @@ fn low_prio_evicted_for_higher_prio_placement() {
     let cands = vec![EvictionCandidate {
         name: SmolStr::new("low"),
         priority: 30,
+        lifecycle: Lifecycle::OnDemand,
         idle: false,
         allocation_bytes: 4 * 1024 * 1024 * 1024,
     }];
@@ -24,6 +25,7 @@ fn low_prio_evicted_for_higher_prio_placement() {
         4 * 1024 * 1024 * 1024,
         &DeviceSlot::Gpu(0),
         70,
+        Lifecycle::OnDemand,
         &cands,
         &res,
         0,

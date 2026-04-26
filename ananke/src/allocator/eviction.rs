@@ -1,37 +1,62 @@
 //! Eviction planner.
 //!
-//! An idle service (no in-flight requests) is always a valid eviction
+//! An idle service (no in-flight requests) is generally a valid eviction
 //! target regardless of priority — if nothing's using it, displacing it
-//! is free. A busy service still needs strictly-higher incoming priority
+//! is cheap. A busy service still needs strictly-higher incoming priority
 //! to be displaced, so an in-flight request isn't interrupted by an
 //! equal-priority competitor.
 //!
-//! Priority therefore only matters as (a) a tie-breaker among idle
-//! candidates, and (b) a protection for busy services against peer
-//! competitors. For single-workload setups where nothing runs
-//! concurrently, idle-first scoring does all the useful work and
-//! priority is effectively unused.
+//! Lifecycle is itself a priority signal at tied numeric priority: a
+//! persistent peer is the operator declaring "should always be loaded,"
+//! and an on-demand requester is "transient, evictable." So at tied
+//! priority an on-demand request cannot evict a persistent peer (idle or
+//! not); it must wait or fail. Strict numeric priority still wins —
+//! raising the on-demand service's priority breaks the tie.
 
 use std::collections::BTreeMap;
 
 use smol_str::SmolStr;
 
-use crate::config::{DeviceSlot, ServiceConfig};
+use crate::config::{DeviceSlot, Lifecycle, ServiceConfig};
 
 #[derive(Debug, Clone)]
 pub struct EvictionCandidate {
     pub name: SmolStr,
     pub priority: u8,
+    pub lifecycle: Lifecycle,
     pub idle: bool,
     pub allocation_bytes: u64,
 }
 
 impl EvictionCandidate {
-    /// Whether this candidate can be displaced by an incoming request
-    /// at `incoming_priority`. Single source of truth for the rule; every
-    /// other eviction decision must go through this.
-    pub fn is_evictable_by(&self, incoming_priority: u8) -> bool {
-        self.idle || self.priority < incoming_priority
+    /// Whether this candidate can be displaced by an incoming request at
+    /// `incoming_priority` and `incoming_lifecycle`. Single source of
+    /// truth for the rule; every other eviction decision must go through
+    /// this.
+    ///
+    /// Rules:
+    /// - Strict priority advantage (`incoming > self.priority`) always wins.
+    /// - At tied or lower priority, a busy candidate is untouchable.
+    /// - At tied priority, an idle persistent candidate is protected from
+    ///   on-demand requesters (lifecycle breaks the tie). Other tied-priority
+    ///   idle combinations are still evictable.
+    pub fn is_evictable_by(&self, incoming_priority: u8, incoming_lifecycle: Lifecycle) -> bool {
+        if self.priority < incoming_priority {
+            return true;
+        }
+        if !self.idle {
+            return false;
+        }
+        // Idle, tied or higher priority — protect persistent peers from
+        // on-demand requesters at the tie. Two persistent peers may still
+        // displace each other (otherwise the persistent watcher deadlocks
+        // with itself when restarting after a config edit).
+        if matches!(self.lifecycle, Lifecycle::Persistent)
+            && matches!(incoming_lifecycle, Lifecycle::OnDemand)
+        {
+            return false;
+        }
+        true
     }
 }
 
@@ -48,6 +73,7 @@ pub fn select_for_slot(
     want_bytes: u64,
     want_slot: &DeviceSlot,
     want_priority: u8,
+    want_lifecycle: Lifecycle,
     running: &[EvictionCandidate],
     reservations: &BTreeMap<SmolStr, BTreeMap<DeviceSlot, u64>>,
     free_bytes: u64,
@@ -59,7 +85,7 @@ pub fn select_for_slot(
 
     let mut candidates: Vec<&EvictionCandidate> = running
         .iter()
-        .filter(|c| c.is_evictable_by(want_priority))
+        .filter(|c| c.is_evictable_by(want_priority, want_lifecycle))
         .filter(|c| {
             reservations
                 .get(&c.name)
@@ -104,6 +130,7 @@ pub fn summarise(svc: &ServiceConfig, idle: bool, allocation_bytes: u64) -> Evic
     EvictionCandidate {
         name: svc.name.clone(),
         priority: svc.priority,
+        lifecycle: svc.lifecycle,
         idle,
         allocation_bytes,
     }
@@ -114,9 +141,20 @@ mod tests {
     use super::*;
 
     fn cand(name: &str, prio: u8, idle: bool, bytes: u64) -> EvictionCandidate {
+        cand_lc(name, prio, Lifecycle::OnDemand, idle, bytes)
+    }
+
+    fn cand_lc(
+        name: &str,
+        prio: u8,
+        lifecycle: Lifecycle,
+        idle: bool,
+        bytes: u64,
+    ) -> EvictionCandidate {
         EvictionCandidate {
             name: SmolStr::new(name),
             priority: prio,
+            lifecycle,
             idle,
             allocation_bytes: bytes,
         }
@@ -133,26 +171,36 @@ mod tests {
     }
 
     #[test]
-    fn is_evictable_by_idle_always_yes() {
+    fn is_evictable_by_idle_on_demand_always_yes() {
         let c = cand("idle", 100, true, 1);
-        assert!(c.is_evictable_by(0));
-        assert!(c.is_evictable_by(50));
-        assert!(c.is_evictable_by(100));
+        // Idle on-demand is freely evictable by anything (the existing
+        // baseline; persistent gets the lifecycle protection below).
+        assert!(c.is_evictable_by(0, Lifecycle::OnDemand));
+        assert!(c.is_evictable_by(50, Lifecycle::OnDemand));
+        assert!(c.is_evictable_by(100, Lifecycle::OnDemand));
     }
 
     #[test]
     fn is_evictable_by_busy_needs_strictly_higher() {
         let c = cand("busy", 50, false, 1);
-        assert!(!c.is_evictable_by(0));
-        assert!(!c.is_evictable_by(49));
-        assert!(!c.is_evictable_by(50));
-        assert!(c.is_evictable_by(51));
-        assert!(c.is_evictable_by(100));
+        assert!(!c.is_evictable_by(0, Lifecycle::OnDemand));
+        assert!(!c.is_evictable_by(49, Lifecycle::OnDemand));
+        assert!(!c.is_evictable_by(50, Lifecycle::OnDemand));
+        assert!(c.is_evictable_by(51, Lifecycle::OnDemand));
+        assert!(c.is_evictable_by(100, Lifecycle::OnDemand));
     }
 
     #[test]
     fn no_eviction_when_enough_free() {
-        let sel = select_for_slot(1000, &DeviceSlot::Gpu(0), 50, &[], &BTreeMap::new(), 2000);
+        let sel = select_for_slot(
+            1000,
+            &DeviceSlot::Gpu(0),
+            50,
+            Lifecycle::OnDemand,
+            &[],
+            &BTreeMap::new(),
+            2000,
+        );
         assert!(sel.is_empty());
     }
 
@@ -167,6 +215,7 @@ mod tests {
             4 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::OnDemand,
             &cands,
             &r,
             0,
@@ -185,6 +234,7 @@ mod tests {
             4 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::OnDemand,
             &cands,
             &r,
             0,
@@ -204,6 +254,7 @@ mod tests {
             5 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::OnDemand,
             &cands,
             &r,
             0,
@@ -222,6 +273,7 @@ mod tests {
             4 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::OnDemand,
             &cands,
             &r,
             0,
@@ -233,13 +285,21 @@ mod tests {
     fn idle_same_priority_is_evictable() {
         // Regression for the "persistent Qwen blocks persistent Gemma at
         // default priority" deadlock. Idle candidates should yield even
-        // without a strict priority advantage.
-        let cands = vec![cand("peer", 70, true, 4 * 1024 * 1024 * 1024)];
+        // without a strict priority advantage when the requester is also
+        // persistent (lifecycle ties don't add protection).
+        let cands = vec![cand_lc(
+            "peer",
+            70,
+            Lifecycle::Persistent,
+            true,
+            4 * 1024 * 1024 * 1024,
+        )];
         let r = res(&[("peer", 4096)]);
         let sel = select_for_slot(
             4 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::Persistent,
             &cands,
             &r,
             0,
@@ -257,6 +317,7 @@ mod tests {
             4 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::OnDemand,
             &cands,
             &r,
             0,
@@ -273,6 +334,88 @@ mod tests {
             4 * 1024 * 1024 * 1024,
             &DeviceSlot::Gpu(0),
             70,
+            Lifecycle::OnDemand,
+            &cands,
+            &r,
+            0,
+        );
+        assert!(sel.is_empty());
+    }
+
+    /// Lifecycle-as-tiebreaker: an idle persistent peer at tied priority
+    /// is **not** evictable by an on-demand requester. Lifecycle is itself
+    /// a priority signal — the operator declared "should always be loaded."
+    /// The on-demand requester must wait or fail (or raise its numeric
+    /// priority to win).
+    #[test]
+    fn idle_persistent_peer_protected_from_on_demand_at_tied_priority() {
+        let qwen = cand_lc(
+            "qwen",
+            50,
+            Lifecycle::Persistent,
+            true,
+            4 * 1024 * 1024 * 1024,
+        );
+        assert!(!qwen.is_evictable_by(50, Lifecycle::OnDemand));
+        // Strictly higher priority still wins.
+        assert!(qwen.is_evictable_by(51, Lifecycle::OnDemand));
+        // Persistent vs persistent at tied priority: still evictable, so
+        // the persistent watcher can swap one persistent for another.
+        assert!(qwen.is_evictable_by(50, Lifecycle::Persistent));
+    }
+
+    /// `select_for_slot` must respect the persistent-protection rule:
+    /// an on-demand request can't pick a tied-priority persistent peer
+    /// even if it's idle and would otherwise satisfy the deficit.
+    #[test]
+    fn select_for_slot_skips_tied_priority_persistent_for_on_demand() {
+        let cands = vec![
+            cand_lc(
+                "qwen",
+                50,
+                Lifecycle::Persistent,
+                true,
+                12 * 1024 * 1024 * 1024,
+            ),
+            cand_lc(
+                "alt",
+                50,
+                Lifecycle::OnDemand,
+                true,
+                12 * 1024 * 1024 * 1024,
+            ),
+        ];
+        let r = res(&[("qwen", 12 * 1024), ("alt", 12 * 1024)]);
+        let sel = select_for_slot(
+            10 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            50,
+            Lifecycle::OnDemand,
+            &cands,
+            &r,
+            0,
+        );
+        // Only `alt` is evictable; `qwen` is protected by lifecycle.
+        assert_eq!(sel, vec![SmolStr::new("alt")]);
+    }
+
+    /// And nothing-evictable when the only candidates are tied-priority
+    /// persistent peers and the requester is on-demand.
+    #[test]
+    fn select_for_slot_empty_when_only_protected_persistent_peers_remain() {
+        let cands = vec![cand_lc(
+            "qwen",
+            50,
+            Lifecycle::Persistent,
+            true,
+            12 * 1024 * 1024 * 1024,
+        )];
+        let r = res(&[("qwen", 12 * 1024)]);
+        let sel = select_for_slot(
+            10 * 1024 * 1024 * 1024,
+            &DeviceSlot::Gpu(0),
+            50,
+            Lifecycle::OnDemand,
             &cands,
             &r,
             0,

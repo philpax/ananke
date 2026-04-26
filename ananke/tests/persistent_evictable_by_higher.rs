@@ -3,14 +3,15 @@ use std::collections::BTreeMap;
 
 use ananke::{
     allocator::eviction::{EvictionCandidate, select_for_slot},
-    config::validate::DeviceSlot,
+    config::{Lifecycle, validate::DeviceSlot},
 };
 use smol_str::SmolStr;
 
 #[test]
-fn persistent_not_special_cased() {
-    // Even a "persistent" service (just a lifecycle label) is evictable
-    // if its priority is lower. The planner only looks at priority + idle.
+fn persistent_evictable_by_strictly_higher_priority() {
+    // A persistent service is still evictable when the incoming request
+    // carries strictly-higher numeric priority. The lifecycle protection
+    // only kicks in at *tied* priority.
     let mut res = BTreeMap::new();
     let mut r = BTreeMap::new();
     r.insert(DeviceSlot::Gpu(0), 4096u64);
@@ -19,6 +20,7 @@ fn persistent_not_special_cased() {
     let cands = vec![EvictionCandidate {
         name: SmolStr::new("persistent-svc"),
         priority: 50,
+        lifecycle: Lifecycle::Persistent,
         idle: false,
         allocation_bytes: 4 * 1024 * 1024 * 1024,
     }];
@@ -26,16 +28,19 @@ fn persistent_not_special_cased() {
         4 * 1024 * 1024 * 1024,
         &DeviceSlot::Gpu(0),
         80,
+        Lifecycle::OnDemand,
         &cands,
         &res,
         0,
     );
     assert_eq!(sel, vec![SmolStr::new("persistent-svc")]);
 
-    // A service at the same priority as the requester cannot be evicted.
+    // A service at the same priority as the requester cannot be evicted
+    // when busy, regardless of lifecycle.
     let cands_pinned = vec![EvictionCandidate {
         name: SmolStr::new("pinned"),
         priority: 100,
+        lifecycle: Lifecycle::OnDemand,
         idle: false,
         allocation_bytes: 4 * 1024 * 1024 * 1024,
     }];
@@ -43,6 +48,7 @@ fn persistent_not_special_cased() {
         4 * 1024 * 1024 * 1024,
         &DeviceSlot::Gpu(0),
         100,
+        Lifecycle::OnDemand,
         &cands_pinned,
         &res,
         0,

@@ -13,7 +13,7 @@ use tracing::warn;
 use crate::{
     config::parse::{
         EstimationConfig, RawCommandService, RawConfig, RawLlamaCppService, RawService,
-        RawServiceCommon, SamplingConfig,
+        SamplingConfig,
     },
     errors::ExpectedError,
 };
@@ -1023,7 +1023,7 @@ pub(crate) fn parse_duration_ms(s: &str) -> Result<u64, String> {
 #[allow(dead_code)]
 const _: () = ();
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fakes"))]
 pub mod test_fixtures {
     //! Shared `ServiceConfig` factory for unit tests.
     //!
@@ -1795,11 +1795,4 @@ allocation.vram_gb = 1
         );
         assert!(validate(&cfg).is_ok());
     }
-}
-
-// The `_: RawServiceCommon` usage below keeps the import live even if
-// downstream test modules don't touch the type directly.
-#[allow(dead_code)]
-fn _use_common(c: &RawServiceCommon) -> bool {
-    c.name.is_some()
 }

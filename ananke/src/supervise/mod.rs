@@ -32,7 +32,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     allocator::placement::Packed,
-    config::validate::{DEFAULT_SERVICE_PRIORITY, ServiceConfig},
+    config::validate::{DEFAULT_SERVICE_PRIORITY, Lifecycle, ServiceConfig},
     daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
@@ -188,6 +188,23 @@ pub struct SupervisorHandle {
 }
 
 impl SupervisorHandle {
+    /// Build a registry-presence-only handle for unit tests that exercise
+    /// pure-data logic against a `ServiceRegistry` (e.g. the balloon
+    /// resolver's contention pick) without standing up a real supervisor
+    /// task. The returned handle's mailbox is closed — anything that
+    /// actually sends a command to it will silently drop or error, which
+    /// is precisely the no-op behaviour those tests want.
+    #[cfg(any(test, feature = "test-fakes"))]
+    pub fn stub_for_test() -> Self {
+        let (tx, _rx) = mpsc::channel(1);
+        Self {
+            name: smol_str::SmolStr::new(""),
+            tx,
+            join: tokio::sync::Mutex::new(None),
+            mirror: Arc::new(SyncMutex::new(MirroredState::default())),
+        }
+    }
+
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         let _ = self
@@ -1376,16 +1393,18 @@ impl RunLoop {
     > {
         let candidates = self.collect_eviction_candidates().await;
         let my_priority = self.current_svc().priority;
+        let my_lifecycle = self.current_svc().lifecycle;
 
         // LRU-first ordering over evictable peers. `collect_eviction_candidates`
         // already excludes zero-allocation peers, so everything in `candidates`
         // holds real VRAM. Services that have never been pinged sort as "most
-        // LRU" (effectively infinite age), so a persistent service sitting in
-        // Running with no traffic is a first-class victim candidate.
+        // LRU" (effectively infinite age), so an idle peer is a first-class
+        // victim candidate — except for tied-priority persistent peers when
+        // the requester is on-demand, which `is_evictable_by` filters out.
         let now = tokio::time::Instant::now();
         let mut ranked: Vec<(&crate::allocator::eviction::EvictionCandidate, u128)> = candidates
             .iter()
-            .filter(|c| c.is_evictable_by(my_priority))
+            .filter(|c| c.is_evictable_by(my_priority, my_lifecycle))
             .map(|c| {
                 let age_ms = self
                     .deps
@@ -1534,6 +1553,7 @@ impl RunLoop {
             nofit.needed_bytes,
             &nofit.slot,
             self.current_svc().priority,
+            self.current_svc().lifecycle,
             &candidates,
             &reservations_now,
             nofit.available_bytes,
@@ -1619,13 +1639,14 @@ impl RunLoop {
         &self,
     ) -> Vec<crate::allocator::eviction::EvictionCandidate> {
         let all_services = self.deps.registry.all();
-        // Materialise the priority map from the live config before any
-        // `.await` below, so the arc-swap guard is released promptly.
-        let priority_by_name: std::collections::BTreeMap<_, _> = {
+        // Materialise the priority + lifecycle map from the live config
+        // before any `.await` below, so the arc-swap guard is released
+        // promptly.
+        let svc_meta_by_name: std::collections::BTreeMap<_, _> = {
             let eff = self.deps.config.effective();
             eff.services
                 .iter()
-                .map(|s| (s.name.clone(), s.priority))
+                .map(|s| (s.name.clone(), (s.priority, s.lifecycle)))
                 .collect()
         };
         let mut out = Vec::new();
@@ -1659,13 +1680,14 @@ impl RunLoop {
             let in_flight = self.deps.inflight.current(&handle.name);
             let idle =
                 in_flight == 0 && matches!(state, ServiceState::Idle | ServiceState::Running);
-            let priority = priority_by_name
+            let (priority, lifecycle) = svc_meta_by_name
                 .get(&handle.name)
                 .copied()
-                .unwrap_or(DEFAULT_SERVICE_PRIORITY);
+                .unwrap_or((DEFAULT_SERVICE_PRIORITY, Lifecycle::OnDemand));
             out.push(crate::allocator::eviction::EvictionCandidate {
                 name: handle.name.clone(),
                 priority,
+                lifecycle,
                 idle,
                 allocation_bytes: bytes,
             });
