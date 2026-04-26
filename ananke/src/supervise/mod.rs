@@ -2408,7 +2408,7 @@ enum RunningOutcome {
 
 /// Convert a `DeviceSlot` to the canonical string key used in
 /// `AllocationChanged` reservations (`"cpu"` or `"gpu:N"`).
-fn slot_to_key(slot: &crate::config::DeviceSlot) -> String {
+pub(crate) fn slot_to_key(slot: &crate::config::DeviceSlot) -> String {
     match slot {
         crate::config::DeviceSlot::Cpu => "cpu".to_string(),
         crate::config::DeviceSlot::Gpu(n) => format!("gpu:{n}"),

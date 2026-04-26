@@ -168,10 +168,13 @@ pub async fn provision_service(
                 svc.name.clone(),
                 cfg,
                 svc.priority,
-                deps.observation.clone(),
-                deps.supervisor_deps.registry.clone(),
-                deps.allocations.clone(),
-                deps.shutdown_rx.clone(),
+                crate::allocator::balloon::ResolverDeps {
+                    observation: deps.observation.clone(),
+                    registry: deps.supervisor_deps.registry.clone(),
+                    allocations: deps.allocations.clone(),
+                    events: deps.supervisor_deps.events.clone(),
+                    shutdown: deps.shutdown_rx.clone(),
+                },
             ))
         }
         _ => None,
