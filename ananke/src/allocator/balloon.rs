@@ -219,6 +219,16 @@ pub fn spawn_resolver(
             reconcile_pledge(&service_name, &window, &cfg, &allocations, &events);
 
             // If observed > max_mb by >10% for >30 s, fast-kill self.
+            //
+            // The resolver does NOT terminate after firing — fast_kill
+            // drains the supervisor, which then re-ensures via its
+            // normal lifecycle. The resolver task lives for the whole
+            // daemon run (one task per service, spawned at provision
+            // time) and re-arms across the kill: window cleared, grace
+            // timer reset, observation cleared by the drain itself.
+            // Returning here would orphan the resolver for the rest of
+            // the daemon's lifetime, leaving subsequent runs of the
+            // service without pledge tracking or contention guarding.
             let ceiling = cfg.max_mb * 1024 * 1024 * OVER_CEILING_PERMILLE / 1000;
             if observed > ceiling {
                 if let Some(since) = exceeded_since {
@@ -232,7 +242,9 @@ pub fn spawn_resolver(
                         if let Some(handle) = registry.get(&service_name) {
                             handle.fast_kill(DrainReason::Eviction).await;
                         }
-                        return;
+                        window.clear();
+                        exceeded_since = None;
+                        continue;
                     }
                 } else {
                     exceeded_since = Some(std::time::Instant::now());
@@ -302,7 +314,12 @@ pub fn spawn_resolver(
                             if let Some(handle) = registry.get(&service_name) {
                                 handle.fast_kill(DrainReason::Eviction).await;
                             }
-                            return;
+                            // Don't terminate — see the over-ceiling
+                            // branch above. The resolver re-arms once
+                            // the supervisor finishes draining; the
+                            // window resets so we don't immediately
+                            // re-fire on the same stale samples.
+                            window.clear();
                         }
                         ContentionAction::NoCandidate => {
                             debug!(

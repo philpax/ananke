@@ -222,11 +222,13 @@ async fn growth_without_overcommit_does_not_evict() {
     let _ = h.shutdown.send(true);
 }
 
-/// When over-commit is real (pre-seeded comfy 14 GB + qwen 12 GB = 26 > 24),
-/// the contention path fires. The dynamic on-demand service yields to the
-/// persistent peer at tied priority, which manifests as the resolver task
-/// returning. The production path then fast-kills self via the supervisor;
-/// our stub handles eat the fast_kill, but the task return is observable.
+/// When NVML free drops below the OOM margin, the contention path fires.
+/// The dynamic on-demand service yields to the persistent peer at tied
+/// priority. Pre-fix the resolver task `return`-ed after yielding, which
+/// orphaned it for the rest of the daemon's lifetime — subsequent runs
+/// of the same service had no pledge tracking. Now the resolver re-arms
+/// (window cleared) and stays alive across the yield, so the next
+/// comfyui spawn cycle is observed correctly.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn overcommit_triggers_yield_at_tied_priority_with_persistent_peer() {
     // Snapshot reports 100 MiB physical free — well under OOM_MARGIN
@@ -243,10 +245,11 @@ async fn overcommit_triggers_yield_at_tied_priority_with_persistent_peer() {
         step().await;
     }
 
-    // Resolver task must have terminated via YieldSelf.
+    // Resolver task must STAY alive after yielding — fast_kill drains
+    // the supervisor but the resolver re-arms for the next spawn cycle.
     assert!(
-        is_finished(&mut h.join),
-        "resolver should yield (terminate) when its GPU is over-committed against a tied-priority persistent peer"
+        !is_finished(&mut h.join),
+        "resolver must stay alive after yielding; pre-fix it `return`-ed and orphaned"
     );
 
     let _ = h.shutdown.send(true);
