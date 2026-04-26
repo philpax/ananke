@@ -28,7 +28,7 @@ use ananke::{
     supervise::{SupervisorHandle, registry::ServiceRegistry},
     tracking::observation::ObservationTable,
 };
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use smol_str::SmolStr;
 use tokio::sync::watch;
 
@@ -38,24 +38,24 @@ fn mb(n: u64) -> u64 {
     n * 1024 * 1024
 }
 
-/// Build a snapshot with a single 24 GB GPU at id 1.
-fn one_24g_gpu() -> SharedSnapshot {
+/// Build a snapshot with a single 24 GB GPU at id 1, parameterised by
+/// the NVML free-bytes the snapshot should report. Tests use a high
+/// value (no OOM pressure) to verify the resolver stays quiet, and a
+/// low value (under `OOM_MARGIN_BYTES`) to verify it fires.
+fn one_24g_gpu(free_bytes: u64) -> SharedSnapshot {
     let snap = ananke::devices::snapshotter::new_shared();
     *snap.write() = DeviceSnapshot {
         gpus: vec![GpuSnapshot {
             id: 1,
             name: "GPU 1".into(),
             total_bytes: 24 * 1024 * 1024 * 1024,
-            free_bytes: 0,
+            free_bytes,
         }],
         cpu: None,
         taken_at_ms: 0,
     };
     snap
 }
-
-/// Convenience: stuff a value into the snapshot's `RwLock` after build.
-fn _ensure_send_sync(_x: &Arc<RwLock<DeviceSnapshot>>) {}
 
 /// `EffectiveConfig` carrying a dynamic on-demand service ("comfy") and a
 /// persistent peer ("qwen"), both at default priority.
@@ -97,7 +97,11 @@ struct ContentionHarness {
     join: tokio::task::JoinHandle<()>,
 }
 
-fn build_harness(comfy_pledge_mb: u64, qwen_pledge_mb: u64) -> ContentionHarness {
+fn build_harness(
+    comfy_pledge_mb: u64,
+    qwen_pledge_mb: u64,
+    snapshot_free_bytes: u64,
+) -> ContentionHarness {
     let svc = SmolStr::new("comfy");
 
     let mut comfy_row = BTreeMap::new();
@@ -127,7 +131,7 @@ fn build_harness(comfy_pledge_mb: u64, qwen_pledge_mb: u64) -> ContentionHarness
     let registry_handles = vec![comfy_handle, qwen_handle];
 
     let events = EventBus::new();
-    let snapshot = one_24g_gpu();
+    let snapshot = one_24g_gpu(snapshot_free_bytes);
     let config = config_with_comfy_and_qwen(events.clone());
     let (shutdown, shutdown_rx) = watch::channel(false);
 
@@ -189,7 +193,9 @@ fn pledge_mb(table: &Mutex<AllocationTable>, name: &str) -> u64 {
 /// operator declared.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn growth_without_overcommit_does_not_evict() {
-    let mut h = build_harness(2 * 1024, 12 * 1024);
+    // 10 GB physical free — well above OOM_MARGIN. The pledge book may
+    // climb past comfortable, but the kernel isn't about to OOM.
+    let mut h = build_harness(2 * 1024, 12 * 1024, 10 * 1024 * 1024 * 1024);
 
     // Drive observed VRAM up to 10 GB across enough samples to convince
     // detect_growth (positive slope across the window).
@@ -201,7 +207,7 @@ async fn growth_without_overcommit_does_not_evict() {
     // Resolver must still be running — no YieldSelf was triggered.
     assert!(
         !is_finished(&mut h.join),
-        "resolver must NOT terminate when over-commit doesn't exist"
+        "resolver must NOT terminate when there's plenty of physical headroom"
     );
 
     // Qwen still has its 12 GB. Comfy's pledge tracks observed via the
@@ -223,7 +229,10 @@ async fn growth_without_overcommit_does_not_evict() {
 /// our stub handles eat the fast_kill, but the task return is observable.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn overcommit_triggers_yield_at_tied_priority_with_persistent_peer() {
-    let mut h = build_harness(14 * 1024, 12 * 1024);
+    // Snapshot reports 100 MiB physical free — well under OOM_MARGIN
+    // (512 MiB). The kernel will refuse the next allocation; the
+    // resolver must intervene by yielding.
+    let mut h = build_harness(14 * 1024, 12 * 1024, 100 * 1024 * 1024);
 
     // Observed peak ramps so detect_growth has a positive slope. The
     // pledge-reconcile path then sees window-max around 14 GB, which

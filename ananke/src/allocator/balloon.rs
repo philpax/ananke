@@ -243,14 +243,15 @@ pub fn spawn_resolver(
 
             // Contention resolver. Pre-condition for firing:
             // 1. Growth detected in the recent sample window.
-            // 2. A GPU the service holds is over-committed (sum of all
-            //    pledges on the GPU exceeds total capacity). Without (2),
-            //    growth into declared headroom is exactly what the
-            //    headroom is for, and `pledge_from_window`'s reconcile
-            //    has already updated peers' fit view via the pledge
-            //    book — peers won't over-book, no runtime intervention
-            //    needed. Acting on growth alone produced spurious
-            //    self-evictions in the first version of the resolver.
+            // 2. A GPU the service holds is OOM-pressured — physical
+            //    NVML free has dropped below `OOM_MARGIN_BYTES`. The
+            //    earlier "pledge sum > total" gate over-fired: pledges
+            //    are upper-bound reservations (estimator predictions
+            //    pad ~10–20 %, dynamic services hold the recent-peak
+            //    high-water mark), so two services can pledge to >100 %
+            //    without ever actually filling the GPU. Only the kernel
+            //    knows when the next allocation is about to fail, and
+            //    NVML free is the signal it gives us.
             //
             // When the gate fires, we identify a peer to resolve against
             // using priority + lifecycle: strict numeric priority always
@@ -336,15 +337,32 @@ enum ContentionAction {
     NoCandidate,
 }
 
-/// GPUs the named service holds an allocation on whose pledge sum
-/// exceeds total physical VRAM. Empty when growth is just filling
-/// declared headroom that exists.
+/// Physical free-VRAM headroom (in bytes) below which the resolver
+/// considers a GPU "OOM-pressured" — there isn't room for the next
+/// growth tick, so a contention resolution is justified.
+///
+/// Aligned with [`BalloonConfig::margin_bytes`] (512 MiB) by
+/// convention: the same magnitude already used as the growth-detection
+/// floor. Smaller and we'd let the GPU OOM before reacting; larger and
+/// we'd kill services preemptively when there's still room to grow.
+const OOM_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
+
+/// GPUs the named service holds an allocation on whose physical NVML
+/// free-VRAM has fallen below [`OOM_MARGIN_BYTES`]. Empty when there's
+/// still slack on every GPU we touch.
+///
+/// A pledge-sum-vs-total check (the original formulation) over-fires:
+/// pledges over-state actual usage (the estimator may predict more than
+/// what loads, and a dynamic service's pledge is the recent-peak
+/// high-water mark, not its current footprint). Two services whose
+/// pledge sums to >100 % of the GPU might in fact be using <100 %; the
+/// kernel won't OOM unless the *physical* allocation overflows. NVML
+/// free-bytes is the immediate signal.
 fn overcommitted_gpus_for(
     service_name: &SmolStr,
     reservations: &AllocationTable,
     snapshot: &crate::devices::DeviceSnapshot,
 ) -> Vec<u32> {
-    // GPUs we hold any pledge on.
     let mine: std::collections::BTreeSet<u32> = reservations
         .get(service_name)
         .map(|row| {
@@ -359,22 +377,12 @@ fn overcommitted_gpus_for(
     if mine.is_empty() {
         return Vec::new();
     }
-    // Per-GPU total pledged across every service.
-    let mut by_gpu: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
-    for row in reservations.values() {
-        for (slot, mb) in row {
-            if let DeviceSlot::Gpu(id) = slot {
-                *by_gpu.entry(*id).or_default() += mb * 1024 * 1024;
-            }
-        }
-    }
-    by_gpu
-        .into_iter()
-        .filter(|(id, _)| mine.contains(id))
-        .filter_map(|(id, pledged_bytes)| {
-            let total = snapshot.gpus.iter().find(|g| g.id == id)?.total_bytes;
-            (pledged_bytes > total).then_some(id)
-        })
+    snapshot
+        .gpus
+        .iter()
+        .filter(|g| mine.contains(&g.id))
+        .filter(|g| g.free_bytes < OOM_MARGIN_BYTES)
+        .map(|g| g.id)
         .collect()
 }
 
@@ -679,13 +687,13 @@ mod tests {
 
     // overcommitted_gpus_for ---------------------------------------------
 
-    fn snap_one_gpu(id: u32, total_gb: u64) -> crate::devices::DeviceSnapshot {
+    fn snap_with_free(id: u32, total_gb: u64, free_bytes: u64) -> crate::devices::DeviceSnapshot {
         crate::devices::DeviceSnapshot {
             gpus: vec![crate::devices::GpuSnapshot {
                 id,
                 name: format!("GPU {id}"),
                 total_bytes: total_gb * 1024 * 1024 * 1024,
-                free_bytes: 0,
+                free_bytes,
             }],
             cpu: None,
             taken_at_ms: 0,
@@ -702,33 +710,34 @@ mod tests {
         t
     }
 
-    /// 10 GB pledge + 12 GB pledge on a 24 GB GPU = 22 GB used pledge.
-    /// Not over-committed, even though the dynamic service has been
-    /// growing — the contention path must NOT fire.
+    /// Pledge sum exceeds GPU total but NVML still reports plenty of free
+    /// VRAM — the kernel won't OOM, so the resolver must NOT fire. This
+    /// is the user-reported false-positive: comfy's high-water pledge
+    /// (14 GB) plus qwen's estimator-prediction pledge (12 GB) sums to
+    /// 26 GB on a 24 GB card, but actual usage was ~22 GB and there was
+    /// real headroom — the resolver shouldn't kill anyone.
     #[test]
-    fn overcommit_no_when_fits() {
-        let snap = snap_one_gpu(1, 24);
-        let table = alloc_table(&[("comfy", 1, 10 * 1024), ("qwen", 1, 12 * 1024)]);
+    fn overcommit_no_when_physical_free_is_ample() {
+        let snap = snap_with_free(1, 24, 2 * 1024 * 1024 * 1024);
+        let table = alloc_table(&[("comfy", 1, 14 * 1024), ("qwen", 1, 12 * 1024)]);
         let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
         assert!(
             gpus.is_empty(),
-            "22/24 GB pledged should not be over-committed"
+            "pledge sum > total but NVML free is fine — no OOM imminent"
         );
     }
 
-    /// 14 GB + 12 GB = 26 GB on a 24 GB GPU. Over-committed by 2 GB.
-    /// Physical OOM is imminent; the contention path should fire.
+    /// NVML reports free VRAM below `OOM_MARGIN_BYTES`. The next growth
+    /// tick would OOM the kernel — fire the resolver.
     #[test]
-    fn overcommit_yes_when_pledge_exceeds_total() {
-        let snap = snap_one_gpu(1, 24);
+    fn overcommit_yes_when_physical_free_below_margin() {
+        let snap = snap_with_free(1, 24, 100 * 1024 * 1024); // 100 MiB free
         let table = alloc_table(&[("comfy", 1, 14 * 1024), ("qwen", 1, 12 * 1024)]);
         let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
         assert_eq!(gpus, vec![1]);
     }
 
-    /// Over-commit only counts on GPUs the service holds. If the service
-    /// is on GPU 1 and an unrelated peer over-commits GPU 2, this
-    /// service's resolver shouldn't fire.
+    /// Pressure on a GPU we don't hold isn't our problem.
     #[test]
     fn overcommit_filters_to_held_gpus() {
         let snap = crate::devices::DeviceSnapshot {
@@ -737,37 +746,32 @@ mod tests {
                     id: 1,
                     name: "GPU 1".into(),
                     total_bytes: 24 * 1024 * 1024 * 1024,
-                    free_bytes: 0,
+                    free_bytes: 10 * 1024 * 1024 * 1024, // plenty
                 },
                 crate::devices::GpuSnapshot {
                     id: 2,
                     name: "GPU 2".into(),
                     total_bytes: 24 * 1024 * 1024 * 1024,
-                    free_bytes: 0,
+                    free_bytes: 50 * 1024 * 1024, // pressured, but not ours
                 },
             ],
             cpu: None,
             taken_at_ms: 0,
         };
-        // We're on GPU 1 and fine; an unrelated peer is over-committing GPU 2.
         let table = alloc_table(&[
             ("comfy", 1, 4 * 1024),
             ("a", 2, 20 * 1024),
             ("b", 2, 10 * 1024),
         ]);
         let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
-        assert!(
-            gpus.is_empty(),
-            "over-commit on a GPU we don't hold isn't our problem"
-        );
+        assert!(gpus.is_empty());
     }
 
-    /// A service with no allocation has nothing to defend; never reports
-    /// over-commit.
+    /// A service with no allocation has nothing to defend.
     #[test]
     fn overcommit_empty_when_service_has_no_allocation() {
-        let snap = snap_one_gpu(1, 24);
-        let table = alloc_table(&[("a", 1, 30 * 1024)]); // someone else over-pledged
+        let snap = snap_with_free(1, 24, 50 * 1024 * 1024);
+        let table = alloc_table(&[("a", 1, 30 * 1024)]);
         let gpus = overcommitted_gpus_for(&SmolStr::new("ghost"), &table, &snap);
         assert!(gpus.is_empty());
     }
