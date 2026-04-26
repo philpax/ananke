@@ -207,6 +207,7 @@ mod fake {
         pub pid: u32,
         pub binary: String,
         pub args: Vec<String>,
+        pub env: std::collections::BTreeMap<String, String>,
         pub state: FakeProcessState,
     }
 
@@ -214,6 +215,7 @@ mod fake {
         pid: u32,
         binary: String,
         args: Vec<String>,
+        env: std::collections::BTreeMap<String, String>,
         state: FakeProcessState,
         /// Published `true` exactly once when the child transitions out of
         /// `Running`. `watch` (rather than `oneshot`) so a supervisor that
@@ -267,6 +269,7 @@ mod fake {
                         pid: s.pid,
                         binary: s.binary.clone(),
                         args: s.args.clone(),
+                        env: s.env.clone(),
                         state: s.state.clone(),
                     }
                 })
@@ -315,6 +318,7 @@ mod fake {
                     pid,
                     binary: cfg.binary.clone(),
                     args: cfg.args.clone(),
+                    env: cfg.env.clone(),
                     state: FakeProcessState::Running,
                     exit_tx: tx,
                 }));

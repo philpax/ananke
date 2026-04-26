@@ -455,6 +455,70 @@ impl<'a> Packer<'a> {
     }
 }
 
+/// VRAM-aware GPU pick for a command-template service.
+///
+/// Walks `svc`'s allowed GPU list (filtered by `gpu_allow` if set) and
+/// returns the GPU with the most available capacity that still satisfies
+/// `min_mb`. When `prefer_mb` is `Some`, GPUs that meet that headroom
+/// target take priority; only if no candidate hits `prefer_mb` do we fall
+/// back to "best of those that meet `min_mb`". This lets dynamic services
+/// (`min_mb` floor, `max_mb` growth ceiling) favour a GPU with room to grow.
+///
+/// `optimistic_remaining` mirrors [`pack_optimistic`]: when `false` the
+/// availability view is `min(nvml_free, total - pledged)`; when `true` we
+/// trust the pledge book exclusively (`total - pledged`). Eviction-retry
+/// passes `true` because nvml hasn't yet caught up to the in-flight drains.
+///
+/// Returns `None` when no allowed GPU can host `min_mb` — the caller should
+/// surface this as a [`PackError::WeightsDoNotFit`] so the supervisor can
+/// run its eviction-retry loop.
+pub fn pick_command_gpu(
+    svc: &ServiceConfig,
+    snapshot: &DeviceSnapshot,
+    reserved: &AllocationTable,
+    min_mb: u64,
+    prefer_mb: Option<u64>,
+    optimistic_remaining: bool,
+) -> Option<u32> {
+    let allowed = allowed_gpu_list(svc, snapshot);
+    if allowed.is_empty() {
+        return None;
+    }
+    let need_min_bytes = min_mb.saturating_mul(1024 * 1024);
+    let prefer_bytes = prefer_mb.map(|m| m.saturating_mul(1024 * 1024));
+
+    let mut candidates: Vec<(u32, u64)> = allowed
+        .into_iter()
+        .map(|gpu| {
+            let slot = DeviceSlot::Gpu(gpu);
+            let free = snapshot.free_bytes(&slot).unwrap_or(0);
+            let total = snapshot.total_bytes(&slot).unwrap_or(free);
+            let pledged = sum_reserved(reserved, &slot, &svc.name);
+            let via_pledge = total.saturating_sub(pledged);
+            let available = if optimistic_remaining {
+                via_pledge
+            } else {
+                free.min(via_pledge)
+            };
+            (gpu, available)
+        })
+        .filter(|(_, available)| *available >= need_min_bytes)
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    if let Some(target) = prefer_bytes
+        && candidates.iter().any(|(_, a)| *a >= target)
+    {
+        candidates.retain(|(_, a)| *a >= target);
+    }
+    // Sort: most-available first, ties broken by ascending GPU id for determinism.
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Some(candidates[0].0)
+}
+
 fn allowed_gpu_list(svc: &ServiceConfig, snapshot: &DeviceSnapshot) -> Vec<u32> {
     if svc.placement_policy == PlacementPolicy::CpuOnly {
         return Vec::new();
@@ -730,5 +794,121 @@ mod tests {
             matches!(err, PackError::LayerDoesNotFit { .. }),
             "expected LayerDoesNotFit when KV pushes layer cost past GPU capacity, got {err:?}"
         );
+    }
+
+    /// `pick_command_gpu` should return the GPU with the most available
+    /// capacity when several satisfy `min_mb`. Ties broken by ascending id.
+    #[test]
+    fn pick_command_gpu_prefers_most_free() {
+        let s = svc(PlacementPolicy::GpuOnly, None);
+        // GPU 0 has 6 GB free, GPU 1 has 18 GB, GPU 2 has 12 GB.
+        let snap = snapshot(&[6, 18, 12]);
+        let table = AllocationTable::new();
+        let pick = pick_command_gpu(&s, &snap, &table, 2 * 1024, None, false);
+        assert_eq!(pick, Some(1), "GPU 1 has the most free; should be picked");
+    }
+
+    /// When a `prefer_mb` headroom target is set (dynamic services'
+    /// `max_mb`), `pick_command_gpu` should reject GPUs whose available
+    /// capacity falls below that target if any other GPU does meet it.
+    #[test]
+    fn pick_command_gpu_honours_prefer_headroom() {
+        let s = svc(PlacementPolicy::GpuOnly, None);
+        // GPU 0 = 4 GB free (above min, below prefer), GPU 1 = 10 GB.
+        let snap = snapshot(&[4, 10]);
+        let table = AllocationTable::new();
+        let pick = pick_command_gpu(
+            &s,
+            &snap,
+            &table,
+            2 * 1024,       // min_mb: 2 GB
+            Some(8 * 1024), // prefer_mb: 8 GB
+            false,
+        );
+        assert_eq!(pick, Some(1), "GPU 1 meets prefer_mb headroom");
+    }
+
+    /// When no GPU meets `prefer_mb`, fall back to "best of those that meet
+    /// `min_mb`" rather than returning None — the pick is still better than
+    /// no pick at all, and the dynamic balloon resolver will fast-kill the
+    /// service if it actually overshoots.
+    #[test]
+    fn pick_command_gpu_falls_back_when_prefer_unmet() {
+        let s = svc(PlacementPolicy::GpuOnly, None);
+        // Both GPUs satisfy min (2 GB) but neither meets prefer (16 GB).
+        let snap = snapshot(&[6, 10]);
+        let table = AllocationTable::new();
+        let pick = pick_command_gpu(&s, &snap, &table, 2 * 1024, Some(16 * 1024), false);
+        assert_eq!(pick, Some(1), "fall back to most-free when prefer unmet");
+    }
+
+    /// A pledge from another service must be subtracted from availability,
+    /// so a busy GPU 0 cedes to a free GPU 1 even when nvml currently reports
+    /// the same free bytes for both.
+    #[test]
+    fn pick_command_gpu_subtracts_pledged_reservations() {
+        let s = svc(PlacementPolicy::GpuOnly, None);
+        let snap = snapshot(&[20, 20]); // both GPUs report 20 GB free
+        // Another service has 19 GB pledged on GPU 0.
+        let mut table = AllocationTable::new();
+        let mut other = BTreeMap::new();
+        other.insert(DeviceSlot::Gpu(0), 19 * 1024u64); // MB
+        table.insert(SmolStr::new("other"), other);
+        let pick = pick_command_gpu(&s, &snap, &table, 4 * 1024, None, false);
+        assert_eq!(pick, Some(1), "GPU 1 has the pledged-aware headroom");
+    }
+
+    /// `gpu_allow` is a hard restriction. Even if a non-listed GPU has more
+    /// free capacity, the pick must come from the allowed set.
+    #[test]
+    fn pick_command_gpu_respects_gpu_allow() {
+        // GPU 0 = 24 GB, GPU 1 = 4 GB, GPU 2 = 16 GB; allow only [1, 2].
+        let s = svc(PlacementPolicy::GpuOnly, Some(vec![1, 2]));
+        let snap = snapshot(&[24, 4, 16]);
+        let table = AllocationTable::new();
+        let pick = pick_command_gpu(&s, &snap, &table, 2 * 1024, None, false);
+        assert_eq!(pick, Some(2), "GPU 2 is the most-free among allowed");
+    }
+
+    /// When no GPU has enough capacity to host `min_mb`, return `None` so
+    /// the supervisor can run its eviction-retry path.
+    #[test]
+    fn pick_command_gpu_returns_none_when_nothing_fits() {
+        let s = svc(PlacementPolicy::GpuOnly, None);
+        let snap = snapshot(&[1, 1]); // 1 GB free each
+        let table = AllocationTable::new();
+        let pick = pick_command_gpu(&s, &snap, &table, 4 * 1024, None, false);
+        assert_eq!(pick, None);
+    }
+
+    /// `optimistic_remaining = true` ignores nvml's view of free bytes and
+    /// trusts the pledge book alone, matching `pack_optimistic`.
+    #[test]
+    fn pick_command_gpu_optimistic_ignores_nvml_free() {
+        let s = svc(PlacementPolicy::GpuOnly, None);
+        // nvml reports 0 free on both, but total = 24 GB and the pledge book
+        // says nothing is reserved.
+        let snap = snapshot(&[0, 0]);
+        let table = AllocationTable::new();
+
+        // Conservative: clamps to nvml_free, nothing fits.
+        let conservative = pick_command_gpu(&s, &snap, &table, 4 * 1024, None, false);
+        assert_eq!(conservative, None);
+
+        // Optimistic: pledge book has 24 GB headroom, GPU 0 wins on tiebreak.
+        let optimistic = pick_command_gpu(&s, &snap, &table, 4 * 1024, None, true);
+        assert_eq!(optimistic, Some(0));
+    }
+
+    /// `placement_policy = CpuOnly` collapses the allowed-GPU list to empty;
+    /// the helper must return `None` so the caller routes the reservation
+    /// onto Cpu instead.
+    #[test]
+    fn pick_command_gpu_cpu_only_returns_none() {
+        let s = svc(PlacementPolicy::CpuOnly, None);
+        let snap = snapshot(&[24, 24]);
+        let table = AllocationTable::new();
+        let pick = pick_command_gpu(&s, &snap, &table, 2 * 1024, None, false);
+        assert_eq!(pick, None);
     }
 }

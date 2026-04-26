@@ -1234,29 +1234,7 @@ impl RunLoop {
         let current = self.current_svc();
         let svc = &current;
         if matches!(svc.template(), crate::config::Template::Command) {
-            self.packed_for_spawn = None;
-            let bytes_mb = match svc.allocation_mode {
-                crate::config::AllocationMode::Static { vram_mb } => vram_mb,
-                crate::config::AllocationMode::Dynamic { min_mb, .. } => min_mb,
-                crate::config::AllocationMode::None => 0,
-            };
-            let target_gpu: Option<u32> = svc
-                .gpu_allow
-                .first()
-                .copied()
-                .or_else(|| snap.gpus.first().map(|g| g.id));
-            let mut map = std::collections::BTreeMap::new();
-            if bytes_mb > 0 {
-                let slot = match svc.placement_policy {
-                    crate::config::PlacementPolicy::CpuOnly => crate::config::DeviceSlot::Cpu,
-                    _ => match target_gpu {
-                        Some(id) => crate::config::DeviceSlot::Gpu(id),
-                        None => crate::config::DeviceSlot::Cpu,
-                    },
-                };
-                map.insert(slot, bytes_mb);
-            }
-            return Ok(map);
+            return self.compute_command_reservation(svc, snap, table, optimistic);
         }
         if !svc.placement_override.is_empty() {
             self.packed_for_spawn = None;
@@ -1297,6 +1275,74 @@ impl RunLoop {
             .collect();
         self.packed_for_spawn = Some(packed);
         Ok(want_mb)
+    }
+
+    /// Reservation-map computation for command-template services.
+    ///
+    /// Picks the GPU with the most available headroom (subject to
+    /// `gpu_allow`) via `placement::pick_command_gpu`, falling back to
+    /// `PackError::WeightsDoNotFit` when nothing fits — that variant is the
+    /// trigger for the supervisor's eviction-retry path. The chosen
+    /// allocation is stashed on `packed_for_spawn` so `handle_active_lifecycle`
+    /// renders `CUDA_VISIBLE_DEVICES` against the actual pick instead of the
+    /// always-empty `init.allocation` (which is built from
+    /// `placement_override` only).
+    fn compute_command_reservation(
+        &mut self,
+        svc: &crate::config::ServiceConfig,
+        snap: &crate::devices::DeviceSnapshot,
+        table: &crate::allocator::AllocationTable,
+        optimistic: bool,
+    ) -> Result<std::collections::BTreeMap<crate::config::DeviceSlot, u64>, ReservationFailure>
+    {
+        self.packed_for_spawn = None;
+        let (min_mb, prefer_mb) = match svc.allocation_mode {
+            crate::config::AllocationMode::Static { vram_mb } => (vram_mb, Some(vram_mb)),
+            crate::config::AllocationMode::Dynamic { min_mb, max_mb, .. } => (min_mb, Some(max_mb)),
+            crate::config::AllocationMode::None => (0, None),
+        };
+        let mut map = std::collections::BTreeMap::new();
+        if min_mb == 0 {
+            // No reservation requested. Still publish an empty Packed so the
+            // spawn path renders a deterministic (empty) CUDA_VISIBLE_DEVICES.
+            let alloc = crate::devices::Allocation::from_override(&map);
+            self.packed_for_spawn = Some(crate::allocator::placement::Packed {
+                allocation: alloc,
+                args: crate::allocator::placement::CommandArgs::default(),
+            });
+            return Ok(map);
+        }
+        let slot = if matches!(
+            svc.placement_policy,
+            crate::config::PlacementPolicy::CpuOnly
+        ) {
+            crate::config::DeviceSlot::Cpu
+        } else {
+            match crate::allocator::placement::pick_command_gpu(
+                svc, snap, table, min_mb, prefer_mb, optimistic,
+            ) {
+                Some(id) => crate::config::DeviceSlot::Gpu(id),
+                None if snap.gpus.is_empty() => {
+                    // No GPUs visible at all (typical in tests with a CPU-only
+                    // snapshot). Fall back to CPU so the reservation lands
+                    // somewhere — matches the pre-fix behaviour and keeps
+                    // the test harness working.
+                    crate::config::DeviceSlot::Cpu
+                }
+                None => {
+                    return Err(ReservationFailure::PackFailed(
+                        crate::allocator::placement::PackError::WeightsDoNotFit,
+                    ));
+                }
+            }
+        };
+        map.insert(slot.clone(), min_mb);
+        let alloc = crate::devices::Allocation::from_override(&map);
+        self.packed_for_spawn = Some(crate::allocator::placement::Packed {
+            allocation: alloc,
+            args: crate::allocator::placement::CommandArgs::default(),
+        });
+        Ok(map)
     }
 
     /// Pack failed against the current allocation table. Walk evictable peers

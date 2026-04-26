@@ -160,6 +160,8 @@ ananke oversubscribes GPU memory by dynamically managing which models are active
 - **Command Services**: Support two allocation modes:
   - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
   - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
+
+  In both modes the daemon picks the GPU with the most available headroom (subject to `gpu_allow`), preferring one whose free capacity satisfies the upper bound (`vram_gb` for `static`, `max_vram_gb` for `dynamic`) so dynamic services have room to grow. The picked GPU id is exported to the spawned child as `CUDA_VISIBLE_DEVICES`, and is also available as the `{gpu_ids}` placeholder in `command` argv. Wrappers that launch containers should forward this env (e.g. `docker run --device "nvidia.com/gpu=$CUDA_VISIBLE_DEVICES"`) so the picked GPU is the only one the container sees.
 - **Eviction**: When VRAM is exhausted, ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
 
 #### Placement Policies
@@ -212,7 +214,12 @@ name = "comfyui"
 template = "command"
 port = 8188
 lifecycle = "on_demand"
-# {port} is replaced by the private loopback port assigned by ananke
+# Placeholders substituted in argv:
+#   {port}     - the private loopback port assigned by ananke
+#   {gpu_ids}  - comma-separated NVML index list ananke picked for this service
+#   {vram_mb}  - reserved VRAM in MiB
+#   {model}    - model path (llama-cpp only; empty here)
+#   {name}     - service name
 command = ["/bin/bash", "start_comfy.sh", "--port", "{port}"]
 shutdown_command = ["/bin/bash", "stop_comfy.sh"]
 
@@ -225,6 +232,8 @@ max_vram_gb = 12.0
 http = "/system_stats"
 timeout = "30s"
 ```
+
+The child also inherits `CUDA_VISIBLE_DEVICES` set to the picked GPU id(s). Wrapper scripts that launch a container should forward this so the container only sees the picked GPU — for example, `docker run --device "nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:-all}" ...`.
 
 The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
 
