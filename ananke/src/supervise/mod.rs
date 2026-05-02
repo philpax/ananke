@@ -1329,6 +1329,22 @@ impl RunLoop {
             });
             return Ok(map);
         }
+        // Operator pinned the layout explicitly (e.g. multi-GPU vLLM with
+        // TP=2). Honour the per-device pledge verbatim instead of trying to
+        // land the whole `min_mb` on a single GPU.
+        if !svc.placement_override.is_empty() {
+            crate::allocator::placement::check_command_placement_override(
+                svc, snap, table, optimistic,
+            )
+            .map_err(ReservationFailure::PackFailed)?;
+            map = svc.placement_override.clone();
+            let alloc = crate::devices::Allocation::from_override(&map);
+            self.packed_for_spawn = Some(crate::allocator::placement::Packed {
+                allocation: alloc,
+                args: crate::allocator::placement::CommandArgs::default(),
+            });
+            return Ok(map);
+        }
         let slot = if matches!(
             svc.placement_policy,
             crate::config::PlacementPolicy::CpuOnly
