@@ -29,6 +29,23 @@ live in a separate NixOS module.
 
 There is no top-level task runner today — `cargo …` for the Rust side and `npm run …` inside `frontend/` are invoked directly. Add one (e.g. a `justfile` or equivalent) only if a cross-cutting recipe emerges that genuinely spans both halves or encodes a multi-step flow; don't reach for one just to alias single-command invocations.
 
+### Reading child-process logs
+
+ananke captures every supervised child's stdout and stderr into its local SQLite store — they are not surfaced through the daemon's own log output. Use `anankectl logs <service>` to read them back:
+
+```sh
+# Last N lines from disk for a service:
+anankectl logs <service> --limit 50
+
+# Live tail (Ctrl-C to stop):
+anankectl logs <service> --follow
+
+# Stderr only, scoped to one specific run:
+anankectl logs <service> --stream stderr --run <run-id>
+```
+
+Pass `--endpoint <url>` (or set `ANANKE_ENDPOINT`) when the management API isn't on the default `http://127.0.0.1:7071`. The same data is reachable over HTTP at `GET /api/services/{name}/logs` (paginated history) and `GET /api/services/{name}/logs/stream` (WebSocket live tail). Reach for these whenever a service reports "child exited during starting" — the daemon log only tells you the exit status; the captured child logs tell you why.
+
 ### The Rust ↔ TypeScript boundary
 
 All types that cross the wire between the Rust backend and the TypeScript frontend should be **generated, not hand-written**. Hand-maintained duplicate type definitions are the single biggest source of silent drift in two-language projects.
