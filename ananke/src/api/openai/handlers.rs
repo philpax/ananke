@@ -212,6 +212,16 @@ async fn forward_json_post(
 
     // Apply filters.
     filters::apply(&mut parsed, &svc.filters);
+    // For openai-proxy command services, rewrite the JSON `model` field
+    // to the upstream's expected name. Runs after filters so the proxy
+    // rewrite is the last word — operators can use filters to mangle
+    // other JSON keys, but `model` is whatever `openai_proxy.upstream_model`
+    // says.
+    if let Some(cmd) = svc.command()
+        && let Some(proxy) = &cmd.openai_proxy
+    {
+        parsed["model"] = Value::String(proxy.upstream_model.to_string());
+    }
     let new_body = match serde_json::to_vec(&parsed) {
         Ok(b) => b,
         Err(e) => return errors::bad_request(format!("re-serialise failed: {e}")),

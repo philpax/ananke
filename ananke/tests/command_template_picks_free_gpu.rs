@@ -63,6 +63,7 @@ fn comfy_like_service(name: &str, port: u16) -> ServiceConfig {
             workdir: None,
             shutdown_command: None,
             private_port_override: None,
+            openai_proxy: None,
         }),
     }
 }

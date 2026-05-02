@@ -237,6 +237,42 @@ The child also inherits `CUDA_VISIBLE_DEVICES` set to the picked GPU id(s). Wrap
 
 The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
 
+#### Fronting an OpenAI-Compatible Upstream
+
+A `command`-template service that already speaks the OpenAI API (vLLM, TGI, SGLang, …) can opt into ananke's `/v1/models` and `/v1/chat/completions` multiplexer by adding an `[service.openai_proxy]` block. Without the block, command services stay invisible to the OpenAI surface and are only reachable via their per-service reverse proxy — the same as before.
+
+```toml
+[[service]]
+name = "qwen3.6-27b-vllm"
+template = "command"
+port = 8210
+command = ["/srv/vllm/qwen36_27b.sh", "{port}"]
+lifecycle = "on_demand"
+idle_timeout = "10m"
+
+[service.allocation]
+mode = "static"
+vram_gb = 44
+
+[service.devices]
+placement = "gpu-only"
+placement_override = { "gpu:0" = 22000, "gpu:1" = 22000 }
+
+[service.health]
+http = "/health"
+
+[service.openai_proxy]
+upstream_model = "qwen3.6-27b-autoround"
+```
+
+When this is set:
+
+- The service appears in `GET /v1/models` under its `name` (here, `qwen3.6-27b-vllm`).
+- `POST /v1/chat/completions` (and `/v1/completions`, `/v1/embeddings`) addressed to `qwen3.6-27b-vllm` are routed to this service. ananke ensures the command is started, then forwards the body to the service's private loopback port.
+- Before forwarding, ananke rewrites the JSON `model` field to `upstream_model` (here, `qwen3.6-27b-autoround`) — the name vLLM was started with via `--served-model-name`. Clients address ananke's name; the upstream sees its own name.
+
+The rewrite happens after `[service.filters]` is applied, so `openai_proxy.upstream_model` overrides any `filters.set_params.model`. Filters can still strip or set other JSON keys.
+
 ### Advanced Service Options
 
 - **Filters**: Modify requests before they reach the model.

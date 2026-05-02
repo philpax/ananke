@@ -93,11 +93,10 @@ pub struct ServiceConfig {
     /// Per-service hints that adjust how the snapshotter attributes
     /// observed VRAM/RSS to this service. See [`TrackingSettings`].
     pub tracking: TrackingSettings,
-    /// Passthrough entries from `[[service]] metadata.*`. The
-    /// `openai_compat` key (if present) is special-cased into
-    /// `openai_compat` above; every other entry is opaque to the daemon
-    /// and exists only to be echoed back through `/v1/models` and
-    /// `/api/services`.
+    /// Passthrough entries from `[[service]] metadata.*`. Opaque to the
+    /// daemon — these exist only to be echoed back through `/v1/models`
+    /// and `/api/services` for clients (Discord rotation, residence
+    /// flags, …).
     pub metadata: AnankeMetadata,
     pub template_config: TemplateConfig,
 }
@@ -195,6 +194,21 @@ pub struct CommandConfig {
     /// at a fixed upstream (docker host binding, a service managed
     /// externally, etc). `None` = auto-assign.
     pub private_port_override: Option<u16>,
+    /// When `Some`, the service is fronted by the OpenAI-compatible
+    /// multiplexer at `:7070`: it appears in `/v1/models`, accepts
+    /// `/v1/chat/completions` (etc.) addressed to its service `name`,
+    /// and the multiplexer rewrites the JSON `model` field to
+    /// `upstream_model` before forwarding. `None` = ordinary command
+    /// service that's only reachable via its per-service reverse proxy.
+    pub openai_proxy: Option<OpenAiProxyConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenAiProxyConfig {
+    /// Model name written into the upstream's JSON `model` field. The
+    /// service's `name` is what clients see in `/v1/models`; this is
+    /// what the upstream (vLLM, TGI, …) is asked to serve.
+    pub upstream_model: SmolStr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,11 +439,6 @@ fn validate_service(
         )));
     }
 
-    let template = match raw {
-        RawService::LlamaCpp(_) => Template::LlamaCpp,
-        RawService::Command(_) => Template::Command,
-    };
-
     let (allocation_mode, template_config) = match raw {
         RawService::LlamaCpp(lc) => {
             let tc = validate_llama_cpp(&name, lc)?;
@@ -486,10 +495,13 @@ fn validate_service(
 
     let metadata = build_ananke_metadata(common.metadata.as_ref())
         .map_err(|e| fail(format!("service {name} metadata: {e}")))?;
-    // llama-cpp always speaks OpenAI; command services never do. No
-    // config knob — if you need a command service routed through
-    // `/v1/models`, wrap it in a llama-cpp-compatible proxy instead.
-    let openai_compat = template == Template::LlamaCpp;
+    // llama-cpp always speaks OpenAI. Command services opt in by
+    // setting `[service.openai_proxy] upstream_model = ...`; that's
+    // also where the model-name rewrite to the upstream lives.
+    let openai_compat = match &template_config {
+        TemplateConfig::LlamaCpp(_) => true,
+        TemplateConfig::Command(cmd) => cmd.openai_proxy.is_some(),
+    };
 
     let dev = common.devices.clone().unwrap_or_default();
     let n_gpu_layers = match &template_config {
@@ -823,11 +835,28 @@ fn validate_command(
     if let Some(sd) = &cmd.shutdown_command {
         check_placeholders(name, "shutdown_command", sd)?;
     }
+    let openai_proxy = match &cmd.openai_proxy {
+        None => None,
+        Some(proxy) => {
+            let upstream_model = proxy
+                .upstream_model
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    fail(format!(
+                        "service {name}: openai_proxy.upstream_model must be a non-empty string"
+                    ))
+                })?
+                .clone();
+            Some(OpenAiProxyConfig { upstream_model })
+        }
+    };
     Ok(CommandConfig {
         command,
         workdir: cmd.workdir.clone(),
         shutdown_command: cmd.shutdown_command.clone(),
         private_port_override: cmd.private_port,
+        openai_proxy,
     })
 }
 
@@ -1091,6 +1120,7 @@ pub mod test_fixtures {
             workdir: None,
             shutdown_command: None,
             private_port_override: None,
+            openai_proxy: None,
         });
         svc.openai_compat = false;
         svc
@@ -1727,6 +1757,100 @@ allocation.vram_gb = 1
         assert!(
             format!("{err}").contains("shutdown_command is present but empty"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_service_with_openai_proxy_is_listed() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "qwen3.6-27b-vllm"
+template = "command"
+command = ["/run/vllm.sh", "{port}"]
+port = 8500
+allocation.mode = "static"
+allocation.vram_gb = 1
+[service.openai_proxy]
+upstream_model = "qwen3.6-27b-autoround"
+"#,
+        );
+        let eff = validate(&cfg).expect("validate");
+        let svc = &eff.services[0];
+        assert!(svc.openai_compat, "openai_compat should be true");
+        let cmd = svc.command().expect("command template");
+        let proxy = cmd.openai_proxy.as_ref().expect("openai_proxy populated");
+        assert_eq!(proxy.upstream_model, "qwen3.6-27b-autoround");
+    }
+
+    #[test]
+    fn command_service_rejects_empty_openai_proxy_upstream_model() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "ext"
+template = "command"
+command = ["/bin/true"]
+port = 8500
+allocation.mode = "static"
+allocation.vram_gb = 1
+[service.openai_proxy]
+upstream_model = ""
+"#,
+        );
+        let err = validate(&cfg).expect_err("empty upstream_model is rejected");
+        assert!(
+            format!("{err}").contains("openai_proxy.upstream_model"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_service_rejects_missing_openai_proxy_upstream_model() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "ext"
+template = "command"
+command = ["/bin/true"]
+port = 8500
+allocation.mode = "static"
+allocation.vram_gb = 1
+[service.openai_proxy]
+"#,
+        );
+        let err = validate(&cfg).expect_err("missing upstream_model is rejected");
+        assert!(
+            format!("{err}").contains("openai_proxy.upstream_model"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_service_without_openai_proxy_is_hidden() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "comfy"
+template = "command"
+command = ["/bin/comfyui"]
+port = 8188
+allocation.mode = "dynamic"
+allocation.min_vram_gb = 2
+allocation.max_vram_gb = 8
+"#,
+        );
+        let eff = validate(&cfg).expect("validate");
+        let svc = &eff.services[0];
+        assert!(
+            !svc.openai_compat,
+            "openai_compat should default to false for command services without openai_proxy"
+        );
+        assert!(
+            svc.command()
+                .expect("command template")
+                .openai_proxy
+                .is_none()
         );
     }
 

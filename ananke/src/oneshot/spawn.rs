@@ -69,6 +69,7 @@ pub async fn spawn_oneshot(
                 workdir: req.workdir.map(PathBuf::from),
                 shutdown_command: None,
                 private_port_override: None,
+                openai_proxy: None,
             })
         }
     };

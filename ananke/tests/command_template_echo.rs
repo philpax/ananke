@@ -58,6 +58,7 @@ fn command_argv_substitutes_port() {
             workdir: None,
             shutdown_command: None,
             private_port_override: None,
+            openai_proxy: None,
         }),
     };
 

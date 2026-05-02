@@ -203,6 +203,10 @@ fn merge_command(
             .shutdown_command
             .clone()
             .or_else(|| parent.shutdown_command.clone()),
+        openai_proxy: child
+            .openai_proxy
+            .clone()
+            .or_else(|| parent.openai_proxy.clone()),
     })
 }
 

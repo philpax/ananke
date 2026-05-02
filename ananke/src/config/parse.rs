@@ -214,6 +214,25 @@ pub struct RawCommandService {
     /// host shell but the container needs an explicit `docker stop`.
     /// Accepts the same placeholder substitutions as `command`.
     pub shutdown_command: Option<Vec<String>>,
+    /// Opt the command service into the OpenAI-compatible multiplexer.
+    /// When present, the service shows up in `/v1/models` and accepts
+    /// `/v1/chat/completions` and friends; the multiplexer rewrites the
+    /// JSON `model` field to `upstream_model` before forwarding to the
+    /// service's private port.
+    pub openai_proxy: Option<RawOpenAiProxy>,
+}
+
+/// `[service.openai_proxy]` block. Marks a `command` service as fronting
+/// an upstream OpenAI-compatible API (vLLM, TGI, SGLang, …) so ananke's
+/// allocator and lifecycle apply uniformly with the llama.cpp services.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawOpenAiProxy {
+    /// Model name passed to the upstream's OpenAI API. The service's
+    /// `name` is what clients see; this is what ananke writes into the
+    /// JSON `model` field before forwarding. Required; the validator
+    /// rejects an empty/missing value.
+    pub upstream_model: Option<SmolStr>,
 }
 
 /// Fields shared by every template variant. Flattened into each variant so
