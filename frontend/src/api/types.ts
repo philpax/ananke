@@ -604,6 +604,16 @@ export interface components {
       /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
       template: string;
     };
+    /** @description Response from `GET /api/services`. */
+    ServicesResponse: {
+      /** @description Registered services. */
+      services: components["schemas"]["ServiceSummary"][];
+      /**
+       * Format: int32
+       * @description Port the OpenAI-compatible API is listening on.
+       */
+      openai_api_port: number;
+    };
     /** @description One entry in `GET /api/services`. */
     ServiceSummary: {
       /**
@@ -932,7 +942,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ServiceSummary"][];
+          "application/json": components["schemas"]["ServicesResponse"];
         };
       };
     };

@@ -3,7 +3,7 @@
 use ananke_api::{
     ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DeviceReservation,
     DeviceSummary, DisableResponse, EnableResponse, LogLine, LogsResponse, ServiceDetail,
-    ServiceSummary, StartResponse, StopResponse, ValidationError,
+    ServiceSummary, ServicesResponse, StartResponse, StopResponse, ValidationError,
     oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
 };
 use axum::{
@@ -59,6 +59,7 @@ use crate::{
         openai_errors::ErrorBody,
         openai_errors::ErrorDetail,
         ServiceSummary,
+        ServicesResponse,
         ServiceDetail,
         LogLine,
         LogsResponse,

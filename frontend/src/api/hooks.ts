@@ -21,6 +21,7 @@ import {
   type LogsResponse,
   type ServiceDetail,
   type ServiceSummary,
+  type ServicesResponse,
   type StartResponse,
   type StopResponse,
 } from "./client.ts";
@@ -32,7 +33,8 @@ const LOGS_POLL_MS = 5_000;
 export function useServices(): UseQueryResult<ServiceSummary[], Error> {
   return useQuery({
     queryKey: ["services"],
-    queryFn: api.listServices,
+    queryFn: () =>
+      api.listServices().then((resp: ServicesResponse) => resp.services),
     refetchInterval: SERVICES_POLL_MS,
   });
 }

@@ -7,6 +7,7 @@ import type { components, paths } from "./types.ts";
 type Schemas = components["schemas"];
 
 export type ServiceSummary = Schemas["ServiceSummary"];
+export type ServicesResponse = Schemas["ServicesResponse"];
 export type ServiceDetail = Schemas["ServiceDetail"];
 export type LogLine = Schemas["LogLine"];
 export type LogsResponse = Schemas["LogsResponse"];

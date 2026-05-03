@@ -1,6 +1,8 @@
 //! Read-only management endpoints.
 
-use ananke_api::{DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary};
+use ananke_api::{
+    DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary, ServicesResponse,
+};
 use axum::{
     Json,
     extract::{Path, State},
@@ -22,9 +24,9 @@ pub fn register(router: Router, state: AppState) -> Router {
     router.merge(mgmt)
 }
 
-#[utoipa::path(get, path = "/api/services", responses((status = 200, body = Vec<ServiceSummary>)))]
+#[utoipa::path(get, path = "/api/services", responses((status = 200, body = ServicesResponse)))]
 pub async fn list_services(State(state): State<AppState>) -> Response {
-    let mut out = Vec::new();
+    let mut services = Vec::new();
     let eff = state.config.effective();
     for svc_cfg in eff.services.iter() {
         let handle = state.registry.get(&svc_cfg.name);
@@ -37,7 +39,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             .as_ref()
             .map(|p| p.state.name().to_string())
             .unwrap_or_else(|| "unknown".into());
-        out.push(ServiceSummary {
+        services.push(ServiceSummary {
             name: svc_cfg.name.to_string(),
             state: state_name,
             lifecycle: svc_cfg.lifecycle.as_str().to_string(),
@@ -50,6 +52,18 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             ananke_metadata: svc_cfg.metadata.clone(),
         });
     }
+    // Extract the port from the OpenAI bind address (e.g. "127.0.0.1:7070").
+    let openai_api_port = eff
+        .daemon
+        .openai_listen
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or_default();
+    let out = ServicesResponse {
+        services,
+        openai_api_port,
+    };
     (StatusCode::OK, Json(out)).into_response()
 }
 
