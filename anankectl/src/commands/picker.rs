@@ -26,11 +26,19 @@ use crate::client::{ApiClient, ApiClientError};
 ///   - exactly one enabled service → returns it without showing the UI.
 pub async fn pick_service(client: &ApiClient) -> Result<Option<String>, ApiClientError> {
     let resp: ServicesResponse = client.get_json("/api/services").await?;
-    let candidates: Vec<ServiceSummary> = resp
+    let mut candidates: Vec<ServiceSummary> = resp
         .services
         .into_iter()
         .filter(|s| !s.state.starts_with("disabled"))
         .collect();
+
+    // Hot models first — running, then idle, then everything else.
+    // Within a tier, sort by name so the order is stable across calls.
+    candidates.sort_by(|a, b| {
+        state_rank(&a.state)
+            .cmp(&state_rank(&b.state))
+            .then_with(|| a.name.cmp(&b.name))
+    });
 
     if candidates.is_empty() {
         return Err(ApiClientError::Usage(
@@ -192,6 +200,16 @@ fn render_list(f: &mut Frame, area: Rect, services: &[ServiceSummary], selected:
             Span::styled(svc.name.clone(), row_style),
         ]);
         f.render_widget(Paragraph::new(line).style(row_style), rect);
+    }
+}
+
+/// Order services by how "ready" they are: running first (already hot),
+/// idle next (warm — child process up), then anything else.
+fn state_rank(state: &str) -> u8 {
+    match state {
+        "running" => 0,
+        "idle" => 1,
+        _ => 2,
     }
 }
 
