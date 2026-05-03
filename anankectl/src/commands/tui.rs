@@ -493,6 +493,11 @@ enum KeyAction {
 /// Handle a single key press, mutating `state` directly for in-line edits
 /// and returning a `KeyAction` for things the caller has to coordinate
 /// (channel sends, returning from the loop).
+///
+/// Note on Shift+Enter: many terminals don't deliver a `KeyCode::Enter`
+/// with the SHIFT modifier — instead the user must bind Shift+Enter to
+/// transmit a literal `\n`. That arrives at crossterm as `Ctrl+J`
+/// (since 0x0A == ASCII Ctrl+J), so we treat both as "insert newline".
 fn handle_key(key: crossterm::event::KeyEvent, state: &mut TuiState) -> Option<KeyAction> {
     use crossterm::event::KeyModifiers;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -501,7 +506,14 @@ fn handle_key(key: crossterm::event::KeyEvent, state: &mut TuiState) -> Option<K
     match key.code {
         KeyCode::Char('c') if ctrl => Some(KeyAction::Quit),
         KeyCode::Char('d') if ctrl && state.input.is_empty() => Some(KeyAction::Quit),
+        // Shift+Enter via terminal modifier reporting (rare).
         KeyCode::Enter if shift => {
+            state.input.push('\n');
+            None
+        }
+        // Shift+Enter via terminal config sending a literal LF (0x0A),
+        // which crossterm decodes as Ctrl+J.
+        KeyCode::Char('j') if ctrl => {
             state.input.push('\n');
             None
         }
