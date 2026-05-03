@@ -112,6 +112,8 @@ enum OneshotCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Show daemon, device, and service snapshot in one view.
+    Status,
     /// List devices with reservations.
     Devices,
     /// List services.
@@ -220,6 +222,7 @@ async fn main() -> ExitCode {
     };
     let client = client::ApiClient::new(&endpoint);
     let result = match cli.command {
+        Command::Status => commands::status::run(&client, cli.json).await,
         Command::Devices => commands::devices::run(&client, cli.json).await,
         Command::Services { all } => commands::services::run(&client, cli.json, all).await,
         Command::Show { name } => commands::show::run(&client, cli.json, &name).await,

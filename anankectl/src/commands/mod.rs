@@ -7,4 +7,5 @@ pub mod oneshot;
 pub mod server_config;
 pub mod services;
 pub mod show;
+pub mod status;
 pub mod tui;
