@@ -24,7 +24,8 @@ async fn api_services_lists_registered() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let names: Vec<String> = parsed
+    assert!(parsed["services"].is_array());
+    let names: Vec<String> = parsed["services"]
         .as_array()
         .unwrap()
         .iter()

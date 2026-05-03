@@ -5,6 +5,15 @@ use utoipa::ToSchema;
 
 use crate::{logs::LogLine, metadata::AnankeMetadata};
 
+/// Response from `GET /api/services`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+pub struct ServicesResponse {
+    /// Registered services.
+    pub services: Vec<ServiceSummary>,
+    /// Port the OpenAI-compatible API is listening on.
+    pub openai_api_port: u16,
+}
+
 /// One entry in `GET /api/services`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ServiceSummary {

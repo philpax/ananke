@@ -1,7 +1,12 @@
+pub mod chat;
 pub mod config;
 pub mod devices;
 pub mod lifecycle;
 pub mod logs;
 pub mod oneshot;
+pub mod picker;
+pub mod server_config;
 pub mod services;
 pub mod show;
+pub mod status;
+pub mod tui;
