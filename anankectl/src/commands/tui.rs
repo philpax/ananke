@@ -70,6 +70,10 @@ struct TuiMsg {
     /// `content` in a dim style.
     reasoning: String,
     streaming: bool,
+    /// User cancelled this turn before the model finished. Surfaced in
+    /// the assistant box title so the partial response is clearly marked
+    /// as truncated rather than completed.
+    cancelled: bool,
     /// Live decode/usage timing for assistant messages. Frozen once the
     /// turn finishes. `None` for user/system messages.
     stats: Option<TurnStats>,
@@ -182,6 +186,7 @@ impl TuiState {
                 content: system_prompt.to_string(),
                 reasoning: String::new(),
                 streaming: false,
+                cancelled: false,
                 stats: None,
             }]
         };
@@ -206,6 +211,7 @@ impl TuiState {
             content,
             reasoning: String::new(),
             streaming: false,
+            cancelled: false,
             stats: None,
         });
         let history = self
@@ -221,6 +227,7 @@ impl TuiState {
             content: String::new(),
             reasoning: String::new(),
             streaming: true,
+            cancelled: false,
             stats: Some(TurnStats::new(Instant::now())),
         });
         self.streaming = true;
@@ -310,6 +317,22 @@ impl TuiState {
         self.streaming = false;
     }
 
+    /// Mark the active streaming turn as user-cancelled. Keeps whatever
+    /// content/reasoning has accumulated so the user can still read it,
+    /// flips `cancelled` so the title makes the truncation visible.
+    fn apply_cancel(&mut self) {
+        if let Some(last) = self.messages.last_mut()
+            && last.streaming
+        {
+            last.streaming = false;
+            last.cancelled = true;
+            if let Some(stats) = last.stats.as_mut() {
+                stats.end.get_or_insert_with(Instant::now);
+            }
+        }
+        self.streaming = false;
+    }
+
     fn set_error(&mut self, error: String) {
         self.error = Some(error);
         // Drop the placeholder assistant message if it carries no body and
@@ -355,15 +378,17 @@ pub async fn run(
 
     let openai_url = construct_openai_url(&client.endpoint, port)?;
 
-    // Channels: TUI -> dispatcher carries new conversation submissions;
-    // dispatcher -> TUI carries SSE updates.
+    // Channels: TUI -> dispatcher carries new conversation submissions
+    // and cancellation signals; dispatcher -> TUI carries SSE updates.
     let (req_tx, req_rx) = mpsc::channel::<Vec<WireMessage>>(8);
+    let (cancel_tx, cancel_rx) = mpsc::channel::<()>(4);
     let (sse_tx, sse_rx) = mpsc::channel::<SSEUpdate>(64);
 
     let chat_handle = tokio::spawn(chat_dispatcher(
         openai_url,
         model.to_string(),
         req_rx,
+        cancel_rx,
         sse_tx,
     ));
 
@@ -383,7 +408,8 @@ pub async fn run(
         let mut state = state;
         let mut sse_rx = sse_rx;
         let req_tx = req_tx;
-        let inner = run_tui(&mut terminal, &mut state, &mut sse_rx, &req_tx);
+        let cancel_tx = cancel_tx;
+        let inner = run_tui(&mut terminal, &mut state, &mut sse_rx, &req_tx, &cancel_tx);
         // Restore terminal regardless of inner result.
         let _ = execute!(
             terminal.backend_mut(),
@@ -422,6 +448,7 @@ enum SSEUpdate {
         completion_tokens: Option<u32>,
     },
     Done,
+    Cancelled,
     Error(String),
 }
 
@@ -448,12 +475,25 @@ async fn chat_dispatcher(
     base: reqwest::Url,
     model: String,
     mut req_rx: mpsc::Receiver<Vec<WireMessage>>,
+    mut cancel_rx: mpsc::Receiver<()>,
     sse_tx: mpsc::Sender<SSEUpdate>,
 ) {
     let client = reqwest::Client::new();
     while let Some(messages) = req_rx.recv().await {
-        if let Err(e) = stream_one(&client, &base, &model, messages, &sse_tx).await {
-            let _ = sse_tx.send(SSEUpdate::Error(e)).await;
+        // Drain stale cancel signals so a Ctrl+X received between turns
+        // doesn't kill the next one.
+        while cancel_rx.try_recv().is_ok() {}
+        tokio::select! {
+            res = stream_one(&client, &base, &model, messages, &sse_tx) => {
+                if let Err(e) = res {
+                    let _ = sse_tx.send(SSEUpdate::Error(e)).await;
+                }
+            }
+            _ = cancel_rx.recv() => {
+                // Dropping the future drops the in-flight HTTP stream
+                // (reqwest closes the connection on drop).
+                let _ = sse_tx.send(SSEUpdate::Cancelled).await;
+            }
         }
     }
 }
@@ -620,6 +660,7 @@ fn run_tui(
     state: &mut TuiState,
     sse_rx: &mut mpsc::Receiver<SSEUpdate>,
     req_tx: &mpsc::Sender<Vec<WireMessage>>,
+    cancel_tx: &mpsc::Sender<()>,
 ) -> Result<(), ApiClientError> {
     loop {
         // Drain any pending SSE updates before drawing.
@@ -632,6 +673,7 @@ fn run_tui(
                     completion_tokens,
                 } => state.apply_usage(prompt_tokens, completion_tokens),
                 SSEUpdate::Done => state.finish_streaming(),
+                SSEUpdate::Cancelled => state.apply_cancel(),
                 SSEUpdate::Error(e) => state.set_error(e),
             }
         }
@@ -657,6 +699,12 @@ fn run_tui(
                                 state.set_error("chat dispatcher closed".to_string());
                             }
                         }
+                        KeyAction::Cancel => {
+                            // Best-effort: dispatcher emits SSEUpdate::Cancelled
+                            // which finalises the turn. If the channel is full
+                            // there's already a pending cancel and that's fine.
+                            let _ = cancel_tx.try_send(());
+                        }
                     }
                 }
             }
@@ -673,6 +721,7 @@ fn run_tui(
 enum KeyAction {
     Quit,
     Submit,
+    Cancel,
 }
 
 /// Handle a single key press, mutating `state` directly for in-line edits
@@ -691,6 +740,8 @@ fn handle_key(key: crossterm::event::KeyEvent, state: &mut TuiState) -> Option<K
     match key.code {
         KeyCode::Char('c') if ctrl => Some(KeyAction::Quit),
         KeyCode::Char('d') if ctrl && state.input.is_empty() => Some(KeyAction::Quit),
+        // Cancel the in-flight turn while keeping any partial response.
+        KeyCode::Char('x') if ctrl && state.streaming => Some(KeyAction::Cancel),
         // Shift+Enter via terminal modifier reporting (rare).
         KeyCode::Enter if shift => {
             state.input.push('\n');
@@ -867,6 +918,14 @@ fn build_title_line(msg: &TuiMsg, now: Instant) -> Line<'static> {
             .fg(msg.role.color())
             .add_modifier(Modifier::BOLD),
     )];
+    if msg.cancelled {
+        spans.push(Span::styled(
+            "· cancelled ",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if let Some(stats) = &msg.stats {
         let streaming = msg.streaming;
         let tokens = stats.decoded_tokens();
@@ -1033,6 +1092,8 @@ fn render_status(f: &mut Frame, area: ratatui::layout::Rect) {
         Span::raw(" newline · "),
         Span::styled("↑/↓/wheel", Style::default().fg(Color::White)),
         Span::raw(" scroll · "),
+        Span::styled("Ctrl+X", Style::default().fg(Color::White)),
+        Span::raw(" cancel · "),
         Span::styled("Esc", Style::default().fg(Color::White)),
         Span::raw(" clear · "),
         Span::styled("Ctrl+C", Style::default().fg(Color::White)),
