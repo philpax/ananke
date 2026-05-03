@@ -413,11 +413,14 @@ The management API exposes a WebSocket endpoint at `/api/events` that delivers r
 
 ## Using `anankectl`
 
-The CLI tool allows real-time management of the daemon. The base URL is set via `--endpoint` or the `ananke_ENDPOINT` environment variable.
+The CLI tool allows real-time management of the daemon. The base URL it talks to is resolved in this order: `--endpoint` flag, `ANANKE_ENDPOINT` environment variable, the `endpoint` key in `~/.config/anankectl/config.toml`, then the built-in default.
 
 ```bash
-# Service Management
-anankectl services [--all]     # List all services (include disabled with --all)
+# At-a-glance health
+anankectl status               # Daemon endpoint, OpenAI port, devices, services in one view
+
+# Service management
+anankectl services [--all]     # List services (include disabled with --all)
 anankectl show <name>          # Show detailed service status
 anankectl start <name>         # Manually trigger a service load
 anankectl stop <name>          # Manually trigger a service drain
@@ -438,14 +441,36 @@ anankectl reload                      # Force a config reload
 # Client (anankectl) configuration
 anankectl config set endpoint <url>   # Persist a default management endpoint
 anankectl config get endpoint
-anankectl config list
+anankectl config list                 # Show every known key + current value
+anankectl config unset endpoint
+anankectl config path                 # Print path to the client config file
 anankectl config edit                 # Open the client config in $EDITOR
 
+# Talking to a model
+anankectl chat <model> <prompt>...    # One-shot, streams the response to stdout
+anankectl chat <model>                # Interactive TUI session
+anankectl chat                        # Pick interactively from OpenAI-accessible services
+
 # Oneshot
-anankectl oneshot submit <file> # Submit from TOML
-anankectl oneshot list           # List active oneshot jobs
-anankectl oneshot kill <id>     # Cancel a running oneshot
+anankectl oneshot submit <file>       # Submit from TOML
+anankectl oneshot list                # List active oneshot jobs
+anankectl oneshot kill <id>           # Cancel a running oneshot
 ```
+
+### Interactive chat (`anankectl chat`)
+
+When invoked without a model, `chat` opens a small picker showing every service that `/v1/models` is willing to route to, sorted with running services at the top and the cursor pre-positioned on the hottest one. Single-candidate services auto-select; everything else is `↑/↓` (or `j/k`) and `Enter`.
+
+The chat TUI itself supports:
+
+- **Multi-line input** — the input box grows from 3 to 10 rows of content as you type, then scrolls internally past the cap. Press `Shift+Enter` (or `Ctrl+J` if your terminal sends a literal LF for Shift+Enter) to insert a newline; `Enter` sends. `Esc` clears the buffer.
+- **Per-turn boxes** — each user/assistant/system turn renders in its own bordered block, role-coloured. Reasoning content (`delta.reasoning_content` / `delta.reasoning`, e.g. from DeepSeek) is shown in a subdued style above the visible response so you can watch the model think without it cluttering the final answer.
+- **Live token-rate stats** — the assistant box title shows decoded-token count, decode rate (tok/s), time-to-first-token, and prompt-processing rate once the streamed `usage` chunk lands. Stats are live during streaming and freeze when the turn finishes.
+- **Cancellation** — `Ctrl+X` cancels the in-flight turn, drops the HTTP stream, freezes the partial response with a red "· cancelled" badge in the title, and returns control to the input box.
+- **Scroll** — `↑/↓` or the mouse wheel scrolls the conversation; `Ctrl+End` snaps back to the bottom.
+- **Quit** — `Ctrl+C` (or `Ctrl+D` on an empty input).
+
+`anankectl chat <model> <prompt>` (with a prompt) skips the TUI entirely and streams the completion to stdout — handy for one-off shell pipelines.
 
 ## Comparing Alternatives
 
