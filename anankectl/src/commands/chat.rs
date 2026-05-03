@@ -25,10 +25,28 @@ struct ChatRequest {
 pub async fn run(
     client: &ApiClient,
     json: bool,
-    model: &str,
+    model: Option<&str>,
     prompt: &str,
     system_prompt: &str,
 ) -> Result<(), ApiClientError> {
+    // Resolve the model. If the caller didn't supply one we open a picker —
+    // but only when there's no prompt, since one-shot invocations don't
+    // have an interactive surface to fall back to.
+    let resolved_model: String = match model {
+        Some(m) => m.to_string(),
+        None => {
+            if !prompt.is_empty() {
+                return Err(ApiClientError::Usage(
+                    "model is required when a prompt is provided; either pass a model name or omit the prompt to pick interactively".into(),
+                ));
+            }
+            match super::picker::pick_service(client).await? {
+                Some(name) => name,
+                None => return Ok(()),
+            }
+        }
+    };
+
     // Discover the OpenAI port from the management API.
     let resp: ServicesResponse = client.get_json("/api/services").await?;
     let port = resp.openai_api_port;
@@ -38,11 +56,11 @@ pub async fn run(
 
     if prompt.is_empty() {
         // No prompt — enter interactive TUI mode.
-        super::tui::run(client, model, system_prompt).await
+        super::tui::run(client, &resolved_model, system_prompt).await
     } else if json {
-        run_non_streaming(openai_url, model, prompt, system_prompt).await
+        run_non_streaming(openai_url, &resolved_model, prompt, system_prompt).await
     } else {
-        run_streaming(openai_url, model, prompt, system_prompt).await
+        run_streaming(openai_url, &resolved_model, prompt, system_prompt).await
     }
 }
 

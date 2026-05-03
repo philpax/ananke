@@ -199,8 +199,8 @@ enum Command {
     Reload,
     /// Talk to a model via the OpenAI-compatible API.
     Chat {
-        /// Model (service) name.
-        model: String,
+        /// Model (service) name. Omit to pick interactively from enabled services.
+        model: Option<String>,
         /// User prompt.
         #[arg(trailing_var_arg = true)]
         prompt: Vec<String>,
@@ -303,7 +303,7 @@ async fn main() -> ExitCode {
             system_prompt,
         } => {
             let prompt = prompt.join(" ");
-            commands::chat::run(&client, cli.json, &model, &prompt, &system_prompt).await
+            commands::chat::run(&client, cli.json, model.as_deref(), &prompt, &system_prompt).await
         }
     };
     match result {

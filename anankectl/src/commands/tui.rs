@@ -921,9 +921,7 @@ fn build_title_line(msg: &TuiMsg, now: Instant) -> Line<'static> {
     if msg.cancelled {
         spans.push(Span::styled(
             "· cancelled ",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
     }
     if let Some(stats) = &msg.stats {
