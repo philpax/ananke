@@ -1,6 +1,9 @@
 //! Interactive TUI chat interface using ratatui.
 
-use std::io;
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use ananke_api::ServicesResponse;
 use crossterm::{
@@ -67,6 +70,95 @@ struct TuiMsg {
     /// `content` in a dim style.
     reasoning: String,
     streaming: bool,
+    /// Live decode/usage timing for assistant messages. Frozen once the
+    /// turn finishes. `None` for user/system messages.
+    stats: Option<TurnStats>,
+}
+
+/// Live and final timing data for a single assistant turn.
+struct TurnStats {
+    /// When the request was dispatched.
+    start: Instant,
+    /// When the first decoded delta (content or reasoning) arrived.
+    first_token_at: Option<Instant>,
+    /// When the stream finished (either `[DONE]` or transport close).
+    end: Option<Instant>,
+    /// Decode chunks observed (content + reasoning), used as the live
+    /// fallback when the server doesn't echo `usage`.
+    content_chunks: u32,
+    reasoning_chunks: u32,
+    /// Token counts from the streamed `usage` chunk (if the server emits
+    /// one — most llama.cpp-style servers do when `stream_options.include_usage`
+    /// is set).
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+}
+
+impl TurnStats {
+    fn new(start: Instant) -> Self {
+        Self {
+            start,
+            first_token_at: None,
+            end: None,
+            content_chunks: 0,
+            reasoning_chunks: 0,
+            prompt_tokens: None,
+            completion_tokens: None,
+        }
+    }
+
+    fn ttft(&self) -> Option<Duration> {
+        self.first_token_at.map(|t| t.duration_since(self.start))
+    }
+
+    /// Tokens-per-second for decode, computed live from chunk counts.
+    /// Returns `None` until at least 200 ms of decode have elapsed so the
+    /// number doesn't whiplash on the first chunk.
+    fn live_decode_rate(&self, now: Instant) -> Option<f64> {
+        let first = self.first_token_at?;
+        let elapsed = now.duration_since(first).as_secs_f64();
+        if elapsed < 0.2 {
+            return None;
+        }
+        let total = (self.content_chunks + self.reasoning_chunks) as f64;
+        if total == 0.0 {
+            return None;
+        }
+        Some(total / elapsed)
+    }
+
+    /// Final tokens-per-second for decode. Prefers `completion_tokens` from
+    /// the usage chunk, falling back to chunk counts.
+    fn final_decode_rate(&self) -> Option<f64> {
+        let first = self.first_token_at?;
+        let end = self.end?;
+        let elapsed = end.duration_since(first).as_secs_f64();
+        if elapsed <= 0.0 {
+            return None;
+        }
+        let n = self
+            .completion_tokens
+            .map(|t| t as f64)
+            .unwrap_or((self.content_chunks + self.reasoning_chunks) as f64);
+        Some(n / elapsed)
+    }
+
+    /// Prompt-processing rate: `prompt_tokens / ttft`. Only available once
+    /// usage has arrived.
+    fn pp_rate(&self) -> Option<f64> {
+        let pt = self.prompt_tokens? as f64;
+        let ttft = self.ttft()?.as_secs_f64();
+        if ttft <= 0.0 {
+            return None;
+        }
+        Some(pt / ttft)
+    }
+
+    /// Live or final decoded-token count to display next to the rate.
+    fn decoded_tokens(&self) -> u32 {
+        self.completion_tokens
+            .unwrap_or(self.content_chunks + self.reasoning_chunks)
+    }
 }
 
 struct TuiState {
@@ -90,6 +182,7 @@ impl TuiState {
                 content: system_prompt.to_string(),
                 reasoning: String::new(),
                 streaming: false,
+                stats: None,
             }]
         };
         Self {
@@ -113,6 +206,7 @@ impl TuiState {
             content,
             reasoning: String::new(),
             streaming: false,
+            stats: None,
         });
         let history = self
             .messages
@@ -127,6 +221,7 @@ impl TuiState {
             content: String::new(),
             reasoning: String::new(),
             streaming: true,
+            stats: Some(TurnStats::new(Instant::now())),
         });
         self.streaming = true;
         self.first_token = false;
@@ -141,7 +236,7 @@ impl TuiState {
         if !last.streaming {
             return;
         }
-        if !self.first_token {
+        let pushed = if !self.first_token {
             // Trim leading whitespace from the first content token to handle
             // models that emit "\n" in the initial delta event.
             let trimmed = token.trim_start();
@@ -150,8 +245,14 @@ impl TuiState {
             }
             last.content.push_str(trimmed);
             self.first_token = true;
+            true
         } else {
             last.content.push_str(&token);
+            true
+        };
+        if pushed && let Some(stats) = last.stats.as_mut() {
+            stats.first_token_at.get_or_insert_with(Instant::now);
+            stats.content_chunks = stats.content_chunks.saturating_add(1);
         }
         self.scroll_offset = 0;
     }
@@ -164,16 +265,37 @@ impl TuiState {
             return;
         }
         // Trim leading whitespace if reasoning is starting fresh.
-        if last.reasoning.is_empty() {
+        let pushed = if last.reasoning.is_empty() {
             let trimmed = token.trim_start();
             if trimmed.is_empty() {
                 return;
             }
             last.reasoning.push_str(trimmed);
+            true
         } else {
             last.reasoning.push_str(&token);
+            true
+        };
+        if pushed && let Some(stats) = last.stats.as_mut() {
+            stats.first_token_at.get_or_insert_with(Instant::now);
+            stats.reasoning_chunks = stats.reasoning_chunks.saturating_add(1);
         }
         self.scroll_offset = 0;
+    }
+
+    fn apply_usage(&mut self, prompt: Option<u32>, completion: Option<u32>) {
+        let Some(last) = self.messages.last_mut() else {
+            return;
+        };
+        let Some(stats) = last.stats.as_mut() else {
+            return;
+        };
+        if let Some(p) = prompt {
+            stats.prompt_tokens = Some(p);
+        }
+        if let Some(c) = completion {
+            stats.completion_tokens = Some(c);
+        }
     }
 
     fn finish_streaming(&mut self) {
@@ -181,6 +303,9 @@ impl TuiState {
             && last.streaming
         {
             last.streaming = false;
+            if let Some(stats) = last.stats.as_mut() {
+                stats.end.get_or_insert_with(Instant::now);
+            }
         }
         self.streaming = false;
     }
@@ -199,6 +324,9 @@ impl TuiState {
             && last.streaming
         {
             last.streaming = false;
+            if let Some(stats) = last.stats.as_mut() {
+                stats.end.get_or_insert_with(Instant::now);
+            }
         }
         self.streaming = false;
     }
@@ -289,6 +417,10 @@ fn construct_openai_url(mgmt: &reqwest::Url, port: u16) -> Result<reqwest::Url, 
 enum SSEUpdate {
     Content(String),
     Reasoning(String),
+    Usage {
+        prompt_tokens: Option<u32>,
+        completion_tokens: Option<u32>,
+    },
     Done,
     Error(String),
 }
@@ -304,6 +436,12 @@ struct ChatRequest {
     model: String,
     messages: Vec<WireMessage>,
     stream: bool,
+    stream_options: StreamOptions,
+}
+
+#[derive(serde::Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 async fn chat_dispatcher(
@@ -331,6 +469,9 @@ async fn stream_one(
         model: model.to_string(),
         messages,
         stream: true,
+        stream_options: StreamOptions {
+            include_usage: true,
+        },
     };
 
     let body = serde_json::to_vec(&request).map_err(|e| format!("serialise chat request: {e}"))?;
@@ -388,6 +529,17 @@ async fn stream_one(
                         {
                             return Ok(());
                         }
+                        if let Some(usage) = extract_usage(data)
+                            && sse_tx
+                                .send(SSEUpdate::Usage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                })
+                                .await
+                                .is_err()
+                        {
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -435,6 +587,34 @@ fn extract_delta(data: &str) -> DeltaParts {
     DeltaParts { content, reasoning }
 }
 
+struct UsageInfo {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+}
+
+/// Pull `usage.{prompt,completion}_tokens` from an SSE payload. OpenAI-style
+/// servers emit these in a final delta when `stream_options.include_usage`
+/// is set; chunks without a `usage` object return `None`.
+fn extract_usage(data: &str) -> Option<UsageInfo> {
+    let val = serde_json::from_str::<serde_json::Value>(data).ok()?;
+    let usage = val.get("usage")?;
+    let prompt = usage
+        .get("prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    let completion = usage
+        .get("completion_tokens")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    if prompt.is_none() && completion.is_none() {
+        return None;
+    }
+    Some(UsageInfo {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+    })
+}
+
 fn run_tui(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     state: &mut TuiState,
@@ -447,6 +627,10 @@ fn run_tui(
             match update {
                 SSEUpdate::Content(token) => state.append_token(token),
                 SSEUpdate::Reasoning(token) => state.append_reasoning(token),
+                SSEUpdate::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => state.apply_usage(prompt_tokens, completion_tokens),
                 SSEUpdate::Done => state.finish_streaming(),
                 SSEUpdate::Error(e) => state.set_error(e),
             }
@@ -459,18 +643,19 @@ fn run_tui(
         }
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                match handle_key(key, state) {
-                    None => {}
-                    Some(KeyAction::Quit) => return Ok(()),
-                    Some(KeyAction::Submit) => {
-                        let user_input = std::mem::take(&mut state.input);
-                        let trimmed = user_input.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let history = state.submit(trimmed.to_string());
-                        if req_tx.blocking_send(history).is_err() {
-                            state.set_error("chat dispatcher closed".to_string());
+                if let Some(action) = handle_key(key, state) {
+                    match action {
+                        KeyAction::Quit => return Ok(()),
+                        KeyAction::Submit => {
+                            let user_input = std::mem::take(&mut state.input);
+                            let trimmed = user_input.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            let history = state.submit(trimmed.to_string());
+                            if req_tx.blocking_send(history).is_err() {
+                                state.set_error("chat dispatcher closed".to_string());
+                            }
                         }
                     }
                 }
@@ -631,6 +816,7 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
     let window_top = max_window_top.saturating_sub(state.scroll_offset as u32);
 
     // Walk the virtual stack, emitting any visible portion of each message.
+    let now = Instant::now();
     let mut virtual_y: u32 = 0;
     for (i, (lines, h)) in rendered.iter().enumerate() {
         let msg_top = virtual_y;
@@ -657,16 +843,11 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
         };
 
         let msg = &state.messages[i];
-        let title_span = Span::styled(
-            format!(" {} ", msg.role.label()),
-            Style::default()
-                .fg(msg.role.color())
-                .add_modifier(Modifier::BOLD),
-        );
+        let title_line = build_title_line(msg, now);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(msg.role.color()))
-            .title(title_span);
+            .title(title_line);
 
         let paragraph = Paragraph::new(lines.clone())
             .wrap(Wrap { trim: false })
@@ -674,6 +855,44 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
             .block(block);
         f.render_widget(paragraph, rect);
     }
+}
+
+/// Build a title line for a message box: role label followed by any
+/// per-turn stats (live during streaming, frozen after `Done`).
+fn build_title_line(msg: &TuiMsg, now: Instant) -> Line<'static> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = vec![Span::styled(
+        format!(" {} ", msg.role.label()),
+        Style::default()
+            .fg(msg.role.color())
+            .add_modifier(Modifier::BOLD),
+    )];
+    if let Some(stats) = &msg.stats {
+        let streaming = msg.streaming;
+        let tokens = stats.decoded_tokens();
+        if tokens > 0 {
+            spans.push(Span::styled(format!("· {tokens} tok "), dim));
+        }
+        let rate = if streaming {
+            stats.live_decode_rate(now)
+        } else {
+            stats.final_decode_rate()
+        };
+        if let Some(r) = rate {
+            spans.push(Span::styled(format!("· {r:.1} tok/s "), dim));
+        }
+        if let Some(ttft) = stats.ttft() {
+            spans.push(Span::styled(
+                format!("· ttft {:.2}s ", ttft.as_secs_f64()),
+                dim,
+            ));
+        }
+        if let Some(pp) = stats.pp_rate() {
+            let pt = stats.prompt_tokens.unwrap_or(0);
+            spans.push(Span::styled(format!("· {pt} prompt @ {pp:.0} tok/s "), dim));
+        }
+    }
+    Line::from(spans)
 }
 
 /// Build the visual lines for a single message: subdued reasoning first
