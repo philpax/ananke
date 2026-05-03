@@ -27,7 +27,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-enum ConfigCommand {
+enum ServerConfigCommand {
     /// Show the current configuration.
     Show,
     /// Validate a configuration file or stdin.
@@ -158,12 +158,12 @@ enum Command {
         #[command(subcommand)]
         command: OneshotCommand,
     },
-    /// Manage configuration.
-    Config {
+    /// Manage daemon configuration over the management API.
+    ServerConfig {
         #[command(subcommand)]
-        command: ConfigCommand,
+        command: ServerConfigCommand,
     },
-    /// Reload configuration (alias for `config reload`).
+    /// Reload daemon configuration (alias for `server-config reload`).
     Reload,
     /// Talk to a model via the OpenAI-compatible API.
     Chat {
@@ -239,14 +239,14 @@ async fn main() -> ExitCode {
             OneshotCommand::List => commands::oneshot::list(&client, cli.json).await,
             OneshotCommand::Kill { id } => commands::oneshot::kill(&client, cli.json, &id).await,
         },
-        Command::Config { command } => match command {
-            ConfigCommand::Show => commands::config::show(&client, cli.json).await,
-            ConfigCommand::Validate { file } => {
-                commands::config::validate(&client, cli.json, file.as_deref()).await
+        Command::ServerConfig { command } => match command {
+            ServerConfigCommand::Show => commands::server_config::show(&client, cli.json).await,
+            ServerConfigCommand::Validate { file } => {
+                commands::server_config::validate(&client, cli.json, file.as_deref()).await
             }
-            ConfigCommand::Reload => commands::config::reload(&client, cli.json).await,
+            ServerConfigCommand::Reload => commands::server_config::reload(&client, cli.json).await,
         },
-        Command::Reload => commands::config::reload(&client, cli.json).await,
+        Command::Reload => commands::server_config::reload(&client, cli.json).await,
         Command::Chat {
             model,
             prompt,

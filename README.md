@@ -430,10 +430,10 @@ anankectl retry <name>         # Enable then start a service
 anankectl logs <name> [--follow] [-n <lines>]  # Stream service logs
 anankectl devices              # View GPU/CPU resource utilization
 
-# Configuration
-anankectl config show          # View current effective configuration
-anankectl config validate      # Validate a TOML file without persisting
-anankectl reload               # Force a config reload
+# Daemon configuration
+anankectl server-config show          # View current effective configuration
+anankectl server-config validate      # Validate a TOML file without persisting
+anankectl reload                      # Force a config reload
 
 # Oneshot
 anankectl oneshot submit <file> # Submit from TOML

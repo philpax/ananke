@@ -1,4 +1,4 @@
-//! Configuration management command handlers.
+//! Server-side (daemon) configuration management command handlers.
 
 use std::{io::Read, path::Path};
 
