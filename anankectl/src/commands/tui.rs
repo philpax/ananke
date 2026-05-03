@@ -461,19 +461,10 @@ fn run_tui(
         if key.kind != KeyEventKind::Press {
             continue;
         }
-
-        use crossterm::event::KeyModifiers;
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-
-        match key.code {
-            KeyCode::Char('c') if ctrl => return Ok(()),
-            KeyCode::Char('d') if ctrl && state.input.is_empty() => return Ok(()),
-            KeyCode::Enter if shift => state.input.push('\n'),
-            KeyCode::Enter => {
-                if state.streaming {
-                    continue;
-                }
+        match handle_key(key, state) {
+            None => {}
+            Some(KeyAction::Quit) => return Ok(()),
+            Some(KeyAction::Submit) => {
                 let user_input = std::mem::take(&mut state.input);
                 let trimmed = user_input.trim();
                 if trimmed.is_empty() {
@@ -484,18 +475,70 @@ fn run_tui(
                     state.set_error("chat dispatcher closed".to_string());
                 }
             }
-            KeyCode::Backspace => {
-                state.input.pop();
-            }
-            KeyCode::Up => state.scroll_up(1),
-            KeyCode::Down => state.scroll_down(1),
-            KeyCode::PageUp => state.scroll_up(10),
-            KeyCode::PageDown => state.scroll_down(10),
-            KeyCode::End if ctrl => state.scroll_to_bottom(),
-            KeyCode::Esc => state.input.clear(),
-            KeyCode::Char(c) => state.input.push(c),
-            _ => {}
         }
+    }
+}
+
+enum KeyAction {
+    Quit,
+    Submit,
+}
+
+/// Handle a single key press, mutating `state` directly for in-line edits
+/// and returning a `KeyAction` for things the caller has to coordinate
+/// (channel sends, returning from the loop).
+fn handle_key(key: crossterm::event::KeyEvent, state: &mut TuiState) -> Option<KeyAction> {
+    use crossterm::event::KeyModifiers;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    match key.code {
+        KeyCode::Char('c') if ctrl => Some(KeyAction::Quit),
+        KeyCode::Char('d') if ctrl && state.input.is_empty() => Some(KeyAction::Quit),
+        KeyCode::Enter if shift => {
+            state.input.push('\n');
+            None
+        }
+        KeyCode::Enter => {
+            if state.streaming {
+                None
+            } else {
+                Some(KeyAction::Submit)
+            }
+        }
+        KeyCode::Backspace => {
+            state.input.pop();
+            None
+        }
+        KeyCode::Up => {
+            state.scroll_up(1);
+            None
+        }
+        KeyCode::Down => {
+            state.scroll_down(1);
+            None
+        }
+        KeyCode::PageUp => {
+            state.scroll_up(10);
+            None
+        }
+        KeyCode::PageDown => {
+            state.scroll_down(10);
+            None
+        }
+        KeyCode::End if ctrl => {
+            state.scroll_to_bottom();
+            None
+        }
+        KeyCode::Esc => {
+            state.input.clear();
+            None
+        }
+        KeyCode::Char(c) => {
+            state.input.push(c);
+            None
+        }
+        _ => None,
     }
 }
 
