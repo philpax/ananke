@@ -165,6 +165,17 @@ enum Command {
     },
     /// Reload configuration (alias for `config reload`).
     Reload,
+    /// Talk to a model via the OpenAI-compatible API.
+    Chat {
+        /// Model (service) name.
+        model: String,
+        /// User prompt.
+        #[arg(trailing_var_arg = true)]
+        prompt: Vec<String>,
+        /// System prompt.
+        #[arg(long, default_value = "You are a helpful assistant.")]
+        system_prompt: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -236,6 +247,14 @@ async fn main() -> ExitCode {
             ConfigCommand::Reload => commands::config::reload(&client, cli.json).await,
         },
         Command::Reload => commands::config::reload(&client, cli.json).await,
+        Command::Chat {
+            model,
+            prompt,
+            system_prompt,
+        } => {
+            let prompt = prompt.join(" ");
+            commands::chat::run(&client, cli.json, &model, &prompt, &system_prompt).await
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
