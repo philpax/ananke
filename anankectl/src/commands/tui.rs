@@ -518,14 +518,6 @@ fn handle_key(key: crossterm::event::KeyEvent, state: &mut TuiState) -> Option<K
             state.scroll_down(1);
             None
         }
-        KeyCode::PageUp => {
-            state.scroll_up(10);
-            None
-        }
-        KeyCode::PageDown => {
-            state.scroll_down(10);
-            None
-        }
         KeyCode::End if ctrl => {
             state.scroll_to_bottom();
             None
@@ -804,7 +796,7 @@ fn render_status(f: &mut Frame, area: ratatui::layout::Rect) {
         Span::raw(" send · "),
         Span::styled("Shift+Enter", Style::default().fg(Color::White)),
         Span::raw(" newline · "),
-        Span::styled("PgUp/PgDn", Style::default().fg(Color::White)),
+        Span::styled("↑/↓", Style::default().fg(Color::White)),
         Span::raw(" scroll · "),
         Span::styled("Esc", Style::default().fg(Color::White)),
         Span::raw(" clear · "),
