@@ -36,7 +36,10 @@ pub async fn run(
     // Construct the OpenAI endpoint from the management endpoint's host and scheme.
     let openai_url = construct_openai_url(&client.endpoint, port)?;
 
-    if json {
+    if prompt.is_empty() {
+        // No prompt — enter interactive TUI mode.
+        super::tui::run(client, model, system_prompt).await
+    } else if json {
         run_non_streaming(openai_url, model, prompt, system_prompt).await
     } else {
         run_streaming(openai_url, model, prompt, system_prompt).await
@@ -112,7 +115,8 @@ async fn run_streaming(
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(ApiClientError::Connect)?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
+        let text = String::from_utf8_lossy(&chunk);
+        buf.push_str(&text);
 
         // Process each complete line in the buffer.
         while let Some(newline_pos) = buf.find('\n') {
@@ -131,7 +135,11 @@ async fn run_streaming(
                     }
                     // Strip leading whitespace from the very first content token
                     // to handle models that emit "\n" in the initial delta event.
-                    let token = if got_first { raw.as_str() } else { raw.trim_start() };
+                    let token = if got_first {
+                        raw.as_str()
+                    } else {
+                        raw.trim_start()
+                    };
                     got_first = !token.is_empty();
                     if !token.is_empty() {
                         let _ = write!(locked, "{token}");
@@ -207,7 +215,7 @@ async fn run_non_streaming(
 }
 
 /// Extract `delta.content` from a parsed SSE JSON payload.
-fn extract_content(data: &str) -> Option<String> {
+pub fn extract_content(data: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(data).ok()?;
     val.get("choices")
         .and_then(|c| c.get(0))

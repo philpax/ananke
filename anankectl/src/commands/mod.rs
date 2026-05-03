@@ -6,3 +6,4 @@ pub mod logs;
 pub mod oneshot;
 pub mod services;
 pub mod show;
+pub mod tui;

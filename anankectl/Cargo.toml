@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 ananke-api.workspace = true
 
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
 reqwest.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -21,6 +21,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 futures.workspace = true
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+ratatui = "0.29"
+crossterm = "0.29"
 
 [dev-dependencies]
 pretty_assertions.workspace = true

@@ -35,6 +35,12 @@ impl std::fmt::Display for ApiClientError {
 
 impl std::error::Error for ApiClientError {}
 
+impl From<std::io::Error> for ApiClientError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Usage(format!("IO error: {e}"))
+    }
+}
+
 impl ApiClientError {
     pub fn exit_code(&self) -> ExitCode {
         match self {

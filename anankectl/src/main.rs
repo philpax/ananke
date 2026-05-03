@@ -178,7 +178,7 @@ enum Command {
     },
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let client = client::ApiClient::new(&cli.endpoint);
