@@ -4,7 +4,9 @@ use std::io;
 
 use ananke_api::ServicesResponse;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -455,26 +457,30 @@ fn run_tui(
         if !event::poll(std::time::Duration::from_millis(50))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        match handle_key(key, state) {
-            None => {}
-            Some(KeyAction::Quit) => return Ok(()),
-            Some(KeyAction::Submit) => {
-                let user_input = std::mem::take(&mut state.input);
-                let trimmed = user_input.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let history = state.submit(trimmed.to_string());
-                if req_tx.blocking_send(history).is_err() {
-                    state.set_error("chat dispatcher closed".to_string());
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                match handle_key(key, state) {
+                    None => {}
+                    Some(KeyAction::Quit) => return Ok(()),
+                    Some(KeyAction::Submit) => {
+                        let user_input = std::mem::take(&mut state.input);
+                        let trimmed = user_input.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let history = state.submit(trimmed.to_string());
+                        if req_tx.blocking_send(history).is_err() {
+                            state.set_error("chat dispatcher closed".to_string());
+                        }
+                    }
                 }
             }
+            Event::Mouse(me) => match me.kind {
+                MouseEventKind::ScrollUp => state.scroll_up(3),
+                MouseEventKind::ScrollDown => state.scroll_down(3),
+                _ => {}
+            },
+            _ => {}
         }
     }
 }
@@ -796,7 +802,7 @@ fn render_status(f: &mut Frame, area: ratatui::layout::Rect) {
         Span::raw(" send · "),
         Span::styled("Shift+Enter", Style::default().fg(Color::White)),
         Span::raw(" newline · "),
-        Span::styled("↑/↓", Style::default().fg(Color::White)),
+        Span::styled("↑/↓/wheel", Style::default().fg(Color::White)),
         Span::raw(" scroll · "),
         Span::styled("Esc", Style::default().fg(Color::White)),
         Span::raw(" clear · "),
