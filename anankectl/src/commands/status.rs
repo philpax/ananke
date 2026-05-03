@@ -40,19 +40,20 @@ pub async fn run(client: &ApiClient, json: bool) -> Result<(), ApiClientError> {
         .count();
     let total = services.services.len();
 
-    println!("daemon");
-    println!("  endpoint:        {}", client.endpoint.as_str());
-    println!("  openai api port: {}", services.openai_api_port);
+    let dot = if running > 0 { "●" } else { "○" };
+    println!("{dot} {total} services · {running} running · {idle} idle · {disabled} disabled");
     println!(
-        "  services:        {total} total · {running} running · {idle} idle · {disabled} disabled"
+        "  endpoint    {}  (openai port {})",
+        client.endpoint.as_str(),
+        services.openai_api_port
     );
     println!();
 
-    println!("devices");
+    println!("DEVICES");
     output::print_devices_table(&devices);
     println!();
 
-    println!("services");
+    println!("SERVICES");
     // Hide disabled here — `anankectl services --all` is the explicit way
     // to see them, and the disabled count above is enough for "is anything
     // missing?".
