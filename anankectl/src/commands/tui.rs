@@ -609,9 +609,8 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
     let content_width = area.width.saturating_sub(2);
 
     // Build per-message lines + total bordered height up front so we can
-    // determine scroll. A single blank row separates messages so adjacent
-    // borders don't visually fuse.
-    let spacer: u16 = 1;
+    // determine scroll. Messages butt up directly so adjacent borders share
+    // a row.
     let rendered: Vec<(Vec<Line>, u16)> = state
         .messages
         .iter()
@@ -624,8 +623,7 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .collect();
 
-    let total_height: u32 = rendered.iter().map(|(_, h)| *h as u32).sum::<u32>()
-        + rendered.len().saturating_sub(1) as u32 * spacer as u32;
+    let total_height: u32 = rendered.iter().map(|(_, h)| *h as u32).sum();
     let visible_height = area.height as u32;
 
     // Anchor to the bottom; user scroll offset moves the window upward.
@@ -637,7 +635,7 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
     for (i, (lines, h)) in rendered.iter().enumerate() {
         let msg_top = virtual_y;
         let msg_bottom = virtual_y + *h as u32;
-        virtual_y = msg_bottom + spacer as u32;
+        virtual_y = msg_bottom;
 
         let win_top = window_top;
         let win_bottom = window_top + visible_height;
