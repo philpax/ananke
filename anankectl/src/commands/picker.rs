@@ -1,7 +1,7 @@
 //! Interactive service-name picker used when `anankectl chat` is invoked
 //! without an explicit model.
 
-use std::io;
+use std::{collections::HashSet, io};
 
 use ananke_api::{ServiceSummary, ServicesResponse};
 use crossterm::{
@@ -19,17 +19,26 @@ use ratatui::{
 
 use crate::client::{ApiClient, ApiClientError};
 
-/// Fetch services and let the user pick one interactively. Returns
-/// `Ok(Some(name))` on confirm, `Ok(None)` on user-cancel (Esc/Ctrl+C),
-/// and short-circuits when there's nothing meaningful to pick:
-///   - no enabled services → usage error,
-///   - exactly one enabled service → returns it without showing the UI.
+/// Fetch services, intersect with `/v1/models`, and let the user pick
+/// one interactively. Returns `Ok(Some(name))` on confirm, `Ok(None)`
+/// on user-cancel (Esc/Ctrl+C), and short-circuits when there's nothing
+/// meaningful to pick:
+///   - no OpenAI-accessible services → usage error,
+///   - exactly one OpenAI-accessible service → returns it without showing the UI.
+///
+/// `/v1/models` is the canonical "what can chat actually accept" list:
+/// the daemon filters it to services whose template speaks OpenAI and
+/// are currently enabled (`Idle` / `Starting` / `Running`). We still hit
+/// `/api/services` so the picker can show running/idle state per row.
 pub async fn pick_service(client: &ApiClient) -> Result<Option<String>, ApiClientError> {
     let resp: ServicesResponse = client.get_json("/api/services").await?;
+    let openai_url = openai_url_from(&client.endpoint, resp.openai_api_port)?;
+    let openai_models = fetch_openai_models(&openai_url).await?;
+
     let mut candidates: Vec<ServiceSummary> = resp
         .services
         .into_iter()
-        .filter(|s| !s.state.starts_with("disabled"))
+        .filter(|s| openai_models.contains(&s.name))
         .collect();
 
     // Hot models first — running, then idle, then everything else.
@@ -42,7 +51,7 @@ pub async fn pick_service(client: &ApiClient) -> Result<Option<String>, ApiClien
 
     if candidates.is_empty() {
         return Err(ApiClientError::Usage(
-            "no enabled services available — enable one first with `anankectl enable <name>`"
+            "no OpenAI-accessible services available — enable one whose template speaks OpenAI"
                 .into(),
         ));
     }
@@ -53,6 +62,50 @@ pub async fn pick_service(client: &ApiClient) -> Result<Option<String>, ApiClien
     tokio::task::spawn_blocking(move || run_picker(candidates))
         .await
         .map_err(|e| ApiClientError::Usage(format!("picker panicked: {e}")))?
+}
+
+/// Derive the OpenAI-compatible base URL from the management endpoint
+/// by swapping the port. Mirrors the daemon's listener split.
+fn openai_url_from(mgmt: &reqwest::Url, port: u16) -> Result<reqwest::Url, ApiClientError> {
+    let mut openai = mgmt.clone();
+    openai
+        .set_port(Some(port))
+        .map_err(|_| ApiClientError::Usage("management endpoint can't carry a port".into()))?;
+    Ok(openai)
+}
+
+/// Fetch the set of model IDs the daemon will actually accept on
+/// `/v1/chat/completions`. Errors out if the OpenAI API is unreachable —
+/// no chat will work in that state anyway, so a clear failure beats a
+/// picker silently dropping every entry.
+async fn fetch_openai_models(base: &reqwest::Url) -> Result<HashSet<String>, ApiClientError> {
+    let url = base
+        .join("v1/models")
+        .map_err(|e| ApiClientError::Usage(format!("invalid openai path: {e}")))?;
+    let resp = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(ApiClientError::Connect)?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ApiClientError::Http { status, body });
+    }
+    let payload: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ApiClientError::Parse(format!("parse /v1/models: {e}")))?;
+    let names = payload
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    Ok(names)
 }
 
 fn run_picker(services: Vec<ServiceSummary>) -> Result<Option<String>, ApiClientError> {
