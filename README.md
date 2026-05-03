@@ -435,6 +435,12 @@ anankectl server-config show          # View current effective configuration
 anankectl server-config validate      # Validate a TOML file without persisting
 anankectl reload                      # Force a config reload
 
+# Client (anankectl) configuration
+anankectl config set endpoint <url>   # Persist a default management endpoint
+anankectl config get endpoint
+anankectl config list
+anankectl config edit                 # Open the client config in $EDITOR
+
 # Oneshot
 anankectl oneshot submit <file> # Submit from TOML
 anankectl oneshot list           # List active oneshot jobs

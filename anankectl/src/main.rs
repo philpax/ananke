@@ -4,19 +4,17 @@ use clap::{Parser, Subcommand};
 
 mod client;
 mod commands;
+mod config;
 mod output;
 
 #[derive(Parser)]
 #[command(name = "anankectl", version)]
 struct Cli {
-    /// Base URL for the management API.
-    #[arg(
-        long,
-        global = true,
-        env = "ANANKE_ENDPOINT",
-        default_value = ananke_api::defaults::MANAGEMENT_ENDPOINT
-    )]
-    endpoint: String,
+    /// Base URL for the management API. Falls back to `$ANANKE_ENDPOINT`,
+    /// then the `endpoint` key in `anankectl config`, then the built-in
+    /// default.
+    #[arg(long, global = true)]
+    endpoint: Option<String>,
 
     /// Emit responses as raw JSON instead of formatted text.
     #[arg(long, global = true)]
@@ -37,6 +35,33 @@ enum ServerConfigCommand {
     },
     /// Reload the configuration.
     Reload,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print the value of a config key.
+    Get {
+        /// Config key (e.g. `endpoint`).
+        key: String,
+    },
+    /// Set a config key to a value.
+    Set {
+        /// Config key (e.g. `endpoint`).
+        key: String,
+        /// New value for the key.
+        value: String,
+    },
+    /// Remove a config key.
+    Unset {
+        /// Config key (e.g. `endpoint`).
+        key: String,
+    },
+    /// List all known config keys and their current values.
+    List,
+    /// Print the path to the client config file.
+    Path,
+    /// Open the client config file in `$EDITOR` (or `vi`).
+    Edit,
 }
 
 #[derive(Subcommand)]
@@ -163,6 +188,11 @@ enum Command {
         #[command(subcommand)]
         command: ServerConfigCommand,
     },
+    /// Manage anankectl's own client-side configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Reload daemon configuration (alias for `server-config reload`).
     Reload,
     /// Talk to a model via the OpenAI-compatible API.
@@ -181,7 +211,14 @@ enum Command {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let client = client::ApiClient::new(&cli.endpoint);
+    let endpoint = match config::resolve_endpoint(cli.endpoint) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("anankectl: {e}");
+            return e.exit_code();
+        }
+    };
+    let client = client::ApiClient::new(&endpoint);
     let result = match cli.command {
         Command::Devices => commands::devices::run(&client, cli.json).await,
         Command::Services { all } => commands::services::run(&client, cli.json, all).await,
@@ -245,6 +282,16 @@ async fn main() -> ExitCode {
                 commands::server_config::validate(&client, cli.json, file.as_deref()).await
             }
             ServerConfigCommand::Reload => commands::server_config::reload(&client, cli.json).await,
+        },
+        Command::Config { command } => match command {
+            ConfigCommand::Get { key } => commands::config::get(cli.json, &key).await,
+            ConfigCommand::Set { key, value } => {
+                commands::config::set(cli.json, &key, &value).await
+            }
+            ConfigCommand::Unset { key } => commands::config::unset(cli.json, &key).await,
+            ConfigCommand::List => commands::config::list(cli.json).await,
+            ConfigCommand::Path => commands::config::path(cli.json).await,
+            ConfigCommand::Edit => commands::config::edit().await,
         },
         Command::Reload => commands::server_config::reload(&client, cli.json).await,
         Command::Chat {
