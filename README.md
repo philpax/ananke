@@ -11,9 +11,11 @@ ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple LLMs an
 
 ### Prerequisites
 
-- Rust toolchain
-- NVIDIA GPU (for CUDA support)
-- `nvml-wrapper` (required for GPU detection and VRAM tracking)
+ananke is currently Linux-only.
+
+- **Rust toolchain** (stable) to build with `cargo`.
+- **NVIDIA driver with NVML** (`libnvidia-ml.so`) on the host, for GPU detection and VRAM tracking. Without it the daemon falls back to CPU-only and any GPU-bound service fails placement.
+- **`llama-server`** on `PATH`, if you plan to use the `llama-cpp` service template (the path the Quick Start below takes). Build or download it from [llama.cpp](https://github.com/ggml-org/llama.cpp).
 
 ### Installation
 
@@ -30,22 +32,16 @@ Binaries are located in `target/debug/ananke` and `target/debug/anankectl`.
 Create a minimal config at `~/.config/ananke/config.toml`:
 
 ```toml
-[openai_api]
-listen = "127.0.0.1:7070"
-
-[daemon]
-management_listen = "127.0.0.1:7071"
-
-[devices]
-gpu_ids = [0]
-
 [[service]]
 name = "my-model"
 template = "llama-cpp"
 port = 8200
 model = "/path/to/model.gguf"
-lifecycle = "on_demand"
 ```
+
+That's the whole config. Everything else has a sensible default: the OpenAI API listens on `127.0.0.1:7070`, the management API on `127.0.0.1:7071`, every visible NVIDIA GPU is probed, and the service is on-demand with a 10-minute idle timeout.
+
+The [Configuration Guide](#configuration-guide) below covers how to override any of these.
 
 Start the daemon:
 
@@ -53,7 +49,13 @@ Start the daemon:
 ananke
 ```
 
-Send a request:
+Then talk to it. The shortest path uses the bundled CLI:
+
+```bash
+anankectl chat my-model "Hello!"
+```
+
+Any OpenAI-compatible client also works — for example, with `curl`:
 
 ```bash
 curl http://127.0.0.1:7070/v1/chat/completions \
@@ -61,13 +63,13 @@ curl http://127.0.0.1:7070/v1/chat/completions \
   -d '{"model": "my-model", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-ananke will automatically load the model on first request, serve the response, then unload it after 10 minutes of idle time to free VRAM.
+ananke loads the model on the first request, serves the response, then unloads it after 10 minutes of idle time to free VRAM.
 
 ### Configuration Resolution
 
 ananke searches for its configuration file in the following priority:
 
-1. `ananke_CONFIG` environment variable.
+1. `ANANKE_CONFIG` environment variable.
 2. `--config` CLI argument.
 3. `$XDG_CONFIG_HOME/ananke/config.toml`
 4. `~/.config/ananke/config.toml`
