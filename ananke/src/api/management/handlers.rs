@@ -240,9 +240,28 @@ fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<C
         .metadata
         .get(trained_context_key.as_str())
         .and_then(|v| v.as_u32());
+    let model_name = summary
+        .metadata
+        .get("general.name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
+    let license = summary
+        .metadata
+        .get("general.license")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty());
+    let parameter_count = summary
+        .metadata
+        .get("general.parameter_count")
+        .and_then(|v| v.as_u64());
 
     let model_info = ModelInfo {
         architecture: summary.architecture.to_string(),
+        model_name,
+        license,
+        parameter_count,
         total_tensor_bytes: summary.total_tensor_bytes,
         block_count: summary.block_count,
         shard_count: summary.shards.len() as u32,

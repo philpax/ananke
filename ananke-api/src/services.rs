@@ -112,6 +112,21 @@ pub struct ModelInfo {
     /// `general.architecture` from the GGUF (`"qwen2"`, `"llama"`,
     /// `"qwen3moe"`, …).
     pub architecture: String,
+    /// Friendly name declared in `general.name`, when the publisher
+    /// set one. Typically the upstream model identifier ("Qwen3 32B",
+    /// "Llama 3.3 70B Instruct", …) rather than ananke's service
+    /// name. Absent for hand-built GGUFs that left the field blank.
+    pub model_name: Option<String>,
+    /// `general.license` if declared (`"apache-2.0"`, `"llama3.3"`,
+    /// `"gemma"`, …). Surfaced so operators can see the licence
+    /// without leaving the dashboard.
+    pub license: Option<String>,
+    /// `general.parameter_count` if declared by the publisher. Modern
+    /// converter tools (Unsloth, bartowski's repacks, …) write this;
+    /// older GGUFs may not. The field is the model's *parameter*
+    /// count, not the on-disk byte size — quantisation makes the two
+    /// diverge by a large factor.
+    pub parameter_count: Option<u64>,
     /// Sum of every tensor's byte size across every shard. The
     /// reference number when sizing the model on disk.
     pub total_tensor_bytes: u64,

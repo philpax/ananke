@@ -95,6 +95,9 @@ mod tests {
             mmproj_path: mmproj.map(PathBuf::from),
             model_info: ModelInfo {
                 architecture: "llama".into(),
+                model_name: None,
+                license: None,
+                parameter_count: None,
                 total_tensor_bytes: 1,
                 block_count: None,
                 shard_count: 1,

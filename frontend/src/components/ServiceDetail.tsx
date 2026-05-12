@@ -5,7 +5,7 @@ import type {
   ModelInfo,
   ServiceDetail,
 } from "../api/client.ts";
-import { formatBytes, serviceProxyUrl } from "../util.ts";
+import { formatBytes, formatParameterCount, serviceProxyUrl } from "../util.ts";
 
 // Detail block rendered inline inside the services table (in an extra
 // `<td colSpan>` row below the service). Assumes its caller has already
@@ -85,6 +85,12 @@ function ModelSection({ model }: { model: ModelInfo | null }) {
         Model
       </h3>
       <dl className="grid grid-cols-[auto_1fr] md:grid-cols-[auto_1fr_auto_1fr] gap-x-4 gap-y-1 text-sm">
+        {model.model_name && (
+          <>
+            <dt className="text-gray-500 dark:text-gray-400">Name</dt>
+            <dd className="break-all">{model.model_name}</dd>
+          </>
+        )}
         <dt className="text-gray-500 dark:text-gray-400">File</dt>
         <dd className="font-mono text-xs break-all">{model.file_name}</dd>
         <dt className="text-gray-500 dark:text-gray-400">Architecture</dt>
@@ -99,6 +105,18 @@ function ModelSection({ model }: { model: ModelInfo | null }) {
             </span>
           )}
         </dd>
+        {model.parameter_count !== null &&
+          model.parameter_count !== undefined && (
+            <>
+              <dt className="text-gray-500 dark:text-gray-400">Parameters</dt>
+              <dd
+                className="tabular-nums"
+                title={`${model.parameter_count.toLocaleString()} parameters`}
+              >
+                {formatParameterCount(model.parameter_count)}
+              </dd>
+            </>
+          )}
         <dt className="text-gray-500 dark:text-gray-400">On disk</dt>
         <dd>{formatBytes(model.total_tensor_bytes)}</dd>
         {model.block_count !== null && model.block_count !== undefined && (
@@ -122,6 +140,12 @@ function ModelSection({ model }: { model: ModelInfo | null }) {
           <>
             <dt className="text-gray-500 dark:text-gray-400">Shards</dt>
             <dd className="tabular-nums">{model.shard_count}</dd>
+          </>
+        )}
+        {model.license && (
+          <>
+            <dt className="text-gray-500 dark:text-gray-400">License</dt>
+            <dd className="font-mono text-xs">{model.license}</dd>
           </>
         )}
       </dl>

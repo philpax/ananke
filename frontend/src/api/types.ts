@@ -477,6 +477,28 @@ export interface components {
        */
       has_mmproj: boolean;
       /**
+       * @description `general.license` if declared (`"apache-2.0"`, `"llama3.3"`,
+       *     `"gemma"`, …). Surfaced so operators can see the licence
+       *     without leaving the dashboard.
+       */
+      license?: string | null;
+      /**
+       * @description Friendly name declared in `general.name`, when the publisher
+       *     set one. Typically the upstream model identifier ("Qwen3 32B",
+       *     "Llama 3.3 70B Instruct", …) rather than ananke's service
+       *     name. Absent for hand-built GGUFs that left the field blank.
+       */
+      model_name?: string | null;
+      /**
+       * Format: int64
+       * @description `general.parameter_count` if declared by the publisher. Modern
+       *     converter tools (Unsloth, bartowski's repacks, …) write this;
+       *     older GGUFs may not. The field is the model's *parameter*
+       *     count, not the on-disk byte size — quantisation makes the two
+       *     diverge by a large factor.
+       */
+      parameter_count?: number | null;
+      /**
        * Format: int32
        * @description Number of shards discovered. 1 for a single-file GGUF.
        */
