@@ -136,6 +136,11 @@ pub async fn provision_service(
         deps.activity.clone(),
         Duration::from_millis(svc.max_request_duration_ms),
     );
+    let activity_ping: Arc<dyn Fn() + Send + Sync> = {
+        let activity = deps.activity.clone();
+        let name = svc.name.clone();
+        Arc::new(move || activity.ping(&name))
+    };
     let proxy_task = tokio::spawn(async move {
         if let Err(e) = proxy::serve_with_activity(
             listen,
@@ -143,6 +148,7 @@ pub async fn provision_service(
             shutdown_rx,
             before_request,
             inflight_counter,
+            activity_ping,
         )
         .await
         {
