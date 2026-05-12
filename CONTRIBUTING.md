@@ -96,8 +96,9 @@ Today the shared DTOs live in the `ananke-api` crate (hand-written, consumed by 
 ### Rust edition and linting
 
 - Use Rust 2024 edition.
+- Format with **nightly rustfmt**: run `cargo +nightly fmt --all` before committing. The `rustfmt.toml` opts into `imports_granularity = "Crate"` and `group_imports = "StdExternalCrate"`, which are nightly-only features — stable rustfmt prints a warning about each and then silently skips them, so a stable-formatted file is *not* equivalent to a nightly-formatted one. See the Imports section below for details.
 - Ensure the following checks pass at the end of each complete task (you do not need to do this for intermediate steps):
-  - `cargo fmt --all -- --check`
+  - `cargo +nightly fmt --all -- --check`
   - `cargo clippy --all-targets --all-features -- -D warnings`
   - `cargo clippy --all-targets --no-default-features -- -D warnings`
   - `cargo test --workspace --all-features`
@@ -156,7 +157,7 @@ Within each module, organize code as follows:
 - Prefer a single grouped `use` statement per crate/module rather than several siblings under the same root. Write `use crate::db::{Database, logs::BatcherHandle, models::ServiceLog};`, not three separate lines.
 - Group imports into three blocks separated by blank lines, in this order: `std`, external crates, then `crate`/`super`/`self`.
 - `use` brace expansion should collapse shared prefixes. `use axum::{extract::State, http::StatusCode, routing::get};` is correct; three separate lines under `axum::` is not.
-- `rustfmt.toml` sets `imports_granularity = "Crate"` and `group_imports = "StdExternalCrate"` to enforce this automatically. Both options are nightly-only, so the authoritative formatter is `cargo +nightly fmt --all`. Stable `cargo fmt --all -- --check` prints warnings about the unstable options and otherwise passes — CI runs on stable, and human formatting is the nightly pass.
+- `rustfmt.toml` sets `imports_granularity = "Crate"` and `group_imports = "StdExternalCrate"` to enforce these rules automatically. Both options are nightly-only — see the linting section above for why `cargo +nightly fmt --all` is the canonical formatter and why stable `cargo fmt` is not a substitute.
 
 ### Function arguments and state
 
