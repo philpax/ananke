@@ -280,7 +280,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
-    /** @description `{"error": {"code", "message", "type"}}` with `type` fixed to `"server_error"`. */
+    /**
+     * @description `{"error": {"code", "message", "type"}}`. The shared wire DTO; the
+     *     daemon-side `ApiErrorCode` enum is the source of truth for which
+     *     `code`, `message`, and `type` go together.
+     */
     ApiError: {
       /** @description The nested body with the actual error metadata. */
       error: components["schemas"]["ApiErrorBody"];
@@ -291,7 +295,12 @@ export interface components {
       code: string;
       /** @description Human-readable error message. */
       message: string;
-      /** @description Always `"server_error"` for our API. */
+      /**
+       * @description OpenAI's taxonomy — `"invalid_request_error"` for things the
+       *     client could have avoided, `"server_error"` for daemon-side
+       *     problems. Previously hardcoded to `"server_error"` everywhere;
+       *     now derived from the daemon's `ApiErrorCode` variant.
+       */
       type: string;
     };
     ChatCompletionEnvelope: unknown & {
@@ -377,13 +386,39 @@ export interface components {
           /** @enum {string} */
           status: "already_enabled";
         };
-    ErrorBody: {
-      error: components["schemas"]["ErrorDetail"];
-    };
-    ErrorDetail: {
-      code: string;
-      message: string;
-      type: string;
+    /**
+     * @description Estimator output projected to the wire. Carries the components a
+     *     reader needs to answer "how much VRAM will this service take?"
+     *     without having to re-derive any of them client-side.
+     */
+    EstimateSummary: {
+      /**
+       * Format: int64
+       * @description Compute-buffer reservation per active device, in bytes.
+       */
+      compute_buffer_bytes_per_device: number;
+      /**
+       * Format: int32
+       * @description Configured context window the estimate is sized against.
+       */
+      configured_context: number;
+      /**
+       * Format: int64
+       * @description `kv_per_token × configured_context`. Precomputed so the
+       *     frontend can render the total directly.
+       */
+      kv_bytes_for_context: number;
+      /**
+       * Format: int64
+       * @description KV cache bytes per context token. Zero for SSM/Mamba
+       *     architectures with no KV cache.
+       */
+      kv_per_token: number;
+      /**
+       * Format: int64
+       * @description Static weight bytes (including mmproj if configured).
+       */
+      weights_bytes: number;
     };
     /** @description One captured stdout/stderr line. */
     LogLine: {
@@ -413,6 +448,52 @@ export interface components {
       logs: components["schemas"]["LogLine"][];
       /** @description Opaque cursor for paging further back; `None` when exhausted. */
       next_cursor?: string | null;
+    };
+    /**
+     * @description GGUF-derived facts about a model file. Read once per service per
+     *     daemon run and cached; the file isn't re-parsed on every detail
+     *     poll.
+     */
+    ModelInfo: {
+      /**
+       * @description `general.architecture` from the GGUF (`"qwen2"`, `"llama"`,
+       *     `"qwen3moe"`, …).
+       */
+      architecture: string;
+      /**
+       * Format: int32
+       * @description Layer count exposed by the architecture's `{arch}.block_count`
+       *     metadata key, when present.
+       */
+      block_count?: number | null;
+      /**
+       * @description File name (basename of shard 0). Useful for the UI to show the
+       *     underlying filename without the full path.
+       */
+      file_name: string;
+      /**
+       * @description `true` when the service has a configured `mmproj` GGUF — the
+       *     standard signal for vision / multimodal support.
+       */
+      has_mmproj: boolean;
+      /**
+       * Format: int32
+       * @description Number of shards discovered. 1 for a single-file GGUF.
+       */
+      shard_count: number;
+      /**
+       * Format: int64
+       * @description Sum of every tensor's byte size across every shard. The
+       *     reference number when sizing the model on disk.
+       */
+      total_tensor_bytes: number;
+      /**
+       * Format: int32
+       * @description The model's *trained* context window, read from
+       *     `{arch}.context_length`. The service's configured context may
+       *     be lower.
+       */
+      trained_context_length?: number | null;
     };
     ModelListing: {
       /**
@@ -542,8 +623,17 @@ export interface components {
        *     [`ServiceSummary::ananke_metadata`].
        */
       ananke_metadata?: Record<string, never>;
+      /**
+       * @description What pledge the service is currently holding on each device.
+       *     Empty when idle. Keys are slot strings (`"cpu"`, `"gpu:0"`, …),
+       *     values are MiB.
+       */
+      current_allocation: {
+        [key: string]: number;
+      };
       /** @description Placeholder for elastic-borrower tracking. */
       elastic_borrower?: string | null;
+      estimate?: null | components["schemas"]["EstimateSummary"];
       /**
        * Format: int64
        * @description Idle-before-drain timeout.
@@ -551,6 +641,7 @@ export interface components {
       idle_timeout_ms: number;
       /** @description `"persistent"` or `"ondemand"`. */
       lifecycle: string;
+      model_info?: null | components["schemas"]["ModelInfo"];
       /** @description Service name. */
       name: string;
       /**
@@ -604,16 +695,6 @@ export interface components {
       /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
       template: string;
     };
-    /** @description Response from `GET /api/services`. */
-    ServicesResponse: {
-      /** @description Registered services. */
-      services: components["schemas"]["ServiceSummary"][];
-      /**
-       * Format: int32
-       * @description Port the OpenAI-compatible API is listening on.
-       */
-      openai_api_port: number;
-    };
     /** @description One entry in `GET /api/services`. */
     ServiceSummary: {
       /**
@@ -625,6 +706,13 @@ export interface components {
       ananke_metadata?: Record<string, never>;
       /** @description Placeholder for elastic-borrower tracking (future work). */
       elastic_borrower?: string | null;
+      /**
+       * @description `true` when the service's `[[service.llama_cpp]]` config has a
+       *     `mmproj` entry — the standard signal that it supports vision /
+       *     multimodal input. `None` for non-llama-cpp services. Cheap
+       *     enough (config-only check) to ship on every list entry.
+       */
+      has_mmproj?: boolean | null;
       /** @description `"persistent"` or `"ondemand"`. */
       lifecycle: string;
       /** @description Service name (matches `[[service]]` table in config). */
@@ -652,6 +740,16 @@ export interface components {
       /** @description State like `"idle"`, `"running"`, `"disabled_user_disabled"`. */
       state: string;
     };
+    /** @description Response from `GET /api/services`. */
+    ServicesResponse: {
+      /**
+       * Format: int32
+       * @description Port the OpenAI-compatible API is listening on.
+       */
+      openai_api_port: number;
+      /** @description Registered services. */
+      services: components["schemas"]["ServiceSummary"][];
+    };
     /** @description `POST /api/services/{name}/start` response body. */
     StartResponse:
       | {
@@ -669,7 +767,7 @@ export interface components {
           status: "queue_full";
         }
       | {
-          reason: string;
+          error: components["schemas"]["ApiErrorBody"];
           /** @enum {string} */
           status: "unavailable";
         };

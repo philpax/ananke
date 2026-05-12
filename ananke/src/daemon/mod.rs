@@ -4,6 +4,7 @@
 //! Linux-coupled via `/proc` orphan reconciliation and the `signals` submodule.
 
 pub mod app_state;
+pub mod estimate_cache;
 pub mod events;
 pub mod signals;
 
@@ -119,6 +120,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         batcher: batcher.clone(),
         events: events.clone(),
         system: system.clone(),
+        estimate_cache: crate::daemon::estimate_cache::EstimateCache::new(),
     };
 
     let provisioning_deps =

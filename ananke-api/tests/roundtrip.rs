@@ -29,6 +29,7 @@ fn service_summary_roundtrips() {
         run_id: Some(1),
         pid: Some(1234),
         elastic_borrower: None,
+        has_mmproj: Some(true),
         ananke_metadata,
     };
     assert_eq!(v.clone(), roundtrip(v));
@@ -158,6 +159,9 @@ fn service_detail_roundtrips() {
         rolling_samples: 0,
         observed_peak_bytes: 0,
         elastic_borrower: None,
+        model_info: None,
+        estimate: None,
+        current_allocation: Default::default(),
         ananke_metadata: ananke_api::AnankeMetadata::new(),
     };
     assert_eq!(v.clone(), roundtrip(v));

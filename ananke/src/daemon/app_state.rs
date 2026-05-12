@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use crate::{
     allocator::AllocationTable,
     config::manager::ConfigManager,
-    daemon::events::EventBus,
+    daemon::{estimate_cache::EstimateCache, events::EventBus},
     db::{Database, logs::BatcherHandle},
     devices::snapshotter::SharedSnapshot,
     oneshot::{OneshotRegistry, PortPool},
@@ -34,6 +34,10 @@ pub struct AppState {
     pub batcher: BatcherHandle,
     pub events: EventBus,
     pub system: crate::system::SystemDeps,
+    /// Memoised GGUF summary + estimator output, keyed by service
+    /// name. Populated lazily by the management `ServiceDetail`
+    /// handler so successive detail polls don't re-parse the GGUF.
+    pub estimate_cache: EstimateCache,
 }
 
 impl AppState {

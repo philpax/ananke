@@ -179,6 +179,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         batcher,
         events: events.clone(),
         system: system.clone(),
+        estimate_cache: ananke::daemon::estimate_cache::EstimateCache::new(),
     };
 
     // Drain-on-remove + spawn-on-add reconciler. Matches what daemon::run

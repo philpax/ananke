@@ -1,7 +1,8 @@
 //! Read-only management endpoints.
 
 use ananke_api::{
-    DeviceReservation, DeviceSummary, LogLine, ServiceDetail, ServiceSummary, ServicesResponse,
+    DeviceReservation, DeviceSummary, EstimateSummary, LogLine, ModelInfo, ServiceDetail,
+    ServiceSummary, ServicesResponse,
 };
 use axum::{
     Json,
@@ -10,8 +11,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{Router, get},
 };
+use smol_str::SmolStr;
+use tracing::warn;
 
-use crate::daemon::app_state::AppState;
+use crate::{
+    config::ServiceConfig,
+    daemon::{app_state::AppState, estimate_cache::CacheEntry},
+    estimator::{Estimate, EstimatorInputs, estimate_from_path},
+    gguf,
+};
 
 pub fn register(router: Router, state: AppState) -> Router {
     // Build the typed router against AppState, collapse to Router<()> via
@@ -49,6 +57,9 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             pid: peek.as_ref().and_then(|p| p.pid),
             // Placeholder: elastic borrower tracking is deferred to a later phase.
             elastic_borrower: None,
+            // Config-only check, no GGUF read — safe to ship in the
+            // list view that the frontend polls every 2 s.
+            has_mmproj: svc_cfg.llama_cpp().map(|lc| lc.mmproj.is_some()),
             ananke_metadata: svc_cfg.metadata.clone(),
         });
     }
@@ -130,6 +141,9 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
     let rc = state.rolling.get(&svc_cfg.name);
     let observed_peak_bytes = state.observation.read_peak(&svc_cfg.name);
 
+    let (model_info, estimate) = model_info_and_estimate(&state, svc_cfg);
+    let current_allocation = read_current_allocation(&state, &svc_cfg.name);
+
     let detail = ServiceDetail {
         name: svc_cfg.name.to_string(),
         state: snap
@@ -156,9 +170,127 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         observed_peak_bytes,
         // Placeholder: elastic borrower tracking is deferred to a later phase.
         elastic_borrower: None,
+        model_info,
+        estimate,
+        current_allocation,
         ananke_metadata: svc_cfg.metadata.clone(),
     };
     (StatusCode::OK, Json(detail)).into_response()
+}
+
+/// Look up the cached `(ModelInfo, EstimateSummary)` for a service,
+/// computing them on cache miss. Returns `(None, None)` for command-
+/// template services and for llama-cpp services whose GGUF can't be
+/// read — errors are logged on the daemon side; the frontend just
+/// sees the absence.
+fn model_info_and_estimate(
+    state: &AppState,
+    svc_cfg: &ServiceConfig,
+) -> (Option<ModelInfo>, Option<EstimateSummary>) {
+    let Some(lc) = svc_cfg.llama_cpp() else {
+        return (None, None);
+    };
+    let model_path = lc.model.as_path();
+    let mmproj_path = lc.mmproj.as_deref();
+    let svc_name = svc_cfg.name.clone();
+
+    if let Some(entry) = state.estimate_cache.get(&svc_name, model_path, mmproj_path) {
+        return (Some(entry.model_info), Some(entry.estimate));
+    }
+    match compute_estimate_entry(state, svc_cfg) {
+        Some(entry) => {
+            let out = (Some(entry.model_info.clone()), Some(entry.estimate.clone()));
+            state.estimate_cache.insert(svc_name, entry);
+            out
+        }
+        None => (None, None),
+    }
+}
+
+/// Run the estimator against the service's configured paths and
+/// project the result into the wire types. Returns `None` when the
+/// GGUF can't be read or the estimator refuses the architecture.
+fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<CacheEntry> {
+    let lc = svc_cfg.llama_cpp()?;
+    let inputs = EstimatorInputs::from_service(svc_cfg)?;
+    let model_path = lc.model.clone();
+    let mmproj_path = lc.mmproj.clone();
+
+    let summary = match gguf::read(state.system.fs.as_ref(), &model_path) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(service = %svc_cfg.name, error = %e, "model_info: gguf read failed");
+            return None;
+        }
+    };
+    let estimate = match estimate_from_path(state.system.fs.as_ref(), &inputs) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(service = %svc_cfg.name, error = %e, "model_info: estimator failed");
+            return None;
+        }
+    };
+
+    let file_name = model_path
+        .file_name()
+        .map(|os| os.to_string_lossy().to_string())
+        .unwrap_or_else(|| model_path.to_string_lossy().to_string());
+    let trained_context_key = format!("{}.context_length", summary.architecture);
+    let trained_context_length = summary
+        .metadata
+        .get(trained_context_key.as_str())
+        .and_then(|v| v.as_u32());
+
+    let model_info = ModelInfo {
+        architecture: summary.architecture.to_string(),
+        total_tensor_bytes: summary.total_tensor_bytes,
+        block_count: summary.block_count,
+        shard_count: summary.shards.len() as u32,
+        trained_context_length,
+        file_name,
+        has_mmproj: mmproj_path.is_some(),
+    };
+    let estimate_summary = project_estimate(&estimate);
+
+    Some(CacheEntry {
+        model_path,
+        mmproj_path,
+        model_info,
+        estimate: estimate_summary,
+    })
+}
+
+fn project_estimate(est: &Estimate) -> EstimateSummary {
+    let kv_bytes_for_context = est.kv_per_token.saturating_mul(est.context as u64);
+    let compute_buffer_bytes_per_device = (est.compute_buffer_mb as u64) * 1024 * 1024;
+    EstimateSummary {
+        weights_bytes: est.weights_bytes,
+        kv_per_token: est.kv_per_token,
+        configured_context: est.context,
+        kv_bytes_for_context,
+        compute_buffer_bytes_per_device,
+    }
+}
+
+/// Snapshot the service's current per-device pledge from the
+/// allocation table. Empty when the service isn't running.
+fn read_current_allocation(
+    state: &AppState,
+    name: &SmolStr,
+) -> std::collections::BTreeMap<String, u64> {
+    let table = state.allocations.lock();
+    let Some(row) = table.get(name) else {
+        return std::collections::BTreeMap::new();
+    };
+    row.iter()
+        .map(|(slot, mb)| {
+            let key = match slot {
+                crate::config::DeviceSlot::Cpu => "cpu".to_string(),
+                crate::config::DeviceSlot::Gpu(n) => format!("gpu:{n}"),
+            };
+            (key, *mb)
+        })
+        .collect()
 }
 
 #[utoipa::path(
