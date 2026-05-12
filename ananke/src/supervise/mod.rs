@@ -1655,14 +1655,22 @@ impl RunLoop {
         &self,
     ) -> Vec<crate::allocator::eviction::EvictionCandidate> {
         let all_services = self.deps.registry.all();
-        // Materialise the priority + lifecycle map from the live config
-        // before any `.await` below, so the arc-swap guard is released
-        // promptly.
+        // Materialise the priority + lifecycle + dynamic-mode flag from the
+        // live config before any `.await` below, so the arc-swap guard is
+        // released promptly. The dynamic-mode bit is what lets the planner
+        // treat balloon services as elastic — see the idle-computation
+        // comment below.
         let svc_meta_by_name: std::collections::BTreeMap<_, _> = {
             let eff = self.deps.config.effective();
             eff.services
                 .iter()
-                .map(|s| (s.name.clone(), (s.priority, s.lifecycle)))
+                .map(|s| {
+                    let is_dynamic = matches!(
+                        s.allocation_mode,
+                        crate::config::AllocationMode::Dynamic { .. }
+                    );
+                    (s.name.clone(), (s.priority, s.lifecycle, is_dynamic))
+                })
                 .collect()
         };
         let mut out = Vec::new();
@@ -1687,19 +1695,31 @@ impl RunLoop {
             // may be mid-drain and unable to service commands; reading the
             // mirror directly is the only safe path.
             let state = handle.peek_state();
+            let (priority, lifecycle, is_dynamic) = svc_meta_by_name
+                .get(&handle.name)
+                .copied()
+                .unwrap_or((DEFAULT_SERVICE_PRIORITY, Lifecycle::OnDemand, false));
             // "Idle" for eviction purposes means "no user-facing work
             // in flight on a settled supervisor" — either literally
             // Idle (not running) or Running with no in-flight requests.
             // Starting is excluded: the child is spawned but not yet
             // healthy and its start-bus still holds queued callers
             // who'd all fail if we tore it down.
+            //
+            // Dynamic-allocation services are the explicit exception. By
+            // choosing `allocation.mode = "dynamic"` the operator has
+            // declared the service elastic — happy to be torn down when
+            // a peer needs VRAM. The most common case is ComfyUI: its
+            // web UI keeps a long-lived `/ws` open for live updates, so
+            // its inflight counter is rarely zero even when no image is
+            // actually generating. Treating that idle-with-open-UI as
+            // "busy" deadlocks tied-priority on-demand peers (chat hits
+            // 503 / silent queue) while ComfyUI's 7 GiB pledge sits
+            // unused. Funnelling dynamic services into the idle bucket
+            // restores the eviction path the operator opted into.
             let in_flight = self.deps.inflight.current(&handle.name);
-            let idle =
-                in_flight == 0 && matches!(state, ServiceState::Idle | ServiceState::Running);
-            let (priority, lifecycle) = svc_meta_by_name
-                .get(&handle.name)
-                .copied()
-                .unwrap_or((DEFAULT_SERVICE_PRIORITY, Lifecycle::OnDemand));
+            let settled = matches!(state, ServiceState::Idle | ServiceState::Running);
+            let idle = settled && (is_dynamic || in_flight == 0);
             out.push(crate::allocator::eviction::EvictionCandidate {
                 name: handle.name.clone(),
                 priority,
