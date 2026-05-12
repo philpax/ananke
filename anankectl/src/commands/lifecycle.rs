@@ -96,6 +96,8 @@ fn report_start(resp: &StartResponse, json: bool) {
         StartResponse::AlreadyRunning => println!("ok: already running"),
         StartResponse::Started { run_id } => println!("ok: started (run_id={run_id})"),
         StartResponse::QueueFull => println!("error: start queue full"),
-        StartResponse::Unavailable { reason } => println!("error: unavailable ({reason})"),
+        StartResponse::Unavailable { error } => {
+            println!("error: {} ({})", error.code, error.message)
+        }
     }
 }

@@ -37,12 +37,23 @@ fn service_summary_roundtrips() {
 #[test]
 fn start_response_tagged_union() {
     let v = StartResponse::Unavailable {
-        reason: "no fit".into(),
+        error: ananke_api::ApiErrorBody {
+            code: "insufficient_vram".into(),
+            message: "no fit".into(),
+            kind: "server_error".into(),
+        },
     };
     let json = serde_json::to_value(&v).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({"status": "unavailable", "reason": "no fit"})
+        serde_json::json!({
+            "status": "unavailable",
+            "error": {
+                "code": "insufficient_vram",
+                "message": "no fit",
+                "type": "server_error",
+            }
+        })
     );
 }
 

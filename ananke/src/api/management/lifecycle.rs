@@ -185,6 +185,12 @@ fn not_found(name: &str) -> Response {
 /// hard-error variants (start failed, blocked) go through
 /// `ApiErrorCode`'s standard 503 projection. Shared between
 /// `post_start` and `post_restart` so the two handlers can't drift.
+///
+/// `Unavailable` carries the same `ApiErrorBody` shape a 503 error
+/// would (slug + message + kind), built through the same
+/// `ApiErrorCode` pipeline — so a client switching on `error.code`
+/// sees `insufficient_vram` / `service_disabled` here and at the 503
+/// surfaces, without having to special-case 202-with-Unavailable.
 fn management_failure_response(
     name: &str,
     op: &'static str,
@@ -196,19 +202,13 @@ fn management_failure_response(
             warn!(service = name, operation = op, "rejected: start_queue_full");
             (StatusCode::ACCEPTED, Json(StartResponse::QueueFull)).into_response()
         }
-        EnsureFailure::InsufficientVram(reason) => {
-            warn!(service = name, operation = op, %reason, "rejected: insufficient_vram");
+        EnsureFailure::InsufficientVram(_) | EnsureFailure::ServiceDisabled(_) => {
+            let code = ensure_failure_to_api_code(&SmolStr::new(name), failure);
+            warn!(service = name, operation = op, slug = code.slug(), message = %code.message(), "rejected (controlled)");
+            let body: ApiError = code.into();
             (
                 StatusCode::ACCEPTED,
-                Json(StartResponse::Unavailable { reason }),
-            )
-                .into_response()
-        }
-        EnsureFailure::ServiceDisabled(reason) => {
-            warn!(service = name, operation = op, %reason, "rejected: service_disabled");
-            (
-                StatusCode::ACCEPTED,
-                Json(StartResponse::Unavailable { reason }),
+                Json(StartResponse::Unavailable { error: body.error }),
             )
                 .into_response()
         }
