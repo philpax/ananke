@@ -2,17 +2,16 @@
 
 use std::time::Duration;
 
-use ananke_api::{ApiError, LogLine, LogStreamMessage};
+use ananke_api::{LogLine, LogStreamMessage};
 use axum::{
-    Json,
     extract::{Path, State, WebSocketUpgrade, ws::Message},
-    http::StatusCode,
     response::{IntoResponse, Response},
 };
+use smol_str::SmolStr;
 use tokio::{select, sync::broadcast::error::RecvError};
 use tracing::warn;
 
-use crate::daemon::app_state::AppState;
+use crate::{api::errors::ApiErrorCode, daemon::app_state::AppState};
 
 pub async fn get_logs_ws(
     State(state): State<AppState>,
@@ -22,14 +21,10 @@ pub async fn get_logs_ws(
     let service_id = match resolve_service_id(&state, &name).await {
         Some(id) => id,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ApiError::new(
-                    "service_not_found",
-                    format!("service `{name}` not found"),
-                )),
-            )
-                .into_response();
+            return ApiErrorCode::ServiceNotFound {
+                name: SmolStr::new(&name),
+            }
+            .into_response();
         }
     };
 

@@ -25,9 +25,7 @@ use hyper_util::{
 use tokio::{net::TcpListener, sync::watch};
 use tracing::{debug, info, warn};
 
-use crate::{
-    api::openai::errors::ProxyErrorCode, errors::ExpectedError, tracking::inflight::InflightGuard,
-};
+use crate::{api::errors::ApiErrorCode, errors::ExpectedError, tracking::inflight::InflightGuard};
 
 /// How often to bump the per-service activity stamp while a WebSocket
 /// session is open. Without this, the supervisor's idle-eviction loop
@@ -199,25 +197,20 @@ pub async fn serve_with_activity(
     }
 }
 
-/// Build an OpenAI-shaped JSON error body for the hyper-native proxy data
-/// plane. The axum OpenAI layer has a sibling `errors::err()` that does the
-/// same thing for its body type — both keep the `{error: {code, message,
-/// type}}` shape and use [`ProxyErrorCode`] as the source of truth for the
-/// code slug, HTTP status, and error-type taxonomy.
-pub fn error_response(code: ProxyErrorCode, message: &str) -> ProxyError {
-    let body_json = serde_json::json!({
-        "error": {
-            "code": code.to_string(),
-            "message": message,
-            "type": code.kind(),
-        }
-    });
-    let body_bytes = serde_json::to_vec(&body_json).unwrap_or_default();
+/// Build the standard JSON error response on the hyper proxy data
+/// plane. Pairs with `ApiErrorCode::into_response` on the axum side —
+/// both serialise the same `ApiError` body the typed code projects to,
+/// so a client gets a byte-identical body regardless of which surface
+/// emitted the failure.
+pub fn error_response(code: ApiErrorCode) -> ProxyError {
+    let status = code.status();
+    let body: ananke_api::ApiError = code.into();
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
     let full: ProxyBody = Full::new(Bytes::from(body_bytes))
         .map_err(|never| -> Box<dyn Error + Send + Sync> { match never {} })
         .boxed();
     Response::builder()
-        .status(code.status())
+        .status(status)
         .header("content-type", "application/json")
         .body(full)
         .unwrap()
@@ -239,10 +232,9 @@ async fn handle(
         Ok(resp) => Ok(resp),
         Err(e) => {
             warn!(error = %e, peer = %peer, "proxy error");
-            Ok(error_response(
-                ProxyErrorCode::ProxyInternal,
-                &e.to_string(),
-            ))
+            Ok(error_response(ApiErrorCode::ProxyInternal {
+                reason: e.to_string(),
+            }))
         }
     }
 }
@@ -287,10 +279,9 @@ async fn try_handle(
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, peer = %peer, "upstream request failed");
-            return Ok(error_response(
-                ProxyErrorCode::UpstreamUnavailable,
-                &e.to_string(),
-            ));
+            return Ok(error_response(ApiErrorCode::UpstreamUnavailable {
+                reason: e.to_string(),
+            }));
         }
     };
 
@@ -365,10 +356,9 @@ async fn handle_upgrade(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, peer = %peer, "upstream upgrade dial failed");
-            return Ok(error_response(
-                ProxyErrorCode::UpstreamUnavailable,
-                &e.to_string(),
-            ));
+            return Ok(error_response(ApiErrorCode::UpstreamUnavailable {
+                reason: e.to_string(),
+            }));
         }
     };
     let upstream_io = TokioIo::new(upstream_stream);
@@ -401,10 +391,9 @@ async fn handle_upgrade(
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, peer = %peer, "upstream upgrade request failed");
-            return Ok(error_response(
-                ProxyErrorCode::UpstreamUnavailable,
-                &e.to_string(),
-            ));
+            return Ok(error_response(ApiErrorCode::UpstreamUnavailable {
+                reason: e.to_string(),
+            }));
         }
     };
 

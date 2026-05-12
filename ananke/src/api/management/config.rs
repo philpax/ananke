@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{config::manager::ApplyError, daemon::app_state::AppState};
+use crate::{api::errors::ApiErrorCode, config::manager::ApplyError, daemon::app_state::AppState};
 
 #[utoipa::path(
     get,
@@ -42,28 +42,16 @@ pub async fn put_config(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim_matches('"').to_string())
     else {
-        return (
-            StatusCode::PRECONDITION_REQUIRED,
-            Json(ApiError::new(
-                "if_match_required",
-                "PUT /api/config requires an If-Match header with the current config hash",
-            )),
-        )
-            .into_response();
+        return ApiErrorCode::IfMatchRequired.into_response();
     };
     match state.config.apply(body, if_match).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(ApplyError::HashMismatch { server_hash }) => {
-            let mut resp = (
-                StatusCode::PRECONDITION_FAILED,
-                Json(ApiError::new(
-                    "hash_mismatch",
-                    format!("config was modified since last GET; current hash is {server_hash}"),
-                )),
-            )
-                .into_response();
-            resp.headers_mut()
-                .insert(axum::http::header::ETAG, server_hash.parse().unwrap());
+            // ETag header has to be set on top of the standard
+            // `ApiErrorCode` body, so build the response in pieces.
+            let etag = server_hash.parse().unwrap();
+            let mut resp = ApiErrorCode::HashMismatch { server_hash }.into_response();
+            resp.headers_mut().insert(axum::http::header::ETAG, etag);
             resp
         }
         Err(ApplyError::Invalid(errors)) => {
@@ -73,14 +61,10 @@ pub async fn put_config(
             };
             (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
         }
-        Err(ApplyError::PersistFailed(io_err)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError::new(
-                "persist_failed",
-                format!("writing config to disk failed: {io_err}"),
-            )),
-        )
-            .into_response(),
+        Err(ApplyError::PersistFailed(io_err)) => ApiErrorCode::PersistFailed {
+            reason: io_err.to_string(),
+        }
+        .into_response(),
     }
 }
 

@@ -1,6 +1,7 @@
 //! HTTP API surface: OpenAI-compatible router, management router, OpenAPI
 //! schema endpoint, and the per-service reverse proxy.
 
+pub mod errors;
 pub mod frontend;
 pub mod management;
 pub mod openai;

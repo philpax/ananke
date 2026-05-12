@@ -208,6 +208,12 @@ async fn forward_json_post(
             warn!(model = %model, endpoint = path, reason = %msg, "request rejected: start_failed");
             return errors::start_failed(&model, &msg);
         }
+        EnsureOutcome::Failed(EnsureFailure::Blocked { busy_peers }) => {
+            warn!(model = %model, endpoint = path, ?busy_peers, "request rejected: service_blocked");
+            return errors::service_blocked(&model, &busy_peers);
+        } // Every `EnsureFailure` is exhausted above; `errors::*` helpers
+          // each project to the same `ApiErrorCode` so the wire body is
+          // consistent with the per-service proxy's hyper data plane.
     }
 
     // Apply filters.

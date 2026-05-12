@@ -9,8 +9,9 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
-use crate::daemon::app_state::AppState;
+use crate::{api::errors::ApiErrorCode, daemon::app_state::AppState};
 
 const DEFAULT_LIMIT: u32 = 200;
 const MAX_LIMIT: u32 = 1000;
@@ -58,14 +59,10 @@ pub async fn get_logs(
     let service_id = match resolve_service_id(&state, &name).await {
         Some(id) => id,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ApiError::new(
-                    "service_not_found",
-                    format!("service `{name}` not found"),
-                )),
-            )
-                .into_response();
+            return ApiErrorCode::ServiceNotFound {
+                name: SmolStr::new(&name),
+            }
+            .into_response();
         }
     };
 
@@ -73,11 +70,7 @@ pub async fn get_logs(
     let cursor = match q.before.as_deref().map(decode_cursor) {
         Some(Ok(c)) => Some(c),
         Some(Err(_)) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ApiError::new("invalid_cursor", "malformed `before` cursor")),
-            )
-                .into_response();
+            return ApiErrorCode::InvalidCursor.into_response();
         }
         None => None,
     };

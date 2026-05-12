@@ -9,13 +9,15 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use smol_str::SmolStr;
 use tracing::{info, warn};
 
 use crate::{
+    api::errors::ApiErrorCode,
     daemon::app_state::AppState,
     supervise::{
-        DisableResult, EnableResult, EnsureFailure, EnsureOutcome, SupervisorHandle, await_ensure,
-        drain::DrainReason,
+        DisableResult, EnableResult, EnsureOutcome, SupervisorHandle, await_ensure,
+        drain::DrainReason, provision::ensure_failure_to_api_code,
     },
 };
 
@@ -46,25 +48,8 @@ pub async fn post_start(State(state): State<AppState>, Path(name): Path<String>)
             let run_id = handle.peek().run_id.unwrap_or(0);
             StartResponse::Started { run_id }
         }
-        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
-            warn!(service = %name, "management start rejected: start_queue_full");
-            StartResponse::QueueFull
-        }
-        EnsureOutcome::Failed(EnsureFailure::InsufficientVram(reason)) => {
-            warn!(service = %name, %reason, "management start rejected: insufficient_vram");
-            StartResponse::Unavailable { reason }
-        }
-        EnsureOutcome::Failed(EnsureFailure::ServiceDisabled(reason)) => {
-            warn!(service = %name, %reason, "management start rejected: service_disabled");
-            StartResponse::Unavailable { reason }
-        }
-        EnsureOutcome::Failed(EnsureFailure::StartFailed(reason)) => {
-            warn!(service = %name, %reason, "management start failed");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError::new("start_failed", reason)),
-            )
-                .into_response();
+        EnsureOutcome::Failed(failure) => {
+            return management_failure_response(&name, "start", failure);
         }
     };
     (StatusCode::ACCEPTED, Json(body)).into_response()
@@ -117,25 +102,8 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
             let run_id = handle.peek().run_id.unwrap_or(0);
             StartResponse::Started { run_id }
         }
-        EnsureOutcome::Failed(EnsureFailure::StartQueueFull) => {
-            warn!(service = %name, "management restart rejected: start_queue_full");
-            StartResponse::QueueFull
-        }
-        EnsureOutcome::Failed(EnsureFailure::InsufficientVram(reason)) => {
-            warn!(service = %name, %reason, "management restart rejected: insufficient_vram");
-            StartResponse::Unavailable { reason }
-        }
-        EnsureOutcome::Failed(EnsureFailure::ServiceDisabled(reason)) => {
-            warn!(service = %name, %reason, "management restart rejected: service_disabled");
-            StartResponse::Unavailable { reason }
-        }
-        EnsureOutcome::Failed(EnsureFailure::StartFailed(reason)) => {
-            warn!(service = %name, %reason, "management restart failed");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError::new("start_failed", reason)),
-            )
-                .into_response();
+        EnsureOutcome::Failed(failure) => {
+            return management_failure_response(&name, "restart", failure);
         }
     };
     (StatusCode::ACCEPTED, Json(body)).into_response()
@@ -204,12 +172,50 @@ fn resolve(
 }
 
 fn not_found(name: &str) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ApiError::new(
-            "service_not_found",
-            format!("service `{name}` not found"),
-        )),
-    )
-        .into_response()
+    ApiErrorCode::ServiceNotFound {
+        name: SmolStr::new(name),
+    }
+    .into_response()
+}
+
+/// Single place that turns an `EnsureFailure` from the supervisor into
+/// the management API's response. Variants the management surface
+/// elects to surface as "controlled outcome" 202s (queue full, vram
+/// shortfall, disabled) project to the typed `StartResponse`; the
+/// hard-error variants (start failed, blocked) go through
+/// `ApiErrorCode`'s standard 503 projection. Shared between
+/// `post_start` and `post_restart` so the two handlers can't drift.
+fn management_failure_response(
+    name: &str,
+    op: &'static str,
+    failure: crate::supervise::EnsureFailure,
+) -> Response {
+    use crate::supervise::EnsureFailure;
+    match failure {
+        EnsureFailure::StartQueueFull => {
+            warn!(service = name, operation = op, "rejected: start_queue_full");
+            (StatusCode::ACCEPTED, Json(StartResponse::QueueFull)).into_response()
+        }
+        EnsureFailure::InsufficientVram(reason) => {
+            warn!(service = name, operation = op, %reason, "rejected: insufficient_vram");
+            (
+                StatusCode::ACCEPTED,
+                Json(StartResponse::Unavailable { reason }),
+            )
+                .into_response()
+        }
+        EnsureFailure::ServiceDisabled(reason) => {
+            warn!(service = name, operation = op, %reason, "rejected: service_disabled");
+            (
+                StatusCode::ACCEPTED,
+                Json(StartResponse::Unavailable { reason }),
+            )
+                .into_response()
+        }
+        other => {
+            let code = ensure_failure_to_api_code(&SmolStr::new(name), other);
+            warn!(service = name, operation = op, slug = code.slug(), message = %code.message(), "rejected");
+            code.into_response()
+        }
+    }
 }

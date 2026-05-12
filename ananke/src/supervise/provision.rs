@@ -12,7 +12,7 @@ use tracing::{error, warn};
 
 use crate::{
     allocator::AllocationTable,
-    api::{openai::errors::ProxyErrorCode, proxy},
+    api::{errors::ApiErrorCode, proxy},
     config::{AllocationMode, Lifecycle, ServiceConfig},
     db::Database,
     devices::Allocation,
@@ -212,25 +212,48 @@ fn make_proxy_before_request(
                 crate::supervise::EnsureOutcome::Ready { .. } => None,
                 crate::supervise::EnsureOutcome::Failed(f) => {
                     warn!(service = %name, failure = ?f, "per-service proxy rejected request");
-                    Some(ensure_failure_to_proxy_error(f))
+                    Some(ensure_failure_to_proxy_error(&name, f))
                 }
             }
         }) as BoxFuture<'static, _>
     })
 }
 
-fn ensure_failure_to_proxy_error(f: crate::supervise::EnsureFailure) -> proxy::ProxyError {
+fn ensure_failure_to_proxy_error(
+    service_name: &smol_str::SmolStr,
+    f: crate::supervise::EnsureFailure,
+) -> proxy::ProxyError {
+    proxy::error_response(ensure_failure_to_api_code(service_name, f))
+}
+
+/// Lift an [`EnsureFailure`] into the unified [`ApiErrorCode`] enum.
+/// Shared between the proxy data plane's `error_response`, the OpenAI
+/// surface's handler match arms, and the management API's lifecycle
+/// endpoints so the mapping is single-source.
+pub(crate) fn ensure_failure_to_api_code(
+    service_name: &smol_str::SmolStr,
+    f: crate::supervise::EnsureFailure,
+) -> ApiErrorCode {
     use crate::supervise::EnsureFailure;
     match f {
-        EnsureFailure::InsufficientVram(msg) => {
-            proxy::error_response(ProxyErrorCode::InsufficientVram, &msg)
-        }
-        EnsureFailure::ServiceDisabled(msg) => {
-            proxy::error_response(ProxyErrorCode::ServiceDisabled, &msg)
-        }
-        EnsureFailure::StartQueueFull => {
-            proxy::error_response(ProxyErrorCode::StartQueueFull, "start queue full")
-        }
-        EnsureFailure::StartFailed(msg) => proxy::error_response(ProxyErrorCode::StartFailed, &msg),
+        EnsureFailure::InsufficientVram(reason) => ApiErrorCode::InsufficientVram {
+            name: service_name.clone(),
+            reason,
+        },
+        EnsureFailure::ServiceDisabled(reason) => ApiErrorCode::ServiceDisabled {
+            name: service_name.clone(),
+            reason,
+        },
+        EnsureFailure::StartQueueFull => ApiErrorCode::StartQueueFull {
+            name: service_name.clone(),
+        },
+        EnsureFailure::StartFailed(reason) => ApiErrorCode::StartFailed {
+            name: service_name.clone(),
+            reason,
+        },
+        EnsureFailure::Blocked { busy_peers } => ApiErrorCode::ServiceBlocked {
+            name: service_name.clone(),
+            busy_peers,
+        },
     }
 }

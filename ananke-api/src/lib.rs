@@ -15,7 +15,7 @@ pub mod services;
 
 pub use config::{ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, ValidationError};
 pub use devices::{DeviceReservation, DeviceSummary};
-pub use errors::ApiError;
+pub use errors::{ApiError, ApiErrorBody};
 pub use events::Event;
 pub use lifecycle::{DisableResponse, EnableResponse, StartResponse, StopResponse};
 pub use logs::{LogLine, LogStreamMessage, LogsResponse};

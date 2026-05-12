@@ -149,6 +149,14 @@ pub enum StartFailureKind {
     HealthTimeout,
     Disabled,
     Oom,
+    /// The request stayed parked in the queue for [`QUEUE_BLOCKED_GRACE`]
+    /// without a single peer idling. The structured `busy_peers` list
+    /// (rather than a freeform message) lets the wire layer render each
+    /// blocker on its own and lets clients programmatically detect
+    /// "blocked by `X`" if they want to.
+    Blocked {
+        busy_peers: Vec<smol_str::SmolStr>,
+    },
 }
 
 /// The full outward-visible state of a supervisor. Always synthesised from
@@ -472,6 +480,13 @@ pub enum EnsureFailure {
     /// The start itself failed (launch error, health timeout, bus closed,
     /// overall timeout, or the supervisor task is gone).
     StartFailed(String),
+    /// The request parked in the start queue for [`QUEUE_BLOCKED_GRACE`]
+    /// without a single watched peer idling. Carries the structured
+    /// list of blocking peer names — wire-layer renderers turn this
+    /// into a 503 + `service_blocked` body that names each blocker.
+    /// Distinct from `InsufficientVram` because the *fit* is fine — the
+    /// planner just can't displace the current occupant on its own.
+    Blocked { busy_peers: Vec<smol_str::SmolStr> },
 }
 
 /// Ensure the service is Running, waiting up to `max_request_duration` for
@@ -520,6 +535,7 @@ async fn await_start_bus(
                 EnsureFailure::StartFailed("health check timed out".into())
             }
             StartFailureKind::LaunchFailed => EnsureFailure::StartFailed(f.message),
+            StartFailureKind::Blocked { busy_peers } => EnsureFailure::Blocked { busy_peers },
         }),
         Ok(Err(e)) => EnsureOutcome::Failed(EnsureFailure::StartFailed(format!(
             "start broadcast closed: {e}"
@@ -573,6 +589,25 @@ const IDLE_DEADLINE_SKEW_MS: u64 = 100;
 /// noise low enough that the logs aren't drowned when a queued ensure
 /// is waiting for a peer that's loading.
 const QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Hard upper bound on how long an Ensure may sit in the start queue
+/// waiting for a busy peer to idle. Past this point the queue gives up
+/// and resolves with [`StartFailureKind::Blocked`] so the client sees a
+/// 503 with a clear "blocked by peer X" message instead of waiting the
+/// full `max_request_duration_ms` (default 10 min) and silently 503'ing
+/// with "start timed out".
+///
+/// Sized to absorb the brief "peer just finishing its response" window
+/// (the happy-path queue test releases at 400 ms; a multi-token
+/// streaming completion that's about to end fits comfortably) without
+/// silently absorbing the genuinely-stuck case. Past 10 s the
+/// expectation is the client should see a structured error and decide
+/// whether to wait, kill the blocker, or try a different model. The
+/// blocker is, by definition, a non-elastic peer at our priority or
+/// higher — dynamic-allocation services are always evictable (see
+/// `collect_eviction_candidates`), so this timeout exists for the
+/// genuinely-stuck case where waiting longer would not help.
+const QUEUE_BLOCKED_GRACE: Duration = Duration::from_secs(10);
 
 async fn run(
     init: SupervisorInit,
@@ -637,6 +672,13 @@ struct RunLoop {
     /// Updated every time the retry returns `WaitForBusy` with a
     /// potentially different set of peers.
     queued_watch: Vec<smol_str::SmolStr>,
+    /// Wall-monotonic stamp captured the first time the current Ensure
+    /// entered the queue. [`QUEUE_BLOCKED_GRACE`] is measured against
+    /// this; the value is preserved across retry ticks (only cleared
+    /// when the queue resolves, succeeds, or hard-fails) so a flapping
+    /// `busy_peers` set doesn't reset the wait clock and let the client
+    /// hang forever.
+    queued_since: Option<tokio::time::Instant>,
     /// Carries the placement-derived `CommandArgs` from Idle (where they are
     /// computed) into Starting (where `render_argv` consumes them).
     packed_for_spawn: Option<Packed>,
@@ -675,6 +717,7 @@ impl RunLoop {
             pending_ensure_bus: None,
             pending_ensure_source: EnsureSource::default(),
             queued_watch: Vec::new(),
+            queued_since: None,
             packed_for_spawn: None,
             oom_attempts: 0,
             base_total_bytes_for_rolling: 0,
@@ -1089,6 +1132,10 @@ impl RunLoop {
         self.pending_ensure_bus = Some(sender);
         self.pending_ensure_source = source;
         self.queued_watch = busy_peers;
+        // Stamp the first time this Ensure parks in the queue so
+        // QUEUE_BLOCKED_GRACE can fire even if `queued_watch` keeps
+        // shifting across retry ticks.
+        self.queued_since = Some(tokio::time::Instant::now());
         false
     }
 
@@ -1105,6 +1152,46 @@ impl RunLoop {
     /// is what keeps a 30-second wait from producing 60+ GGUF reads and
     /// 180+ info log lines.
     async fn retry_queued_ensure(&mut self) -> bool {
+        // Bail out of the queue entirely once we've been parked here for
+        // longer than `QUEUE_BLOCKED_GRACE`. Without this, a request
+        // blocked by a tied-priority non-elastic peer (e.g. another
+        // model mid-generation that's about to exceed the user's
+        // patience) hangs all the way to `max_request_duration_ms` and
+        // returns a generic "start timed out". With it, the client sees
+        // a 503 + structured "blocked by peer X" within ~30 s. Dynamic
+        // peers don't reach this branch because they are always
+        // evictable (see `collect_eviction_candidates`).
+        if let Some(since) = self.queued_since
+            && since.elapsed() > QUEUE_BLOCKED_GRACE
+        {
+            let busy_peers = self.queued_watch.clone();
+            let log_summary = if busy_peers.is_empty() {
+                "unknown".to_string()
+            } else {
+                busy_peers
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            info!(
+                service = %self.init.identity.name,
+                busy_peers = %log_summary,
+                grace_secs = QUEUE_BLOCKED_GRACE.as_secs(),
+                "queue grace exceeded; failing queued ensure"
+            );
+            // The `message` field on `StartFailure` is now just a
+            // human-readable log breadcrumb; the wire layer renders
+            // off the structured `busy_peers` list inside the kind
+            // and ignores this string.
+            let log_message = format!(
+                "blocked by busy peer(s) for {:?}: {log_summary}",
+                QUEUE_BLOCKED_GRACE
+            );
+            self.fail_queue(StartFailureKind::Blocked { busy_peers }, log_message);
+            return false;
+        }
+
         // Same yield rule as `handle_idle_ensure`: a background-watcher-driven
         // persistent ensure queued behind a busy peer stands down the moment
         // any non-persistent peer enters Starting/Running. Without this check,
@@ -1199,6 +1286,7 @@ impl RunLoop {
             self.start_bus_carry = Some(sender);
         }
         self.queued_watch.clear();
+        self.queued_since = None;
         let next = transition(&self.read_state(), StateEvent::SpawnRequested);
         self.set_state(next);
         true
@@ -1209,6 +1297,7 @@ impl RunLoop {
     /// other terminal interrupt while queued.
     fn fail_queue(&mut self, kind: StartFailureKind, message: String) {
         self.queued_watch.clear();
+        self.queued_since = None;
         if let Some(sender) = self.pending_ensure_bus.take() {
             let _ = sender.send(StartOutcome::Err(StartFailure { kind, message }));
         }
