@@ -1,13 +1,14 @@
-//! Scenarios for the balloon resolver's contention path (the second-half
-//! fix to the dynamic-pledge work). The resolver should:
+//! Scenarios for the balloon resolver's contention path. The resolver should:
 //!
 //!   - Stay quiet while a dynamic service grows into declared headroom
-//!     that physically exists on the GPU. This was the regression: the
-//!     pre-fix resolver fired on slope alone, fast-killed itself, and
-//!     the eviction-retry then evicted the persistent peer it had just
-//!     yielded to — net churn.
-//!   - Fire only when a GPU the service holds is actually over-committed
-//!     (sum of pledges > total VRAM) — i.e. physical OOM is imminent.
+//!     the operator made room for. The original churn regression fired
+//!     on positive slope alone, fast-killed itself, then the eviction-
+//!     retry path evicted the very peer it had just yielded to.
+//!   - Fire when the sum of pledges on a GPU the balloon holds eats
+//!     into the growth-headroom margin — even if NVML's `free_bytes`
+//!     still reports plenty of slack. Pledges are reservations; once
+//!     they sum past the GPU's total, the balloon physically cannot
+//!     grow further without displacing someone.
 //!   - At tied numeric priority, on-demand yields to persistent (lifecycle
 //!     breaks the tie). Reproduces the user's ComfyUI-vs-Qwen setup.
 #![cfg(feature = "test-fakes")]
@@ -38,10 +39,10 @@ fn mb(n: u64) -> u64 {
     n * 1024 * 1024
 }
 
-/// Build a snapshot with a single 24 GB GPU at id 1, parameterised by
-/// the NVML free-bytes the snapshot should report. Tests use a high
-/// value (no OOM pressure) to verify the resolver stays quiet, and a
-/// low value (under `OOM_MARGIN_BYTES`) to verify it fires.
+/// Build a snapshot with a single 24 GB GPU at id 1. NVML `free_bytes`
+/// is parameterised but no longer affects the contention check (which
+/// is pledge-based since the symmetric-balloon-grows fix); tests pass
+/// it through anyway so the snapshots look realistic.
 fn one_24g_gpu(free_bytes: u64) -> SharedSnapshot {
     let snap = ananke::devices::snapshotter::new_shared();
     *snap.write() = DeviceSnapshot {
@@ -222,18 +223,20 @@ async fn growth_without_overcommit_does_not_evict() {
     let _ = h.shutdown.send(true);
 }
 
-/// When NVML free drops below the OOM margin, the contention path fires.
-/// The dynamic on-demand service yields to the persistent peer at tied
-/// priority. Pre-fix the resolver task `return`-ed after yielding, which
+/// Pledge sum exceeds the GPU total — the contention path fires
+/// regardless of what NVML reports as physically free. The dynamic
+/// on-demand service yields to the persistent peer at tied priority.
+/// Pre-fix the resolver task `return`-ed after yielding, which
 /// orphaned it for the rest of the daemon's lifetime — subsequent runs
 /// of the same service had no pledge tracking. Now the resolver re-arms
 /// (window cleared) and stays alive across the yield, so the next
 /// comfyui spawn cycle is observed correctly.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn overcommit_triggers_yield_at_tied_priority_with_persistent_peer() {
-    // Snapshot reports 100 MiB physical free — well under OOM_MARGIN
-    // (512 MiB). The kernel will refuse the next allocation; the
-    // resolver must intervene by yielding.
+    // 14 + 12 = 26 GiB pledges on a 24 GiB card → over-committed even
+    // though NVML still reports 100 MiB free. (Realistic snapshot too:
+    // a GPU with full pledges and some unrelated process consuming the
+    // rest.)
     let mut h = build_harness(14 * 1024, 12 * 1024, 100 * 1024 * 1024);
 
     // Observed peak ramps so detect_growth has a positive slope. The
@@ -253,4 +256,114 @@ async fn overcommit_triggers_yield_at_tied_priority_with_persistent_peer() {
     );
 
     let _ = h.shutdown.send(true);
+}
+
+/// Symmetric to `growth_without_overcommit_does_not_evict`: a balloon
+/// growing into a peer's pledged territory triggers eviction even when
+/// NVML reports plenty of physical free space. Before the
+/// pledge-overcommit fix, the resolver waited for NVML's `free_bytes`
+/// to drop below 512 MiB before firing; a peer that had merely
+/// pledged-but-not-yet-allocated would silently constrain the balloon's
+/// growth ceiling far below its declared `max_vram_gb`. Now the
+/// pledge book is the signal: once `balloon_pledge + peer_pledges +
+/// growth_margin > total`, the resolver picks a peer to evict.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn growing_balloon_evicts_lower_priority_peer_before_physical_oom() {
+    // 24 GiB GPU; the snapshot reports 8 GiB physically free (the peer
+    // pledged but hasn't fully populated VRAM yet). Pre-fix the
+    // resolver would never fire here — 8 GiB is far above the 512 MiB
+    // OOM margin. Post-fix it fires once the pledge sum on this GPU
+    // closes within 512 MiB of the total.
+    let svc = SmolStr::new("comfy");
+
+    let mut comfy_row = BTreeMap::new();
+    comfy_row.insert(DeviceSlot::Gpu(1), 2 * 1024);
+    let mut peer_row = BTreeMap::new();
+    peer_row.insert(DeviceSlot::Gpu(1), 20 * 1024);
+    let mut table = AllocationTable::new();
+    table.insert(svc.clone(), comfy_row);
+    table.insert(SmolStr::new("peer"), peer_row);
+    let allocations = Arc::new(Mutex::new(table));
+
+    let observation = ObservationTable::new();
+    observation.register(&svc, 1000);
+
+    let registry = ServiceRegistry::new();
+    let comfy_handle = Arc::new(SupervisorHandle::stub_for_test());
+    let peer_handle = Arc::new(SupervisorHandle::stub_for_test());
+    registry.insert(svc.clone(), comfy_handle.clone());
+    registry.insert(SmolStr::new("peer"), peer_handle.clone());
+    let _registry_handles = [comfy_handle, peer_handle];
+
+    // Comfy at priority 70 (above default 50), peer at default 50 —
+    // strict priority advantage so comfy elects to EvictPeer rather
+    // than YieldSelf.
+    let events = EventBus::new();
+    let snapshot = one_24g_gpu(8 * 1024 * 1024 * 1024);
+    let config = {
+        let mut comfy_cfg = minimal_service("comfy");
+        comfy_cfg.lifecycle = Lifecycle::OnDemand;
+        comfy_cfg.priority = 70;
+        let mut peer_cfg = minimal_service("peer");
+        peer_cfg.lifecycle = Lifecycle::OnDemand;
+        peer_cfg.priority = 50;
+        ConfigManager::in_memory(
+            EffectiveConfig {
+                daemon: DaemonSettings {
+                    management_listen: String::new(),
+                    openai_listen: String::new(),
+                    data_dir: std::path::PathBuf::new(),
+                    shutdown_timeout_ms: 5_000,
+                    allow_external_management: false,
+                    allow_external_services: false,
+                },
+                services: vec![comfy_cfg, peer_cfg],
+            },
+            events.clone(),
+        )
+    };
+    let (shutdown, shutdown_rx) = watch::channel(false);
+
+    let cfg = BalloonConfig {
+        min_mb: 2 * 1024,
+        max_mb: 20 * 1024,
+        min_borrower_runtime: Duration::from_millis(60_000),
+        margin_bytes: 512 * 1024 * 1024,
+    };
+
+    let join = spawn_resolver(
+        svc.clone(),
+        cfg,
+        70,
+        Lifecycle::OnDemand,
+        ResolverDeps {
+            observation: observation.clone(),
+            registry,
+            allocations: allocations.clone(),
+            events,
+            snapshot,
+            config,
+            shutdown: shutdown_rx,
+        },
+    );
+
+    // Drive comfy from 2 GiB up to 4 GiB observed. With the peer's
+    // 20 GiB pledge already on the card, total pledged ramps from
+    // 22 GiB → 24 GiB and crosses the 23.5 GiB overcommit threshold
+    // partway through.
+    for gb in [3u64, 3, 4, 4, 4, 4] {
+        observation.update_peak(&svc, mb(gb * 1024), 0);
+        tokio::time::advance(SAMPLE_INTERVAL + Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+    }
+
+    // Resolver stays alive across the eviction (it re-arms for the
+    // next spawn cycle, same as the YieldSelf path).
+    let mut join = join;
+    assert!(
+        !is_finished(&mut join),
+        "resolver must stay alive after evicting; the next spawn cycle re-uses it"
+    );
+
+    let _ = shutdown.send(true);
 }

@@ -354,27 +354,28 @@ enum ContentionAction {
     NoCandidate,
 }
 
-/// Physical free-VRAM headroom (in bytes) below which the resolver
-/// considers a GPU "OOM-pressured" — there isn't room for the next
-/// growth tick, so a contention resolution is justified.
-///
-/// Aligned with [`BalloonConfig::margin_bytes`] (512 MiB) by
-/// convention: the same magnitude already used as the growth-detection
-/// floor. Smaller and we'd let the GPU OOM before reacting; larger and
-/// we'd kill services preemptively when there's still room to grow.
-const OOM_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
+/// Headroom (in bytes) the balloon's next growth tick may consume.
+/// A GPU whose pledge sum leaves less than this much slack is treated
+/// as over-committed — the balloon won't be able to climb without
+/// eating into a peer's reservation. Aligned with
+/// [`BalloonConfig::margin_bytes`] by convention.
+const OVERCOMMIT_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
 
-/// GPUs the named service holds an allocation on whose physical NVML
-/// free-VRAM has fallen below [`OOM_MARGIN_BYTES`]. Empty when there's
-/// still slack on every GPU we touch.
+/// GPUs the named service holds an allocation on where the sum of all
+/// pledges already eats into the [`OVERCOMMIT_MARGIN_BYTES`] growth
+/// headroom. Empty when there's still slack on every GPU we touch.
 ///
-/// A pledge-sum-vs-total check (the original formulation) over-fires:
-/// pledges over-state actual usage (the estimator may predict more than
-/// what loads, and a dynamic service's pledge is the recent-peak
-/// high-water mark, not its current footprint). Two services whose
-/// pledge sums to >100 % of the GPU might in fact be using <100 %; the
-/// kernel won't OOM unless the *physical* allocation overflows. NVML
-/// free-bytes is the immediate signal.
+/// History: this check used to read NVML `free_bytes` directly, on
+/// the theory that pledges over-state actual usage and the kernel
+/// won't OOM until physical allocation overflows. That was strictly
+/// safer but symmetrically wrong — when a balloon *wants* to grow
+/// (detected separately by `detect_growth`), peer pledges that
+/// arithmetically don't fit alongside it never get evicted until the
+/// GPU is on the literal edge of OOM. The over-firing the original
+/// formulation suffered from is now avoided by the caller's
+/// `detect_growth` gate: a stale recent-peak pledge with no actual
+/// climb in the sample window won't trigger eviction, even if the
+/// pledge sum arithmetically exceeds the GPU total.
 fn overcommitted_gpus_for(
     service_name: &SmolStr,
     reservations: &AllocationTable,
@@ -398,9 +399,24 @@ fn overcommitted_gpus_for(
         .gpus
         .iter()
         .filter(|g| mine.contains(&g.id))
-        .filter(|g| g.free_bytes < OOM_MARGIN_BYTES)
+        .filter(|g| {
+            let pledged_bytes_on_gpu = pledged_bytes_on_slot(reservations, DeviceSlot::Gpu(g.id));
+            pledged_bytes_on_gpu + OVERCOMMIT_MARGIN_BYTES > g.total_bytes
+        })
         .map(|g| g.id)
         .collect()
+}
+
+/// Sum every service's pledged MiB on `slot`, returning bytes. Used by
+/// the contention check to compare reservations against GPU capacity
+/// without involving NVML.
+fn pledged_bytes_on_slot(reservations: &AllocationTable, slot: DeviceSlot) -> u64 {
+    reservations
+        .values()
+        .filter_map(|row| row.get(&slot).copied())
+        .sum::<u64>()
+        * 1024
+        * 1024
 }
 
 /// Pick a contention peer on one of `overcommitted_gpus` and decide whose
@@ -727,31 +743,55 @@ mod tests {
         t
     }
 
-    /// Pledge sum exceeds GPU total but NVML still reports plenty of free
-    /// VRAM — the kernel won't OOM, so the resolver must NOT fire. This
-    /// is the user-reported false-positive: comfy's high-water pledge
-    /// (14 GB) plus qwen's estimator-prediction pledge (12 GB) sums to
-    /// 26 GB on a 24 GB card, but actual usage was ~22 GB and there was
-    /// real headroom — the resolver shouldn't kill anyone.
+    /// Pledge sum exceeds the GPU total — `overcommitted_gpus_for`
+    /// reports the GPU as over-committed regardless of what NVML says.
+    /// The historical "kernel won't OOM, so don't fire" reasoning is
+    /// preserved at the *resolver* level by the caller's
+    /// `detect_growth` gate: when the balloon's observed window isn't
+    /// climbing, the resolver returns early without consulting this
+    /// function. Pledge-overcommit + growth → evict; pledge-overcommit
+    /// alone → wait.
     #[test]
-    fn overcommit_no_when_physical_free_is_ample() {
+    fn overcommit_yes_when_pledges_exceed_total() {
+        // GPU 1 has 24 GiB total; NVML free is unrelated to this check
+        // now (we report based on pledges), so any value works here.
         let snap = snap_with_free(1, 24, 2 * 1024 * 1024 * 1024);
         let table = alloc_table(&[("comfy", 1, 14 * 1024), ("qwen", 1, 12 * 1024)]);
         let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
-        assert!(
-            gpus.is_empty(),
-            "pledge sum > total but NVML free is fine — no OOM imminent"
+        assert_eq!(
+            gpus,
+            vec![1],
+            "comfy (14 GiB) + qwen (12 GiB) = 26 GiB > 24 GiB — over-committed"
         );
     }
 
-    /// NVML reports free VRAM below `OOM_MARGIN_BYTES`. The next growth
-    /// tick would OOM the kernel — fire the resolver.
+    /// Pledge sum eats into the `OVERCOMMIT_MARGIN_BYTES` (512 MiB)
+    /// growth headroom but doesn't yet exceed the GPU total. Still
+    /// over-committed: the next growth tick has nowhere to go.
     #[test]
-    fn overcommit_yes_when_physical_free_below_margin() {
-        let snap = snap_with_free(1, 24, 100 * 1024 * 1024); // 100 MiB free
-        let table = alloc_table(&[("comfy", 1, 14 * 1024), ("qwen", 1, 12 * 1024)]);
+    fn overcommit_yes_when_pledges_within_margin_of_total() {
+        let snap = snap_with_free(1, 24, 4 * 1024 * 1024 * 1024);
+        // 23.75 GiB pledged on a 24 GiB card → 256 MiB slack, below
+        // the 512 MiB growth margin.
+        let table = alloc_table(&[("comfy", 1, 12 * 1024), ("qwen", 1, 12 * 1024 - 256)]);
         let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
         assert_eq!(gpus, vec![1]);
+    }
+
+    /// Pledges leave more than `OVERCOMMIT_MARGIN_BYTES` of headroom.
+    /// The balloon can keep growing without stealing from a peer, so
+    /// the GPU is not over-committed even if NVML reports tight free
+    /// space (that would be the *physical* footprint of unrelated
+    /// processes, not something the pledge book promised away).
+    #[test]
+    fn overcommit_no_when_pledges_leave_headroom() {
+        let snap = snap_with_free(1, 24, 100 * 1024 * 1024);
+        let table = alloc_table(&[("comfy", 1, 7 * 1024), ("qwen", 1, 12 * 1024)]);
+        let gpus = overcommitted_gpus_for(&SmolStr::new("comfy"), &table, &snap);
+        assert!(
+            gpus.is_empty(),
+            "7 GiB + 12 GiB = 19 GiB, 5 GiB of slack — plenty of room"
+        );
     }
 
     /// Pressure on a GPU we don't hold isn't our problem.
