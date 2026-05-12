@@ -186,6 +186,7 @@ mod tests {
             system: crate::system::SystemDeps::fake().0,
             inflight: crate::tracking::inflight::InflightTable::new(),
             activity: activity.clone(),
+            estimate_cache: crate::daemon::estimate_cache::EstimateCache::new(),
         };
 
         for svc in services {

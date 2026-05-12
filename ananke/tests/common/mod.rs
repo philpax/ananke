@@ -135,6 +135,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     // request.
     let inflight = InflightTable::new();
 
+    let estimate_cache = ananke::daemon::estimate_cache::EstimateCache::new();
     let deps = ananke::supervise::SupervisorDeps {
         db: db.clone(),
         batcher: batcher.clone(),
@@ -148,6 +149,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         system: system.clone(),
         inflight: inflight.clone(),
         activity: activity.clone(),
+        estimate_cache: estimate_cache.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -179,7 +181,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         batcher,
         events: events.clone(),
         system: system.clone(),
-        estimate_cache: ananke::daemon::estimate_cache::EstimateCache::new(),
+        estimate_cache,
     };
 
     // Drain-on-remove + spawn-on-add reconciler. Matches what daemon::run

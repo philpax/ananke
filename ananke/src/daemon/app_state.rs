@@ -57,6 +57,7 @@ impl AppState {
             system: self.system.clone(),
             inflight: self.inflight.clone(),
             activity: self.activity.clone(),
+            estimate_cache: self.estimate_cache.clone(),
         }
     }
 }

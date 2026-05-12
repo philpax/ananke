@@ -17,8 +17,7 @@ use tracing::warn;
 use crate::{
     config::ServiceConfig,
     daemon::{app_state::AppState, estimate_cache::CacheEntry},
-    estimator::{Estimate, EstimatorInputs, estimate_from_path},
-    gguf,
+    estimator::{EstimatorInputs, estimate_with_summary},
 };
 
 pub fn register(router: Router, state: AppState) -> Router {
@@ -218,8 +217,9 @@ fn model_info_and_estimate(
 }
 
 /// Run the estimator against the service's configured paths and
-/// project the result into the wire types. Returns `None` when the
-/// GGUF can't be read or the estimator refuses the architecture.
+/// project the result through the shared `CacheEntry::build`
+/// constructor. Returns `None` when the GGUF can't be read or the
+/// estimator refuses the architecture.
 fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<CacheEntry> {
     let lc = svc_cfg.llama_cpp()?;
     let inputs = EstimatorInputs::from_service(svc_cfg)?;
@@ -227,79 +227,18 @@ fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<C
     let model_path = lc.model.clone();
     let mmproj_path = lc.mmproj.clone();
 
-    let summary = match gguf::read(state.system.fs.as_ref(), &model_path) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(service = %svc_cfg.name, error = %e, "model_info: gguf read failed");
-            return None;
-        }
-    };
-    let estimate = match estimate_from_path(state.system.fs.as_ref(), &inputs) {
-        Ok(e) => e,
+    match estimate_with_summary(state.system.fs.as_ref(), &inputs) {
+        Ok((summary, estimate)) => Some(CacheEntry::build(
+            &summary,
+            &estimate,
+            model_path,
+            mmproj_path,
+            config_fingerprint,
+        )),
         Err(e) => {
             warn!(service = %svc_cfg.name, error = %e, "model_info: estimator failed");
-            return None;
+            None
         }
-    };
-
-    let file_name = model_path
-        .file_name()
-        .map(|os| os.to_string_lossy().to_string())
-        .unwrap_or_else(|| model_path.to_string_lossy().to_string());
-    let trained_context_key = format!("{}.context_length", summary.architecture);
-    let trained_context_length = summary
-        .metadata
-        .get(trained_context_key.as_str())
-        .and_then(|v| v.as_u32());
-    let model_name = summary
-        .metadata
-        .get("general.name")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty());
-    let license = summary
-        .metadata
-        .get("general.license")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .filter(|s| !s.is_empty());
-    let parameter_count = summary
-        .metadata
-        .get("general.parameter_count")
-        .and_then(|v| v.as_u64());
-
-    let model_info = ModelInfo {
-        architecture: summary.architecture.to_string(),
-        model_name,
-        license,
-        parameter_count,
-        total_tensor_bytes: summary.total_tensor_bytes,
-        block_count: summary.block_count,
-        shard_count: summary.shards.len() as u32,
-        trained_context_length,
-        file_name,
-        has_mmproj: mmproj_path.is_some(),
-    };
-    let estimate_summary = project_estimate(&estimate);
-
-    Some(CacheEntry {
-        model_path,
-        mmproj_path,
-        config_fingerprint,
-        model_info,
-        estimate: estimate_summary,
-    })
-}
-
-fn project_estimate(est: &Estimate) -> EstimateSummary {
-    let kv_bytes_for_context = est.kv_per_token.saturating_mul(est.context as u64);
-    let compute_buffer_bytes_per_device = (est.compute_buffer_mb as u64) * 1024 * 1024;
-    EstimateSummary {
-        weights_bytes: est.weights_bytes,
-        kv_per_token: est.kv_per_token,
-        configured_context: est.context,
-        kv_bytes_for_context,
-        compute_buffer_bytes_per_device,
     }
 }
 

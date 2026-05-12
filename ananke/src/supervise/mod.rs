@@ -318,6 +318,11 @@ pub struct SupervisorDeps {
     /// Global activity table. Exposed on `SupervisorDeps` so the eviction
     /// planner can rank peers by LRU when picking a minimum victim set.
     pub activity: crate::tracking::activity::ActivityTable,
+    /// Shared GGUF + estimator cache. The supervisor's spawn-time
+    /// estimator run writes into this cache so the management
+    /// `ServiceDetail` handler sees the same numbers without doing a
+    /// second GGUF read.
+    pub estimate_cache: crate::daemon::estimate_cache::EstimateCache,
 }
 
 /// Identity fields that don't change across a reload. Everything else a
@@ -1351,8 +1356,33 @@ impl RunLoop {
         let inputs = crate::estimator::EstimatorInputs::from_service(svc).ok_or(
             ReservationFailure::Misconfigured(MisconfiguredKind::NoModelPath),
         )?;
-        let mut est = crate::estimator::estimate_from_path(self.deps.system.fs.as_ref(), &inputs)
-            .map_err(ReservationFailure::EstimatorError)?;
+        let fingerprint = inputs.config_fingerprint();
+        let (summary, mut est) =
+            crate::estimator::estimate_with_summary(self.deps.system.fs.as_ref(), &inputs)
+                .map_err(ReservationFailure::EstimatorError)?;
+        // Warm the daemon-wide estimate cache with the *base* estimate
+        // (pre-rolling-correction) and the GGUF summary we just
+        // parsed. The management `ServiceDetail` handler reads this
+        // cache instead of re-parsing the file on every detail poll;
+        // populating it here turns the first detail-page view of a
+        // running service into a cache hit. The cache stores the base
+        // numbers because that's what the wire `EstimateSummary`
+        // documents — the rolling correction applied below is a
+        // supervisor-internal placement tweak, not a user-facing
+        // estimate.
+        let lc = svc.llama_cpp();
+        if let Some(lc) = lc {
+            self.deps.estimate_cache.insert(
+                svc.name.clone(),
+                crate::daemon::estimate_cache::CacheEntry::build(
+                    &summary,
+                    &est,
+                    lc.model.clone(),
+                    lc.mmproj.clone(),
+                    fingerprint,
+                ),
+            );
+        }
         // Apply rolling correction to weights_bytes.
         let rc = self.deps.rolling.get(&svc.name);
         est.weights_bytes = (est.weights_bytes as f64 * rc.rolling_mean) as u64;

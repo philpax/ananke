@@ -104,10 +104,27 @@ impl std::error::Error for EstimatorError {}
 /// GGUF (including any mmproj) through `fs` and dispatches on
 /// `general.architecture`. Pure function over `inputs` + the bytes on
 /// disk; caller applies rolling correction + safety factor afterward.
+///
+/// Thin wrapper around [`estimate_with_summary`] for callers that don't
+/// need the GGUF summary back; new code that wants both should call
+/// `estimate_with_summary` directly so the file is parsed only once.
 pub fn estimate_from_path(
     fs: &dyn Fs,
     inputs: &EstimatorInputs<'_>,
 ) -> Result<Estimate, EstimatorError> {
+    estimate_with_summary(fs, inputs).map(|(_summary, est)| est)
+}
+
+/// Same as [`estimate_from_path`] but also returns the parsed
+/// [`GgufSummary`] so the caller can derive `ModelInfo`-style facts
+/// (architecture, block count, metadata keys) without re-parsing the
+/// file. Used by the management `ServiceDetail` cache and by the
+/// supervisor's spawn-time cache warming so the two paths share one
+/// GGUF read.
+pub fn estimate_with_summary(
+    fs: &dyn Fs,
+    inputs: &EstimatorInputs<'_>,
+) -> Result<(GgufSummary, Estimate), EstimatorError> {
     let summary = gguf::read(fs, inputs.model).map_err(|e| EstimatorError::GgufRead {
         path: inputs.model.to_path_buf(),
         cause: e.to_string(),
@@ -153,7 +170,7 @@ pub fn estimate_from_path(
         }
     }
 
-    Ok(est)
+    Ok((summary, est))
 }
 
 pub fn dispatch(

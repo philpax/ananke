@@ -23,6 +23,11 @@ use ananke_api::{EstimateSummary, ModelInfo};
 use parking_lot::RwLock;
 use smol_str::SmolStr;
 
+use crate::{
+    estimator::Estimate,
+    gguf::{GgufSummary, GgufValue},
+};
+
 /// Cloneable handle to the daemon-wide estimate cache. Backed by a
 /// single `RwLock<BTreeMap>` — most accesses are reads (detail polls)
 /// with the occasional write on cache miss or invalidation.
@@ -46,6 +51,81 @@ pub struct CacheEntry {
     pub config_fingerprint: u64,
     pub model_info: ModelInfo,
     pub estimate: EstimateSummary,
+}
+
+impl CacheEntry {
+    /// Build a cache entry from a fresh estimator run. Centralises
+    /// the GGUF → `ModelInfo` and `Estimate` → `EstimateSummary`
+    /// projections so the management detail handler and the
+    /// supervisor's spawn-time cache warming produce byte-identical
+    /// entries from the same inputs.
+    pub fn build(
+        summary: &GgufSummary,
+        estimate: &Estimate,
+        model_path: PathBuf,
+        mmproj_path: Option<PathBuf>,
+        config_fingerprint: u64,
+    ) -> Self {
+        let file_name = model_path
+            .file_name()
+            .map(|os| os.to_string_lossy().to_string())
+            .unwrap_or_else(|| model_path.to_string_lossy().to_string());
+        let trained_context_key = format!("{}.context_length", summary.architecture);
+        let trained_context_length = summary
+            .metadata
+            .get(trained_context_key.as_str())
+            .and_then(|v| v.as_u32());
+        let model_name = summary
+            .metadata
+            .get("general.name")
+            .and_then(GgufValue::as_str)
+            .map(str::to_string)
+            .filter(|s| !s.is_empty());
+        let license = summary
+            .metadata
+            .get("general.license")
+            .and_then(GgufValue::as_str)
+            .map(str::to_string)
+            .filter(|s| !s.is_empty());
+        let parameter_count = summary
+            .metadata
+            .get("general.parameter_count")
+            .and_then(GgufValue::as_u64);
+
+        let has_mmproj = mmproj_path.is_some();
+        let model_info = ModelInfo {
+            architecture: summary.architecture.to_string(),
+            model_name,
+            license,
+            parameter_count,
+            total_tensor_bytes: summary.total_tensor_bytes,
+            block_count: summary.block_count,
+            shard_count: summary.shards.len() as u32,
+            trained_context_length,
+            file_name,
+            has_mmproj,
+        };
+
+        let kv_bytes_for_context = estimate
+            .kv_per_token
+            .saturating_mul(estimate.context as u64);
+        let compute_buffer_bytes_per_device = (estimate.compute_buffer_mb as u64) * 1024 * 1024;
+        let estimate_summary = EstimateSummary {
+            weights_bytes: estimate.weights_bytes,
+            kv_per_token: estimate.kv_per_token,
+            configured_context: estimate.context,
+            kv_bytes_for_context,
+            compute_buffer_bytes_per_device,
+        };
+
+        Self {
+            model_path,
+            mmproj_path,
+            config_fingerprint,
+            model_info,
+            estimate: estimate_summary,
+        }
+    }
 }
 
 impl EstimateCache {
