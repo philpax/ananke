@@ -190,11 +190,21 @@ fn model_info_and_estimate(
     let Some(lc) = svc_cfg.llama_cpp() else {
         return (None, None);
     };
+    // Build the inputs once so the fingerprint we compare against is
+    // identical to the one `compute_estimate_entry` would write into
+    // the cache on miss.
+    let Some(inputs) = EstimatorInputs::from_service(svc_cfg) else {
+        return (None, None);
+    };
+    let fingerprint = inputs.config_fingerprint();
     let model_path = lc.model.as_path();
     let mmproj_path = lc.mmproj.as_deref();
     let svc_name = svc_cfg.name.clone();
 
-    if let Some(entry) = state.estimate_cache.get(&svc_name, model_path, mmproj_path) {
+    if let Some(entry) = state
+        .estimate_cache
+        .get(&svc_name, model_path, mmproj_path, fingerprint)
+    {
         return (Some(entry.model_info), Some(entry.estimate));
     }
     match compute_estimate_entry(state, svc_cfg) {
@@ -213,6 +223,7 @@ fn model_info_and_estimate(
 fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<CacheEntry> {
     let lc = svc_cfg.llama_cpp()?;
     let inputs = EstimatorInputs::from_service(svc_cfg)?;
+    let config_fingerprint = inputs.config_fingerprint();
     let model_path = lc.model.clone();
     let mmproj_path = lc.mmproj.clone();
 
@@ -274,6 +285,7 @@ fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<C
     Some(CacheEntry {
         model_path,
         mmproj_path,
+        config_fingerprint,
         model_info,
         estimate: estimate_summary,
     })

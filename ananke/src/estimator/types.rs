@@ -63,6 +63,31 @@ impl<'a> EstimatorInputs<'a> {
             allow_fallback: lc.estimation.allow_fallback.unwrap_or(false),
         })
     }
+
+    /// Stable hash of every field that would change the estimate's
+    /// numbers. Cache layers (currently the daemon-side
+    /// `EstimateCache`) compare this against the value stored
+    /// alongside a cached entry to detect "the operator edited
+    /// `context` / `override_tensor` / `cache_type_*` / … without
+    /// changing the GGUF path" — the model on disk is the same but
+    /// the estimate isn't.
+    ///
+    /// `model` and `mmproj` paths are deliberately excluded because
+    /// the cache keys on them separately (any path change is a
+    /// different model, not a different config of the same model).
+    /// `name` is excluded because it's a log-context-only field.
+    pub fn config_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.context.hash(&mut hasher);
+        self.cache_type_k.hash(&mut hasher);
+        self.cache_type_v.hash(&mut hasher);
+        self.override_tensor.hash(&mut hasher);
+        self.n_cpu_moe.hash(&mut hasher);
+        self.compute_buffer_mb.hash(&mut hasher);
+        self.allow_fallback.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 /// Base estimate for a service's VRAM footprint, pre-safety-factor and

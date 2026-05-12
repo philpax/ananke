@@ -4,13 +4,18 @@
 //! daemon already runs it on every spawn to size the placement; the
 //! `ServiceDetail` handler wants the same data without paying a fresh
 //! GGUF read per HTTP poll. This cache memoises the result keyed on
-//! service name and invalidates whenever the configured `model` /
-//! `mmproj` paths change — the cheapest signal that the underlying
-//! file might be different from what we measured.
+//! service name and invalidates on two signals:
+//!
+//!   1. The configured `model` / `mmproj` paths change — the operator
+//!      pointed the service at a different file.
+//!   2. The estimator-relevant config fingerprint changes (context,
+//!      override_tensor, cache_type_*, n_cpu_moe, compute_buffer_mb,
+//!      allow_fallback). The model on disk is the same but the
+//!      estimate's numbers aren't, so the cached entry is stale.
 //!
 //! Cache lifetime is per daemon run. Editing the GGUF in place
-//! without changing its path won't invalidate; restart the daemon (or
-//! touch the service's config) to refresh.
+//! without changing its path or any config field won't invalidate;
+//! restart the daemon to refresh.
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
@@ -33,6 +38,12 @@ pub struct CacheEntry {
     pub model_path: PathBuf,
     /// Same, for the vision projector.
     pub mmproj_path: Option<PathBuf>,
+    /// `EstimatorInputs::config_fingerprint()` at the moment this
+    /// entry was inserted. A mismatch on lookup means the operator
+    /// changed a context / cache_type / override_tensor / … setting
+    /// that affects the estimate numbers without changing the GGUF
+    /// path.
+    pub config_fingerprint: u64,
     pub model_info: ModelInfo,
     pub estimate: EstimateSummary,
 }
@@ -42,16 +53,17 @@ impl EstimateCache {
         Self::default()
     }
 
-    /// Return the cached entry only if the (model_path, mmproj_path)
-    /// pair still matches what the caller is asking about. A mismatch
-    /// means the operator pointed the service at a different file
-    /// since the last measurement — we treat that as a cache miss so
-    /// the caller re-reads.
+    /// Return the cached entry only if every invalidation key still
+    /// matches: model + mmproj paths AND the
+    /// [`EstimatorInputs::config_fingerprint`] the caller is asking
+    /// against. Any mismatch is treated as a cache miss so the caller
+    /// re-runs the estimator.
     pub fn get(
         &self,
         name: &SmolStr,
         model_path: &std::path::Path,
         mmproj_path: Option<&std::path::Path>,
+        config_fingerprint: u64,
     ) -> Option<CacheEntry> {
         let inner = self.inner.read();
         let entry = inner.get(name)?;
@@ -62,6 +74,9 @@ impl EstimateCache {
             (Some(a), Some(b)) if a == b => {}
             (None, None) => {}
             _ => return None,
+        }
+        if entry.config_fingerprint != config_fingerprint {
+            return None;
         }
         Some(entry.clone())
     }
@@ -89,10 +104,13 @@ impl EstimateCache {
 mod tests {
     use super::*;
 
-    fn make_entry(model: &str, mmproj: Option<&str>) -> CacheEntry {
+    const FP: u64 = 0xC0FFEE;
+
+    fn make_entry(model: &str, mmproj: Option<&str>, fp: u64) -> CacheEntry {
         CacheEntry {
             model_path: PathBuf::from(model),
             mmproj_path: mmproj.map(PathBuf::from),
+            config_fingerprint: fp,
             model_info: ModelInfo {
                 architecture: "llama".into(),
                 model_name: None,
@@ -116,13 +134,13 @@ mod tests {
     }
 
     #[test]
-    fn hit_when_paths_match() {
+    fn hit_when_paths_and_fingerprint_match() {
         let cache = EstimateCache::new();
         let name = SmolStr::new("svc");
-        cache.insert(name.clone(), make_entry("/a/model.gguf", None));
+        cache.insert(name.clone(), make_entry("/a/model.gguf", None, FP));
         assert!(
             cache
-                .get(&name, std::path::Path::new("/a/model.gguf"), None)
+                .get(&name, std::path::Path::new("/a/model.gguf"), None, FP)
                 .is_some()
         );
     }
@@ -131,10 +149,10 @@ mod tests {
     fn miss_when_model_path_differs() {
         let cache = EstimateCache::new();
         let name = SmolStr::new("svc");
-        cache.insert(name.clone(), make_entry("/a/model.gguf", None));
+        cache.insert(name.clone(), make_entry("/a/model.gguf", None, FP));
         assert!(
             cache
-                .get(&name, std::path::Path::new("/a/other.gguf"), None)
+                .get(&name, std::path::Path::new("/a/other.gguf"), None, FP)
                 .is_none(),
             "different model path must invalidate"
         );
@@ -146,11 +164,11 @@ mod tests {
         let name = SmolStr::new("svc");
         cache.insert(
             name.clone(),
-            make_entry("/a/model.gguf", Some("/a/mmproj.gguf")),
+            make_entry("/a/model.gguf", Some("/a/mmproj.gguf"), FP),
         );
         assert!(
             cache
-                .get(&name, std::path::Path::new("/a/model.gguf"), None)
+                .get(&name, std::path::Path::new("/a/model.gguf"), None, FP)
                 .is_none(),
             "mmproj removal must invalidate"
         );
@@ -159,10 +177,33 @@ mod tests {
                 .get(
                     &name,
                     std::path::Path::new("/a/model.gguf"),
-                    Some(std::path::Path::new("/b/mmproj.gguf"))
+                    Some(std::path::Path::new("/b/mmproj.gguf")),
+                    FP,
                 )
                 .is_none(),
             "mmproj path change must invalidate"
+        );
+    }
+
+    /// Pin the new fingerprint-based invalidation: paths unchanged
+    /// but a non-path estimator-relevant setting (context,
+    /// override_tensor, etc.) changed since insertion → cache miss so
+    /// the handler re-runs the estimator against the updated config.
+    #[test]
+    fn miss_when_config_fingerprint_differs() {
+        let cache = EstimateCache::new();
+        let name = SmolStr::new("svc");
+        cache.insert(name.clone(), make_entry("/a/model.gguf", None, FP));
+        assert!(
+            cache
+                .get(
+                    &name,
+                    std::path::Path::new("/a/model.gguf"),
+                    None,
+                    FP.wrapping_add(1)
+                )
+                .is_none(),
+            "fingerprint mismatch must invalidate even when paths match"
         );
     }
 
@@ -170,11 +211,11 @@ mod tests {
     fn invalidate_removes_entry() {
         let cache = EstimateCache::new();
         let name = SmolStr::new("svc");
-        cache.insert(name.clone(), make_entry("/a/model.gguf", None));
+        cache.insert(name.clone(), make_entry("/a/model.gguf", None, FP));
         cache.invalidate(&name);
         assert!(
             cache
-                .get(&name, std::path::Path::new("/a/model.gguf"), None)
+                .get(&name, std::path::Path::new("/a/model.gguf"), None, FP)
                 .is_none()
         );
     }
