@@ -1,18 +1,17 @@
-import { useLogs, useServiceDetail } from "../api/hooks.ts";
+import { useServiceDetail } from "../api/hooks.ts";
 import type {
   EstimateSummary,
-  LogLine,
   ModelInfo,
   ServiceDetail,
 } from "../api/client.ts";
 import { formatBytes, formatParameterCount, serviceProxyUrl } from "../util.ts";
+import { LogsView } from "./LogsView.tsx";
 
 // Detail block rendered inline inside the services table (in an extra
 // `<td colSpan>` row below the service). Assumes its caller has already
 // decided to show it; queries are always enabled.
 export function ServiceDetailInline({ name }: { name: string }) {
   const { data: detail, error, isPending } = useServiceDetail(name);
-  const { data: logs } = useLogs(name);
 
   if (isPending) return <div className="opacity-60">Loading {name}…</div>;
   if (error)
@@ -72,7 +71,7 @@ export function ServiceDetailInline({ name }: { name: string }) {
         placementOverride={detail.placement_override}
       />
 
-      <LogsView logs={logs?.logs ?? []} />
+      <LogsView name={name} />
     </div>
   );
 }
@@ -282,35 +281,5 @@ function AllocationSection({
         )}
       </div>
     </section>
-  );
-}
-
-function LogsView({ logs }: { logs: LogLine[] }) {
-  if (logs.length === 0) {
-    return (
-      <div className="text-sm text-gray-500 dark:text-gray-400">
-        No recent logs.
-      </div>
-    );
-  }
-  return (
-    <div>
-      <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-        Recent logs (newest first, capped)
-      </div>
-      <pre className="bg-gray-900 dark:bg-black text-gray-100 dark:text-gray-200 text-xs p-2 rounded max-h-80 overflow-y-auto whitespace-pre-wrap">
-        {logs.map((l) => {
-          const ts = new Date(l.timestamp_ms).toISOString().slice(11, 23);
-          const color =
-            l.stream === "stderr" ? "text-red-300" : "text-gray-100";
-          return (
-            <div key={`${l.run_id}-${l.seq}`} className={color}>
-              <span className="text-gray-500 dark:text-gray-600">{ts}</span>{" "}
-              {l.line}
-            </div>
-          );
-        })}
-      </pre>
-    </div>
   );
 }

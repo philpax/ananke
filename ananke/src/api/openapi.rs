@@ -2,8 +2,8 @@
 
 use ananke_api::{
     ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DeviceReservation,
-    DeviceSummary, DisableResponse, EnableResponse, LogLine, LogsResponse, ServiceDetail,
-    ServiceSummary, ServicesResponse, StartResponse, StopResponse, ValidationError,
+    DeviceSummary, DisableResponse, EnableResponse, LogLine, LogStreamMessage, LogsResponse,
+    ServiceDetail, ServiceSummary, ServicesResponse, StartResponse, StopResponse, ValidationError,
     oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
 };
 use axum::{
@@ -63,6 +63,7 @@ use crate::{
         ServiceDetail,
         LogLine,
         LogsResponse,
+        LogStreamMessage,
         DeviceSummary,
         DeviceReservation,
         StartResponse,

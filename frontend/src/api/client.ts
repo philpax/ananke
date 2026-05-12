@@ -6,6 +6,20 @@ import type { components, paths } from "./types.ts";
 
 type Schemas = components["schemas"];
 
+/// Query parameters for `GET /api/services/{name}/logs`. Mirrors the
+/// daemon's `LogsQuery` (see `ananke/src/api/management/logs.rs`).
+/// Times are millisecond UNIX timestamps. `before` is an opaque cursor
+/// from a previous response's `next_cursor` — the daemon pages
+/// backward (older) from there.
+export type LogsQuery = {
+  since?: number;
+  until?: number;
+  run?: number;
+  stream?: "stdout" | "stderr";
+  limit?: number;
+  before?: string;
+};
+
 export type ServiceSummary = Schemas["ServiceSummary"];
 export type ServicesResponse = Schemas["ServicesResponse"];
 export type ServiceDetail = Schemas["ServiceDetail"];
@@ -13,6 +27,7 @@ export type ModelInfo = Schemas["ModelInfo"];
 export type EstimateSummary = Schemas["EstimateSummary"];
 export type LogLine = Schemas["LogLine"];
 export type LogsResponse = Schemas["LogsResponse"];
+export type LogStreamMessage = Schemas["LogStreamMessage"];
 export type DeviceSummary = Schemas["DeviceSummary"];
 export type DeviceReservation = Schemas["DeviceReservation"];
 export type StartResponse = Schemas["StartResponse"];
@@ -58,8 +73,25 @@ export const api = {
     getJson<
       paths["/api/devices"]["get"]["responses"]["200"]["content"]["application/json"]
     >("/api/devices"),
-  getLogs: (name: string) =>
-    getJson<LogsResponse>(`/api/services/${encodeURIComponent(name)}/logs`),
+  getLogs: (name: string, query: LogsQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.since !== undefined) params.set("since", String(query.since));
+    if (query.until !== undefined) params.set("until", String(query.until));
+    if (query.run !== undefined) params.set("run", String(query.run));
+    if (query.stream !== undefined) params.set("stream", query.stream);
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.before !== undefined) params.set("before", query.before);
+    const qs = params.toString();
+    const path = `/api/services/${encodeURIComponent(name)}/logs${qs ? `?${qs}` : ""}`;
+    return getJson<LogsResponse>(path);
+  },
+  /// Build the absolute WebSocket URL for `/logs/stream`. The frontend
+  /// is served from the same host:port as the management API, so the
+  /// scheme is mirrored (`ws` ↔ `http`, `wss` ↔ `https`).
+  logStreamUrl: (name: string) => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/api/services/${encodeURIComponent(name)}/logs/stream`;
+  },
   getConfig: () => getJson<ConfigResponse>("/api/config"),
   start: (name: string) =>
     postJson<StartResponse>(`/api/services/${encodeURIComponent(name)}/start`),
