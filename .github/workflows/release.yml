@@ -10,26 +10,30 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Cross-compilation hooks. Each variable is keyed on the Rust target
-  # triple, so it only takes effect for the matching matrix entry.
+  # rusqlite's bundled SQLite is built via cc-rs; the musl entry runs on
+  # a glibc host so we point cc-rs at the musl-libc wrapper. Other
+  # targets build on a runner whose host triple already matches.
   CC_x86_64_unknown_linux_musl: musl-gcc
-  CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
 jobs:
   build:
     name: Build (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Pin to 22.04 (glibc 2.35) so the produced binaries stay
+          # compatible with a wide range of distros.
           - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-22.04
             apt: ""
           - target: x86_64-unknown-linux-musl
+            runs-on: ubuntu-22.04
             apt: musl-tools
           - target: aarch64-unknown-linux-gnu
-            apt: gcc-aarch64-linux-gnu
+            runs-on: ubuntu-22.04-arm
+            apt: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -40,7 +44,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Install cross-compilation tools
+      - name: Install apt packages
         if: matrix.apt != ''
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
 
@@ -99,7 +103,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 

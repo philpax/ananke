@@ -8,10 +8,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # rusqlite's bundled SQLite is built via cc-rs; the musl entry runs on
+  # a glibc host so we point cc-rs at the musl-libc wrapper. Other
+  # targets build on a runner whose host triple already matches.
+  CC_x86_64_unknown_linux_musl: musl-gcc
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +52,7 @@ jobs:
         run: cargo test --workspace --no-default-features --lib
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -66,3 +70,56 @@ jobs:
       - name: Lint
         run: npm run lint
         working-directory: frontend
+
+  build-targets:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pin to 22.04 (glibc 2.35) so what CI builds matches what the
+          # release workflow ships.
+          - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-22.04
+            apt: ""
+          - target: x86_64-unknown-linux-musl
+            runs-on: ubuntu-22.04
+            apt: musl-tools
+          - target: aarch64-unknown-linux-gnu
+            runs-on: ubuntu-22.04-arm
+            apt: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install apt packages
+        if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ${{ matrix.apt }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: build-${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: Build binaries
+        run: cargo build --locked --target ${{ matrix.target }} -p ananke -p anankectl
