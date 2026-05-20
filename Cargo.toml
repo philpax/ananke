@@ -1,5 +1,6 @@
 [workspace]
-members = ["ananke", "anankectl", "ananke-api"]
+members = ["ananke", "anankectl", "ananke-api", "scripts/xtask"]
+default-members = ["ananke", "anankectl", "ananke-api"]
 resolver = "2"
 
 [workspace.package]
