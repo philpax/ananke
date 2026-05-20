@@ -156,6 +156,7 @@ pub enum Error {
         found: usize,
         expected: usize,
     },
+    CargoMetadata(cargo_metadata::Error),
 }
 
 impl fmt::Display for Error {
@@ -219,13 +220,12 @@ impl fmt::Display for Error {
                 "expected {expected} occurrence(s) of `{needle}` in {}, found {found}",
                 path.display()
             ),
+            Self::CargoMetadata(source) => write!(f, "failed to read workspace metadata: {source}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
-
-const WORKSPACE_CRATES: &[&str] = &["ananke", "anankectl", "ananke-api"];
 
 struct Plan {
     files: Vec<PlannedFile>,
@@ -245,6 +245,7 @@ impl Plan {
         old: &str,
         new: &str,
     ) -> Result<Self, Error> {
+        let members = workspace_member_names(cargo_toml)?;
         let files = vec![
             PlannedFile {
                 path: cargo_toml.to_path_buf(),
@@ -252,7 +253,7 @@ impl Plan {
             },
             PlannedFile {
                 path: cargo_lock.to_path_buf(),
-                new_content: rewrite_cargo_lock(cargo_lock, old, new)?,
+                new_content: rewrite_cargo_lock(cargo_lock, &members, old, new)?,
             },
             PlannedFile {
                 path: package_json.to_path_buf(),
@@ -272,6 +273,19 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+fn workspace_member_names(cargo_toml: &Path) -> Result<Vec<String>, Error> {
+    let metadata = cargo_metadata::MetadataCommand::new()
+        .manifest_path(cargo_toml)
+        .no_deps()
+        .exec()
+        .map_err(Error::CargoMetadata)?;
+    Ok(metadata
+        .workspace_packages()
+        .into_iter()
+        .map(|p| p.name.clone())
+        .collect())
 }
 
 fn validate_version(v: &str) -> Result<(), Error> {
@@ -429,7 +443,12 @@ fn rewrite_cargo_toml(path: &Path, new_version: &str) -> Result<String, Error> {
     Ok(doc.to_string())
 }
 
-fn rewrite_cargo_lock(path: &Path, old: &str, new_version: &str) -> Result<String, Error> {
+fn rewrite_cargo_lock(
+    path: &Path,
+    members: &[String],
+    old: &str,
+    new_version: &str,
+) -> Result<String, Error> {
     let content = read(path)?;
     let mut doc: DocumentMut = content.parse().map_err(|source| Error::TomlParse {
         path: path.to_path_buf(),
@@ -449,7 +468,7 @@ fn rewrite_cargo_lock(path: &Path, old: &str, new_version: &str) -> Result<Strin
             .and_then(|n| n.as_str())
             .unwrap_or_default()
             .to_string();
-        if !WORKSPACE_CRATES.contains(&name.as_str()) {
+        if !members.iter().any(|m| m == &name) {
             continue;
         }
         let current = pkg
@@ -468,10 +487,10 @@ fn rewrite_cargo_lock(path: &Path, old: &str, new_version: &str) -> Result<Strin
         pkg["version"] = value(new_version);
         bumped += 1;
     }
-    if bumped != WORKSPACE_CRATES.len() {
+    if bumped != members.len() {
         return Err(Error::WorkspaceCratesIncomplete {
             found: bumped,
-            expected: WORKSPACE_CRATES.len(),
+            expected: members.len(),
         });
     }
     Ok(doc.to_string())
