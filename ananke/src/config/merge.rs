@@ -153,6 +153,8 @@ fn merge_llama_cpp(
         jinja: inherit!(jinja),
         chat_template_file: inherit!(chat_template_file),
         override_tensor: inherit!(override_tensor),
+        llama_server: inherit!(llama_server),
+        launcher: inherit!(launcher),
         sampling: match (parent.sampling.clone(), child.sampling.clone()) {
             (None, x) => x,
             (x, None) => x,

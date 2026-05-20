@@ -278,6 +278,8 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
             override_tensor: Vec::new(),
             sampling: SamplingConfig::default(),
             estimation: EstimationConfig::default(),
+            binary: PathBuf::from("llama-server"),
+            launcher: None,
         })),
     }
 }

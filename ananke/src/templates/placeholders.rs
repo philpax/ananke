@@ -21,6 +21,10 @@ pub enum SubstituteError {
     VramMbOnDynamic,
     VramMbMultiDevice,
     UnknownPlaceholder(String),
+    /// The launcher splat `{args}` must occupy a launcher entry on its
+    /// own; it cannot be embedded inside a larger argv string because
+    /// the expansion produces multiple arguments, not a single one.
+    SplatInsideArg,
 }
 
 impl std::fmt::Display for SubstituteError {
@@ -37,6 +41,13 @@ impl std::fmt::Display for SubstituteError {
             }
             SubstituteError::UnknownPlaceholder(s) => {
                 write!(f, "unknown placeholder {{{s}}}")
+            }
+            SubstituteError::SplatInsideArg => {
+                write!(
+                    f,
+                    "splat placeholder {{args}} must be the entire launcher entry, \
+                     not embedded inside a larger string"
+                )
             }
         }
     }
@@ -113,6 +124,34 @@ pub fn resolve(key: &str, ctx: &PlaceholderContext<'_>) -> Result<String, Substi
             .ok_or(SubstituteError::VramMbOnDynamic),
         other => Err(SubstituteError::UnknownPlaceholder(other.to_string())),
     }
+}
+
+/// Substitute a llama-cpp `launcher` argv template, expanding the splat
+/// `{args}` placeholder to the full list of llama-server flags ananke
+/// would otherwise have emitted. `{args}` must occupy a launcher entry
+/// on its own — `["--foo={args}"]` is rejected because the expansion
+/// produces multiple argv entries, not a single one.
+///
+/// Every other launcher entry passes through [`substitute`], so the
+/// usual placeholders (`{model}`, `{port}`, `{name}`, `{gpu_ids}`) are
+/// resolved in-place.
+pub fn substitute_launcher_argv(
+    launcher: &[String],
+    llama_args: &[String],
+    ctx: &PlaceholderContext<'_>,
+) -> Result<Vec<String>, SubstituteError> {
+    let mut out: Vec<String> = Vec::with_capacity(launcher.len() + llama_args.len());
+    for entry in launcher {
+        if entry == "{args}" {
+            out.extend(llama_args.iter().cloned());
+            continue;
+        }
+        if entry.contains("{args}") {
+            return Err(SubstituteError::SplatInsideArg);
+        }
+        out.push(substitute(entry, ctx)?);
+    }
+    Ok(out)
 }
 
 /// Apply substitution across a whole argv vector and env map. Stops at

@@ -72,6 +72,13 @@ pub struct DaemonConfig {
     /// 59999. Override (together with `private_port_start`) when another
     /// process on the host occupies the default window.
     pub private_port_end: Option<u16>,
+    /// Path (or `$PATH` lookup name) of the llama-server executable used
+    /// when spawning llama-cpp services. Defaults to `"llama-server"`
+    /// (looked up on `$PATH`). A per-service `llama_server` field
+    /// overrides this. Useful when the llama-server binary lives outside
+    /// `$PATH`, or when operators wrap it in a container/script that
+    /// still accepts llama-server's CLI.
+    pub llama_server: Option<PathBuf>,
 }
 
 fn default_management_listen() -> String {
@@ -191,6 +198,22 @@ pub struct RawLlamaCppService {
     pub override_tensor: Option<Vec<String>>,
     pub sampling: Option<SamplingConfig>,
     pub estimation: Option<EstimationConfig>,
+    /// Per-service override of the llama-server executable. Overrides
+    /// the daemon-level `daemon.llama_server` default. Has no effect
+    /// when `launcher` is set — the launcher's first element is the
+    /// executable in that case.
+    pub llama_server: Option<PathBuf>,
+    /// Full argv template that replaces the default
+    /// `llama-server -m <model> …` invocation. When set, `launcher[0]`
+    /// is the executable and `launcher[1..]` is its argv. Each entry is
+    /// substituted with the standard placeholders (`{model}`,
+    /// `{mmproj}`, `{port}`, `{name}`, `{gpu_ids}`) plus the splat
+    /// `{args}`, which expands to every llama-server flag ananke would
+    /// otherwise have emitted (excluding `-m <model>` — that lives in
+    /// `{model}` so wrappers can position it freely). Lets operators
+    /// front llama-server with a docker/podman wrapper that has its own
+    /// argv shape.
+    pub launcher: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]

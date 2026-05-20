@@ -178,6 +178,18 @@ pub struct LlamaCppConfig {
     pub override_tensor: Vec<String>,
     pub sampling: SamplingConfig,
     pub estimation: EstimationConfig,
+    /// Resolved executable used to launch the service. Defaults to
+    /// `"llama-server"` (looked up on `$PATH`); a per-service
+    /// `llama_server` overrides that, falling back to the daemon-level
+    /// `daemon.llama_server`. Ignored when [`Self::launcher`] is set —
+    /// the launcher's first element becomes the executable.
+    pub binary: PathBuf,
+    /// Optional argv template that replaces the default
+    /// `llama-server -m <model> …` invocation. `launcher[0]` becomes
+    /// the executable; `launcher[1..]` is substituted with the standard
+    /// placeholders and the splat `{args}` (which expands to every
+    /// other llama-server flag ananke would have emitted).
+    pub launcher: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -378,21 +390,25 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     let private_port_range =
         PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;
     let mut private_ports = PrivatePortAllocator::new(private_port_range);
+    let daemon_llama_server = cfg.daemon.llama_server.clone();
 
     let mut names: BTreeSet<SmolStr> = BTreeSet::new();
     let mut ports: BTreeSet<u16> = BTreeSet::new();
     let mut out = Vec::new();
 
+    let daemon_ctx = DaemonValidationCtx {
+        defaults: &cfg.defaults,
+        management_port,
+        daemon_llama_server: daemon_llama_server.as_deref(),
+    };
+    let mut svc_state = ServiceValidationState {
+        names: &mut names,
+        ports: &mut ports,
+        private_ports: &mut private_ports,
+    };
+
     for (i, raw) in cfg.services.iter().enumerate() {
-        let svc = validate_service(
-            i,
-            raw,
-            &cfg.defaults,
-            management_port,
-            &mut names,
-            &mut ports,
-            &mut private_ports,
-        )?;
+        let svc = validate_service(i, raw, &daemon_ctx, &mut svc_state)?;
         out.push(svc);
     }
 
@@ -409,14 +425,30 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     })
 }
 
+/// Daemon-scoped inputs that don't change across services within a
+/// single `validate` call. Grouped into a struct so per-service
+/// validation doesn't need a long arg list (and so clippy stops
+/// flagging it).
+struct DaemonValidationCtx<'a> {
+    defaults: &'a crate::config::parse::DefaultsConfig,
+    management_port: Option<u16>,
+    daemon_llama_server: Option<&'a std::path::Path>,
+}
+
+/// Mutable bookkeeping that accumulates across the per-service loop:
+/// the set of names seen so duplicates can be rejected, the same for
+/// ports, and the allocator that hands out private loopback ports.
+struct ServiceValidationState<'a> {
+    names: &'a mut BTreeSet<SmolStr>,
+    ports: &'a mut BTreeSet<u16>,
+    private_ports: &'a mut PrivatePortAllocator,
+}
+
 fn validate_service(
     index: usize,
     raw: &RawService,
-    defaults: &crate::config::parse::DefaultsConfig,
-    management_port: Option<u16>,
-    names: &mut BTreeSet<SmolStr>,
-    ports: &mut BTreeSet<u16>,
-    private_ports: &mut PrivatePortAllocator,
+    daemon: &DaemonValidationCtx<'_>,
+    state: &mut ServiceValidationState<'_>,
 ) -> Result<ServiceConfig, ExpectedError> {
     let common = raw.common();
     let name = common
@@ -427,13 +459,13 @@ fn validate_service(
         .port
         .ok_or_else(|| fail(format!("service {name} missing port")))?;
 
-    if !names.insert(name.clone()) {
+    if !state.names.insert(name.clone()) {
         return Err(fail(format!("duplicate service name `{name}`")));
     }
-    if !ports.insert(port) {
+    if !state.ports.insert(port) {
         return Err(fail(format!("duplicate service port {port}")));
     }
-    if Some(port) == management_port {
+    if Some(port) == daemon.management_port {
         return Err(fail(format!(
             "service {name} port {port} collides with daemon.management_listen"
         )));
@@ -441,7 +473,7 @@ fn validate_service(
 
     let (allocation_mode, template_config) = match raw {
         RawService::LlamaCpp(lc) => {
-            let tc = validate_llama_cpp(&name, lc)?;
+            let tc = validate_llama_cpp(&name, lc, daemon.daemon_llama_server)?;
             // llama-cpp never takes an allocation.mode; none of the dynamic
             // knobs apply here.
             let alloc = AllocationMode::from_parts(
@@ -597,12 +629,12 @@ fn validate_service(
 
     let priority = common
         .priority
-        .or(defaults.priority)
+        .or(daemon.defaults.priority)
         .unwrap_or(DEFAULT_SERVICE_PRIORITY);
     let idle_timeout_ms = common
         .idle_timeout
         .as_deref()
-        .or(defaults.idle_timeout.as_deref())
+        .or(daemon.defaults.idle_timeout.as_deref())
         .map(parse_duration_ms)
         .transpose()
         .map_err(|e| fail(format!("service {name} idle_timeout: {e}")))?
@@ -668,18 +700,18 @@ fn validate_service(
         TemplateConfig::LlamaCpp(_) => None,
     };
     let private_port = if let Some(fixed) = private_port_override {
-        if private_ports.contains(fixed) {
+        if state.private_ports.contains(fixed) {
             warn!(
                 service = %name,
                 port = fixed,
-                range_start = private_ports.range.start,
-                range_end = private_ports.range.end,
+                range_start = state.private_ports.range.start,
+                range_end = state.private_ports.range.end,
                 "private_port override falls inside the auto-assignment pool; a later auto-assigned service may collide — move this port outside [private_port_start, private_port_end]"
             );
         }
         fixed
     } else {
-        let p = private_ports.allocate(&name)?;
+        let p = state.private_ports.allocate(&name)?;
         if let TemplateConfig::Command(cmd) = &template_config
             && !command_uses_port_placeholder(cmd, common.env.as_ref())
         {
@@ -762,6 +794,7 @@ fn validate_tracking(
 fn validate_llama_cpp(
     name: &SmolStr,
     lc: &RawLlamaCppService,
+    daemon_llama_server: Option<&std::path::Path>,
 ) -> Result<LlamaCppConfig, ExpectedError> {
     let model = lc.model.clone().ok_or_else(|| {
         fail(format!(
@@ -784,6 +817,24 @@ fn validate_llama_cpp(
         }
     }
 
+    let launcher = match &lc.launcher {
+        None => None,
+        Some(argv) => {
+            if argv.is_empty() {
+                return Err(fail(format!(
+                    "service {name}: launcher is present but empty"
+                )));
+            }
+            check_launcher_placeholders(name, argv)?;
+            Some(argv.clone())
+        }
+    };
+    let binary = lc
+        .llama_server
+        .clone()
+        .or_else(|| daemon_llama_server.map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("llama-server"));
+
     Ok(LlamaCppConfig {
         model,
         mmproj: lc.mmproj.clone(),
@@ -805,6 +856,8 @@ fn validate_llama_cpp(
         override_tensor: lc.override_tensor.clone().unwrap_or_default(),
         sampling: lc.sampling.clone().unwrap_or_default(),
         estimation: lc.estimation.clone().unwrap_or_default(),
+        binary,
+        launcher,
     })
 }
 
@@ -888,6 +941,31 @@ fn check_placeholders(name: &SmolStr, field: &str, argv: &[String]) -> Result<()
         substitute(arg, &ctx)
             .map_err(|e| fail(format!("service {name}: {field}[{i}] {arg:?}: {e}")))?;
     }
+    Ok(())
+}
+
+/// Dry-run a llama-cpp `launcher` argv at validate time. Identical
+/// purpose to [`check_placeholders`] but tolerates the `{args}` splat
+/// (which would otherwise be rejected by [`substitute`]). Surfaces
+/// typos like `{prot}` and misuses like `--foo={args}` as config errors
+/// rather than runtime `StartFailure`s.
+fn check_launcher_placeholders(name: &SmolStr, argv: &[String]) -> Result<(), ExpectedError> {
+    use crate::{
+        devices::{Allocation, DeviceId},
+        templates::{PlaceholderContext, substitute_launcher_argv},
+    };
+    let mut alloc_bytes = std::collections::BTreeMap::new();
+    alloc_bytes.insert(DeviceId::Gpu(0), 1);
+    let alloc = Allocation { bytes: alloc_bytes };
+    let ctx = PlaceholderContext {
+        name,
+        port: 0,
+        model: Some("/m/x.gguf"),
+        allocation: &alloc,
+        static_vram_mb: None,
+    };
+    substitute_launcher_argv(argv, &[], &ctx)
+        .map_err(|e| fail(format!("service {name}: launcher: {e}")))?;
     Ok(())
 }
 
@@ -1165,6 +1243,8 @@ pub mod test_fixtures {
             override_tensor: Vec::new(),
             sampling: SamplingConfig::default(),
             estimation: EstimationConfig::default(),
+            binary: PathBuf::from("llama-server"),
+            launcher: None,
         }
     }
 
@@ -1895,6 +1975,138 @@ allocation.vram_gb = 1
             msg.contains("shutdown_command[1]") && msg.contains("{bogus}"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn llama_server_defaults_to_path_lookup() {
+        let cfg = parse_and_merge(GOOD);
+        let ec = validate(&cfg).unwrap();
+        let lc = ec.services[0].llama_cpp().unwrap();
+        assert_eq!(lc.binary, PathBuf::from("llama-server"));
+        assert!(lc.launcher.is_none());
+    }
+
+    #[test]
+    fn daemon_llama_server_default_applies_when_service_unset() {
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+llama_server = "/opt/llama-build/llama-server"
+
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let lc = ec.services[0].llama_cpp().unwrap();
+        assert_eq!(lc.binary, PathBuf::from("/opt/llama-build/llama-server"));
+    }
+
+    #[test]
+    fn service_llama_server_overrides_daemon_default() {
+        let cfg = parse_and_merge(
+            r#"
+[daemon]
+llama_server = "/opt/global"
+
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+llama_server = "/opt/per-service"
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let lc = ec.services[0].llama_cpp().unwrap();
+        assert_eq!(lc.binary, PathBuf::from("/opt/per-service"));
+    }
+
+    #[test]
+    fn launcher_accepts_well_formed_template() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+launcher = ["/opt/podman-wrap.sh", "{model}", "{args}"]
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let lc = ec.services[0].llama_cpp().unwrap();
+        assert_eq!(
+            lc.launcher.as_deref(),
+            Some(
+                &[
+                    "/opt/podman-wrap.sh".to_string(),
+                    "{model}".into(),
+                    "{args}".into()
+                ][..]
+            )
+        );
+    }
+
+    #[test]
+    fn launcher_rejects_unknown_placeholder() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+launcher = ["wrap.sh", "{model}", "{bogus}", "{args}"]
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("{bogus}") && msg.contains("launcher"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn launcher_rejects_splat_embedded_in_arg() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+launcher = ["wrap.sh", "{model}", "--foo={args}"]
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("{args}"));
+    }
+
+    #[test]
+    fn launcher_rejects_empty_argv() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11000
+launcher = []
+devices.placement_override = { "gpu:0" = 1000 }
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("launcher"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::{
     allocator::placement::CommandArgs,
     config::validate::{LlamaCppConfig, PlacementPolicy, ServiceConfig, TemplateConfig},
     devices::{Allocation, cuda_env},
+    templates::{PlaceholderContext, substitute_launcher_argv},
 };
 
 pub struct SpawnConfig {
@@ -30,7 +31,7 @@ pub fn render_argv(
     cmd_args: Option<&CommandArgs>,
 ) -> Result<SpawnConfig, crate::templates::SubstituteError> {
     match &svc.template_config {
-        TemplateConfig::LlamaCpp(lc) => Ok(render_llama_cpp_argv(svc, lc, alloc, cmd_args)),
+        TemplateConfig::LlamaCpp(lc) => render_llama_cpp_argv(svc, lc, alloc, cmd_args),
         TemplateConfig::Command(_) => render_command_argv(svc, alloc),
     }
 }
@@ -40,11 +41,64 @@ fn render_llama_cpp_argv(
     lc: &LlamaCppConfig,
     alloc: &Allocation,
     cmd_args: Option<&CommandArgs>,
-) -> SpawnConfig {
-    let mut args: Vec<String> = Vec::new();
+) -> Result<SpawnConfig, crate::templates::SubstituteError> {
+    let mut env: BTreeMap<String, String> = svc.env.clone();
+    env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
+    let standard_args = render_llama_server_flags(svc, lc, cmd_args);
+
+    if let Some(launcher) = &lc.launcher {
+        // Launcher template: `{model}` is exposed as a standalone
+        // placeholder so wrappers can position it (e.g. for a container
+        // volume mount). Every other flag — `--mmproj`, `-c`, port,
+        // placement-derived `-ngl`/`--tensor-split`/`-ot`, sampling,
+        // `extra_args` — flows through the `{args}` splat. The launcher
+        // owns its own argv shape from there.
+        let model_str = lc.model.to_string_lossy().into_owned();
+        let ctx = PlaceholderContext {
+            name: &svc.name,
+            port: svc.private_port,
+            model: Some(&model_str),
+            allocation: alloc,
+            static_vram_mb: None,
+        };
+        let argv = substitute_launcher_argv(launcher, &standard_args, &ctx)?;
+        // `launcher` is non-empty (the validator rejects an empty
+        // launcher), and substitution never drops the first entry, so
+        // argv has at least one element here.
+        let mut iter = argv.into_iter();
+        let binary = iter.next().unwrap_or_default();
+        let args: Vec<String> = iter.collect();
+        return Ok(SpawnConfig { binary, args, env });
+    }
+
+    let mut args: Vec<String> = Vec::new();
     args.push("-m".into());
     args.push(lc.model.to_string_lossy().into_owned());
+    args.extend(standard_args);
+
+    Ok(SpawnConfig {
+        binary: lc.binary.to_string_lossy().into_owned(),
+        args,
+        env,
+    })
+}
+
+/// Render every llama-server flag *except* `-m <model>`. The model
+/// path is held back so the `launcher` template's `{model}` placeholder
+/// can position it freely (e.g. for a container volume mount); every
+/// other flag — including `--mmproj <path>`, placement-derived
+/// `-ngl`/`--tensor-split`/`-ot`, sampling, host/port, and `extra_args`
+/// — is emitted here and reaches the launcher via the `{args}` splat.
+/// Shared by the default and launcher rendering paths so both emit
+/// identical flag sets.
+fn render_llama_server_flags(
+    svc: &ServiceConfig,
+    lc: &LlamaCppConfig,
+    cmd_args: Option<&CommandArgs>,
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+
     if let Some(mmproj) = &lc.mmproj {
         args.push("--mmproj".into());
         args.push(mmproj.to_string_lossy().into_owned());
@@ -176,14 +230,7 @@ fn render_llama_cpp_argv(
     args.push("--port".into());
     args.push(svc.private_port.to_string());
 
-    let mut env: BTreeMap<String, String> = svc.env.clone();
-    env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
-
-    SpawnConfig {
-        binary: "llama-server".into(),
-        args,
-        env,
-    }
+    args
 }
 
 /// Assemble the [`PlaceholderContext`] a command-template argv renders
@@ -407,6 +454,61 @@ mod tests {
             cfg.args.iter().all(|a| a != "{port}"),
             "raw placeholder leaked into args: {:?}",
             cfg.args
+        );
+    }
+
+    #[test]
+    fn custom_binary_replaces_llama_server() {
+        let mut svc = base_service();
+        expect_llama_cpp(&mut svc).binary = PathBuf::from("/opt/bin/special-llama-server");
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert_eq!(cmd.binary, "/opt/bin/special-llama-server");
+        // `-m <path>` still leads the argv, same shape as the default.
+        assert_eq!(cmd.args[0], "-m");
+        assert_eq!(cmd.args[1], "/m/x.gguf");
+    }
+
+    #[test]
+    fn launcher_template_splats_args_and_substitutes_model() {
+        let mut svc = base_service();
+        {
+            let lc = expect_llama_cpp(&mut svc);
+            lc.launcher = Some(vec![
+                "/opt/podman-wrap.sh".into(),
+                "{model}".into(),
+                "{args}".into(),
+            ]);
+        }
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert_eq!(cmd.binary, "/opt/podman-wrap.sh");
+        // Model is positional; standard `-m <path>` is *not* prepended.
+        assert_eq!(cmd.args[0], "/m/x.gguf");
+        assert!(
+            !cmd.args.iter().any(|a| a == "-m"),
+            "`-m` must not leak into the launcher argv: {:?}",
+            cmd.args
+        );
+        // Splat covers the rest of llama-server's flags.
+        assert!(cmd.args.iter().any(|a| a == "-c"));
+        assert!(cmd.args.iter().any(|a| a == "8192"));
+        assert!(cmd.args.iter().any(|a| a == "--port"));
+        assert!(cmd.args.iter().any(|a| a == "41000"));
+    }
+
+    #[test]
+    fn launcher_splat_inside_arg_is_rejected() {
+        let mut svc = base_service();
+        expect_llama_cpp(&mut svc).launcher = Some(vec!["wrap.sh".into(), "--foo={args}".into()]);
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let err = match render_argv(&svc, &alloc, None) {
+            Ok(_) => panic!("expected splat-misuse error"),
+            Err(e) => e,
+        };
+        assert!(
+            format!("{err}").contains("{args}"),
+            "expected splat-misuse error, got {err}"
         );
     }
 }

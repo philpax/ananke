@@ -15,7 +15,7 @@ ananke is currently Linux-only.
 
 - **Rust toolchain** (stable) to build with `cargo`.
 - **NVIDIA driver with NVML** (`libnvidia-ml.so`) on the host, for GPU detection and VRAM tracking. Without it the daemon falls back to CPU-only and any GPU-bound service fails placement.
-- **`llama-server`** on `PATH`, if you plan to use the `llama-cpp` service template (the path the Quick Start below takes). Build or download it from [llama.cpp](https://github.com/ggml-org/llama.cpp).
+- **`llama-server`** on `PATH`, if you plan to use the `llama-cpp` service template (the path the Quick Start below takes). Build or download it from [llama.cpp](https://github.com/ggml-org/llama.cpp). Point ananke at a non-`PATH` binary or wrap it in a container via [`daemon.llama_server`](#daemon-settings), the per-service `llama_server` field, or a full [`launcher` template](#custom-llama-server-binary-or-wrapper).
 
 ### Installation
 
@@ -94,6 +94,7 @@ allow_external_management = true # Required if management_listen is non-loopback
 allow_external_services = true   # Allow public access to individual model ports
 data_dir = "./data"
 shutdown_timeout = "120s"         # Max time to wait for services to drain
+llama_server = "/opt/llama-build/llama-server"  # Optional: default llama-server binary for every llama-cpp service (overridable per-service)
 ```
 
 > **Security Note:** Both the Management API (`management_listen`) and per-service reverse proxies (`allow_external_services`) are **unauthenticated**. If you bind them to non-loopback addresses:
@@ -205,6 +206,49 @@ top_p = 0.95
 # mmap = true             # Memory-map the model file
 # jinja = true            # Use Jinja chat templates
 ```
+
+#### Custom llama-server Binary or Wrapper
+
+By default, ananke spawns `llama-server` from `PATH`. Two knobs change that:
+
+- **`llama_server`** — a path to the executable (or wrapper script) that should be invoked in place of `llama-server`. The script must accept llama-server's CLI flags. Settable at the daemon level (default for every llama-cpp service) and per-service (overrides the daemon default).
+- **`launcher`** — a full argv template that replaces the default `llama-server -m <model> ...` invocation. `launcher[0]` is the executable; the remaining entries are substituted with placeholders so a wrapper can see the model path separately from the rest of the flags (useful for container volume mounts).
+
+Placeholders in `launcher` entries:
+
+- `{model}` — the model path. Held back from `{args}` so the wrapper can position it freely.
+- `{name}` — service name.
+- `{port}` — the private loopback port ananke assigned.
+- `{gpu_ids}` — comma-separated NVML index list ananke picked for this service.
+- `{args}` — splat: expands to every llama-server flag ananke would otherwise have emitted (everything except `-m <model>` — `--mmproj`, `-c`, placement-derived `-ngl`/`--tensor-split`/`-ot`, sampling, `--host`, `--port`, `extra_args`, …). Must occupy a launcher entry on its own; `"--foo={args}"` is rejected at config validation.
+
+Example: wrap llama-server in a podman container that needs a volume mount for the model.
+
+```toml
+[[service]]
+name = "qwen3-podman"
+template = "llama-cpp"
+port = 11436
+model = "/srv/models/qwen3-30b.gguf"
+context = 32768
+flash_attn = true
+launcher = ["/opt/podman-llama.sh", "{model}", "{args}"]
+```
+
+The wrapper script receives `/srv/models/qwen3-30b.gguf` as `$1` (for the volume mount) and `$@` after `shift` contains the rest of the llama-server argv — `-c 32768 -fa on -ngl 999 ... --host 127.0.0.1 --port 41000`. With `--network host` the container's llama-server is reachable on that port without further plumbing.
+
+If you only need to point at a non-`PATH` binary (no argv rearranging), set `llama_server` instead:
+
+```toml
+[[service]]
+name = "demo"
+template = "llama-cpp"
+port = 11437
+model = "/srv/models/x.gguf"
+llama_server = "/opt/llama-cuda/llama-server"
+```
+
+`CUDA_VISIBLE_DEVICES` is set on the spawned process from the picked GPU id(s) in both cases. Wrapper scripts that launch a container should forward this so the container only sees the picked GPU — for example, `podman run --device "nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:-all}" ...`.
 
 #### Command Template
 
