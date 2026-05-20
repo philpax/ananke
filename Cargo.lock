@@ -19,7 +19,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "ananke"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "ananke-api",
  "arc-swap",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "ananke-api"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "anankectl"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "ananke-api",
  "clap",
@@ -3680,7 +3680,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xtask"
-version = "0.1.0-rc1"
+version = "0.1.0-rc2"
 dependencies = [
  "cargo_metadata",
  "clap",
