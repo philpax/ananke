@@ -77,6 +77,41 @@ struct TuiMsg {
     /// Live decode/usage timing for assistant messages. Frozen once the
     /// turn finishes. `None` for user/system messages.
     stats: Option<TurnStats>,
+    /// Files pulled in via `@path` references on this message. The full
+    /// contents are appended to the wire message sent to the model (see
+    /// [`TuiMsg::wire_content`]); the history view only shows a collapsed
+    /// summary so the box isn't flooded with file bodies.
+    attachments: Vec<Attachment>,
+}
+
+impl TuiMsg {
+    /// The message body as sent to the model. For user messages carrying
+    /// `@`-file attachments, each file's contents are appended as
+    /// `\n{path}: {contents}` so the model sees the full text even though
+    /// the rendered history only shows a collapsed summary.
+    fn wire_content(&self) -> String {
+        if self.attachments.is_empty() {
+            return self.content.clone();
+        }
+        let mut out = self.content.clone();
+        for att in &self.attachments {
+            out.push('\n');
+            out.push_str(&att.path);
+            out.push_str(": ");
+            out.push_str(&att.contents);
+        }
+        out
+    }
+}
+
+/// A file referenced by `@path` in the user's input and read from disk at
+/// submit time.
+struct Attachment {
+    /// The path as the user referenced it, with the leading `@` stripped.
+    path: String,
+    /// The full file contents. Appended to the wire message and shown
+    /// inline when the user expands attachments.
+    contents: String,
 }
 
 /// Live and final timing data for a single assistant turn.
@@ -174,6 +209,9 @@ struct TuiState {
     first_token: bool,
     error: Option<String>,
     model: String,
+    /// When set, `@file` attachments render their full contents inline
+    /// instead of a one-line summary. Toggled globally with Ctrl+E.
+    expand_attachments: bool,
 }
 
 impl TuiState {
@@ -188,6 +226,7 @@ impl TuiState {
                 streaming: false,
                 cancelled: false,
                 stats: None,
+                attachments: Vec::new(),
             }]
         };
         Self {
@@ -198,13 +237,14 @@ impl TuiState {
             first_token: false,
             error: None,
             model,
+            expand_attachments: false,
         }
     }
 
     /// Push the user's message and an empty streaming assistant message,
     /// and return the wire-format history to send (excluding the empty
     /// assistant we just appended).
-    fn submit(&mut self, content: String) -> Vec<WireMessage> {
+    fn submit(&mut self, content: String, attachments: Vec<Attachment>) -> Vec<WireMessage> {
         self.error = None;
         self.messages.push(TuiMsg {
             role: MsgRole::User,
@@ -213,13 +253,14 @@ impl TuiState {
             streaming: false,
             cancelled: false,
             stats: None,
+            attachments,
         });
         let history = self
             .messages
             .iter()
             .map(|m| WireMessage {
                 role: m.role.wire_role(),
-                content: m.content.clone(),
+                content: m.wire_content(),
             })
             .collect();
         self.messages.push(TuiMsg {
@@ -229,6 +270,7 @@ impl TuiState {
             streaming: true,
             cancelled: false,
             stats: Some(TurnStats::new(Instant::now())),
+            attachments: Vec::new(),
         });
         self.streaming = true;
         self.first_token = false;
@@ -438,6 +480,39 @@ fn construct_openai_url(mgmt: &reqwest::Url, port: u16) -> Result<reqwest::Url, 
     openai.set_host(Some(host)).ok();
     let _ = openai.set_port(Some(port));
     Ok(openai)
+}
+
+/// Extract `@path` file references from the user's input. A reference is a
+/// whitespace-delimited token starting with `@`; the `@` is stripped and
+/// the remainder taken verbatim as a path. Splitting on whitespace keeps
+/// in-word `@` (e.g. an email address like `me@host`) from being treated
+/// as a reference. Duplicate paths are collapsed, preserving first-seen
+/// order.
+fn parse_attachment_paths(input: &str) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for token in input.split_whitespace() {
+        if let Some(path) = token.strip_prefix('@')
+            && !path.is_empty()
+            && !paths.iter().any(|p| p == path)
+        {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
+/// Read every `@path` reference in `input` from disk, in reference order.
+/// Returns an error naming the first path that could not be read so the
+/// turn isn't sent with a missing file silently dropped.
+fn resolve_attachments(input: &str) -> Result<Vec<Attachment>, String> {
+    let mut attachments = Vec::new();
+    for path in parse_attachment_paths(input) {
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => attachments.push(Attachment { path, contents }),
+            Err(e) => return Err(format!("cannot read @{path}: {e}")),
+        }
+    }
+    Ok(attachments)
 }
 
 enum SSEUpdate {
@@ -694,9 +769,19 @@ fn run_tui(
                             if trimmed.is_empty() {
                                 continue;
                             }
-                            let history = state.submit(trimmed.to_string());
-                            if req_tx.blocking_send(history).is_err() {
-                                state.set_error("chat dispatcher closed".to_string());
+                            match resolve_attachments(trimmed) {
+                                Ok(attachments) => {
+                                    let history = state.submit(trimmed.to_string(), attachments);
+                                    if req_tx.blocking_send(history).is_err() {
+                                        state.set_error("chat dispatcher closed".to_string());
+                                    }
+                                }
+                                Err(e) => {
+                                    // Restore the input so the user can fix the
+                                    // bad reference rather than retype the turn.
+                                    state.input = user_input;
+                                    state.error = Some(e);
+                                }
                             }
                         }
                         KeyAction::Cancel => {
@@ -742,6 +827,11 @@ fn handle_key(key: crossterm::event::KeyEvent, state: &mut TuiState) -> Option<K
         KeyCode::Char('d') if ctrl && state.input.is_empty() => Some(KeyAction::Quit),
         // Cancel the in-flight turn while keeping any partial response.
         KeyCode::Char('x') if ctrl && state.streaming => Some(KeyAction::Cancel),
+        // Toggle inline expansion of `@file` attachments in the history.
+        KeyCode::Char('e') if ctrl => {
+            state.expand_attachments = !state.expand_attachments;
+            None
+        }
         // Shift+Enter via terminal modifier reporting (rare).
         KeyCode::Enter if shift => {
             state.input.push('\n');
@@ -811,7 +901,7 @@ fn render(f: &mut Frame, state: &TuiState) {
     render_header(f, chunks[0], state);
     render_messages(f, chunks[1], state);
     render_input(f, chunks[2], state);
-    render_status(f, chunks[3]);
+    render_status(f, chunks[3], state);
 }
 
 fn render_header(f: &mut Frame, area: ratatui::layout::Rect, state: &TuiState) {
@@ -851,7 +941,7 @@ fn render_messages(f: &mut Frame, area: Rect, state: &TuiState) {
         .messages
         .iter()
         .map(|m| {
-            let lines = build_message_lines(m);
+            let lines = build_message_lines(m, state.expand_attachments);
             let rows = visual_line_count(&lines, content_width);
             // u32 -> u16 with headroom for the +2 borders, never overflowing.
             let content = rows.min((u16::MAX - 2) as u32) as u16;
@@ -955,7 +1045,7 @@ fn build_title_line(msg: &TuiMsg, now: Instant) -> Line<'static> {
 /// Build the visual lines for a single message: subdued reasoning first
 /// (if any), then the content, with a streaming spinner on the trailing
 /// line where appropriate.
-fn build_message_lines(msg: &TuiMsg) -> Vec<Line<'static>> {
+fn build_message_lines(msg: &TuiMsg, expand_attachments: bool) -> Vec<Line<'static>> {
     let dim = Style::default().fg(Color::DarkGray);
     let reasoning_label = Style::default()
         .fg(Color::DarkGray)
@@ -993,10 +1083,37 @@ fn build_message_lines(msg: &TuiMsg) -> Vec<Line<'static>> {
         {
             last.spans.push(Span::styled(" ⟳", dim));
         }
-    } else if !msg.streaming && msg.content.is_empty() && msg.reasoning.is_empty() {
+    } else if !msg.streaming
+        && msg.content.is_empty()
+        && msg.reasoning.is_empty()
+        && msg.attachments.is_empty()
+    {
         // System message with empty content (rare); render an empty line so
         // the box isn't zero-height.
         lines.push(Line::from(""));
+    }
+
+    if !msg.attachments.is_empty() {
+        let attach_label = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        // Separate the attachment summary from any typed message body.
+        if !msg.content.is_empty() {
+            lines.push(Line::from(""));
+        }
+        for att in &msg.attachments {
+            let line_count = att.contents.lines().count();
+            let byte_count = att.contents.len();
+            lines.push(Line::from(vec![
+                Span::styled(format!("📎 {}", att.path), attach_label),
+                Span::styled(format!(" ({line_count} lines, {byte_count} bytes)"), dim),
+            ]));
+            if expand_attachments {
+                for raw in att.contents.split('\n') {
+                    lines.push(Line::from(Span::styled(format!("  {raw}"), dim)));
+                }
+            }
+        }
     }
 
     if lines.is_empty() {
@@ -1082,12 +1199,26 @@ fn input_content_rows(input: &str, inner_width: u16) -> u16 {
     total.clamp(INPUT_MIN_CONTENT_ROWS, INPUT_MAX_CONTENT_ROWS)
 }
 
-fn render_status(f: &mut Frame, area: ratatui::layout::Rect) {
-    let line = Line::from(vec![
+fn render_status(f: &mut Frame, area: ratatui::layout::Rect, state: &TuiState) {
+    let mut spans = vec![
         Span::styled("Enter", Style::default().fg(Color::White)),
         Span::raw(" send · "),
         Span::styled("Shift+Enter", Style::default().fg(Color::White)),
         Span::raw(" newline · "),
+        Span::styled("@path", Style::default().fg(Color::White)),
+        Span::raw(" attach · "),
+    ];
+    // Only advertise the expand toggle once there's something to expand.
+    if state.messages.iter().any(|m| !m.attachments.is_empty()) {
+        let label = if state.expand_attachments {
+            " collapse files · "
+        } else {
+            " expand files · "
+        };
+        spans.push(Span::styled("Ctrl+E", Style::default().fg(Color::White)));
+        spans.push(Span::raw(label));
+    }
+    spans.extend([
         Span::styled("↑/↓/wheel", Style::default().fg(Color::White)),
         Span::raw(" scroll · "),
         Span::styled("Ctrl+X", Style::default().fg(Color::White)),
@@ -1096,7 +1227,58 @@ fn render_status(f: &mut Frame, area: ratatui::layout::Rect) {
         Span::raw(" clear · "),
         Span::styled("Ctrl+C", Style::default().fg(Color::White)),
         Span::raw(" quit"),
-    ])
-    .style(Style::default().fg(Color::DarkGray));
+    ]);
+    let line = Line::from(spans).style(Style::default().fg(Color::DarkGray));
     f.render_widget(Paragraph::new(line), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_msg(content: &str, attachments: Vec<Attachment>) -> TuiMsg {
+        TuiMsg {
+            role: MsgRole::User,
+            content: content.to_string(),
+            reasoning: String::new(),
+            streaming: false,
+            cancelled: false,
+            stats: None,
+            attachments,
+        }
+    }
+
+    #[test]
+    fn parses_at_references_and_skips_in_word_at() {
+        let paths = parse_attachment_paths("look at @src/main.rs and @Cargo.toml please");
+        assert_eq!(paths, vec!["src/main.rs", "Cargo.toml"]);
+        // An email-style in-word `@` is not a reference.
+        assert!(parse_attachment_paths("ping me@example.com about it").is_empty());
+        // A lone `@` with no path is ignored.
+        assert!(parse_attachment_paths("just an @ sign").is_empty());
+    }
+
+    #[test]
+    fn deduplicates_paths_preserving_order() {
+        let paths = parse_attachment_paths("@a.txt @b.txt @a.txt");
+        assert_eq!(paths, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn wire_content_appends_attachment_bodies() {
+        let msg = user_msg(
+            "explain @foo.rs",
+            vec![Attachment {
+                path: "foo.rs".to_string(),
+                contents: "fn main() {}".to_string(),
+            }],
+        );
+        assert_eq!(msg.wire_content(), "explain @foo.rs\nfoo.rs: fn main() {}");
+    }
+
+    #[test]
+    fn wire_content_without_attachments_is_unchanged() {
+        let msg = user_msg("just text", Vec::new());
+        assert_eq!(msg.wire_content(), "just text");
+    }
 }
