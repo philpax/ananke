@@ -319,6 +319,50 @@ When this is set:
 
 The rewrite happens after `[service.filters]` is applied, so `openai_proxy.upstream_model` overrides any `filters.set_params.model`. Filters can still strip or set other JSON keys.
 
+#### Embedding Services
+
+By default every service is registered as a chat model. Pooling-only embedding models (Jina v5, BGE, E5, …) opt in by setting `modality = "embedding"` on the service. The proxy itself is endpoint-agnostic — it already routes `POST /v1/embeddings` by `model` field — so the `modality` field is purely a typed declaration: clients filter on it through `/v1/models` and `/api/services`, and the frontend renders a teal `embedding` badge next to the service name (mirroring the purple `vision` badge for llama.cpp services with an `mmproj`).
+
+```toml
+[[service]]
+name = "jina-embeddings-v5-text-small-retrieval-vllm"
+template = "command"
+port = 8211
+modality = "embedding"
+command = ["/srv/vllm/jina_embed_v5_small.sh", "{port}"]
+lifecycle = "on_demand"
+idle_timeout = "30m"
+
+[service.allocation]
+mode = "static"
+vram_gb = 7
+
+[service.devices]
+placement = "gpu-only"
+placement_override = { "gpu:1" = 7000 }
+
+[service.health]
+http = "/health"
+
+[service.openai_proxy]
+upstream_model = "jina-embeddings-v5-text-small-retrieval"
+```
+
+Valid values are `"chat"` (the default) and `"embedding"`; any other string is a hard config error rather than a silent fall-back. The field is elided from `/v1/models` and `/api/services` JSON when it equals `"chat"`, so chat-only deployments see byte-identical wire output to what they shipped before this field landed.
+
+Once registered, hit the endpoint as you would any OpenAI embedding API:
+
+```sh
+curl -s -X POST http://localhost:7070/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "jina-embeddings-v5-text-small-retrieval-vllm",
+    "input": ["the quick brown fox", "lorem ipsum dolor sit amet"]
+  }' | jq '{model, dim: (.data[0].embedding | length), n: (.data | length)}'
+```
+
+ananke ensures the upstream container is started (cold-starting it on first request if needed), rewrites `model` to `upstream_model`, and relays the embedding vectors back unchanged. The static VRAM pledge is held only while the service is running; on-demand services drain back to idle after `idle_timeout` elapses with no traffic.
+
 ### Advanced Service Options
 
 - **Filters**: Modify requests before they reach the model.
