@@ -4,1428 +4,1441 @@
  */
 
 export interface paths {
-    "/api/config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_config"];
-        put: operations["put_config"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+  "/api/config": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/config/validate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["post_validate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["get_config"];
+    put: operations["put_config"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/config/validate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/devices": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_devices"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["post_validate"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/devices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/oneshot": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_oneshots"];
-        put?: never;
-        post: operations["post_oneshot"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["list_devices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/oneshot": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/oneshot/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_oneshot"];
-        put?: never;
-        post?: never;
-        delete: operations["delete_oneshot"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["list_oneshots"];
+    put?: never;
+    post: operations["post_oneshot"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/oneshot/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_services"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["get_oneshot"];
+    put?: never;
+    post?: never;
+    delete: operations["delete_oneshot"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["service_detail"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["list_services"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}/disable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["post_disable"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["service_detail"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}/disable": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}/enable": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["post_enable"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["post_disable"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}/enable": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}/logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["get_logs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["post_enable"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}/logs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}/restart": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["post_restart"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get: operations["get_logs"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}/restart": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["post_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["post_restart"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}/start": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/services/{name}/stop": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["post_stop"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["post_start"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/services/{name}/stop": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/chat/completions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["chat_completions"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["post_stop"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/chat/completions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/completions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["completions"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["chat_completions"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/completions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/embeddings": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["embeddings"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["completions"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/embeddings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_models"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    post: operations["embeddings"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/models": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    get: operations["list_models"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: {
-        /**
-         * @description `{"error": {"code", "message", "type"}}`. The shared wire DTO; the
-         *     daemon-side `ApiErrorCode` enum is the source of truth for which
-         *     `code`, `message`, and `type` go together.
-         */
-        ApiError: {
-            /** @description The nested body with the actual error metadata. */
-            error: components["schemas"]["ApiErrorBody"];
-        };
-        /** @description Inner body of [`ApiError`]. */
-        ApiErrorBody: {
-            /** @description Short slug identifying the error class. */
-            code: string;
-            /** @description Human-readable error message. */
-            message: string;
-            /**
-             * @description OpenAI's taxonomy — `"invalid_request_error"` for things the
-             *     client could have avoided, `"server_error"` for daemon-side
-             *     problems. Previously hardcoded to `"server_error"` everywhere;
-             *     now derived from the daemon's `ApiErrorCode` variant.
-             */
-            type: string;
-        };
-        ChatCompletionEnvelope: unknown & {
-            model: string;
-        };
-        CompletionEnvelope: unknown & {
-            model: string;
-        };
-        /** @description `GET /api/config` response body. */
-        ConfigResponse: {
-            /** @description Raw TOML content. */
-            content: string;
-            /** @description SHA-256 of `content`, base64-encoded; used as an `If-Match` value on PUT. */
-            hash: string;
-        };
-        /** @description `POST /api/config/validate` request body. */
-        ConfigValidateRequest: {
-            /** @description Raw TOML to validate without persisting. */
-            content: string;
-        };
-        /** @description `POST /api/config/validate` response body. */
-        ConfigValidateResponse: {
-            /** @description Structured validation errors (span-annotated where possible). */
-            errors: components["schemas"]["ValidationError"][];
-            /** @description `true` iff no errors were found. */
-            valid: boolean;
-        };
-        /** @description One reservation held against a device. */
-        DeviceReservation: {
-            /**
-             * Format: int64
-             * @description Bytes reserved.
-             */
-            bytes: number;
-            /** @description Whether the reservation is elastic (dynamic service borrowing). */
-            elastic: boolean;
-            /** @description Service holding the reservation. */
-            service: string;
-        };
-        /** @description One entry in `GET /api/devices`. */
-        DeviceSummary: {
-            /**
-             * Format: int64
-             * @description Currently free bytes.
-             */
-            free_bytes: number;
-            /** @description Device id string, e.g. `"gpu:0"` or `"cpu"`. */
-            id: string;
-            /** @description Human-readable device name. */
-            name: string;
-            /** @description Per-service reservation breakdown. */
-            reservations: components["schemas"]["DeviceReservation"][];
-            /**
-             * Format: int64
-             * @description Total byte capacity.
-             */
-            total_bytes: number;
-        };
-        /** @description `POST /api/services/{name}/disable` response body. */
-        DisableResponse: {
-            /** @enum {string} */
-            status: "disabled";
-        } | {
-            /** @enum {string} */
-            status: "already_disabled";
-        };
-        EmbeddingEnvelope: unknown & {
-            model: string;
-        };
-        /** @description `POST /api/services/{name}/enable` response body. */
-        EnableResponse: {
-            /** @enum {string} */
-            status: "enabled";
-        } | {
-            /** @enum {string} */
-            status: "not_disabled";
-        } | {
-            /** @enum {string} */
-            status: "already_enabled";
-        };
-        /**
-         * @description Estimator output projected to the wire. Carries the components a
-         *     reader needs to answer "how much VRAM will this service take?"
-         *     without having to re-derive any of them client-side.
-         */
-        EstimateSummary: {
-            /**
-             * Format: int64
-             * @description Compute-buffer reservation per active device, in bytes.
-             */
-            compute_buffer_bytes_per_device: number;
-            /**
-             * Format: int32
-             * @description Configured context window the estimate is sized against.
-             */
-            configured_context: number;
-            /**
-             * Format: int64
-             * @description `kv_per_token × configured_context`. Precomputed so the
-             *     frontend can render the total directly.
-             */
-            kv_bytes_for_context: number;
-            /**
-             * Format: int64
-             * @description KV cache bytes per context token. Zero for SSM/Mamba
-             *     architectures with no KV cache.
-             */
-            kv_per_token: number;
-            /**
-             * Format: int64
-             * @description Static weight bytes (including mmproj if configured).
-             */
-            weights_bytes: number;
-        };
-        /** @description One captured stdout/stderr line. */
-        LogLine: {
-            /** @description The line content (sans trailing newline). */
-            line: string;
-            /**
-             * Format: int64
-             * @description Owning run id.
-             */
-            run_id: number;
-            /**
-             * Format: int64
-             * @description Sequence number within `(service_id, run_id)`, monotonic per run.
-             */
-            seq: number;
-            /** @description `"stdout"` or `"stderr"`. */
-            stream: string;
-            /**
-             * Format: int64
-             * @description Millisecond UNIX timestamp the line was received.
-             */
-            timestamp_ms: number;
-        };
-        /** @description Frame sent over `/api/services/{name}/logs/stream`. */
-        LogStreamMessage: (components["schemas"]["LogLine"] & {
-            /** @enum {string} */
-            type: "line";
-        }) | {
-            /**
-             * Format: int64
-             * @description Number of dropped frames.
-             */
-            dropped: number;
-            /** @enum {string} */
-            type: "overflow";
-        };
-        /** @description `GET /api/services/{name}/logs` response body. */
-        LogsResponse: {
-            /** @description Newest-first page of log lines. */
-            logs: components["schemas"]["LogLine"][];
-            /** @description Opaque cursor for paging further back; `None` when exhausted. */
-            next_cursor?: string | null;
-        };
-        /**
-         * @description What kind of model the service exposes through the OpenAI-compatible
-         *     API. Drives badge rendering in the frontend and lets clients (Discord
-         *     rotation, RAG indexers) filter the model list by purpose without
-         *     parsing `metadata.*` strings.
-         *
-         *     Defaults to `Chat` so existing configs and JSON payloads stay
-         *     byte-identical — the field is elided from the wire when it's `Chat`.
-         * @enum {string}
-         */
-        Modality: "chat" | "embedding";
-        /**
-         * @description GGUF-derived facts about a model file. Read once per service per
-         *     daemon run and cached; the file isn't re-parsed on every detail
-         *     poll.
-         */
-        ModelInfo: {
-            /**
-             * @description `general.architecture` from the GGUF (`"qwen2"`, `"llama"`,
-             *     `"qwen3moe"`, …).
-             */
-            architecture: string;
-            /**
-             * Format: int32
-             * @description Layer count exposed by the architecture's `{arch}.block_count`
-             *     metadata key, when present.
-             */
-            block_count?: number | null;
-            /**
-             * @description File name (basename of shard 0). Useful for the UI to show the
-             *     underlying filename without the full path.
-             */
-            file_name: string;
-            /**
-             * @description `true` when the service has a configured `mmproj` GGUF — the
-             *     standard signal for vision / multimodal support.
-             */
-            has_mmproj: boolean;
-            /**
-             * @description `general.license` if declared (`"apache-2.0"`, `"llama3.3"`,
-             *     `"gemma"`, …). Surfaced so operators can see the licence
-             *     without leaving the dashboard.
-             */
-            license?: string | null;
-            /**
-             * @description Friendly name declared in `general.name`, when the publisher
-             *     set one. Typically the upstream model identifier ("Qwen3 32B",
-             *     "Llama 3.3 70B Instruct", …) rather than ananke's service
-             *     name. Absent for hand-built GGUFs that left the field blank.
-             */
-            model_name?: string | null;
-            /**
-             * Format: int64
-             * @description `general.parameter_count` if declared by the publisher. Modern
-             *     converter tools (Unsloth, bartowski's repacks, …) write this;
-             *     older GGUFs may not. The field is the model's *parameter*
-             *     count, not the on-disk byte size — quantisation makes the two
-             *     diverge by a large factor.
-             */
-            parameter_count?: number | null;
-            /**
-             * Format: int32
-             * @description Number of shards discovered. 1 for a single-file GGUF.
-             */
-            shard_count: number;
-            /**
-             * Format: int64
-             * @description Sum of every tensor's byte size across every shard. The
-             *     reference number when sizing the model on disk.
-             */
-            total_tensor_bytes: number;
-            /**
-             * Format: int32
-             * @description The model's *trained* context window, read from
-             *     `{arch}.context_length`. The service's configured context may
-             *     be lower.
-             */
-            trained_context_length?: number | null;
-        };
-        ModelListing: {
-            /**
-             * @description Passthrough entries from `[[service]] metadata.*`. Non-standard
-             *     OpenAI field, elided when empty; strict OpenAI clients ignore it.
-             */
-            ananke_metadata?: Record<string, never>;
-            /** Format: int64 */
-            created: number;
-            id: string;
-            /**
-             * @description What kind of OpenAI endpoint this model serves. Non-standard
-             *     OpenAI field, elided when [`Modality::Chat`] (the default), so
-             *     strict OpenAI clients see exactly what they saw before this
-             *     field landed; embedding clients can filter on it.
-             */
-            modality?: components["schemas"]["Modality"];
-            object: string;
-            owned_by: string;
-        };
-        ModelsResponse: {
-            data: components["schemas"]["ModelListing"][];
-            object: string;
-        };
-        /** @description Allocation-mode knobs for [`OneshotRequest`]. */
-        OneshotAllocation: {
-            /**
-             * Format: float
-             * @description Dynamic max.
-             */
-            max_vram_gb?: number | null;
-            /**
-             * Format: float
-             * @description Dynamic min.
-             */
-            min_vram_gb?: number | null;
-            /** @description `"static"` or `"dynamic"`; `None` for llama-cpp template. */
-            mode?: string | null;
-            /**
-             * Format: float
-             * @description Static allocation amount.
-             */
-            vram_gb?: number | null;
-        };
-        /** @description Device-placement hints for [`OneshotRequest`]. */
-        OneshotDevices: {
-            /** @description `"gpu-only"` / `"cpu-only"` / `"hybrid"`. */
-            placement?: string | null;
-        };
-        /** @description `POST /api/oneshot` request body. */
-        OneshotRequest: {
-            /** @description Allocation mode + sizes. */
-            allocation: components["schemas"]["OneshotAllocation"];
-            /** @description Command + args for the `"command"` template. */
-            command?: string[] | null;
-            devices?: null | components["schemas"]["OneshotDevices"];
-            /** @description Free-form metadata passed through to responses. */
-            metadata?: {
-                [key: string]: unknown;
-            };
-            /** @description Optional human-meaningful name; daemon auto-generates if absent. */
-            name?: string | null;
-            /**
-             * Format: int32
-             * @description Explicit port request; `None` means daemon picks from the pool.
-             */
-            port?: number | null;
-            /**
-             * Format: int32
-             * @description Eviction priority.
-             */
-            priority?: number | null;
-            /** @description `"llama-cpp"` or `"command"`. */
-            template: string;
-            /** @description Time-to-live duration string (`"2h"`, `"30m"`). */
-            ttl?: string | null;
-            /** @description Working directory for the spawned child. */
-            workdir?: string | null;
-        };
-        /** @description `POST /api/oneshot` response body. */
-        OneshotResponse: {
-            /** @description ULID identifier (prefixed `oneshot_`). */
-            id: string;
-            /** @description Path component suitable for appending to `ANANKE_ENDPOINT` to open the log stream. */
-            logs_url: string;
-            /** @description Assigned name. */
-            name: string;
-            /**
-             * Format: int32
-             * @description Bound port.
-             */
-            port: number;
-        };
-        /** @description `GET /api/oneshot/{id}` response body. */
-        OneshotStatus: {
-            /**
-             * Format: int64
-             * @description End timestamp, if terminal.
-             */
-            ended_at_ms?: number | null;
-            /**
-             * Format: int32
-             * @description Exit code when the child terminated with one.
-             */
-            exit_code?: number | null;
-            /** @description ULID id. */
-            id: string;
-            /** @description Path component for the WS log-stream endpoint. */
-            logs_url: string;
-            /** @description Name. */
-            name: string;
-            /**
-             * Format: int32
-             * @description Port.
-             */
-            port: number;
-            /**
-             * Format: int64
-             * @description Start timestamp, if reached Running.
-             */
-            started_at_ms?: number | null;
-            /** @description Current state (`"pending"`, `"running"`, `"ended"`, `"evicted"`, etc.). */
-            state: string;
-            /**
-             * Format: int64
-             * @description Submission timestamp.
-             */
-            submitted_at_ms: number;
-        };
-        /** @description `GET /api/services/{name}` response body. */
-        ServiceDetail: {
-            /**
-             * @description Passthrough entries from `[[service]] metadata.*`. See
-             *     [`ServiceSummary::ananke_metadata`].
-             */
-            ananke_metadata?: Record<string, never>;
-            /**
-             * @description What pledge the service is currently holding on each device.
-             *     Empty when idle. Keys are slot strings (`"cpu"`, `"gpu:0"`, …),
-             *     values are MiB.
-             */
-            current_allocation: {
-                [key: string]: number;
-            };
-            /** @description Placeholder for elastic-borrower tracking. */
-            elastic_borrower?: string | null;
-            estimate?: null | components["schemas"]["EstimateSummary"];
-            /**
-             * Format: int64
-             * @description Idle-before-drain timeout.
-             */
-            idle_timeout_ms: number;
-            /** @description `"persistent"` or `"ondemand"`. */
-            lifecycle: string;
-            /**
-             * @description What kind of OpenAI endpoint the service serves. See
-             *     [`ServiceSummary::modality`] for the rendering rule.
-             */
-            modality?: components["schemas"]["Modality"];
-            model_info?: null | components["schemas"]["ModelInfo"];
-            /** @description Service name. */
-            name: string;
-            /**
-             * Format: int64
-             * @description Observed VRAM peak across the service's lifetime.
-             */
-            observed_peak_bytes: number;
-            /**
-             * Format: int32
-             * @description Child PID if any.
-             */
-            pid?: number | null;
-            /** @description Manual placement override, keyed by device slot string. */
-            placement_override: {
-                [key: string]: number;
-            };
-            /**
-             * Format: int32
-             * @description Public port.
-             */
-            port: number;
-            /**
-             * Format: int32
-             * @description Eviction priority.
-             */
-            priority: number;
-            /**
-             * Format: int32
-             * @description Private (upstream) port.
-             */
-            private_port: number;
-            /** @description Most recent log lines for a frontend's first-paint context. */
-            recent_logs: components["schemas"]["LogLine"][];
-            /**
-             * Format: float
-             * @description Rolling estimator correction factor.
-             */
-            rolling_mean?: number | null;
-            /**
-             * Format: int64
-             * @description Sample count backing the rolling mean.
-             */
-            rolling_samples: number;
-            /**
-             * Format: int64
-             * @description Active run id if any.
-             */
-            run_id?: number | null;
-            /** @description Current state name. */
-            state: string;
-            /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
-            template: string;
-        };
-        /** @description One entry in `GET /api/services`. */
-        ServiceSummary: {
-            /**
-             * @description Passthrough entries from `[[service]] metadata.*`. Empty when
-             *     none were set; the field is elided from JSON when the map is
-             *     empty so existing consumers see no change unless a service opts
-             *     in to metadata.
-             */
-            ananke_metadata?: Record<string, never>;
-            /** @description Placeholder for elastic-borrower tracking (future work). */
-            elastic_borrower?: string | null;
-            /**
-             * @description `true` when the service's `[[service.llama_cpp]]` config has a
-             *     `mmproj` entry — the standard signal that it supports vision /
-             *     multimodal input. `None` for non-llama-cpp services. Cheap
-             *     enough (config-only check) to ship on every list entry.
-             */
-            has_mmproj?: boolean | null;
-            /** @description `"persistent"` or `"ondemand"`. */
-            lifecycle: string;
-            /**
-             * @description What kind of OpenAI endpoint the service serves. Elided from
-             *     JSON when [`Modality::Chat`] (the default) so existing chat
-             *     services emit unchanged wire bytes; embedding services explicitly
-             *     declare `modality = "embedding"` in their `[[service]]` block.
-             */
-            modality?: components["schemas"]["Modality"];
-            /** @description Service name (matches `[[service]]` table in config). */
-            name: string;
-            /**
-             * Format: int32
-             * @description Child PID if currently running.
-             */
-            pid?: number | null;
-            /**
-             * Format: int32
-             * @description Public port the proxy listens on.
-             */
-            port: number;
-            /**
-             * Format: int32
-             * @description Eviction priority.
-             */
-            priority: number;
-            /**
-             * Format: int64
-             * @description Active run id if currently running.
-             */
-            run_id?: number | null;
-            /** @description State like `"idle"`, `"running"`, `"disabled_user_disabled"`. */
-            state: string;
-        };
-        /** @description Response from `GET /api/services`. */
-        ServicesResponse: {
-            /**
-             * Format: int32
-             * @description Port the OpenAI-compatible API is listening on.
-             */
-            openai_api_port: number;
-            /** @description Registered services. */
-            services: components["schemas"]["ServiceSummary"][];
-        };
-        /** @description `POST /api/services/{name}/start` response body. */
-        StartResponse: {
-            /** @enum {string} */
-            status: "already_running";
-        } | {
-            /** Format: int64 */
-            run_id: number;
-            /** @enum {string} */
-            status: "started";
-        } | {
-            /** @enum {string} */
-            status: "queue_full";
-        } | {
-            error: components["schemas"]["ApiErrorBody"];
-            /** @enum {string} */
-            status: "unavailable";
-        };
-        /** @description `POST /api/services/{name}/stop` response body. */
-        StopResponse: {
-            /** @enum {string} */
-            status: "not_running";
-        } | {
-            /** @enum {string} */
-            status: "drained";
-        };
-        /** @description One validation error from the config parser. */
-        ValidationError: {
-            /**
-             * Format: int32
-             * @description 1-based column number in the TOML source.
-             */
-            column: number;
-            /**
-             * Format: int32
-             * @description 1-based line number in the TOML source.
-             */
-            line: number;
-            /** @description Human-readable message. */
-            message: string;
-        };
+  schemas: {
+    /**
+     * @description `{"error": {"code", "message", "type"}}`. The shared wire DTO; the
+     *     daemon-side `ApiErrorCode` enum is the source of truth for which
+     *     `code`, `message`, and `type` go together.
+     */
+    ApiError: {
+      /** @description The nested body with the actual error metadata. */
+      error: components["schemas"]["ApiErrorBody"];
     };
-    responses: never;
-    parameters: never;
-    requestBodies: never;
-    headers: never;
-    pathItems: never;
+    /** @description Inner body of [`ApiError`]. */
+    ApiErrorBody: {
+      /** @description Short slug identifying the error class. */
+      code: string;
+      /** @description Human-readable error message. */
+      message: string;
+      /**
+       * @description OpenAI's taxonomy — `"invalid_request_error"` for things the
+       *     client could have avoided, `"server_error"` for daemon-side
+       *     problems. Previously hardcoded to `"server_error"` everywhere;
+       *     now derived from the daemon's `ApiErrorCode` variant.
+       */
+      type: string;
+    };
+    ChatCompletionEnvelope: unknown & {
+      model: string;
+    };
+    CompletionEnvelope: unknown & {
+      model: string;
+    };
+    /** @description `GET /api/config` response body. */
+    ConfigResponse: {
+      /** @description Raw TOML content. */
+      content: string;
+      /** @description SHA-256 of `content`, base64-encoded; used as an `If-Match` value on PUT. */
+      hash: string;
+    };
+    /** @description `POST /api/config/validate` request body. */
+    ConfigValidateRequest: {
+      /** @description Raw TOML to validate without persisting. */
+      content: string;
+    };
+    /** @description `POST /api/config/validate` response body. */
+    ConfigValidateResponse: {
+      /** @description Structured validation errors (span-annotated where possible). */
+      errors: components["schemas"]["ValidationError"][];
+      /** @description `true` iff no errors were found. */
+      valid: boolean;
+    };
+    /** @description One reservation held against a device. */
+    DeviceReservation: {
+      /**
+       * Format: int64
+       * @description Bytes reserved.
+       */
+      bytes: number;
+      /** @description Whether the reservation is elastic (dynamic service borrowing). */
+      elastic: boolean;
+      /** @description Service holding the reservation. */
+      service: string;
+    };
+    /** @description One entry in `GET /api/devices`. */
+    DeviceSummary: {
+      /**
+       * Format: int64
+       * @description Currently free bytes.
+       */
+      free_bytes: number;
+      /** @description Device id string, e.g. `"gpu:0"` or `"cpu"`. */
+      id: string;
+      /** @description Human-readable device name. */
+      name: string;
+      /** @description Per-service reservation breakdown. */
+      reservations: components["schemas"]["DeviceReservation"][];
+      /**
+       * Format: int64
+       * @description Total byte capacity.
+       */
+      total_bytes: number;
+    };
+    /** @description `POST /api/services/{name}/disable` response body. */
+    DisableResponse:
+      | {
+          /** @enum {string} */
+          status: "disabled";
+        }
+      | {
+          /** @enum {string} */
+          status: "already_disabled";
+        };
+    EmbeddingEnvelope: unknown & {
+      model: string;
+    };
+    /** @description `POST /api/services/{name}/enable` response body. */
+    EnableResponse:
+      | {
+          /** @enum {string} */
+          status: "enabled";
+        }
+      | {
+          /** @enum {string} */
+          status: "not_disabled";
+        }
+      | {
+          /** @enum {string} */
+          status: "already_enabled";
+        };
+    /**
+     * @description Estimator output projected to the wire. Carries the components a
+     *     reader needs to answer "how much VRAM will this service take?"
+     *     without having to re-derive any of them client-side.
+     */
+    EstimateSummary: {
+      /**
+       * Format: int64
+       * @description Compute-buffer reservation per active device, in bytes.
+       */
+      compute_buffer_bytes_per_device: number;
+      /**
+       * Format: int32
+       * @description Configured context window the estimate is sized against.
+       */
+      configured_context: number;
+      /**
+       * Format: int64
+       * @description `kv_per_token × configured_context`. Precomputed so the
+       *     frontend can render the total directly.
+       */
+      kv_bytes_for_context: number;
+      /**
+       * Format: int64
+       * @description KV cache bytes per context token. Zero for SSM/Mamba
+       *     architectures with no KV cache.
+       */
+      kv_per_token: number;
+      /**
+       * Format: int64
+       * @description Static weight bytes (including mmproj if configured).
+       */
+      weights_bytes: number;
+    };
+    /** @description One captured stdout/stderr line. */
+    LogLine: {
+      /** @description The line content (sans trailing newline). */
+      line: string;
+      /**
+       * Format: int64
+       * @description Owning run id.
+       */
+      run_id: number;
+      /**
+       * Format: int64
+       * @description Sequence number within `(service_id, run_id)`, monotonic per run.
+       */
+      seq: number;
+      /** @description `"stdout"` or `"stderr"`. */
+      stream: string;
+      /**
+       * Format: int64
+       * @description Millisecond UNIX timestamp the line was received.
+       */
+      timestamp_ms: number;
+    };
+    /** @description Frame sent over `/api/services/{name}/logs/stream`. */
+    LogStreamMessage:
+      | (components["schemas"]["LogLine"] & {
+          /** @enum {string} */
+          type: "line";
+        })
+      | {
+          /**
+           * Format: int64
+           * @description Number of dropped frames.
+           */
+          dropped: number;
+          /** @enum {string} */
+          type: "overflow";
+        };
+    /** @description `GET /api/services/{name}/logs` response body. */
+    LogsResponse: {
+      /** @description Newest-first page of log lines. */
+      logs: components["schemas"]["LogLine"][];
+      /** @description Opaque cursor for paging further back; `None` when exhausted. */
+      next_cursor?: string | null;
+    };
+    /**
+     * @description What kind of model the service exposes through the OpenAI-compatible
+     *     API. Drives badge rendering in the frontend and lets clients (Discord
+     *     rotation, RAG indexers) filter the model list by purpose without
+     *     parsing `metadata.*` strings.
+     *
+     *     Defaults to `Chat` so existing configs and JSON payloads stay
+     *     byte-identical — the field is elided from the wire when it's `Chat`.
+     * @enum {string}
+     */
+    Modality: "chat" | "embedding";
+    /**
+     * @description GGUF-derived facts about a model file. Read once per service per
+     *     daemon run and cached; the file isn't re-parsed on every detail
+     *     poll.
+     */
+    ModelInfo: {
+      /**
+       * @description `general.architecture` from the GGUF (`"qwen2"`, `"llama"`,
+       *     `"qwen3moe"`, …).
+       */
+      architecture: string;
+      /**
+       * Format: int32
+       * @description Layer count exposed by the architecture's `{arch}.block_count`
+       *     metadata key, when present.
+       */
+      block_count?: number | null;
+      /**
+       * @description File name (basename of shard 0). Useful for the UI to show the
+       *     underlying filename without the full path.
+       */
+      file_name: string;
+      /**
+       * @description `true` when the service has a configured `mmproj` GGUF — the
+       *     standard signal for vision / multimodal support.
+       */
+      has_mmproj: boolean;
+      /**
+       * @description `general.license` if declared (`"apache-2.0"`, `"llama3.3"`,
+       *     `"gemma"`, …). Surfaced so operators can see the licence
+       *     without leaving the dashboard.
+       */
+      license?: string | null;
+      /**
+       * @description Friendly name declared in `general.name`, when the publisher
+       *     set one. Typically the upstream model identifier ("Qwen3 32B",
+       *     "Llama 3.3 70B Instruct", …) rather than ananke's service
+       *     name. Absent for hand-built GGUFs that left the field blank.
+       */
+      model_name?: string | null;
+      /**
+       * Format: int64
+       * @description `general.parameter_count` if declared by the publisher. Modern
+       *     converter tools (Unsloth, bartowski's repacks, …) write this;
+       *     older GGUFs may not. The field is the model's *parameter*
+       *     count, not the on-disk byte size — quantisation makes the two
+       *     diverge by a large factor.
+       */
+      parameter_count?: number | null;
+      /**
+       * Format: int32
+       * @description Number of shards discovered. 1 for a single-file GGUF.
+       */
+      shard_count: number;
+      /**
+       * Format: int64
+       * @description Sum of every tensor's byte size across every shard. The
+       *     reference number when sizing the model on disk.
+       */
+      total_tensor_bytes: number;
+      /**
+       * Format: int32
+       * @description The model's *trained* context window, read from
+       *     `{arch}.context_length`. The service's configured context may
+       *     be lower.
+       */
+      trained_context_length?: number | null;
+    };
+    ModelListing: {
+      /**
+       * @description Passthrough entries from `[[service]] metadata.*`. Non-standard
+       *     OpenAI field, elided when empty; strict OpenAI clients ignore it.
+       */
+      ananke_metadata?: Record<string, never>;
+      /** Format: int64 */
+      created: number;
+      id: string;
+      /**
+       * @description What kind of OpenAI endpoint this model serves. Non-standard
+       *     OpenAI field, elided when [`Modality::Chat`] (the default), so
+       *     strict OpenAI clients see exactly what they saw before this
+       *     field landed; embedding clients can filter on it.
+       */
+      modality?: components["schemas"]["Modality"];
+      object: string;
+      owned_by: string;
+    };
+    ModelsResponse: {
+      data: components["schemas"]["ModelListing"][];
+      object: string;
+    };
+    /** @description Allocation-mode knobs for [`OneshotRequest`]. */
+    OneshotAllocation: {
+      /**
+       * Format: float
+       * @description Dynamic max.
+       */
+      max_vram_gb?: number | null;
+      /**
+       * Format: float
+       * @description Dynamic min.
+       */
+      min_vram_gb?: number | null;
+      /** @description `"static"` or `"dynamic"`; `None` for llama-cpp template. */
+      mode?: string | null;
+      /**
+       * Format: float
+       * @description Static allocation amount.
+       */
+      vram_gb?: number | null;
+    };
+    /** @description Device-placement hints for [`OneshotRequest`]. */
+    OneshotDevices: {
+      /** @description `"gpu-only"` / `"cpu-only"` / `"hybrid"`. */
+      placement?: string | null;
+    };
+    /** @description `POST /api/oneshot` request body. */
+    OneshotRequest: {
+      /** @description Allocation mode + sizes. */
+      allocation: components["schemas"]["OneshotAllocation"];
+      /** @description Command + args for the `"command"` template. */
+      command?: string[] | null;
+      devices?: null | components["schemas"]["OneshotDevices"];
+      /** @description Free-form metadata passed through to responses. */
+      metadata?: {
+        [key: string]: unknown;
+      };
+      /** @description Optional human-meaningful name; daemon auto-generates if absent. */
+      name?: string | null;
+      /**
+       * Format: int32
+       * @description Explicit port request; `None` means daemon picks from the pool.
+       */
+      port?: number | null;
+      /**
+       * Format: int32
+       * @description Eviction priority.
+       */
+      priority?: number | null;
+      /** @description `"llama-cpp"` or `"command"`. */
+      template: string;
+      /** @description Time-to-live duration string (`"2h"`, `"30m"`). */
+      ttl?: string | null;
+      /** @description Working directory for the spawned child. */
+      workdir?: string | null;
+    };
+    /** @description `POST /api/oneshot` response body. */
+    OneshotResponse: {
+      /** @description ULID identifier (prefixed `oneshot_`). */
+      id: string;
+      /** @description Path component suitable for appending to `ANANKE_ENDPOINT` to open the log stream. */
+      logs_url: string;
+      /** @description Assigned name. */
+      name: string;
+      /**
+       * Format: int32
+       * @description Bound port.
+       */
+      port: number;
+    };
+    /** @description `GET /api/oneshot/{id}` response body. */
+    OneshotStatus: {
+      /**
+       * Format: int64
+       * @description End timestamp, if terminal.
+       */
+      ended_at_ms?: number | null;
+      /**
+       * Format: int32
+       * @description Exit code when the child terminated with one.
+       */
+      exit_code?: number | null;
+      /** @description ULID id. */
+      id: string;
+      /** @description Path component for the WS log-stream endpoint. */
+      logs_url: string;
+      /** @description Name. */
+      name: string;
+      /**
+       * Format: int32
+       * @description Port.
+       */
+      port: number;
+      /**
+       * Format: int64
+       * @description Start timestamp, if reached Running.
+       */
+      started_at_ms?: number | null;
+      /** @description Current state (`"pending"`, `"running"`, `"ended"`, `"evicted"`, etc.). */
+      state: string;
+      /**
+       * Format: int64
+       * @description Submission timestamp.
+       */
+      submitted_at_ms: number;
+    };
+    /** @description `GET /api/services/{name}` response body. */
+    ServiceDetail: {
+      /**
+       * @description Passthrough entries from `[[service]] metadata.*`. See
+       *     [`ServiceSummary::ananke_metadata`].
+       */
+      ananke_metadata?: Record<string, never>;
+      /**
+       * @description What pledge the service is currently holding on each device.
+       *     Empty when idle. Keys are slot strings (`"cpu"`, `"gpu:0"`, …),
+       *     values are MiB.
+       */
+      current_allocation: {
+        [key: string]: number;
+      };
+      /** @description Placeholder for elastic-borrower tracking. */
+      elastic_borrower?: string | null;
+      estimate?: null | components["schemas"]["EstimateSummary"];
+      /**
+       * Format: int64
+       * @description Idle-before-drain timeout.
+       */
+      idle_timeout_ms: number;
+      /** @description `"persistent"` or `"ondemand"`. */
+      lifecycle: string;
+      /**
+       * @description What kind of OpenAI endpoint the service serves. See
+       *     [`ServiceSummary::modality`] for the rendering rule.
+       */
+      modality?: components["schemas"]["Modality"];
+      model_info?: null | components["schemas"]["ModelInfo"];
+      /** @description Service name. */
+      name: string;
+      /**
+       * Format: int64
+       * @description Observed VRAM peak across the service's lifetime.
+       */
+      observed_peak_bytes: number;
+      /**
+       * Format: int32
+       * @description Child PID if any.
+       */
+      pid?: number | null;
+      /** @description Manual placement override, keyed by device slot string. */
+      placement_override: {
+        [key: string]: number;
+      };
+      /**
+       * Format: int32
+       * @description Public port.
+       */
+      port: number;
+      /**
+       * Format: int32
+       * @description Eviction priority.
+       */
+      priority: number;
+      /**
+       * Format: int32
+       * @description Private (upstream) port.
+       */
+      private_port: number;
+      /** @description Most recent log lines for a frontend's first-paint context. */
+      recent_logs: components["schemas"]["LogLine"][];
+      /**
+       * Format: float
+       * @description Rolling estimator correction factor.
+       */
+      rolling_mean?: number | null;
+      /**
+       * Format: int64
+       * @description Sample count backing the rolling mean.
+       */
+      rolling_samples: number;
+      /**
+       * Format: int64
+       * @description Active run id if any.
+       */
+      run_id?: number | null;
+      /** @description Current state name. */
+      state: string;
+      /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
+      template: string;
+    };
+    /** @description One entry in `GET /api/services`. */
+    ServiceSummary: {
+      /**
+       * @description Passthrough entries from `[[service]] metadata.*`. Empty when
+       *     none were set; the field is elided from JSON when the map is
+       *     empty so existing consumers see no change unless a service opts
+       *     in to metadata.
+       */
+      ananke_metadata?: Record<string, never>;
+      /** @description Placeholder for elastic-borrower tracking (future work). */
+      elastic_borrower?: string | null;
+      /**
+       * @description `true` when the service's `[[service.llama_cpp]]` config has a
+       *     `mmproj` entry — the standard signal that it supports vision /
+       *     multimodal input. `None` for non-llama-cpp services. Cheap
+       *     enough (config-only check) to ship on every list entry.
+       */
+      has_mmproj?: boolean | null;
+      /** @description `"persistent"` or `"ondemand"`. */
+      lifecycle: string;
+      /**
+       * @description What kind of OpenAI endpoint the service serves. Elided from
+       *     JSON when [`Modality::Chat`] (the default) so existing chat
+       *     services emit unchanged wire bytes; embedding services explicitly
+       *     declare `modality = "embedding"` in their `[[service]]` block.
+       */
+      modality?: components["schemas"]["Modality"];
+      /** @description Service name (matches `[[service]]` table in config). */
+      name: string;
+      /**
+       * Format: int32
+       * @description Child PID if currently running.
+       */
+      pid?: number | null;
+      /**
+       * Format: int32
+       * @description Public port the proxy listens on.
+       */
+      port: number;
+      /**
+       * Format: int32
+       * @description Eviction priority.
+       */
+      priority: number;
+      /**
+       * Format: int64
+       * @description Active run id if currently running.
+       */
+      run_id?: number | null;
+      /** @description State like `"idle"`, `"running"`, `"disabled_user_disabled"`. */
+      state: string;
+    };
+    /** @description Response from `GET /api/services`. */
+    ServicesResponse: {
+      /**
+       * Format: int32
+       * @description Port the OpenAI-compatible API is listening on.
+       */
+      openai_api_port: number;
+      /** @description Registered services. */
+      services: components["schemas"]["ServiceSummary"][];
+    };
+    /** @description `POST /api/services/{name}/start` response body. */
+    StartResponse:
+      | {
+          /** @enum {string} */
+          status: "already_running";
+        }
+      | {
+          /** Format: int64 */
+          run_id: number;
+          /** @enum {string} */
+          status: "started";
+        }
+      | {
+          /** @enum {string} */
+          status: "queue_full";
+        }
+      | {
+          error: components["schemas"]["ApiErrorBody"];
+          /** @enum {string} */
+          status: "unavailable";
+        };
+    /** @description `POST /api/services/{name}/stop` response body. */
+    StopResponse:
+      | {
+          /** @enum {string} */
+          status: "not_running";
+        }
+      | {
+          /** @enum {string} */
+          status: "drained";
+        };
+    /** @description One validation error from the config parser. */
+    ValidationError: {
+      /**
+       * Format: int32
+       * @description 1-based column number in the TOML source.
+       */
+      column: number;
+      /**
+       * Format: int32
+       * @description 1-based line number in the TOML source.
+       */
+      line: number;
+      /** @description Human-readable message. */
+      message: string;
+    };
+  };
+  responses: never;
+  parameters: never;
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    get_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigResponse"];
-                };
-            };
-        };
+  get_config: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    put_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        /** @description Raw TOML config */
-        requestBody: {
-            content: {
-                "text/plain": string;
-            };
+        content: {
+          "application/json": components["schemas"]["ConfigResponse"];
         };
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            412: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigValidateResponse"];
-                };
-            };
-            428: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
+      };
     };
-    post_validate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConfigValidateRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConfigValidateResponse"];
-                };
-            };
-        };
+  };
+  put_config: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    list_devices: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeviceSummary"][];
-                };
-            };
-        };
+    /** @description Raw TOML config */
+    requestBody: {
+      content: {
+        "text/plain": string;
+      };
     };
-    list_oneshots: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OneshotStatus"][];
-                };
-            };
+        content?: never;
+      };
+      412: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConfigValidateResponse"];
+        };
+      };
+      428: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
     };
-    post_oneshot: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OneshotRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OneshotResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  post_validate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    get_oneshot: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OneshotStatus"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ConfigValidateRequest"];
+      };
     };
-    delete_oneshot: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+        content: {
+          "application/json": components["schemas"]["ConfigValidateResponse"];
         };
+      };
     };
-    list_services: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ServicesResponse"];
-                };
-            };
-        };
+  };
+  list_devices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    service_detail: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                name: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ServiceDetail"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+        content: {
+          "application/json": components["schemas"]["DeviceSummary"][];
         };
+      };
     };
-    post_disable: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Service name */
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DisableResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
+  };
+  list_oneshots: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    post_enable: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Service name */
-                name: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EnableResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["OneshotStatus"][];
         };
+      };
     };
-    get_logs: {
-        parameters: {
-            query?: {
-                /** @description Earliest timestamp_ms, inclusive */
-                since?: number;
-                /** @description Latest timestamp_ms, inclusive */
-                until?: number;
-                /** @description Restrict to one run_id */
-                run?: number;
-                /** @description "stdout" or "stderr" */
-                stream?: string;
-                /** @description Max rows to return (≤1000, default 200) */
-                limit?: number;
-                /** @description Opaque cursor from a prior response */
-                before?: string;
-            };
-            header?: never;
-            path: {
-                /** @description Service name */
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LogsResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
+  };
+  post_oneshot: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    post_restart: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Service name */
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StartResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OneshotRequest"];
+      };
     };
-    post_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Service name */
-                name: string;
-            };
-            cookie?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StartResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["OneshotResponse"];
         };
+      };
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
-    post_stop: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Service name */
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StopResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
+  };
+  get_oneshot: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
     };
-    chat_completions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChatCompletionEnvelope"];
-            };
+        content: {
+          "application/json": components["schemas"]["OneshotStatus"];
         };
-        responses: {
-            /** @description Proxied from upstream */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
         };
+        content?: never;
+      };
     };
-    completions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CompletionEnvelope"];
-            };
-        };
-        responses: {
-            /** @description Proxied from upstream */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+  };
+  delete_oneshot: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
     };
-    embeddings: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      204: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EmbeddingEnvelope"];
-            };
+        content?: never;
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
         };
-        responses: {
-            /** @description Proxied from upstream */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
+        content?: never;
+      };
     };
-    list_models: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelsResponse"];
-                };
-            };
-        };
+  };
+  list_services: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ServicesResponse"];
+        };
+      };
+    };
+  };
+  service_detail: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ServiceDetail"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  post_disable: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DisableResponse"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  post_enable: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EnableResponse"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  get_logs: {
+    parameters: {
+      query?: {
+        /** @description Earliest timestamp_ms, inclusive */
+        since?: number;
+        /** @description Latest timestamp_ms, inclusive */
+        until?: number;
+        /** @description Restrict to one run_id */
+        run?: number;
+        /** @description "stdout" or "stderr" */
+        stream?: string;
+        /** @description Max rows to return (≤1000, default 200) */
+        limit?: number;
+        /** @description Opaque cursor from a prior response */
+        before?: string;
+      };
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LogsResponse"];
+        };
+      };
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  post_restart: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StartResponse"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  post_start: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StartResponse"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  post_stop: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StopResponse"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  chat_completions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ChatCompletionEnvelope"];
+      };
+    };
+    responses: {
+      /** @description Proxied from upstream */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  completions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CompletionEnvelope"];
+      };
+    };
+    responses: {
+      /** @description Proxied from upstream */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  embeddings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EmbeddingEnvelope"];
+      };
+    };
+    responses: {
+      /** @description Proxied from upstream */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  list_models: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ModelsResponse"];
+        };
+      };
+    };
+  };
 }

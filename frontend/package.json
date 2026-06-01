@@ -9,7 +9,7 @@
     "format": "prettier -w .",
     "lint": "prettier --check . && eslint . && tsc -b",
     "preview": "vite preview",
-    "gen-types": "cargo run --quiet --manifest-path ../Cargo.toml --example dump-openapi | openapi-typescript /dev/stdin -o src/api/types.ts"
+    "gen-types": "cargo run --quiet --manifest-path ../Cargo.toml --example dump-openapi | openapi-typescript /dev/stdin -o src/api/types.ts && prettier --write src/api/types.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",
