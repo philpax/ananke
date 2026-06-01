@@ -252,6 +252,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         allocation_mode: AllocationMode::None,
         openai_compat: true,
         description: None,
+        modality: ananke_api::Modality::Chat,
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),
