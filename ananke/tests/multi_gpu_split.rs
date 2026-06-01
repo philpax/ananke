@@ -58,6 +58,7 @@ fn large_estimate() -> Estimate {
         weights_bytes: per_layer_bytes * n_layers as u64,
         kv_per_token: 0,
         compute_buffer_mb: 0, // suppress compute buffer overhead for clarity
+        mtp_bytes: 0,
         per_layer_bytes: Some(vec![per_layer_bytes; n_layers]),
         attention_layers: None,
         non_layer: NonLayer::default(),

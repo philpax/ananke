@@ -146,6 +146,8 @@ fn merge_llama_cpp(
         mmap: inherit!(mmap),
         mlock: inherit!(mlock),
         parallel: inherit!(parallel),
+        spec_type: inherit!(spec_type),
+        spec_draft_n_max: inherit!(spec_draft_n_max),
         batch_size: inherit!(batch_size),
         ubatch_size: inherit!(ubatch_size),
         threads: inherit!(threads),

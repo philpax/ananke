@@ -109,6 +109,7 @@ fn pack_inner(
 ) -> Result<Packed, PackError> {
     let mut packer = Packer::new(estimate, svc, snapshot, reserved, optimistic_remaining);
     packer.seed_non_layer();
+    packer.seed_mtp_overhead();
     packer.walk_layers()?;
     packer.place_fallback_weights()?;
     packer.add_kv_bytes();
@@ -216,6 +217,28 @@ impl<'a> Packer<'a> {
         }
     }
 
+    /// Reserve the MTP / NextN draft-context overhead (its KV cache plus
+    /// compute buffer) as a single lump on the *last* allowed GPU. At
+    /// runtime llama.cpp attaches this second context to the GPU that hosts
+    /// the MTP head — the model's trailing layer — which the first-fit
+    /// walker places on the GPU it fills last (the least-free in the sort,
+    /// i.e. the spill target that keeps the most leftover room). Pinning the
+    /// lump there both matches where it physically lands and avoids piling
+    /// it onto the most-free GPU that the walker is simultaneously filling
+    /// to the brim (which would overflow that card by the MTP size). Seeded
+    /// *before* [`Self::walk_layers`] so the walker reserves room for it.
+    /// Zero when MTP is off or the model carries no MTP head.
+    fn seed_mtp_overhead(&mut self) {
+        if self.estimate.mtp_bytes == 0 {
+            return;
+        }
+        let target = match self.allowed_gpus.last() {
+            Some(last_gpu) => DeviceSlot::Gpu(*last_gpu),
+            None => DeviceSlot::Cpu,
+        };
+        *self.per_device.entry(target).or_default() += self.estimate.mtp_bytes;
+    }
+
     /// Step 2: first-fit layer walker. Pre-reserves per-GPU headroom for
     /// steps 3-5 so we don't fill to the brim and then overflow. Returns
     /// `PackError` if a layer's bytes don't fit on any allowed GPU and CPU
@@ -272,19 +295,32 @@ impl<'a> Packer<'a> {
     }
 
     /// Reserve the fixed per-GPU headroom that does not depend on how layers
-    /// end up distributed: compute buffer + one-layer fudge. KV headroom is
-    /// reserved incrementally during the walk via the per-layer KV cost
-    /// folded into [`Self::walk_layers`].
+    /// end up distributed: compute buffer + one-layer fudge. The per-layer KV
+    /// *of placed layers* is reserved incrementally during the walk (folded
+    /// into [`Self::walk_layers`]'s `layer_cost`); the headroom reserved here
+    /// must additionally cover the *fudge* layer that [`Self::add_one_layer_fudge`]
+    /// adds post-walk — and that fudge is `per_layer_avg + per_layer_kv`, so
+    /// both terms have to be reserved here. Reserving only the weight term let
+    /// a GPU that the walker fills to the brim overshoot its capacity by one
+    /// layer's KV (≈ the live qwen3.6-27b "insufficient_vram on gpu:0" by
+    /// ~one `per_layer_kv`); including `per_layer_kv` makes the post-walk total
+    /// land at or below `available`.
     fn initialise_gpu_remaining(&mut self) {
-        let n_layers_nonzero = self.per_layer.iter().filter(|b| **b > 0).count() as u64;
+        let n_layers = self.per_layer.len() as u64;
         let per_layer_avg = self
             .per_layer
             .iter()
             .sum::<u64>()
-            .checked_div(n_layers_nonzero)
+            .checked_div(n_layers)
             .unwrap_or(0);
+        let kv_total = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        let per_layer_kv = kv_total.checked_div(n_layers).unwrap_or(0);
         let compute_headroom = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
-        let gpu_headroom_each = compute_headroom + per_layer_avg * ONE_LAYER_FUDGE_MULTIPLIER;
+        let gpu_headroom_each =
+            compute_headroom + (per_layer_avg + per_layer_kv) * ONE_LAYER_FUDGE_MULTIPLIER;
 
         for gpu in &self.allowed_gpus {
             let slot = DeviceSlot::Gpu(*gpu);
@@ -629,6 +665,7 @@ mod tests {
             weights_bytes: per_layer_mb * 1024 * 1024 * n_layers as u64,
             kv_per_token: 0,
             compute_buffer_mb: 400,
+            mtp_bytes: 0,
             per_layer_bytes: Some(vec![per_layer_mb * 1024 * 1024; n_layers as usize]),
             attention_layers: None,
             non_layer: NonLayer::default(),
@@ -770,6 +807,7 @@ mod tests {
             weights_bytes,
             kv_per_token: 45220,
             compute_buffer_mb: 3792,
+            mtp_bytes: 0,
             per_layer_bytes: Some(per_layer_bytes),
             attention_layers: None,
             non_layer: NonLayer::default(),
@@ -811,6 +849,7 @@ mod tests {
             weights_bytes,
             kv_per_token: 120_000,
             compute_buffer_mb: 2048,
+            mtp_bytes: 0,
             per_layer_bytes: Some(per_layer_bytes),
             attention_layers: None,
             non_layer: NonLayer::default(),
@@ -1029,5 +1068,59 @@ mod tests {
         let table = AllocationTable::new();
         let r = check_command_placement_override(&svc, &snap, &table, false);
         assert_eq!(r, Ok(()));
+    }
+
+    /// Regression for the live "insufficient_vram on gpu:0" failure: the MTP
+    /// draft-context lump must ride the *last* GPU (the spill target the
+    /// trailing MTP head lands on), not pile onto the most-free GPU the
+    /// first-fit walker is already filling to the brim. A model that spans
+    /// both 24 GB cards plus a 3 GiB MTP lump must pack without overflowing
+    /// GPU 0.
+    #[test]
+    fn mtp_overhead_rides_last_gpu_without_overflowing_first() {
+        // 40 layers × 700 MiB ≈ 27.3 GiB of weights — does not fit one card,
+        // so the walker spills onto GPU 1.
+        let per_layer_bytes: Vec<u64> = (0..40).map(|_| 700 * 1024 * 1024).collect();
+        let weights_bytes: u64 = per_layer_bytes.iter().sum();
+        let mtp_bytes = 3 * 1024 * 1024 * 1024;
+        let e = Estimate {
+            weights_bytes,
+            kv_per_token: 0,
+            compute_buffer_mb: 1000,
+            mtp_bytes,
+            per_layer_bytes: Some(per_layer_bytes),
+            attention_layers: None,
+            non_layer: NonLayer::default(),
+            override_tensor_bytes: BTreeMap::new(),
+            expert_layers: Vec::new(),
+            expert_layer_cpu_bytes: BTreeMap::new(),
+            context: 4096,
+            architecture: SmolStr::new("qwen35"),
+        };
+        let snap = snapshot(&[24, 24]);
+        let alloc = AllocationTable::new();
+        let packed = pack(&e, &svc(PlacementPolicy::GpuOnly, None), &snap, &alloc)
+            .expect("MTP model spanning two cards must pack");
+        let gpu0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let gpu1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        let cap = 24u64 * 1024 * 1024 * 1024;
+        assert!(
+            gpu0 <= cap,
+            "GPU 0 must not be over-pledged: {gpu0} > {cap}"
+        );
+        assert!(
+            gpu1 >= mtp_bytes,
+            "the MTP lump must ride the last GPU (gpu1={gpu1}, mtp={mtp_bytes})"
+        );
     }
 }

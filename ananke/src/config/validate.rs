@@ -174,6 +174,11 @@ pub struct LlamaCppConfig {
     pub mmap: Option<bool>,
     pub mlock: Option<bool>,
     pub parallel: Option<u32>,
+    /// `--spec-type` value (e.g. `"draft-mtp"`). See
+    /// [`crate::config::parse::RawLlamaCppService::spec_type`].
+    pub spec_type: Option<SmolStr>,
+    /// `--spec-draft-n-max` value.
+    pub spec_draft_n_max: Option<u32>,
     pub batch_size: Option<u32>,
     pub ubatch_size: Option<u32>,
     pub threads: Option<u32>,
@@ -862,6 +867,8 @@ fn validate_llama_cpp(
         mmap: lc.mmap,
         mlock: lc.mlock,
         parallel: lc.parallel,
+        spec_type: lc.spec_type.clone(),
+        spec_draft_n_max: lc.spec_draft_n_max,
         batch_size: lc.batch_size,
         ubatch_size: lc.ubatch_size,
         threads: lc.threads,
@@ -1250,6 +1257,8 @@ pub mod test_fixtures {
             mmap: None,
             mlock: None,
             parallel: None,
+            spec_type: None,
+            spec_draft_n_max: None,
             batch_size: None,
             ubatch_size: None,
             threads: None,

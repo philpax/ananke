@@ -123,6 +123,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         compute_buffer_mb: inputs
             .compute_buffer_mb
             .unwrap_or_else(|| super::compute_buffer::default_for(summary, inputs.context)),
+        mtp_bytes: 0,
         per_layer_bytes: Some(per_layer_total),
         attention_layers: None,
         non_layer,
@@ -224,6 +225,7 @@ mod tests {
             n_cpu_moe: None,
             compute_buffer_mb: None,
             allow_fallback: false,
+            mtp: false,
         };
 
         let e = estimate(&summary, &inputs);
@@ -318,6 +320,7 @@ mod tests {
             n_cpu_moe: Some(1),
             compute_buffer_mb: None,
             allow_fallback: false,
+            mtp: false,
         };
 
         let e = estimate(&summary, &inputs);

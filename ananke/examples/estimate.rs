@@ -44,6 +44,7 @@ struct Args {
     compute_buffer_mb: Option<u32>,
     active_devices: Option<u64>,
     allow_fallback: bool,
+    mtp: bool,
 }
 
 fn parse_args() -> Args {
@@ -58,6 +59,7 @@ fn parse_args() -> Args {
     let mut compute_buffer_mb: Option<u32> = None;
     let mut active_devices: Option<u64> = None;
     let mut allow_fallback = false;
+    let mut mtp = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--model" => model = it.next().map(PathBuf::from),
@@ -76,6 +78,7 @@ fn parse_args() -> Args {
             "--compute-buffer-mb" => compute_buffer_mb = it.next().and_then(|s| s.parse().ok()),
             "--active-devices" => active_devices = it.next().and_then(|s| s.parse().ok()),
             "--allow-fallback" => allow_fallback = true,
+            "--mtp" => mtp = true,
             _ => {
                 eprintln!("unknown argument: {arg}");
                 process::exit(2);
@@ -97,6 +100,7 @@ fn parse_args() -> Args {
         compute_buffer_mb,
         active_devices,
         allow_fallback,
+        mtp,
     }
 }
 
@@ -113,6 +117,7 @@ fn main() {
         n_cpu_moe: args.n_cpu_moe,
         compute_buffer_mb: args.compute_buffer_mb,
         allow_fallback: args.allow_fallback,
+        mtp: args.mtp,
     };
 
     let estimate = match estimator::estimate_from_path(&LocalFs, &inputs) {
@@ -140,7 +145,8 @@ fn main() {
     let total_bytes = estimate
         .weights_bytes
         .saturating_add(kv_total_bytes)
-        .saturating_add(cb_total_bytes);
+        .saturating_add(cb_total_bytes)
+        .saturating_add(estimate.mtp_bytes);
 
     // "GPU VRAM" estimate: subtract the tensors llama.cpp keeps on CPU
     // by default (token embeddings — plus the per-layer token embeddings
@@ -159,7 +165,8 @@ fn main() {
             (estimate.compute_buffer_mb as u64)
                 .saturating_mul(active_devices.min(2))
                 .saturating_mul(1024 * 1024),
-        );
+        )
+        .saturating_add(estimate.mtp_bytes);
 
     let out = json!({
         "architecture": estimate.architecture.as_str(),
@@ -170,6 +177,8 @@ fn main() {
         "kv_total_bytes": kv_total_bytes,
         "kv_total_mib": kv_total_bytes / (1024 * 1024),
         "compute_buffer_mb": estimate.compute_buffer_mb,
+        "mtp_bytes": estimate.mtp_bytes,
+        "mtp_mib": estimate.mtp_bytes / (1024 * 1024),
         "per_layer_count": estimate.per_layer_bytes.as_ref().map(|v| v.len()),
         "non_layer_output_head_bytes": estimate.non_layer.output_head_bytes,
         "non_layer_token_embd_bytes": estimate.non_layer.token_embd_bytes,

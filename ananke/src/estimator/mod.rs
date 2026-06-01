@@ -7,6 +7,7 @@ pub mod kv;
 pub mod llama;
 pub mod mamba;
 pub mod moe;
+pub mod mtp;
 pub mod override_tensor;
 pub mod types;
 
@@ -142,11 +143,18 @@ pub fn estimate_with_summary(
 
     let mut est = dispatch(&summary, inputs)?;
 
+    // MTP / NextN draft-context overhead is architecture-independent
+    // post-processing: it reads `nextn_predict_layers` + the full-attention
+    // head dims straight from the GGUF, so it applies uniformly to whichever
+    // family dispatched above rather than living in each one.
+    est.mtp_bytes = mtp::mtp_overhead_bytes(&summary, inputs);
+
     info!(
         service = %inputs.name,
         weights_gb = est.weights_bytes / (1024 * 1024 * 1024),
         per_layer_len = est.per_layer_bytes.as_ref().map(|v| v.len()).unwrap_or(0),
         kv_per_token = est.kv_per_token,
+        mtp_mb = est.mtp_bytes / (1024 * 1024),
         "post-dispatch estimate",
     );
 
@@ -212,6 +220,7 @@ mod tests {
             n_cpu_moe: None,
             compute_buffer_mb: None,
             allow_fallback: true,
+            mtp: false,
         }
     }
 

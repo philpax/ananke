@@ -270,6 +270,8 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
             mmap: None,
             mlock: None,
             parallel: None,
+            spec_type: None,
+            spec_draft_n_max: None,
             batch_size: None,
             ubatch_size: None,
             threads: None,

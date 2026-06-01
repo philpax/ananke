@@ -177,6 +177,14 @@ fn render_llama_server_flags(
         args.push("-np".into());
         args.push(p.to_string());
     }
+    if let Some(st) = &lc.spec_type {
+        args.push("--spec-type".into());
+        args.push(st.to_string());
+    }
+    if let Some(n) = lc.spec_draft_n_max {
+        args.push("--spec-draft-n-max".into());
+        args.push(n.to_string());
+    }
 
     if let Some(ca) = cmd_args {
         // Placement-derived tensor-split and override-tensor rules take
@@ -356,6 +364,38 @@ mod tests {
         assert!(cmd.args.iter().any(|a| a == "--port"));
         assert!(cmd.args.iter().any(|a| a == "41000"));
         assert_eq!(cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(), "0");
+    }
+
+    #[test]
+    fn renders_mtp_spec_flags() {
+        let mut svc = base_service();
+        {
+            let lc = expect_llama_cpp(&mut svc);
+            lc.parallel = Some(2);
+            lc.spec_type = Some(SmolStr::new("draft-mtp"));
+            lc.spec_draft_n_max = Some(2);
+        }
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        let np = cmd.args.iter().position(|a| a == "-np").unwrap();
+        assert_eq!(cmd.args[np + 1], "2");
+        let st = cmd.args.iter().position(|a| a == "--spec-type").unwrap();
+        assert_eq!(cmd.args[st + 1], "draft-mtp");
+        let n = cmd
+            .args
+            .iter()
+            .position(|a| a == "--spec-draft-n-max")
+            .unwrap();
+        assert_eq!(cmd.args[n + 1], "2");
+    }
+
+    #[test]
+    fn omits_spec_flags_when_unset() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(!cmd.args.iter().any(|a| a == "--spec-type"));
+        assert!(!cmd.args.iter().any(|a| a == "--spec-draft-n-max"));
     }
 
     #[test]

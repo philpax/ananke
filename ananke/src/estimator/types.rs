@@ -42,6 +42,11 @@ pub struct EstimatorInputs<'a> {
     /// `false` by default — unknown architectures return an error instead
     /// of silently producing a guess that may be badly wrong.
     pub allow_fallback: bool,
+    /// Whether the service runs with `--spec-type draft-mtp`. When set and
+    /// the model carries an MTP head (`nextn_predict_layers > 0`), the
+    /// estimator adds the MTP draft context's KV + compute overhead. See
+    /// [`crate::estimator::mtp`].
+    pub mtp: bool,
 }
 
 impl<'a> EstimatorInputs<'a> {
@@ -61,6 +66,7 @@ impl<'a> EstimatorInputs<'a> {
             n_cpu_moe: lc.n_cpu_moe,
             compute_buffer_mb: lc.estimation.compute_buffer_mb,
             allow_fallback: lc.estimation.allow_fallback.unwrap_or(false),
+            mtp: lc.spec_type.as_deref() == Some("draft-mtp"),
         })
     }
 
@@ -86,6 +92,7 @@ impl<'a> EstimatorInputs<'a> {
         self.n_cpu_moe.hash(&mut hasher);
         self.compute_buffer_mb.hash(&mut hasher);
         self.allow_fallback.hash(&mut hasher);
+        self.mtp.hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -100,6 +107,11 @@ pub struct Estimate {
     pub kv_per_token: u64,
     /// Compute buffer per device in MB (default 400).
     pub compute_buffer_mb: u32,
+    /// Extra VRAM (bytes) for the MTP / NextN draft context when the
+    /// service runs `--spec-type draft-mtp`. Zero when MTP is off or the
+    /// model carries no MTP head. Reserved as a single lump on the
+    /// primary GPU by the packer. See [`super::mtp`].
+    pub mtp_bytes: u64,
     /// Per-layer weight bytes for index-ordered packing. `None` for
     /// architectures where layer-aware placement isn't applicable
     /// (currently SSM/Mamba; in that case `placement` uses single-device

@@ -201,10 +201,22 @@ top_p = 0.95
 # Other common llama.cpp options:
 # n_gpu_layers = -1       # Offload all layers to GPU (default)
 # threads = 8             # Number of CPU threads
-# parallel = 4            # Request parallelism
+# parallel = 4            # Request parallelism (-np). With a non-unified KV
+#                         # this splits the context budget across slots, so
+#                         # each request caps at context / parallel.
 # batch_size = 512        # Context batch size
 # mmap = true             # Memory-map the model file
 # jinja = true            # Use Jinja chat templates
+
+# Speculative decoding via multi-token prediction (MTP / NextN):
+# spec_type = "draft-mtp" # --spec-type. For models with an embedded MTP head
+#                         # (nextn_predict_layers > 0, e.g. Qwen 3.6), this
+#                         # drafts ahead using the same weights — no separate
+#                         # draft model. ananke's estimator adds the MTP draft
+#                         # context's VRAM (a small f16 KV over the nextn
+#                         # layer(s) plus a ~1.7 GiB compute buffer).
+# spec_draft_n_max = 2    # --spec-draft-n-max: max draft tokens per step.
+# MTP composes with `parallel > 1` and `mmproj` (vision) on current llama.cpp.
 ```
 
 #### Custom llama-server Binary or Wrapper

@@ -189,6 +189,16 @@ pub struct RawLlamaCppService {
     pub mmap: Option<bool>,
     pub mlock: Option<bool>,
     pub parallel: Option<u32>,
+    /// Speculative-decoding type passed to llama-server's `--spec-type`
+    /// (e.g. `"draft-mtp"` for multi-token prediction). When set to
+    /// `"draft-mtp"` and the model carries an MTP head
+    /// (`nextn_predict_layers > 0`), the estimator adds the MTP draft
+    /// context's KV + compute overhead. MTP composes with `parallel > 1`
+    /// and `mmproj` — both are supported by current llama.cpp.
+    pub spec_type: Option<SmolStr>,
+    /// Maximum number of draft tokens per step, passed to
+    /// `--spec-draft-n-max`. Only meaningful when `spec_type` is set.
+    pub spec_draft_n_max: Option<u32>,
     pub batch_size: Option<u32>,
     pub ubatch_size: Option<u32>,
     pub threads: Option<u32>,
@@ -394,6 +404,27 @@ port = 11435
             panic!("expected LlamaCpp variant");
         };
         assert_eq!(lc.model.as_ref().unwrap().to_str(), Some("/m/x.gguf"));
+    }
+
+    #[test]
+    fn parses_mtp_spec_keys() {
+        let toml = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+parallel = 2
+spec_type = "draft-mtp"
+spec_draft_n_max = 2
+"#;
+        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let RawService::LlamaCpp(lc) = &cfg.services[0] else {
+            panic!("expected LlamaCpp variant");
+        };
+        assert_eq!(lc.parallel, Some(2));
+        assert_eq!(lc.spec_type.as_deref(), Some("draft-mtp"));
+        assert_eq!(lc.spec_draft_n_max, Some(2));
     }
 
     #[test]
