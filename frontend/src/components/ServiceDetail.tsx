@@ -28,6 +28,19 @@ export function ServiceDetailInline({ name }: { name: string }) {
       <dl className="grid grid-cols-[auto_1fr] md:grid-cols-[auto_1fr_auto_1fr] gap-x-4 gap-y-1 text-sm mb-3">
         <dt className="text-gray-500 dark:text-gray-400">Template</dt>
         <dd>{detail.template}</dd>
+        {detail.modality === "embedding" && (
+          <>
+            <dt className="text-gray-500 dark:text-gray-400">Modality</dt>
+            <dd>
+              <span
+                className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-300 align-middle"
+                title="Embedding model: serves /v1/embeddings rather than /v1/chat/completions"
+              >
+                embedding
+              </span>
+            </dd>
+          </>
+        )}
         <dt className="text-gray-500 dark:text-gray-400">Port</dt>
         <dd className="break-all">
           <a

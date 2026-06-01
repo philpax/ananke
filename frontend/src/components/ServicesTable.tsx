@@ -123,6 +123,14 @@ function ServiceRow({
               vision
             </span>
           )}
+          {svc.modality === "embedding" && (
+            <span
+              className="ml-1 inline-block px-1.5 py-0.5 text-[10px] rounded bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-300 align-middle"
+              title="Embedding model: serves /v1/embeddings rather than /v1/chat/completions"
+            >
+              embedding
+            </span>
+          )}
           <div className="text-xs text-gray-500 dark:text-gray-400 pl-4">
             :{svc.port}
           </div>

@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-use ananke_api::AnankeMetadata;
+use ananke_api::{AnankeMetadata, Modality};
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -87,6 +87,11 @@ pub struct ServiceConfig {
     pub allocation_mode: AllocationMode,
     pub openai_compat: bool,
     pub description: Option<String>,
+    /// What kind of model the service exposes (chat or embedding).
+    /// Default is [`Modality::Chat`] so configs and JSON shipped before
+    /// the field landed are unchanged. Embedding services opt in with
+    /// `modality = "embedding"` in their `[[service]]` block.
+    pub modality: Modality,
     pub start_queue_depth: usize,
     pub extra_args: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -527,6 +532,15 @@ fn validate_service(
 
     let metadata = build_ananke_metadata(common.metadata.as_ref())
         .map_err(|e| fail(format!("service {name} metadata: {e}")))?;
+    let modality = match common.modality.as_deref() {
+        None | Some("chat") => Modality::Chat,
+        Some("embedding") => Modality::Embedding,
+        Some(other) => {
+            return Err(fail(format!(
+                "service {name}: unknown modality `{other}` (valid: `chat`, `embedding`)"
+            )));
+        }
+    };
     // llama-cpp always speaks OpenAI. Command services opt in by
     // setting `[service.openai_proxy] upstream_model = ...`; that's
     // also where the model-name rewrite to the upstream lives.
@@ -744,6 +758,7 @@ fn validate_service(
         allocation_mode,
         openai_compat,
         description: common.description.clone(),
+        modality,
         start_queue_depth,
         extra_args: all_extra,
         env,
@@ -1144,8 +1159,8 @@ pub mod test_fixtures {
 
     use super::{
         AllocationMode, CommandConfig, DEFAULT_SERVICE_PRIORITY, DeviceSlot, Filters,
-        HealthSettings, Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, Template,
-        TemplateConfig, TrackingSettings,
+        HealthSettings, Lifecycle, LlamaCppConfig, Modality, PlacementPolicy, ServiceConfig,
+        Template, TemplateConfig, TrackingSettings,
     };
     use crate::config::parse::{EstimationConfig, SamplingConfig};
 
@@ -1182,6 +1197,7 @@ pub mod test_fixtures {
             allocation_mode: AllocationMode::None,
             openai_compat: true,
             description: None,
+            modality: Modality::Chat,
             start_queue_depth: 10,
             extra_args: Vec::new(),
             env: BTreeMap::new(),

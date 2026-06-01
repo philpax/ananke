@@ -95,6 +95,7 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
                     object: "model",
                     created: 0,
                     owned_by: "ananke",
+                    modality: svc.modality,
                     ananke_metadata: svc.metadata.clone(),
                 });
             }

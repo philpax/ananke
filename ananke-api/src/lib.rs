@@ -21,4 +21,6 @@ pub use lifecycle::{DisableResponse, EnableResponse, StartResponse, StopResponse
 pub use logs::{LogLine, LogStreamMessage, LogsResponse};
 pub use metadata::AnankeMetadata;
 pub use oneshot::{OneshotRequest, OneshotResponse, OneshotStatus};
-pub use services::{EstimateSummary, ModelInfo, ServiceDetail, ServiceSummary, ServicesResponse};
+pub use services::{
+    EstimateSummary, Modality, ModelInfo, ServiceDetail, ServiceSummary, ServicesResponse,
+};

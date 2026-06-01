@@ -5,7 +5,7 @@
 //! only `model` in the OpenAPI schema, plus `#[serde(flatten)]` to
 //! capture arbitrary other keys.
 
-use ananke_api::AnankeMetadata;
+use ananke_api::{AnankeMetadata, Modality};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -15,6 +15,12 @@ pub struct ModelListing {
     pub object: &'static str,
     pub created: u64,
     pub owned_by: &'static str,
+    /// What kind of OpenAI endpoint this model serves. Non-standard
+    /// OpenAI field, elided when [`Modality::Chat`] (the default), so
+    /// strict OpenAI clients see exactly what they saw before this
+    /// field landed; embedding clients can filter on it.
+    #[serde(default, skip_serializing_if = "Modality::is_chat")]
+    pub modality: Modality,
     /// Passthrough entries from `[[service]] metadata.*`. Non-standard
     /// OpenAI field, elided when empty; strict OpenAI clients ignore it.
     #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]

@@ -7,6 +7,34 @@ use utoipa::ToSchema;
 
 use crate::{logs::LogLine, metadata::AnankeMetadata};
 
+/// What kind of model the service exposes through the OpenAI-compatible
+/// API. Drives badge rendering in the frontend and lets clients (Discord
+/// rotation, RAG indexers) filter the model list by purpose without
+/// parsing `metadata.*` strings.
+///
+/// Defaults to `Chat` so existing configs and JSON payloads stay
+/// byte-identical — the field is elided from the wire when it's `Chat`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Modality {
+    /// Text generation: `/v1/chat/completions` and `/v1/completions`.
+    /// The default for backward compatibility.
+    #[default]
+    Chat,
+    /// Vector embeddings: `/v1/embeddings`. Pooling-only models such as
+    /// jina-embeddings-v5, BGE, E5, etc.
+    Embedding,
+}
+
+impl Modality {
+    /// Predicate for `#[serde(skip_serializing_if)]` so the default
+    /// (`Chat`) is elided from JSON. Existing chat services then ship
+    /// the exact same wire bytes they shipped before this field landed.
+    pub fn is_chat(&self) -> bool {
+        matches!(self, Modality::Chat)
+    }
+}
+
 /// Response from `GET /api/services`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ServicesResponse {
@@ -40,6 +68,12 @@ pub struct ServiceSummary {
     /// multimodal input. `None` for non-llama-cpp services. Cheap
     /// enough (config-only check) to ship on every list entry.
     pub has_mmproj: Option<bool>,
+    /// What kind of OpenAI endpoint the service serves. Elided from
+    /// JSON when [`Modality::Chat`] (the default) so existing chat
+    /// services emit unchanged wire bytes; embedding services explicitly
+    /// declare `modality = "embedding"` in their `[[service]]` block.
+    #[serde(default, skip_serializing_if = "Modality::is_chat")]
+    pub modality: Modality,
     /// Passthrough entries from `[[service]] metadata.*`. Empty when
     /// none were set; the field is elided from JSON when the map is
     /// empty so existing consumers see no change unless a service opts
@@ -97,6 +131,10 @@ pub struct ServiceDetail {
     /// Empty when idle. Keys are slot strings (`"cpu"`, `"gpu:0"`, …),
     /// values are MiB.
     pub current_allocation: BTreeMap<String, u64>,
+    /// What kind of OpenAI endpoint the service serves. See
+    /// [`ServiceSummary::modality`] for the rendering rule.
+    #[serde(default, skip_serializing_if = "Modality::is_chat")]
+    pub modality: Modality,
     /// Passthrough entries from `[[service]] metadata.*`. See
     /// [`ServiceSummary::ananke_metadata`].
     #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]

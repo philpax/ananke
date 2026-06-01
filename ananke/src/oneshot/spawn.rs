@@ -102,6 +102,7 @@ pub async fn spawn_oneshot(
         allocation_mode,
         openai_compat: false,
         description: None,
+        modality: ananke_api::Modality::Chat,
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),

@@ -272,6 +272,15 @@ pub struct RawServiceCommon {
     pub priority: Option<u8>,
     pub idle_timeout: Option<String>,
     pub description: Option<String>,
+    /// What kind of OpenAI endpoint the service serves: `"chat"`
+    /// (default) or `"embedding"`. Embedding services advertise
+    /// themselves through `/v1/models` + `/api/services` with a typed
+    /// `modality` field clients can filter on, and the frontend renders
+    /// an `embedding` badge alongside the service name. Validated into
+    /// the [`ananke_api::Modality`] enum during config validation; an
+    /// unknown string is a hard config error rather than a silent fall
+    /// back to chat.
+    pub modality: Option<SmolStr>,
     pub filters: Option<RawFilters>,
     pub metadata: Option<BTreeMap<String, toml::Value>>,
     pub devices: Option<RawServiceDevices>,

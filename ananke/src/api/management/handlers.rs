@@ -59,6 +59,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             // Config-only check, no GGUF read — safe to ship in the
             // list view that the frontend polls every 2 s.
             has_mmproj: svc_cfg.llama_cpp().map(|lc| lc.mmproj.is_some()),
+            modality: svc_cfg.modality,
             ananke_metadata: svc_cfg.metadata.clone(),
         });
     }
@@ -172,6 +173,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         model_info,
         estimate,
         current_allocation,
+        modality: svc_cfg.modality,
         ananke_metadata: svc_cfg.metadata.clone(),
     };
     (StatusCode::OK, Json(detail)).into_response()
