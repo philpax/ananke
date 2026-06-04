@@ -79,6 +79,10 @@ pub struct ServiceConfig {
     pub placement_override: BTreeMap<DeviceSlot, u64>,
     pub placement_policy: PlacementPolicy,
     pub gpu_allow: Vec<u32>,
+    /// Inter-GPU split strategy for multi-GPU llama.cpp services. See
+    /// [`SplitMode`]. Default [`SplitMode::Layer`] preserves the historical
+    /// first-fit pipeline behaviour.
+    pub split_mode: SplitMode,
     pub filters: Filters,
     pub idle_timeout_ms: u64,
     pub drain_timeout_ms: u64,
@@ -338,6 +342,47 @@ pub enum PlacementPolicy {
     GpuOnly,
     CpuOnly,
     Hybrid,
+}
+
+/// How a multi-GPU llama.cpp service divides the model across the GPUs it
+/// spans. Orthogonal to [`PlacementPolicy`], which decides CPU-vs-GPU and
+/// whether CPU spill is allowed; this decides the *inter-GPU* strategy and
+/// maps straight onto llama.cpp's `--split-mode`.
+///
+/// - `Layer` (default): pipeline — each GPU holds whole layers and the
+///   first-fit packer fills one GPU before spilling to the next. Minimal
+///   inter-GPU traffic, but only one GPU computes at a time for a single
+///   request.
+/// - `Row` / `Tensor`: tensor parallelism — every layer is sharded across
+///   all spanned GPUs, which compute in parallel and reduce per layer.
+///   `tensor` is llama.cpp's newer, faster implementation; `row` is the
+///   older one, kept for parity. Both require [`PlacementPolicy::GpuOnly`]
+///   (no CPU spill) and a llama-cpp service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SplitMode {
+    #[default]
+    Layer,
+    Row,
+    Tensor,
+}
+
+impl SplitMode {
+    /// The `--split-mode` flag value, also used verbatim in operator-facing
+    /// validation errors.
+    pub fn as_flag(self) -> &'static str {
+        match self {
+            SplitMode::Layer => "layer",
+            SplitMode::Row => "row",
+            SplitMode::Tensor => "tensor",
+        }
+    }
+
+    /// Whether this mode shards every layer across all spanned GPUs (as
+    /// opposed to `Layer`'s whole-layer pipeline). Drives the packer's
+    /// balanced-distribution path.
+    pub fn is_sharded(self) -> bool {
+        matches!(self, SplitMode::Row | SplitMode::Tensor)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -625,6 +670,42 @@ fn validate_service(
 
     let gpu_allow = dev.gpu_allow.clone().unwrap_or_default();
 
+    let split_mode = match dev.split.as_deref().unwrap_or("layer") {
+        "layer" => SplitMode::Layer,
+        "row" => SplitMode::Row,
+        "tensor" => SplitMode::Tensor,
+        other => {
+            return Err(fail(format!(
+                "service {name}: unknown devices.split `{other}` (expected layer, row, or tensor)"
+            )));
+        }
+    };
+    if split_mode.is_sharded() {
+        // Tensor/row split shards every layer across all spanned GPUs in
+        // parallel; there is no CPU half and no per-tensor override to honour.
+        if placement_policy != PlacementPolicy::GpuOnly {
+            return Err(fail(format!(
+                "service {name}: devices.split=`{}` requires placement=gpu-only (tensor/row split cannot spill to CPU)",
+                split_mode.as_flag()
+            )));
+        }
+        match &template_config {
+            TemplateConfig::Command(_) => {
+                return Err(fail(format!(
+                    "service {name}: devices.split=`{}` is only valid for llama-cpp services",
+                    split_mode.as_flag()
+                )));
+            }
+            TemplateConfig::LlamaCpp(lc) if !lc.override_tensor.is_empty() => {
+                return Err(fail(format!(
+                    "service {name}: devices.split=`{}` cannot be combined with override_tensor",
+                    split_mode.as_flag()
+                )));
+            }
+            TemplateConfig::LlamaCpp(_) => {}
+        }
+    }
+
     let health_raw = common.health.clone().unwrap_or_default();
     let health = HealthSettings {
         http_path: health_raw.http.unwrap_or_else(|| "/v1/models".into()),
@@ -755,6 +836,7 @@ fn validate_service(
         placement_override,
         placement_policy,
         gpu_allow,
+        split_mode,
         filters,
         idle_timeout_ms,
         drain_timeout_ms,
@@ -1167,7 +1249,7 @@ pub mod test_fixtures {
     use super::{
         AllocationMode, CommandConfig, DEFAULT_SERVICE_PRIORITY, DeviceSlot, Filters,
         HealthSettings, Lifecycle, LlamaCppConfig, Modality, PlacementPolicy, ServiceConfig,
-        Template, TemplateConfig, TrackingSettings,
+        SplitMode, Template, TemplateConfig, TrackingSettings,
     };
     use crate::config::parse::{EstimationConfig, SamplingConfig};
 
@@ -1196,6 +1278,7 @@ pub mod test_fixtures {
             placement_override: placement,
             placement_policy: PlacementPolicy::CpuOnly,
             gpu_allow: Vec::new(),
+            split_mode: SplitMode::Layer,
             idle_timeout_ms: 60_000,
             drain_timeout_ms: 1_000,
             extended_stream_drain_ms: 1_000,
@@ -1342,6 +1425,98 @@ lifecycle = "persistent"
         );
         let ec = validate(&cfg).unwrap();
         assert!(ec.services[0].placement_override.is_empty());
+    }
+
+    #[test]
+    fn parses_tensor_split_mode() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        assert_eq!(ec.services[0].split_mode, SplitMode::Tensor);
+    }
+
+    #[test]
+    fn defaults_split_mode_to_layer() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        assert_eq!(ec.services[0].split_mode, SplitMode::Layer);
+    }
+
+    #[test]
+    fn rejects_unknown_split_mode() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+devices.split = "diagonal"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("unknown devices.split"));
+    }
+
+    #[test]
+    fn rejects_tensor_split_with_cpu_spill() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "hybrid"
+devices.split = "tensor"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("requires placement=gpu-only"));
+    }
+
+    #[test]
+    fn rejects_tensor_split_on_command_service() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "command"
+command = ["/bin/true"]
+port = 11435
+allocation.mode = "static"
+allocation.vram_gb = 4
+devices.placement = "gpu-only"
+devices.split = "row"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("only valid for llama-cpp"));
     }
 
     #[test]

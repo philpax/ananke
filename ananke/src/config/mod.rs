@@ -15,7 +15,7 @@ pub use merge::{Migration, resolve_inheritance, resolve_migrations};
 pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
     AllocationMode, CommandConfig, DaemonSettings, DeviceSlot, EffectiveConfig, Filters,
-    HealthSettings, Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, Template,
+    HealthSettings, Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, SplitMode, Template,
     TemplateConfig, TrackingSettings, validate,
 };
 

@@ -23,7 +23,7 @@ use ananke::{
     allocator::AllocationTable,
     config::{
         AllocationMode, DaemonSettings, DeviceSlot, EffectiveConfig, Filters, HealthSettings,
-        Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, TemplateConfig,
+        Lifecycle, LlamaCppConfig, PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
         manager::ConfigManager,
         parse::{DEFAULT_START_QUEUE_DEPTH, EstimationConfig, SamplingConfig},
     },
@@ -244,6 +244,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         placement_override: placement,
         placement_policy: PlacementPolicy::CpuOnly,
         gpu_allow: Vec::new(),
+        split_mode: SplitMode::Layer,
         idle_timeout_ms: 60_000,
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,

@@ -9,7 +9,7 @@ use smol_str::SmolStr;
 
 use crate::{
     allocator::AllocationTable,
-    config::{DeviceSlot, PlacementPolicy, ServiceConfig},
+    config::{DeviceSlot, PlacementPolicy, ServiceConfig, SplitMode},
     devices::{Allocation, DeviceId, DeviceSnapshot},
     estimator::Estimate,
 };
@@ -31,11 +31,23 @@ pub struct CommandArgs {
     /// `-ngl N` value. `None` means do not emit the flag (caller uses
     /// `placement_override` escape hatch or cpu-only).
     pub ngl: Option<u32>,
-    /// `--tensor-split A,B,...` if multiple GPUs carry layers.
+    /// `--tensor-split A,B,...`. In layer mode these are per-GPU layer
+    /// counts; in a sharded (tensor/row) mode they are equal proportions
+    /// (one `1` per spanned GPU).
     pub tensor_split: Option<Vec<u32>>,
     /// `-ot <regex>=<device>` rules, rendered verbatim from
     /// `service.raw.override_tensor`.
     pub override_tensor: Vec<String>,
+    /// `--split-mode {row,tensor}` when the packer used a sharded
+    /// (tensor-parallel) distribution. `None` keeps llama.cpp's default
+    /// (`layer`), so layer-split services emit no `--split-mode` flag and
+    /// their argv is unchanged.
+    pub split_mode: Option<SplitMode>,
+    /// `--main-gpu N` — the CUDA-visible index (after the
+    /// `CUDA_VISIBLE_DEVICES` remap) that gathers intermediate results and
+    /// KV in sharded modes. Always the lowest-id spanned GPU, which
+    /// `cuda_env::render`'s ascending ordering places at visible index 0.
+    pub main_gpu: Option<u32>,
 }
 
 /// Structured packer failure modes. Each variant carries the numbers the
@@ -50,6 +62,10 @@ pub enum PackError {
     /// an unknown architecture) and the weights can't fit on any
     /// allowed device.
     WeightsDoNotFit,
+    /// A sharded (tensor/row) split's equal per-GPU share didn't fit on one
+    /// of the spanned GPUs. Unlike layer split there is no CPU spill — every
+    /// spanned GPU must hold its shard, so a single overflow fails the pack.
+    ShardDoesNotFit { gpu_index: u32, bytes: u64 },
 }
 
 impl std::fmt::Display for PackError {
@@ -62,6 +78,12 @@ impl std::fmt::Display for PackError {
                 )
             }
             Self::WeightsDoNotFit => f.write_str("weights do not fit on any allowed device"),
+            Self::ShardDoesNotFit { gpu_index, bytes } => {
+                write!(
+                    f,
+                    "tensor-split shard ({bytes} bytes) does not fit on gpu:{gpu_index}"
+                )
+            }
         }
     }
 }
@@ -72,6 +94,16 @@ impl std::error::Error for PackError {}
 pub struct Packed {
     pub allocation: Allocation,
     pub args: CommandArgs,
+}
+
+/// A tensor/row-split distribution decided by [`Packer::distribute_sharded`].
+/// [`Packer::finish`] turns it into `--split-mode`, `--main-gpu`, and an equal
+/// `--tensor-split`.
+#[derive(Debug)]
+struct ShardedPlan {
+    mode: SplitMode,
+    /// Spanned GPUs in ascending id order; `gpus[0]` is the main GPU.
+    gpus: Vec<u32>,
 }
 
 /// Pack `estimate` onto allowed devices, respecting `policy`,
@@ -108,6 +140,20 @@ fn pack_inner(
     optimistic_remaining: bool,
 ) -> Result<Packed, PackError> {
     let mut packer = Packer::new(estimate, svc, snapshot, reserved, optimistic_remaining);
+    // Sharded (tensor/row) split distributes every layer across all spanned
+    // GPUs in parallel — a fundamentally different shape from the first-fit
+    // layer walk. Taken only when the service opts in, at least two GPUs are
+    // available to span, and the estimator gave a per-layer breakdown to
+    // halve. Otherwise fall through to the layer path: a single-GPU "tensor
+    // split" is just an ordinary placement, and a fallback-arch model (no
+    // per-layer detail) can't be evenly sharded.
+    if packer.svc.split_mode.is_sharded()
+        && packer.allowed_gpus.len() >= 2
+        && !packer.per_layer.is_empty()
+    {
+        packer.distribute_sharded()?;
+        return Ok(packer.finish());
+    }
     packer.seed_non_layer();
     packer.seed_mtp_overhead();
     packer.walk_layers()?;
@@ -146,6 +192,11 @@ struct Packer<'a> {
     /// See `pack_optimistic` — controls whether we clamp per-GPU remaining
     /// against nvml-reported free bytes or trust the pledge book only.
     optimistic_remaining: bool,
+
+    /// Set by [`Self::distribute_sharded`] for tensor/row split; drives the
+    /// `--split-mode`/`--main-gpu`/equal `--tensor-split` emission in
+    /// [`Self::finish`]. `None` on the layer-split path.
+    sharded: Option<ShardedPlan>,
 }
 
 impl<'a> Packer<'a> {
@@ -187,6 +238,7 @@ impl<'a> Packer<'a> {
             layers_on_cpu: 0,
             fallback_on_gpu: false,
             optimistic_remaining,
+            sharded: None,
         }
     }
 
@@ -237,6 +289,80 @@ impl<'a> Packer<'a> {
             None => DeviceSlot::Cpu,
         };
         *self.per_device.entry(target).or_default() += self.estimate.mtp_bytes;
+    }
+
+    /// Tensor/row split: shard the whole model across every spanned GPU in
+    /// parallel rather than assigning whole layers. Each GPU pledges an equal
+    /// share of the layer weights, the KV cache, the output head, and the MTP
+    /// draft context, plus its own compute buffer and one-layer fudge.
+    /// llama.cpp's tensor-parallel modes split those tensors across the
+    /// spanned devices — empirically the main GPU carries no measurable output-
+    /// head or MTP premium — so modelling them as a per-GPU share rather than a
+    /// lump on `--main-gpu` keeps the pledge in line with the real footprint.
+    /// Only the vision projector (the residual "other" weights, which llama.cpp
+    /// keeps on the main device) and any weight bytes not in the per-layer
+    /// breakdown ride the main GPU. Token embeddings ride the CPU, as on the
+    /// layer path.
+    ///
+    /// There is no CPU spill: a share that overruns a spanned GPU's capacity
+    /// is a hard [`PackError::ShardDoesNotFit`], since tensor parallelism ties
+    /// every GPU's share to the same proportions and can't offload the
+    /// remainder.
+    fn distribute_sharded(&mut self) -> Result<(), PackError> {
+        let mut gpus = self.allowed_gpus.clone();
+        gpus.sort_unstable();
+        let main = gpus[0];
+        let n = gpus.len() as u64;
+
+        let n_layers = self.per_layer.len() as u64;
+        let per_layer_sum: u64 = self.per_layer.iter().sum();
+        let per_layer_avg = per_layer_sum / n_layers;
+        let non_layer = &self.estimate.non_layer;
+        // The vision projector ("other") stays on the main GPU; the output head
+        // is sharded across all of them (see below).
+        let main_only = non_layer.other_bytes;
+        // `weights_bytes` covers per-layer + non-layer + mmproj/anything else;
+        // the leftover (vision projector, etc.) rides the main GPU.
+        let remainder = self.estimate.weights_bytes.saturating_sub(
+            per_layer_sum + non_layer.output_head_bytes + main_only + non_layer.token_embd_bytes,
+        );
+        let kv_total = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        let compute = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
+        let fudge = ONE_LAYER_FUDGE_MULTIPLIER * (per_layer_avg + kv_total / n_layers);
+
+        let weights_per_gpu = per_layer_sum / n;
+        let kv_per_gpu = kv_total / n;
+        // The output head and the MTP draft context are tensor-parallel
+        // sharded, so each GPU carries an equal slice rather than the main GPU
+        // owning the whole thing.
+        let sharded_non_layer = (non_layer.output_head_bytes + self.estimate.mtp_bytes) / n;
+
+        if non_layer.token_embd_bytes > 0 {
+            *self.per_device.entry(DeviceSlot::Cpu).or_default() += non_layer.token_embd_bytes;
+        }
+
+        for &gpu in &gpus {
+            let mut bytes = weights_per_gpu + kv_per_gpu + sharded_non_layer + compute + fudge;
+            if gpu == main {
+                bytes += main_only + remainder;
+            }
+            if bytes > self.gpu_available(gpu) {
+                return Err(PackError::ShardDoesNotFit {
+                    gpu_index: gpu,
+                    bytes,
+                });
+            }
+            *self.per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += bytes;
+        }
+
+        self.sharded = Some(ShardedPlan {
+            mode: self.svc.split_mode,
+            gpus,
+        });
+        Ok(())
     }
 
     /// Step 2: first-fit layer walker. Pre-reserves per-GPU headroom for
@@ -324,28 +450,34 @@ impl<'a> Packer<'a> {
 
         for gpu in &self.allowed_gpus {
             let slot = DeviceSlot::Gpu(*gpu);
-            let free = self.snapshot.free_bytes(&slot).unwrap_or(0);
-            let total = self.snapshot.total_bytes(&slot).unwrap_or(free);
-            let reserved_here = sum_reserved(self.reserved, &slot, &self.svc.name);
-            // Two views compete here:
-            //   - `min(free, total - reserved)` (conservative): respects
-            //     external VRAM pressure that nvml surfaces but our pledge
-            //     book can't see.
-            //   - `total - reserved` (optimistic): trusts the pledge book
-            //     exclusively. Needed for retry-after-eviction, where we've
-            //     removed victims from `reserved` to model "if they were
-            //     gone" — nvml_free would still show their realized usage
-            //     until the drain actually lands.
-            // `optimistic_remaining` picks the right one.
-            let via_pledge = total.saturating_sub(reserved_here);
-            let available = if self.optimistic_remaining {
-                via_pledge
-            } else {
-                free.min(via_pledge)
-            };
+            let available = self.gpu_available(*gpu);
             let raw = available.saturating_sub(*self.per_device.get(&slot).unwrap_or(&0));
             self.gpu_remaining
                 .insert(*gpu, raw.saturating_sub(gpu_headroom_each));
+        }
+    }
+
+    /// Available bytes on `gpu` under the active remaining-capacity view:
+    /// `min(nvml_free, total - pledged)` normally, or `total - pledged`
+    /// (optimistic) on the eviction-retry path. Does *not* subtract bytes
+    /// this packer has already attributed to the GPU — callers do that.
+    ///
+    /// Two views compete: the conservative `min(free, total - reserved)`
+    /// respects external VRAM pressure nvml surfaces but the pledge book
+    /// can't see; the optimistic `total - reserved` trusts the pledge book
+    /// alone, needed for retry-after-eviction where victims have been removed
+    /// from `reserved` but nvml still shows their realized usage until the
+    /// drain lands. `optimistic_remaining` picks.
+    fn gpu_available(&self, gpu: u32) -> u64 {
+        let slot = DeviceSlot::Gpu(gpu);
+        let free = self.snapshot.free_bytes(&slot).unwrap_or(0);
+        let total = self.snapshot.total_bytes(&slot).unwrap_or(free);
+        let reserved_here = sum_reserved(self.reserved, &slot, &self.svc.name);
+        let via_pledge = total.saturating_sub(reserved_here);
+        if self.optimistic_remaining {
+            via_pledge
+        } else {
+            free.min(via_pledge)
         }
     }
 
@@ -435,29 +567,43 @@ impl<'a> Packer<'a> {
     /// Step 6: materialise the final `Packed` — derive -ngl, --tensor-split,
     /// -ot, and convert the per_device map into an `Allocation`.
     fn finish(self) -> Packed {
-        let total_on_gpus: u32 = self.layers_per_gpu.values().sum();
-        let ngl = if self.allowed_gpus.is_empty() {
-            Some(NGL_CPU_ONLY)
-        } else if self.fallback_on_gpu {
-            Some(NGL_OFFLOAD_ALL)
-        } else {
-            Some(total_on_gpus)
-        };
-
-        let tensor_split = if self.allowed_gpus.len() > 1 && total_on_gpus > 0 {
-            // Ratios in CUDA_VISIBLE_DEVICES-remapped order: must be in
-            // ascending GPU-id order to match CUDA device numbering,
-            // regardless of the placement sort order.
-            let mut gpus_by_id = self.allowed_gpus.clone();
-            gpus_by_id.sort_unstable();
-            Some(
-                gpus_by_id
-                    .iter()
-                    .map(|g| self.layers_per_gpu.get(g).copied().unwrap_or(0))
-                    .collect(),
+        // Sharded (tensor/row) split: every layer is offloaded and divided
+        // across all spanned GPUs by equal proportions, so emit `-ngl 999`,
+        // a `1`-per-GPU `--tensor-split`, the `--split-mode`, and `--main-gpu`
+        // (visible index 0 — the lowest-id GPU, which cuda_env renders first).
+        let (ngl, tensor_split, split_mode, main_gpu) = if let Some(plan) = &self.sharded {
+            (
+                Some(NGL_OFFLOAD_ALL),
+                Some(vec![1u32; plan.gpus.len()]),
+                Some(plan.mode),
+                Some(0),
             )
         } else {
-            None
+            let total_on_gpus: u32 = self.layers_per_gpu.values().sum();
+            let ngl = if self.allowed_gpus.is_empty() {
+                Some(NGL_CPU_ONLY)
+            } else if self.fallback_on_gpu {
+                Some(NGL_OFFLOAD_ALL)
+            } else {
+                Some(total_on_gpus)
+            };
+
+            let tensor_split = if self.allowed_gpus.len() > 1 && total_on_gpus > 0 {
+                // Ratios in CUDA_VISIBLE_DEVICES-remapped order: must be in
+                // ascending GPU-id order to match CUDA device numbering,
+                // regardless of the placement sort order.
+                let mut gpus_by_id = self.allowed_gpus.clone();
+                gpus_by_id.sort_unstable();
+                Some(
+                    gpus_by_id
+                        .iter()
+                        .map(|g| self.layers_per_gpu.get(g).copied().unwrap_or(0))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            (ngl, tensor_split, None, None)
         };
 
         let override_tensor = self
@@ -486,6 +632,8 @@ impl<'a> Packer<'a> {
                 ngl,
                 tensor_split,
                 override_tensor,
+                split_mode,
+                main_gpu,
             },
         }
     }
@@ -1122,5 +1270,151 @@ mod tests {
             gpu1 >= mtp_bytes,
             "the MTP lump must ride the last GPU (gpu1={gpu1}, mtp={mtp_bytes})"
         );
+    }
+
+    /// Tensor split shards every layer across both GPUs in parallel: emits
+    /// `-ngl 999`, equal `--tensor-split 1,1`, `--split-mode tensor`, and
+    /// `--main-gpu 0`, with each GPU pledged roughly half the model rather
+    /// than first-fit filling GPU 0.
+    #[test]
+    fn tensor_split_shards_equally_across_gpus() {
+        let e = trivial_estimate(20, 1024); // 20 layers × 1 GiB = 20 GiB
+        let snap = snapshot(&[24, 24]);
+        let alloc = AllocationTable::new();
+        let mut s = svc(PlacementPolicy::GpuOnly, None);
+        s.split_mode = SplitMode::Tensor;
+        let packed = pack(&e, &s, &snap, &alloc).unwrap();
+
+        assert_eq!(packed.args.ngl, Some(999));
+        assert_eq!(packed.args.split_mode, Some(SplitMode::Tensor));
+        assert_eq!(packed.args.main_gpu, Some(0));
+        assert_eq!(packed.args.tensor_split.as_deref(), Some(&[1u32, 1][..]));
+
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        // With no non-layer tensors or MTP overhead (trivial estimate), the
+        // two shards are exactly equal, and each holds ~half the 20 GiB.
+        assert_eq!(g0, g1, "shards must be balanced; got {g0} vs {g1}");
+        let half = 10u64 * 1024 * 1024 * 1024;
+        assert!(g0 >= half, "each shard should carry ~half the weights");
+    }
+
+    /// Tensor split shards the output head and the MTP draft context across
+    /// every spanned GPU; only the vision projector (the non-layer "other"
+    /// bytes) rides the main GPU. Measured on Qwen 3.6 27B (`--split-mode
+    /// tensor`), enabling MTP added the same VRAM to *both* cards (≈1.4 GiB
+    /// each), and the main GPU's only premium was the non-sharded mmproj — so
+    /// the per-GPU difference must equal exactly `other_bytes`. Regression
+    /// against the original lump-on-`--main-gpu` accounting, which over-pledged
+    /// the main GPU by the whole output head plus the whole MTP context.
+    #[test]
+    fn tensor_split_shards_output_head_and_mtp_across_gpus() {
+        let gib = 1024 * 1024 * 1024u64;
+        let per_layer_bytes: Vec<u64> = (0..20).map(|_| gib).collect();
+        let output_head = gib; // tensor-parallel sharded
+        let other = gib / 2; // mmproj/vision — main GPU only
+        let token_embd = gib / 2; // CPU
+        let mtp_bytes = 3 * gib; // tensor-parallel sharded
+        let weights_bytes = 20 * gib + output_head + other + token_embd;
+        let e = Estimate {
+            weights_bytes,
+            kv_per_token: 0,
+            compute_buffer_mb: 400,
+            mtp_bytes,
+            per_layer_bytes: Some(per_layer_bytes),
+            attention_layers: None,
+            non_layer: NonLayer {
+                output_head_bytes: output_head,
+                token_embd_bytes: token_embd,
+                other_bytes: other,
+            },
+            override_tensor_bytes: BTreeMap::new(),
+            expert_layers: Vec::new(),
+            expert_layer_cpu_bytes: BTreeMap::new(),
+            context: 4096,
+            architecture: SmolStr::new("qwen35"),
+        };
+        let snap = snapshot(&[24, 24]);
+        let alloc = AllocationTable::new();
+        let mut s = svc(PlacementPolicy::GpuOnly, None);
+        s.split_mode = SplitMode::Tensor;
+        let packed = pack(&e, &s, &snap, &alloc).unwrap();
+
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        // If the output head and MTP rode the main GPU, the difference would be
+        // `other + output_head + mtp`. Sharded, the only premium is the mmproj.
+        assert_eq!(
+            g0 - g1,
+            other,
+            "main GPU premium must be only the mmproj (got g0={g0}, g1={g1})"
+        );
+        // The last GPU must carry its half of the MTP draft context — proof it
+        // is sharded, not lumped on the main GPU.
+        assert!(
+            g1 >= mtp_bytes / 2,
+            "MTP must be sharded onto the last GPU (g1={g1}, mtp/2={})",
+            mtp_bytes / 2
+        );
+        // Token embeddings ride the CPU, as on the layer path.
+        let cpu = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Cpu)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(cpu, token_embd, "token embeddings must ride the CPU");
+    }
+
+    /// In a sharded split every spanned GPU must hold its shard — there is no
+    /// CPU spill. A GPU too small for its equal share fails the pack with
+    /// `ShardDoesNotFit`, naming the offending GPU.
+    #[test]
+    fn tensor_split_rejects_when_a_shard_overflows() {
+        let e = trivial_estimate(40, 1024); // 40 GiB → 20 GiB per shard
+        let snap = snapshot(&[24, 8]); // GPU 1 can't hold a 20 GiB shard
+        let alloc = AllocationTable::new();
+        let mut s = svc(PlacementPolicy::GpuOnly, None);
+        s.split_mode = SplitMode::Tensor;
+        let err = pack(&e, &s, &snap, &alloc).unwrap_err();
+        assert!(
+            matches!(err, PackError::ShardDoesNotFit { gpu_index: 1, .. }),
+            "expected ShardDoesNotFit on gpu:1, got {err:?}"
+        );
+    }
+
+    /// With only one GPU available, tensor split is meaningless — fall back to
+    /// the ordinary single-GPU placement and emit no `--split-mode`/`--main-gpu`.
+    #[test]
+    fn tensor_split_with_one_gpu_falls_back_to_layer() {
+        let e = trivial_estimate(4, 1024);
+        let snap = snapshot(&[24]); // single GPU
+        let alloc = AllocationTable::new();
+        let mut s = svc(PlacementPolicy::GpuOnly, None);
+        s.split_mode = SplitMode::Tensor;
+        let packed = pack(&e, &s, &snap, &alloc).unwrap();
+        assert_eq!(packed.args.split_mode, None);
+        assert_eq!(packed.args.main_gpu, None);
+        assert_eq!(packed.args.ngl, Some(4), "single-GPU layer count, not 999");
     }
 }

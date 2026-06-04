@@ -173,6 +173,28 @@ ananke oversubscribes GPU memory by dynamically managing which models are active
 - `cpu-only`: Service resides entirely on CPU.
 - `hybrid`: Allows a mix of GPU and CPU (e.g., using `override_tensor` for specific CPU offloading).
 
+#### Multi-GPU split modes
+
+When a llama.cpp service spans more than one GPU, `devices.split` selects how llama.cpp divides the model across them. It maps directly to llama.cpp's `--split-mode`:
+
+```toml
+[service.devices]
+placement = "gpu-only"
+split = "tensor"   # "layer" (default), "row", or "tensor"
+```
+
+- `layer` (default): pipeline parallelism — each GPU holds a contiguous range of whole layers. ananke estimates each layer's footprint and packs them across the allowed GPUs first-fit, so the split ratio follows the per-GPU layer counts. Lowest interconnect demand; the right default when the cards have no fast peer link.
+- `row`: the older tensor-parallel mode (`--split-mode row`). Splits individual tensors by row. Without NVLink/P2P it is typically *slower* than `layer` because every token incurs cross-GPU traffic over PCIe; prefer `tensor` over `row` on such hosts.
+- `tensor`: the newer tensor-parallel mode (`--split-mode tensor`). Shards each tensor across the GPUs and emits a balanced `--tensor-split` with `--main-gpu` set to the lowest allowed GPU. On dual identical cards this measures meaningfully faster decode than `layer` even without P2P, at the cost of a larger compute buffer and constant cross-GPU communication.
+
+`row` and `tensor` are sharded modes and carry extra constraints, rejected at config validation:
+
+- The service must use `placement = "gpu-only"` — a sharded model cannot spill to CPU.
+- Only valid for `llama-cpp` services, not `command` services.
+- Cannot be combined with `override_tensor` (manual tensor placement), since the sharded modes manage tensor placement themselves.
+
+With a sharded mode, ananke reserves an equal share of the model weights, KV cache, and compute buffer on each allowed GPU, placing the non-layer remainder (output tensor, MTP overhead, …) on the main GPU. The pledge book reflects this per-GPU split, so a co-tenant (e.g. an embedding service) sees the true free capacity on each card.
+
 #### llama.cpp Template
 
 Used for GGUF models via llama.cpp.
@@ -383,11 +405,12 @@ ananke ensures the upstream container is started (cold-starting it on first requ
   strip_params = ["temperature"] # Remove these from the request
   set_params = { max_tokens = 4096 } # Force these values
   ```
-- **Devices**: Control GPU visibility.
+- **Devices**: Control GPU visibility and multi-GPU splitting.
   ```toml
   [service.devices]
   placement = "hybrid"
   gpu_allow = [0, 1] # Only use these GPUs
+  split = "tensor"   # Multi-GPU split mode; see "Multi-GPU split modes" above
   ```
 - **Metadata**: Arbitrary key-value pairs exposed through `/v1/models` and `/api/services`.
   ```toml

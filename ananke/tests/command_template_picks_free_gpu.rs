@@ -17,7 +17,8 @@ use std::{collections::BTreeMap, time::Duration};
 use ananke::{
     config::{
         AllocationMode, CommandConfig, DeviceSlot, Filters, HealthSettings, Lifecycle,
-        PlacementPolicy, ServiceConfig, TemplateConfig, parse::DEFAULT_START_QUEUE_DEPTH,
+        PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
+        parse::DEFAULT_START_QUEUE_DEPTH,
     },
     devices::{CpuSnapshot, DeviceSnapshot, GpuSnapshot},
     supervise::EnsureSource,
@@ -41,6 +42,7 @@ fn comfy_like_service(name: &str, port: u16) -> ServiceConfig {
         placement_override: BTreeMap::new(),
         placement_policy: PlacementPolicy::GpuOnly,
         gpu_allow: Vec::new(),
+        split_mode: SplitMode::Layer,
         idle_timeout_ms: 60_000,
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,

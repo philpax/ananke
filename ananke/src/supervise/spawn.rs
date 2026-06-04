@@ -190,6 +190,18 @@ fn render_llama_server_flags(
         // Placement-derived tensor-split and override-tensor rules take
         // precedence; lc.override_tensor is subsumed into CommandArgs by
         // the placement engine already.
+        //
+        // `--split-mode`/`--main-gpu` are emitted only for sharded
+        // (tensor/row) packings; layer split leaves `split_mode` `None` so
+        // llama.cpp keeps its default `layer` mode and the argv is unchanged.
+        if let Some(mode) = ca.split_mode {
+            args.push("--split-mode".into());
+            args.push(mode.as_flag().into());
+        }
+        if let Some(mg) = ca.main_gpu {
+            args.push("--main-gpu".into());
+            args.push(mg.to_string());
+        }
         if let Some(ref split) = ca.tensor_split {
             let split_str = split
                 .iter()
@@ -328,7 +340,7 @@ mod tests {
 
     use super::*;
     use crate::config::validate::{
-        AllocationMode, DeviceSlot, Lifecycle, PlacementPolicy, ServiceConfig,
+        AllocationMode, DeviceSlot, Lifecycle, PlacementPolicy, ServiceConfig, SplitMode,
         test_fixtures::{expect_llama_cpp, minimal_command_service, minimal_service},
     };
 
@@ -429,12 +441,37 @@ mod tests {
             ngl: Some(24),
             tensor_split: Some(vec![12, 12]),
             override_tensor: vec![],
+            split_mode: None,
+            main_gpu: None,
         };
         let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
         let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
         assert_eq!(cmd.args[ngl_idx + 1], "24");
         let ts_idx = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();
         assert_eq!(cmd.args[ts_idx + 1], "12,12");
+        // Layer split (split_mode = None) must not emit --split-mode/--main-gpu.
+        assert!(!cmd.args.iter().any(|a| a == "--split-mode"));
+        assert!(!cmd.args.iter().any(|a| a == "--main-gpu"));
+    }
+
+    #[test]
+    fn placement_cmd_args_emit_tensor_split_mode_flags() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let ca = CommandArgs {
+            ngl: Some(999),
+            tensor_split: Some(vec![1, 1]),
+            override_tensor: vec![],
+            split_mode: Some(SplitMode::Tensor),
+            main_gpu: Some(0),
+        };
+        let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
+        let sm = cmd.args.iter().position(|a| a == "--split-mode").unwrap();
+        assert_eq!(cmd.args[sm + 1], "tensor");
+        let mg = cmd.args.iter().position(|a| a == "--main-gpu").unwrap();
+        assert_eq!(cmd.args[mg + 1], "0");
+        let ts = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();
+        assert_eq!(cmd.args[ts + 1], "1,1");
     }
 
     /// Regression for the scenario-01 `CUDA_VISIBLE_DEVICES=` empty-env bug:

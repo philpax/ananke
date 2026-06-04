@@ -333,6 +333,9 @@ pub struct RawServiceDevices {
     pub placement: Option<SmolStr>,
     pub gpu_allow: Option<Vec<u32>>,
     pub placement_override: Option<BTreeMap<String, u64>>,
+    /// `--split-mode` for multi-GPU llama.cpp services: `"layer"` (default),
+    /// `"row"`, or `"tensor"`. Validated into [`crate::config::SplitMode`].
+    pub split: Option<SmolStr>,
 }
 
 /// Estimator overrides. No transformation between parse and validate layers —

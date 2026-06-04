@@ -272,6 +272,7 @@ fn merge_common(
             placement: c.placement.or(p.placement),
             gpu_allow: c.gpu_allow.or(p.gpu_allow),
             placement_override: c.placement_override.or(p.placement_override),
+            split: c.split.or(p.split),
         }),
     };
 
