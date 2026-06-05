@@ -2,8 +2,9 @@
 
 use ananke_api::{
     ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DeviceReservation,
-    DeviceSummary, DisableResponse, EnableResponse, LogLine, LogStreamMessage, LogsResponse,
-    ServiceDetail, ServiceSummary, ServicesResponse, StartResponse, StopResponse, ValidationError,
+    DeviceSummary, DisableResponse, EnableResponse, EnvVar, LaunchCommand, LaunchCommandSource,
+    LogLine, LogStreamMessage, LogsResponse, ServiceDetail, ServiceSummary, ServicesResponse,
+    StartResponse, StopResponse, ValidationError,
     oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
 };
 use axum::{
@@ -35,6 +36,7 @@ use crate::{
         openai_handlers::embeddings,
         mgmt_handlers::list_services,
         mgmt_handlers::service_detail,
+        mgmt_handlers::service_command,
         mgmt_handlers::list_devices,
         mgmt_lifecycle::post_start,
         mgmt_lifecycle::post_stop,
@@ -61,6 +63,9 @@ use crate::{
         ServiceSummary,
         ServicesResponse,
         ServiceDetail,
+        LaunchCommand,
+        LaunchCommandSource,
+        EnvVar,
         LogLine,
         LogsResponse,
         LogStreamMessage,

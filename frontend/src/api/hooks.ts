@@ -19,6 +19,7 @@ import {
   type DeviceSummary,
   type DisableResponse,
   type EnableResponse,
+  type LaunchCommand,
   type LogLine,
   type LogStreamMessage,
   type ServiceDetail,
@@ -65,6 +66,22 @@ export function useServiceDetail(
     queryFn: () => api.serviceDetail(name ?? ""),
     enabled: name !== null,
     refetchInterval: SERVICES_POLL_MS,
+  });
+}
+
+/// Fetch the launch command ananke uses (or would use) for a service.
+/// Gated by `enabled` so the daemon only runs the estimator/packer when the
+/// user actually reveals the command, and re-polls while open so the
+/// `running` ↔ `preview` source and any placement shift stay current.
+export function useServiceCommand(
+  name: string | null,
+  enabled: boolean,
+): UseQueryResult<LaunchCommand, Error> {
+  return useQuery({
+    queryKey: ["service-command", name],
+    queryFn: () => api.serviceCommand(name ?? ""),
+    enabled: enabled && name !== null,
+    refetchInterval: enabled ? SERVICES_POLL_MS : false,
   });
 }
 

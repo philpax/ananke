@@ -8,6 +8,7 @@ pub mod health;
 pub mod logs;
 pub mod orphans;
 pub mod persistent_watcher;
+pub mod preview;
 pub mod provision;
 pub mod reconciler;
 pub mod registry;
@@ -23,6 +24,7 @@ use std::{
 use ananke_api::Event;
 pub use orphans::{OrphanDisposition, reconcile};
 use parking_lot::Mutex as SyncMutex;
+pub use preview::{PreviewError, preview_command};
 pub use spawn::{SpawnConfig, render_argv};
 use tokio::{
     sync::{broadcast, mpsc, watch},

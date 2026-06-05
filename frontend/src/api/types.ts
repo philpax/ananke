@@ -116,6 +116,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/services/{name}/command": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["service_command"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/services/{name}/disable": {
     parameters: {
       query?: never;
@@ -386,6 +402,13 @@ export interface components {
           /** @enum {string} */
           status: "already_enabled";
         };
+    /** @description One environment variable ananke sets on the child process. */
+    EnvVar: {
+      /** @description Variable name (e.g. `CUDA_VISIBLE_DEVICES`). */
+      key: string;
+      /** @description Variable value. */
+      value: string;
+    };
     /**
      * @description Estimator output projected to the wire. Carries the components a
      *     reader needs to answer "how much VRAM will this service take?"
@@ -420,6 +443,34 @@ export interface components {
        */
       weights_bytes: number;
     };
+    /**
+     * @description Response from `GET /api/services/{name}/command`: the full launch command
+     *     ananke uses (or would use) for a service.
+     */
+    LaunchCommand: {
+      /**
+       * @description The full argv. `argv[0]` is the binary; the rest are its arguments.
+       *     Already split into tokens — no shell quoting is applied, so a client
+       *     rendering a copy-pasteable line should quote as needed.
+       */
+      argv: string[];
+      /**
+       * @description Environment variables ananke sets or overrides for the child (notably
+       *     `CUDA_VISIBLE_DEVICES`), sorted by key. Not the full inherited
+       *     environment.
+       */
+      env: components["schemas"]["EnvVar"][];
+      /**
+       * @description Whether the service is running (`running`) or this is a preview of the
+       *     next start (`preview`).
+       */
+      source: components["schemas"]["LaunchCommandSource"];
+    };
+    /**
+     * @description Whether a [`LaunchCommand`] describes a live process or a what-if.
+     * @enum {string}
+     */
+    LaunchCommandSource: "running" | "preview";
     /** @description One captured stdout/stderr line. */
     LogLine: {
       /** @description The line content (sans trailing newline). */
@@ -1132,6 +1183,41 @@ export interface operations {
         };
       };
       404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  service_command: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Service name */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LaunchCommand"];
+        };
+      };
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The command could not be computed (e.g. placement does not fit) */
+      422: {
         headers: {
           [name: string]: unknown;
         };

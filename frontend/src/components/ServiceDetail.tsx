@@ -1,6 +1,9 @@
-import { useServiceDetail } from "../api/hooks.ts";
+import { useState } from "react";
+
+import { useServiceCommand, useServiceDetail } from "../api/hooks.ts";
 import type {
   EstimateSummary,
+  LaunchCommand,
   ModelInfo,
   ServiceDetail,
 } from "../api/client.ts";
@@ -83,6 +86,8 @@ export function ServiceDetailInline({ name }: { name: string }) {
         current={detail.current_allocation}
         placementOverride={detail.placement_override}
       />
+
+      <LaunchCommandSection name={name} />
 
       <LogsView name={name} />
     </div>
@@ -295,4 +300,110 @@ function AllocationSection({
       </div>
     </section>
   );
+}
+
+// The full llama-server / command argv ananke uses (or would use) for this
+// service. Collapsed by default: expanding it enables the query, which makes
+// the daemon run the estimator + packer on demand rather than on every poll.
+function LaunchCommandSection({ name }: { name: string }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const { data, error, isPending } = useServiceCommand(name, open);
+
+  const copy = async (cmd: LaunchCommand) => {
+    try {
+      await navigator.clipboard.writeText(renderCommand(cmd));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard unavailable (e.g. an insecure context) — leave the
+      // button label unchanged; the command is still visible to select.
+    }
+  };
+
+  return (
+    <section className="mb-3">
+      <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+        <summary className="cursor-pointer text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 select-none">
+          Launch command
+        </summary>
+        <div className="mt-2 text-sm">
+          {open && isPending && <div className="opacity-60">Computing…</div>}
+          {error && (
+            <div className="text-red-600 dark:text-red-400">
+              Cannot compute command: {error.message}
+            </div>
+          )}
+          {data && (
+            <>
+              <div className="flex items-center gap-2 mb-1">
+                <SourceBadge source={data.source} />
+                <button
+                  type="button"
+                  onClick={() => void copy(data)}
+                  className="px-1.5 py-0.5 text-[10px] rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <pre className="bg-gray-50 dark:bg-black/30 text-xs p-2 rounded overflow-x-auto whitespace-pre-wrap break-all font-mono">
+                {renderCommand(data)}
+              </pre>
+            </>
+          )}
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function SourceBadge({ source }: { source: LaunchCommand["source"] }) {
+  if (source === "running") {
+    return (
+      <span
+        className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
+        title="The service is running; this is the configuration it was launched with."
+      >
+        running
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+      title="The service is not running; this is what it would launch with on the next start, given the current config and free VRAM."
+    >
+      preview
+    </span>
+  );
+}
+
+// Render a launch command as a shell-pasteable, multi-line string: env
+// assignments first, then the binary, then each flag (paired with its value
+// when it takes one), joined with backslash continuations. Every token is
+// shell-quoted so JSON/regex arguments stay intact.
+function renderCommand(cmd: LaunchCommand): string {
+  const lines: string[] = [];
+  for (const e of cmd.env) lines.push(`${e.key}=${shellQuote(e.value)}`);
+  const [binary, ...rest] = cmd.argv;
+  if (binary !== undefined) lines.push(shellQuote(binary));
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    const next = rest[i + 1];
+    if (tok.startsWith("-") && next !== undefined && !next.startsWith("-")) {
+      lines.push(`  ${shellQuote(tok)} ${shellQuote(next)}`);
+      i++;
+    } else {
+      lines.push(`  ${shellQuote(tok)}`);
+    }
+  }
+  return lines.join(" \\\n");
+}
+
+// Minimal POSIX shell quoting: leave shell-safe tokens bare, single-quote the
+// rest (escaping embedded single quotes the standard `'\''` way).
+function shellQuote(s: string): string {
+  if (s.length === 0) return "''";
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }

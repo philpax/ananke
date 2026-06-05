@@ -23,6 +23,7 @@ export type LogsQuery = {
 export type ServiceSummary = Schemas["ServiceSummary"];
 export type ServicesResponse = Schemas["ServicesResponse"];
 export type ServiceDetail = Schemas["ServiceDetail"];
+export type LaunchCommand = Schemas["LaunchCommand"];
 export type ModelInfo = Schemas["ModelInfo"];
 export type EstimateSummary = Schemas["EstimateSummary"];
 export type LogLine = Schemas["LogLine"];
@@ -54,11 +55,21 @@ async function postJson<T>(path: string): Promise<T> {
 }
 
 async function errorMessage(resp: Response): Promise<string> {
+  const fallback = `${resp.status} ${resp.statusText}`;
   try {
-    const body = (await resp.json()) as ApiError;
-    return body.error?.message ?? `${resp.status} ${resp.statusText}`;
+    // Two error shapes are in play: the structured `ApiError`
+    // (`{ error: { message } }`) and the simpler inline form some handlers
+    // return (`{ error: "..." }`, e.g. the launch-command 422). Handle both.
+    const body = (await resp.json()) as { error?: unknown };
+    const e = body.error;
+    if (typeof e === "string") return e;
+    if (e && typeof e === "object" && "message" in e) {
+      const message = (e as { message?: unknown }).message;
+      if (typeof message === "string") return message;
+    }
+    return fallback;
   } catch {
-    return `${resp.status} ${resp.statusText}`;
+    return fallback;
   }
 }
 
@@ -69,6 +80,8 @@ export const api = {
     >("/api/services"),
   serviceDetail: (name: string) =>
     getJson<ServiceDetail>(`/api/services/${encodeURIComponent(name)}`),
+  serviceCommand: (name: string) =>
+    getJson<LaunchCommand>(`/api/services/${encodeURIComponent(name)}/command`),
   listDevices: () =>
     getJson<
       paths["/api/devices"]["get"]["responses"]["200"]["content"]["application/json"]

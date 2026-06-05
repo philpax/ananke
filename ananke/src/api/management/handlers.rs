@@ -1,8 +1,8 @@
 //! Read-only management endpoints.
 
 use ananke_api::{
-    DeviceReservation, DeviceSummary, EstimateSummary, LogLine, ModelInfo, ServiceDetail,
-    ServiceSummary, ServicesResponse,
+    DeviceReservation, DeviceSummary, EnvVar, EstimateSummary, LaunchCommand, LaunchCommandSource,
+    LogLine, ModelInfo, ServiceDetail, ServiceSummary, ServicesResponse,
 };
 use axum::{
     Json,
@@ -26,6 +26,7 @@ pub fn register(router: Router, state: AppState) -> Router {
     let mgmt: Router = Router::new()
         .route("/api/services", get(list_services))
         .route("/api/services/:name", get(service_detail))
+        .route("/api/services/:name/command", get(service_command))
         .route("/api/devices", get(list_devices))
         .with_state(state);
     router.merge(mgmt)
@@ -177,6 +178,74 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         ananke_metadata: svc_cfg.metadata.clone(),
     };
     (StatusCode::OK, Json(detail)).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/services/{name}/command",
+    params(("name" = String, Path, description = "Service name")),
+    responses(
+        (status = 200, body = LaunchCommand),
+        (status = 404),
+        (status = 422, description = "The command could not be computed (e.g. placement does not fit)")
+    )
+)]
+pub async fn service_command(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    let eff = state.config.effective();
+    let Some(svc_cfg) = eff.services.iter().find(|s| s.name == name) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response();
+    };
+
+    // A live pid means the service is running; otherwise the rendered command
+    // is what it would launch with on the next start.
+    let running = state
+        .registry
+        .get(&svc_cfg.name)
+        .map(|h| h.peek())
+        .and_then(|s| s.pid)
+        .is_some();
+    let source = if running {
+        LaunchCommandSource::Running
+    } else {
+        LaunchCommandSource::Preview
+    };
+
+    let snapshot = state.snapshot.read().clone();
+    let table = state.allocations.lock().clone();
+    let rolling_mean = state.rolling.get(&svc_cfg.name).rolling_mean;
+
+    let spawn_cfg = match crate::supervise::preview_command(
+        svc_cfg,
+        &snapshot,
+        &table,
+        state.system.fs.as_ref(),
+        rolling_mean,
+    ) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut argv = Vec::with_capacity(spawn_cfg.args.len() + 1);
+    argv.push(spawn_cfg.binary);
+    argv.extend(spawn_cfg.args);
+    let env = spawn_cfg
+        .env
+        .into_iter()
+        .map(|(key, value)| EnvVar { key, value })
+        .collect();
+
+    let command = LaunchCommand { source, argv, env };
+    (StatusCode::OK, Json(command)).into_response()
 }
 
 /// Look up the cached `(ModelInfo, EstimateSummary)` for a service,
