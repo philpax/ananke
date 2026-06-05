@@ -1,10 +1,10 @@
 //! Aggregated OpenAPI document for the daemon.
 
 use ananke_api::{
-    ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DeviceReservation,
-    DeviceSummary, DisableResponse, EnableResponse, EnvVar, LaunchCommand, LaunchCommandSource,
-    LogLine, LogStreamMessage, LogsResponse, ServiceDetail, ServiceSummary, ServicesResponse,
-    StartResponse, StopResponse, ValidationError,
+    ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DevicePlacement,
+    DeviceReservation, DeviceSummary, DisableResponse, EnableResponse, EnvVar, FitVerdict,
+    LaunchCommand, LaunchCommandSource, LogLine, LogStreamMessage, LogsResponse, PlacementPreview,
+    ServiceDetail, ServiceSummary, ServicesResponse, StartResponse, StopResponse, ValidationError,
     oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
 };
 use axum::{
@@ -63,6 +63,9 @@ use crate::{
         ServiceSummary,
         ServicesResponse,
         ServiceDetail,
+        PlacementPreview,
+        DevicePlacement,
+        FitVerdict,
         LaunchCommand,
         LaunchCommandSource,
         EnvVar,

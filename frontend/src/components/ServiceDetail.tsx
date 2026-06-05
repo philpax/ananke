@@ -2,9 +2,11 @@ import { useState } from "react";
 
 import { useServiceCommand, useServiceDetail } from "../api/hooks.ts";
 import type {
+  DevicePlacement,
   EstimateSummary,
   LaunchCommand,
   ModelInfo,
+  PlacementPreview,
   ServiceDetail,
 } from "../api/client.ts";
 import { formatBytes, formatParameterCount, serviceProxyUrl } from "../util.ts";
@@ -86,6 +88,7 @@ export function ServiceDetailInline({ name }: { name: string }) {
         current={detail.current_allocation}
         placementOverride={detail.placement_override}
       />
+      <PlacementNowSection placement={detail.placement_preview ?? null} />
 
       <LaunchCommandSection name={name} />
 
@@ -178,9 +181,8 @@ function EstimateSection({
   observedPeakBytes: number;
 }) {
   if (!estimate) return null;
-  // Sum of the three components for a "single-device load" lower
-  // bound. The actual per-device split depends on placement (which
-  // shows up in `current_allocation` once the service has spawned).
+  // Sum of the three components for a "single-device load" lower bound. The
+  // actual per-device split shows up in the placement bars below.
   const estimatedTotal =
     estimate.weights_bytes +
     estimate.kv_bytes_for_context +
@@ -190,53 +192,172 @@ function EstimateSection({
       <h3 className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
         VRAM estimate
       </h3>
-      <dl className="grid grid-cols-[auto_1fr] md:grid-cols-[auto_1fr_auto_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-gray-500 dark:text-gray-400">Weights</dt>
-        <dd>{formatBytes(estimate.weights_bytes)}</dd>
-        <dt
-          className="text-gray-500 dark:text-gray-400"
-          title="kv_per_token × configured context"
-        >
-          KV cache @ {estimate.configured_context.toLocaleString()}
-        </dt>
-        <dd>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+        <span>
+          <span className="text-gray-500 dark:text-gray-400">Weights</span>{" "}
+          {formatBytes(estimate.weights_bytes)}
+        </span>
+        <span title="kv_per_token × configured context">
+          <span className="text-gray-500 dark:text-gray-400">
+            KV @ {estimate.configured_context.toLocaleString()}
+          </span>{" "}
           {formatBytes(estimate.kv_bytes_for_context)}
-          {estimate.kv_per_token > 0 && (
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              {" "}
-              ({estimate.kv_per_token} B/token)
-            </span>
-          )}
-        </dd>
-        <dt
-          className="text-gray-500 dark:text-gray-400"
-          title="Reserved compute buffer per active device"
-        >
-          Compute buffer
-        </dt>
-        <dd>
-          {formatBytes(estimate.compute_buffer_bytes_per_device)}{" "}
-          <span className="text-xs text-gray-500 dark:text-gray-400">
-            per device
-          </span>
-        </dd>
-        <dt
-          className="text-gray-500 dark:text-gray-400"
+        </span>
+        <span title="Reserved compute buffer per active device">
+          <span className="text-gray-500 dark:text-gray-400">Compute/dev</span>{" "}
+          {formatBytes(estimate.compute_buffer_bytes_per_device)}
+        </span>
+        <span
+          className="font-medium"
           title="Weights + KV + compute buffer, single-device estimate"
         >
-          Estimated total
-        </dt>
-        <dd className="font-medium">
+          <span className="text-gray-500 dark:text-gray-400 font-normal">
+            Total
+          </span>{" "}
           {formatBytes(estimatedTotal)}
           {observedPeakBytes > 0 && (
-            <span className="text-xs text-gray-500 dark:text-gray-400">
+            <span className="text-xs text-gray-500 dark:text-gray-400 font-normal">
               {" "}
-              (observed peak {formatBytes(observedPeakBytes)})
+              (peak {formatBytes(observedPeakBytes)})
             </span>
           )}
-        </dd>
-      </dl>
+        </span>
+      </div>
     </section>
+  );
+}
+
+// Per-device utilisation bars showing where the service's VRAM would land
+// right now and whether it fits without eviction. Placed after the static
+// `AllocationSection` (current pledge / configured override) so the live view
+// reads below the declared one.
+function PlacementNowSection({
+  placement,
+}: {
+  placement: PlacementPreview | null;
+}) {
+  if (!placement) return null;
+  return (
+    <section className="mb-3">
+      <div className="flex items-center gap-2 mb-1">
+        <h3 className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          Placement now
+        </h3>
+        <FitBadge verdict={placement.verdict} />
+      </div>
+      {placement.devices.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {placement.devices.map((d) => (
+            <DeviceBar key={d.device} device={d} verdict={placement.verdict} />
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-gray-500 dark:text-gray-400">
+          No placement fits the allowed GPUs.
+        </div>
+      )}
+    </section>
+  );
+}
+
+// A per-device utilisation bar: what is already in use by other services
+// (grey), this service's reserved share (solid blue, or amber when it does not
+// fit in currently-free VRAM), and — for a dynamic service — the room it may
+// grow into up to its max (a lighter extension), against total capacity.
+function DeviceBar({
+  device,
+  verdict,
+}: {
+  device: DevicePlacement;
+  verdict: PlacementPreview["verdict"];
+}) {
+  const {
+    device: name,
+    bytes,
+    max_bytes,
+    used_by_others_bytes,
+    total_bytes,
+  } = device;
+  const hasBar = total_bytes > 0;
+  const canGrow = max_bytes > bytes;
+  const pct = (n: number) =>
+    hasBar ? Math.min(100, (n / total_bytes) * 100) : 0;
+  const othersPct = pct(used_by_others_bytes);
+  const thisPct = Math.min(100 - othersPct, pct(bytes));
+  const growthPct = canGrow
+    ? Math.min(100 - othersPct - thisPct, pct(max_bytes - bytes))
+    : 0;
+  const thisColor =
+    verdict === "needs_eviction"
+      ? "bg-amber-500 dark:bg-amber-400"
+      : "bg-blue-500 dark:bg-blue-400";
+  const growthColor =
+    verdict === "needs_eviction"
+      ? "bg-amber-300 dark:bg-amber-800"
+      : "bg-blue-300 dark:bg-blue-800";
+  return (
+    <div className="text-xs">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="font-mono text-gray-600 dark:text-gray-300">
+          {name}
+        </span>
+        <span className="tabular-nums text-gray-500 dark:text-gray-400">
+          {formatBytes(bytes)}
+          {canGrow && <>–{formatBytes(max_bytes)}</>}
+          {hasBar && <> / {formatBytes(total_bytes)}</>}
+        </span>
+      </div>
+      {hasBar && (
+        // Widths are runtime values, so they go through `style` rather than a
+        // (necessarily static) Tailwind width utility.
+        <div
+          className="mt-0.5 flex h-2 w-full overflow-hidden rounded bg-gray-200 dark:bg-gray-800"
+          title={`${formatBytes(used_by_others_bytes)} in use by others · ${formatBytes(bytes)}${canGrow ? ` (up to ${formatBytes(max_bytes)})` : ""} this service · ${formatBytes(total_bytes)} total`}
+        >
+          <div
+            className="bg-gray-400 dark:bg-gray-600"
+            style={{ width: `${othersPct}%` }}
+          />
+          <div className={thisColor} style={{ width: `${thisPct}%` }} />
+          {growthPct > 0 && (
+            <div className={growthColor} style={{ width: `${growthPct}%` }} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FitBadge({ verdict }: { verdict: PlacementPreview["verdict"] }) {
+  const styles: Record<
+    PlacementPreview["verdict"],
+    { label: string; cls: string; title: string }
+  > = {
+    fits: {
+      label: "fits now",
+      cls: "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300",
+      title: "Starts now in currently-free VRAM — no eviction needed.",
+    },
+    needs_eviction: {
+      label: "needs eviction",
+      cls: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+      title:
+        "Fits within the hardware, but currently-free VRAM is insufficient — the daemon would reclaim or evict lower-priority services to make room.",
+    },
+    does_not_fit: {
+      label: "does not fit",
+      cls: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300",
+      title: "Too large for the allowed GPUs even with everything else gone.",
+    },
+  };
+  const s = styles[verdict];
+  return (
+    <span
+      className={`inline-block px-1.5 py-0.5 text-[10px] rounded ${s.cls}`}
+      title={s.title}
+    >
+      {s.label}
+    </span>
   );
 }
 

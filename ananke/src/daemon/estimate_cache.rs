@@ -51,6 +51,11 @@ pub struct CacheEntry {
     pub config_fingerprint: u64,
     pub model_info: ModelInfo,
     pub estimate: EstimateSummary,
+    /// The full internal estimate the summary was projected from. Kept so the
+    /// detail handler can re-run the packer (for the placement preview)
+    /// without re-parsing the GGUF — the summary alone is lossy (no per-layer
+    /// breakdown, MTP, or non-layer split).
+    pub estimate_full: Estimate,
 }
 
 impl CacheEntry {
@@ -124,6 +129,7 @@ impl CacheEntry {
             config_fingerprint,
             model_info,
             estimate: estimate_summary,
+            estimate_full: estimate.clone(),
         }
     }
 }
@@ -209,6 +215,20 @@ mod tests {
                 configured_context: 4096,
                 kv_bytes_for_context: 0,
                 compute_buffer_bytes_per_device: 0,
+            },
+            estimate_full: Estimate {
+                weights_bytes: 1,
+                kv_per_token: 0,
+                compute_buffer_mb: 0,
+                mtp_bytes: 0,
+                per_layer_bytes: None,
+                attention_layers: None,
+                non_layer: crate::estimator::NonLayer::default(),
+                override_tensor_bytes: std::collections::BTreeMap::new(),
+                expert_layers: Vec::new(),
+                expert_layer_cpu_bytes: std::collections::BTreeMap::new(),
+                context: 4096,
+                architecture: SmolStr::new("llama"),
             },
         }
     }

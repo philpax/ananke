@@ -162,6 +162,7 @@ fn service_detail_roundtrips() {
         elastic_borrower: None,
         model_info: None,
         estimate: None,
+        placement_preview: None,
         current_allocation: Default::default(),
         modality: ananke_api::Modality::Chat,
         ananke_metadata: ananke_api::AnankeMetadata::new(),

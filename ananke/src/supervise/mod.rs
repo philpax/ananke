@@ -24,7 +24,10 @@ use std::{
 use ananke_api::Event;
 pub use orphans::{OrphanDisposition, reconcile};
 use parking_lot::Mutex as SyncMutex;
-pub use preview::{PreviewError, preview_command};
+pub use preview::{
+    PlacementOutcome, PreviewError, preview_command, preview_command_placement,
+    preview_override_placement, preview_placement,
+};
 pub use spawn::{SpawnConfig, render_argv};
 use tokio::{
     sync::{broadcast, mpsc, watch},

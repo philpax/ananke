@@ -127,6 +127,11 @@ pub struct ServiceDetail {
     /// VRAM estimate computed against the service's configured context
     /// and KV cache settings. Same caching rules as `model_info`.
     pub estimate: Option<EstimateSummary>,
+    /// Per-device placement the service would take under current conditions,
+    /// plus whether it fits without eviction. `None` for command-template
+    /// services, services with a manual `placement_override`, and llama-cpp
+    /// services whose GGUF couldn't be read.
+    pub placement_preview: Option<PlacementPreview>,
     /// What pledge the service is currently holding on each device.
     /// Empty when idle. Keys are slot strings (`"cpu"`, `"gpu:0"`, …),
     /// values are MiB.
@@ -202,6 +207,53 @@ pub struct EstimateSummary {
     pub kv_bytes_for_context: u64,
     /// Compute-buffer reservation per active device, in bytes.
     pub compute_buffer_bytes_per_device: u64,
+}
+
+/// Where a service's VRAM would land per device under current conditions, and
+/// whether it fits without the daemon having to evict or reclaim. Computed by
+/// running the placement engine against the live snapshot and pledge book.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PlacementPreview {
+    /// Per-device VRAM the service would occupy, sorted by device. Keys are
+    /// slot strings (`"cpu"`, `"gpu:0"`, …); values are bytes.
+    pub devices: Vec<DevicePlacement>,
+    /// Whether the placement fits right now without eviction or reclaim.
+    pub verdict: FitVerdict,
+}
+
+/// One device's share of a [`PlacementPreview`], with enough context to draw a
+/// utilisation bar: this service's share, what is already in use by everything
+/// else, and the device's total capacity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DevicePlacement {
+    /// Slot string: `"cpu"` or `"gpu:N"`.
+    pub device: String,
+    /// VRAM bytes this service reserves on the device — the pledge floor for a
+    /// dynamic service.
+    pub bytes: u64,
+    /// Upper bound this service could grow to on the device. Equals `bytes`
+    /// for fixed-size services; larger for a dynamic command service that may
+    /// borrow up to its configured maximum.
+    pub max_bytes: u64,
+    /// VRAM bytes already in use on the device by everything except this
+    /// service (for a running service, its own resident VRAM is excluded so
+    /// `used_by_others_bytes + bytes` doesn't double-count it).
+    pub used_by_others_bytes: u64,
+    /// Total VRAM capacity of the device, in bytes. Zero if unknown.
+    pub total_bytes: u64,
+}
+
+/// Whether a service's estimated placement fits under current conditions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FitVerdict {
+    /// Starts now in currently-free VRAM — no eviction needed.
+    Fits,
+    /// Fits within the hardware, but currently-free VRAM is insufficient, so
+    /// the daemon would reclaim or evict lower-priority peers to make room.
+    NeedsEviction,
+    /// Too large for the allowed GPUs even with everything else gone.
+    DoesNotFit,
 }
 
 /// Whether a [`LaunchCommand`] describes a live process or a what-if.

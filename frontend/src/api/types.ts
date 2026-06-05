@@ -344,6 +344,40 @@ export interface components {
       /** @description `true` iff no errors were found. */
       valid: boolean;
     };
+    /**
+     * @description One device's share of a [`PlacementPreview`], with enough context to draw a
+     *     utilisation bar: this service's share, what is already in use by everything
+     *     else, and the device's total capacity.
+     */
+    DevicePlacement: {
+      /**
+       * Format: int64
+       * @description VRAM bytes this service reserves on the device — the pledge floor for a
+       *     dynamic service.
+       */
+      bytes: number;
+      /** @description Slot string: `"cpu"` or `"gpu:N"`. */
+      device: string;
+      /**
+       * Format: int64
+       * @description Upper bound this service could grow to on the device. Equals `bytes`
+       *     for fixed-size services; larger for a dynamic command service that may
+       *     borrow up to its configured maximum.
+       */
+      max_bytes: number;
+      /**
+       * Format: int64
+       * @description Total VRAM capacity of the device, in bytes. Zero if unknown.
+       */
+      total_bytes: number;
+      /**
+       * Format: int64
+       * @description VRAM bytes already in use on the device by everything except this
+       *     service (for a running service, its own resident VRAM is excluded so
+       *     `used_by_others_bytes + bytes` doesn't double-count it).
+       */
+      used_by_others_bytes: number;
+    };
     /** @description One reservation held against a device. */
     DeviceReservation: {
       /**
@@ -443,6 +477,11 @@ export interface components {
        */
       weights_bytes: number;
     };
+    /**
+     * @description Whether a service's estimated placement fits under current conditions.
+     * @enum {string}
+     */
+    FitVerdict: "fits" | "needs_eviction" | "does_not_fit";
     /**
      * @description Response from `GET /api/services/{name}/command`: the full launch command
      *     ananke uses (or would use) for a service.
@@ -722,6 +761,20 @@ export interface components {
        */
       submitted_at_ms: number;
     };
+    /**
+     * @description Where a service's VRAM would land per device under current conditions, and
+     *     whether it fits without the daemon having to evict or reclaim. Computed by
+     *     running the placement engine against the live snapshot and pledge book.
+     */
+    PlacementPreview: {
+      /**
+       * @description Per-device VRAM the service would occupy, sorted by device. Keys are
+       *     slot strings (`"cpu"`, `"gpu:0"`, …); values are bytes.
+       */
+      devices: components["schemas"]["DevicePlacement"][];
+      /** @description Whether the placement fits right now without eviction or reclaim. */
+      verdict: components["schemas"]["FitVerdict"];
+    };
     /** @description `GET /api/services/{name}` response body. */
     ServiceDetail: {
       /**
@@ -769,6 +822,7 @@ export interface components {
       placement_override: {
         [key: string]: number;
       };
+      placement_preview?: null | components["schemas"]["PlacementPreview"];
       /**
        * Format: int32
        * @description Public port.

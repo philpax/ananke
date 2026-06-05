@@ -22,6 +22,6 @@ pub use logs::{LogLine, LogStreamMessage, LogsResponse};
 pub use metadata::AnankeMetadata;
 pub use oneshot::{OneshotRequest, OneshotResponse, OneshotStatus};
 pub use services::{
-    EnvVar, EstimateSummary, LaunchCommand, LaunchCommandSource, Modality, ModelInfo,
-    ServiceDetail, ServiceSummary, ServicesResponse,
+    DevicePlacement, EnvVar, EstimateSummary, FitVerdict, LaunchCommand, LaunchCommandSource,
+    Modality, ModelInfo, PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse,
 };
