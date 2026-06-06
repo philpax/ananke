@@ -894,7 +894,14 @@ impl RunLoop {
     fn record_drain_complete(&mut self) {
         self.deps.rolling.update(
             &self.init.identity.name,
-            self.deps.observation.read_peak(&self.init.identity.name),
+            // The rolling base is a VRAM-only pledge, so the observed peak must
+            // be VRAM-only too. Using the combined VRAM+RSS peak here inflates
+            // the ratio by the process's host-memory footprint and over-pledges
+            // VRAM on the next placement — which has pushed a shard past a GPU's
+            // capacity and blocked re-placement.
+            self.deps
+                .observation
+                .read_peak_vram(&self.init.identity.name),
             self.base_total_bytes_for_rolling,
         );
         self.deps.observation.clear(&self.init.identity.name);
@@ -1388,9 +1395,12 @@ impl RunLoop {
                 ),
             );
         }
-        // Apply rolling correction to weights_bytes.
+        // Apply rolling correction to weights_bytes. `effective_mean()` gates
+        // the factor to a neutral 1.0 until enough samples accumulate, so a
+        // single noisy early observation can't over-pledge a shard past a GPU's
+        // capacity.
         let rc = self.deps.rolling.get(&svc.name);
-        est.weights_bytes = (est.weights_bytes as f64 * rc.rolling_mean) as u64;
+        est.weights_bytes = (est.weights_bytes as f64 * rc.effective_mean()) as u64;
 
         let packed = if optimistic {
             crate::allocator::placement::pack_optimistic(&est, svc, snap, table)

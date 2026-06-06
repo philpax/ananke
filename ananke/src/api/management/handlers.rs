@@ -226,7 +226,7 @@ pub async fn service_command(State(state): State<AppState>, Path(name): Path<Str
 
     let snapshot = state.snapshot.read().clone();
     let table = state.allocations.lock().clone();
-    let rolling_mean = state.rolling.get(&svc_cfg.name).rolling_mean;
+    let rolling_mean = state.rolling.get(&svc_cfg.name).effective_mean();
 
     let spawn_cfg = match crate::supervise::preview_command(
         svc_cfg,
@@ -334,7 +334,7 @@ fn placement_preview(
         let mut est = estimate?.clone();
         // Match the supervisor: apply the rolling drift correction before packing.
         est.weights_bytes =
-            (est.weights_bytes as f64 * state.rolling.get(&svc_cfg.name).rolling_mean) as u64;
+            (est.weights_bytes as f64 * state.rolling.get(&svc_cfg.name).effective_mean()) as u64;
         crate::supervise::preview_placement(svc_cfg, &est, &snapshot, &table, running)
     };
 
