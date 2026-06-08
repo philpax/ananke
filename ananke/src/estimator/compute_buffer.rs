@@ -98,6 +98,19 @@ fn tuning_for(summary: &GgufSummary) -> Tuning {
             slope: 6,
         },
 
+        // Talkie: dense 13B with full MHA and a native 2048 context. A
+        // single-GPU sweep at 2048/4096/8192/16384 (f16 KV, llama-server
+        // defaults) put the residual compute buffer — real nvidia-smi
+        // usage minus modelled GPU weights minus KV — at a near-flat
+        // 414→428 MiB (warmup adds ~10). Slope is ~1 MiB per 1024 tokens,
+        // so the dense default's (700, 8) over-reserves by ~290 MiB at
+        // 2048. (500, 2) tracks the data with ~80 MiB of headroom and
+        // never under-reserves across the swept range.
+        "talkie" => Tuning {
+            base: 500,
+            slope: 2,
+        },
+
         // Pure Mamba / SSM: no standard KV cache, so the compute buffer
         // is almost flat in context. Recurrent state lives in the per-
         // layer tensors, which the weights accounting already covers.
@@ -235,6 +248,32 @@ mod tests {
             "qwen35moe should land between MoE-only and dense at 262k \
              (moe={moe_only_262k} qwen35moe={qwen35moe_262k} dense={dense_262k})"
         );
+    }
+
+    #[test]
+    fn talkie_is_tighter_than_llama_default_and_covers_measured() {
+        // The talkie curve was calibrated against a single-GPU sweep whose
+        // residual compute buffer stayed ~414-428 MiB across 2048..16384.
+        // It must (a) stay strictly below the conservative dense default it
+        // would otherwise inherit, and (b) still cover the measured peak
+        // (~428 MiB warmed) at the model's native 2048 context.
+        let talkie_2k = default_for(&summary_for("talkie"), 2048);
+        let llama_2k = default_for(&summary_for("qwen3"), 2048);
+        assert!(
+            talkie_2k < llama_2k,
+            "talkie cb should be tighter than the dense default \
+             (talkie={talkie_2k} llama={llama_2k})"
+        );
+        assert!(
+            talkie_2k >= 440,
+            "talkie cb at 2048 must cover the measured ~428 MiB peak with headroom \
+             (got {talkie_2k})"
+        );
+    }
+
+    #[test]
+    fn talkie_floors_to_base() {
+        assert_eq!(default_for(&summary_for("talkie"), 0), 500);
     }
 
     #[test]

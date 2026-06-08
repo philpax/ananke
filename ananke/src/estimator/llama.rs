@@ -1,6 +1,6 @@
 //! Llama-family estimator.
 //!
-//! Applies to: llama, qwen2, qwen3, mistral, gemma(1/2/3), phi3, glm4.
+//! Applies to: llama, qwen2, qwen3, mistral, gemma(1/2/3), phi3, glm4, talkie.
 //!
 //! weights = Σ per-layer tensor bytes + non-layer bytes;
 //! kv_per_token = n_layers × n_kv_heads ×
@@ -56,6 +56,14 @@ pub const LLAMA_FAMILY: &[&str] = &[
     // MatFormer altup/laurel tensors live under `blk.N.*` and are picked
     // up by `collect_per_layer` automatically.
     "gemma3n",
+    // Talkie: a dense transformer with the standard `blk.N.*` attention +
+    // dense-FFN layout and `talkie.attention.*` metadata keys. It adds a
+    // handful of per-tensor "gain" scalars (`attn_q_gain`, `ffn_output_gain`,
+    // `token_embd_skip_gain`, `output_gain`, …) that are a few bytes each and
+    // fall through `collect_per_layer` / `collect_non_layer` harmlessly. It
+    // omits `attention.head_count_kv` entirely (full MHA, no GQA), which
+    // `compute_kv_per_token` resolves by falling back to `head_count`.
+    "talkie",
 ];
 
 pub fn is_llama_family(arch: &str) -> bool {
@@ -124,10 +132,18 @@ fn compute_kv_per_token(
 
     // Head-count-KV can be a scalar (broadcast across all layers) or a
     // per-layer array. Materialise a vector of length `n_layers` so the
-    // loop below treats both uniformly.
+    // loop below treats both uniformly. When `head_count_kv` is absent the
+    // model has no GQA, so llama.cpp defaults `n_head_kv` to `n_head`; we
+    // mirror that by falling back to `attention.head_count` (e.g. talkie,
+    // which omits the KV key entirely).
     let kv_heads_raw: Vec<u32> = summary
         .metadata
         .get(&*format!("{arch}.attention.head_count_kv"))
+        .or_else(|| {
+            summary
+                .metadata
+                .get(&*format!("{arch}.attention.head_count"))
+        })
         .and_then(|v| v.as_u32_array())
         .unwrap_or_default();
     let kv_heads_per_layer: Vec<u32> = if kv_heads_raw.len() == 1 {
@@ -410,6 +426,61 @@ mod tests {
         // compute_kv_per_token's per-layer bool mask + separate SWA head
         // dim paths, not a distinct estimator.
         assert!(is_llama_family("gemma4"));
+    }
+
+    #[test]
+    fn talkie_is_llama_family() {
+        // Talkie is a dense transformer with the standard llama-family tensor
+        // layout; it must dispatch here rather than falling through to the
+        // weights-only fallback (which leaves `per_layer_bytes = None`).
+        assert!(is_llama_family("talkie"));
+    }
+
+    #[test]
+    fn missing_head_count_kv_falls_back_to_head_count() {
+        // Talkie omits `attention.head_count_kv` (full MHA, no GQA). The KV
+        // computation must fall back to `attention.head_count` rather than
+        // returning zero, which would silently under-reserve the cache.
+        let mut tensors = std::collections::BTreeMap::new();
+        for layer in 0..2u32 {
+            for kind in ["attn_q", "attn_k", "attn_v", "ffn_down"] {
+                let name = format!("blk.{layer}.{kind}.weight");
+                tensors.insert(SmolStr::new(&name), tensor(&name, 1024 * 1024));
+            }
+        }
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("talkie".into()),
+        );
+        metadata.insert(SmolStr::new("talkie.block_count"), GgufValue::U32(2));
+        metadata.insert(
+            SmolStr::new("talkie.attention.head_count"),
+            GgufValue::U32(8),
+        );
+        metadata.insert(
+            SmolStr::new("talkie.attention.key_length"),
+            GgufValue::U32(128),
+        );
+        metadata.insert(
+            SmolStr::new("talkie.attention.value_length"),
+            GgufValue::U32(128),
+        );
+        let s = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors,
+            metadata,
+            block_count: Some(2),
+            architecture: SmolStr::new("talkie"),
+            shards: vec!["/fake".into()],
+        };
+        let empty: Vec<String> = Vec::new();
+        let e = estimate(&s, &inputs("f16", "f16", 4096, &empty));
+        // n_layers=2, n_kv=head_count=8, k=v=128, 2 bytes/element (f16).
+        // per_layer_kv = 8 × (128*2 + 128*2) = 8 × 512 = 4096 bytes.
+        // kv_per_token = 2 × 4096 = 8192 bytes.
+        assert_eq!(e.kv_per_token, 8192);
     }
 
     #[test]
