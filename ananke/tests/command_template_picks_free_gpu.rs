@@ -12,7 +12,7 @@
 
 mod common;
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use ananke::{
     config::{
@@ -44,7 +44,7 @@ fn comfy_like_service(name: &str, port: u16) -> ServiceConfig {
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
         gpu_headroom_mb: 0,
-        reserves: DeviceReserves::default(),
+        reserves: Arc::new(DeviceReserves::default()),
         idle_timeout_ms: 60_000,
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,

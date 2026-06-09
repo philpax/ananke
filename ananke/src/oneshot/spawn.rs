@@ -97,7 +97,7 @@ pub async fn spawn_oneshot(
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
         gpu_headroom_mb: 0,
-        reserves: DeviceReserves::default(),
+        reserves: Arc::new(DeviceReserves::default()),
         filters: Filters::default(),
         idle_timeout_ms: ttl_ms,
         drain_timeout_ms: DEFAULT_DRAIN_TIMEOUT_MS,

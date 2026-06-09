@@ -4,6 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use ananke_api::{AnankeMetadata, Modality};
@@ -86,10 +87,11 @@ pub struct ServiceConfig {
     /// Extra per-GPU VRAM (MiB) this service keeps free when packing, layered
     /// on top of [`Self::reserves`]. From `[service.devices] gpu_headroom_mb`.
     pub gpu_headroom_mb: u64,
-    /// Global device reserves (resolved from `[devices]`), copied here so the
+    /// Global device reserves (resolved from `[devices]`), shared here so the
     /// packer reads them without a separate config handle. Identical across
-    /// every service in a config.
-    pub reserves: DeviceReserves,
+    /// every service in a config, so the `Arc` is cloned per service rather than
+    /// the map.
+    pub reserves: Arc<DeviceReserves>,
     pub filters: Filters,
     pub idle_timeout_ms: u64,
     pub drain_timeout_ms: u64,
@@ -492,7 +494,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;
     let mut private_ports = PrivatePortAllocator::new(private_port_range);
     let daemon_llama_server = cfg.daemon.llama_server.clone();
-    let device_reserves = resolve_device_reserves(&cfg.devices)?;
+    let device_reserves = Arc::new(resolve_device_reserves(&cfg.devices)?);
 
     let mut names: BTreeSet<SmolStr> = BTreeSet::new();
     let mut ports: BTreeSet<u16> = BTreeSet::new();
@@ -562,9 +564,9 @@ struct DaemonValidationCtx<'a> {
     defaults: &'a crate::config::parse::DefaultsConfig,
     management_port: Option<u16>,
     daemon_llama_server: Option<&'a std::path::Path>,
-    /// Global device reserves resolved from `[devices]`, copied onto every
-    /// service so the packer can read them.
-    reserves: &'a DeviceReserves,
+    /// Global device reserves resolved from `[devices]`, shared with every
+    /// service so the packer can read them. The `Arc` is cloned per service.
+    reserves: &'a Arc<DeviceReserves>,
 }
 
 /// Mutable bookkeeping that accumulates across the per-service loop:
@@ -928,7 +930,7 @@ fn validate_service(
         gpu_allow,
         split_mode,
         gpu_headroom_mb,
-        reserves: daemon.reserves.clone(),
+        reserves: Arc::clone(daemon.reserves),
         filters,
         idle_timeout_ms,
         drain_timeout_ms,
@@ -1349,7 +1351,7 @@ pub mod test_fixtures {
     //! fixtures, which previously ranged over the full struct surface and had
     //! to be updated in lockstep every time a field was added.
 
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
     use smol_str::SmolStr;
 
@@ -1387,7 +1389,7 @@ pub mod test_fixtures {
             gpu_allow: Vec::new(),
             split_mode: SplitMode::Layer,
             gpu_headroom_mb: 0,
-            reserves: DeviceReserves::default(),
+            reserves: Arc::new(DeviceReserves::default()),
             idle_timeout_ms: 60_000,
             drain_timeout_ms: 1_000,
             extended_stream_drain_ms: 1_000,

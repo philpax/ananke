@@ -1,5 +1,5 @@
 #![cfg(feature = "test-fakes")]
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use ananke::{
     config::{
@@ -43,7 +43,7 @@ fn command_argv_substitutes_port() {
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
         gpu_headroom_mb: 0,
-        reserves: DeviceReserves::default(),
+        reserves: Arc::new(DeviceReserves::default()),
         idle_timeout_ms: 600_000,
         drain_timeout_ms: 5_000,
         extended_stream_drain_ms: 5_000,
