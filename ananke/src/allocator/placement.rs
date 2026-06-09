@@ -73,6 +73,11 @@ pub enum PackError {
     /// bytes the packer wants to keep on the host exceed the available host
     /// RAM (minus the configured `[devices.cpu] reserved_gb`).
     CpuDoesNotFit { needed: u64, available: u64 },
+    /// A manual `expert_offload = N` pins every non-offloaded layer's experts
+    /// to its home GPU regardless of fit, and the experts kept on `gpu_index`
+    /// overflow it. Unlike `Auto`, manual mode never spills the surplus for the
+    /// operator — the fix is a larger offload count.
+    ManualExpertsDoNotFit { gpu_index: u32, bytes: u64 },
 }
 
 impl std::fmt::Display for PackError {
@@ -95,6 +100,12 @@ impl std::fmt::Display for PackError {
                 write!(
                     f,
                     "host RAM offload ({needed} bytes) exceeds available CPU memory ({available} bytes)"
+                )
+            }
+            Self::ManualExpertsDoNotFit { gpu_index, bytes } => {
+                write!(
+                    f,
+                    "manual expert_offload keeps more expert weight on gpu:{gpu_index} than it can hold (overflow at a {bytes}-byte expert tensor); raise the expert_offload count"
                 )
             }
         }
@@ -181,7 +192,7 @@ fn pack_inner(
         // then distribute the experts, offloading the surplus to CPU (or a
         // secondary GPU) and recording `-ot` rules for what moved.
         packer.place_nonexpert_layers()?;
-        packer.distribute_experts();
+        packer.distribute_experts()?;
     } else {
         packer.walk_layers()?;
         packer.place_fallback_weights()?;
@@ -710,9 +721,12 @@ impl<'a> Packer<'a> {
     /// end up on CPU are the trailing ones (the walk is in `(layer, kind)`
     /// order), which keeps the synthesised `-ot` rules compact. `Layers(N)`
     /// sends the experts of the N tail-most expert layers to CPU and pins the
-    /// rest to their home GPU. Anything placed off its home GPU is recorded for
-    /// `-ot` synthesis in [`Self::finish`].
-    fn distribute_experts(&mut self) {
+    /// rest to their home GPU regardless of fit — so an `N` too small to relieve
+    /// the card overflows it, which we reject as [`PackError::ManualExpertsDoNotFit`]
+    /// rather than silently over-committing the GPU. Anything placed off its
+    /// home GPU is recorded for `-ot` synthesis in [`Self::finish`].
+    fn distribute_experts(&mut self) -> Result<(), PackError> {
+        let manual = matches!(self.offload_mode, OffloadMode::Layers(_));
         let manual_cpu_layers: BTreeSet<u32> = match self.offload_mode {
             OffloadMode::Layers(n) => {
                 let mut layers: Vec<u32> = self.expert_bytes_by_layer.keys().copied().collect();
@@ -728,8 +742,20 @@ impl<'a> Packer<'a> {
             }
             let home = self.layer_home.get(&e.layer).copied();
             let target = self.choose_expert_target(&e, home, &manual_cpu_layers);
+            // `Auto` only ever targets a GPU that has room; `Layers(N)`
+            // force-pins to the home GPU, so it is the one path that can overflow.
+            if manual
+                && let DeviceSlot::Gpu(g) = target
+                && self.gpu_remaining.get(&g).copied().unwrap_or(0) < e.bytes
+            {
+                return Err(PackError::ManualExpertsDoNotFit {
+                    gpu_index: g,
+                    bytes: e.bytes,
+                });
+            }
             self.place_expert(e, target, home);
         }
+        Ok(())
     }
 
     /// Pick where one expert tensor lands. See [`Self::distribute_experts`].
@@ -1283,6 +1309,25 @@ mod tests {
             packed.args.override_tensor,
             vec![r"blk\.(7|8|9)\.ffn_(gate|up|down)_exps\.=CPU".to_string()],
             "offloads exactly the 3 tail expert layers"
+        );
+    }
+
+    /// A manual `expert_offload = N` too small to relieve the card pins the
+    /// remaining experts to their home GPU regardless of fit. That overflow is
+    /// rejected with `ManualExpertsDoNotFit` rather than silently
+    /// over-committing the GPU into a spawn-time OOM.
+    #[test]
+    fn expert_offload_manual_rejects_when_gpu_overflows() {
+        // 10 layers, 100 MiB attn + 900 MiB experts each (10 GiB). Offloading
+        // only the 2 tail layers leaves ~7 GiB of experts pinned to a 4 GiB card.
+        let e = moe_estimate(10, 100, 300);
+        let snap = snapshot(&[4]);
+        let alloc = AllocationTable::new();
+        let err = pack(&e, &moe_svc(OffloadMode::Layers(2)), &snap, &alloc)
+            .expect_err("under-sized manual offload must not over-commit the GPU");
+        assert!(
+            matches!(err, PackError::ManualExpertsDoNotFit { gpu_index: 0, .. }),
+            "expected ManualExpertsDoNotFit on gpu:0, got {err:?}"
         );
     }
 
