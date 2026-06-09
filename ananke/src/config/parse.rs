@@ -182,7 +182,12 @@ pub struct RawLlamaCppService {
     pub mmproj: Option<PathBuf>,
     pub context: Option<u32>,
     pub n_gpu_layers: Option<i32>,
-    pub n_cpu_moe: Option<u32>,
+    /// MoE expert-offload policy: `"off"` (no expert offload — whole-layer CPU
+    /// spill only), `"auto"` (the packer offloads the minimum experts to fit
+    /// live VRAM), or an integer `N` (offload the experts of the N tail-most
+    /// expert layers). Validated into [`crate::config::OffloadMode`]. Requires
+    /// a CPU-allowing placement (`placement = "hybrid"`) when not `"off"`.
+    pub expert_offload: Option<RawExpertOffload>,
     pub flash_attn: Option<bool>,
     pub cache_type_k: Option<SmolStr>,
     pub cache_type_v: Option<SmolStr>,
@@ -333,9 +338,26 @@ pub struct RawServiceDevices {
     pub placement: Option<SmolStr>,
     pub gpu_allow: Option<Vec<u32>>,
     pub placement_override: Option<BTreeMap<String, u64>>,
+    /// Extra per-GPU VRAM (MiB) to keep free when placing *this* service, added
+    /// on top of the global `[devices]` reserve. Lets a single model be packed
+    /// more conservatively (headroom for KV growth, a co-resident service, or
+    /// estimator slack) without bypassing the estimator.
+    pub gpu_headroom_mb: Option<u64>,
     /// `--split-mode` for multi-GPU llama.cpp services: `"layer"` (default),
     /// `"row"`, or `"tensor"`. Validated into [`crate::config::SplitMode`].
     pub split: Option<SmolStr>,
+}
+
+/// Raw `expert_offload` value before validation: a mode string (`"off"` /
+/// `"auto"`) or an integer layer count. Validated into
+/// [`crate::config::OffloadMode`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum RawExpertOffload {
+    /// `expert_offload = N` — offload exactly N tail-most expert layers.
+    Layers(u32),
+    /// `expert_offload = "off" | "auto"`.
+    Mode(SmolStr),
 }
 
 /// Estimator overrides. No transformation between parse and validate layers —

@@ -106,7 +106,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         non_layer,
         override_tensor_bytes: BTreeMap::new(),
         expert_layers: Vec::new(),
-        expert_layer_cpu_bytes: BTreeMap::new(),
+        expert_tensors: None,
         context: inputs.context,
         architecture: SmolStr::new(arch),
     }
@@ -206,7 +206,6 @@ mod tests {
             cache_type_k: Some("f16"),
             cache_type_v: Some("f16"),
             override_tensor: empty,
-            n_cpu_moe: None,
             compute_buffer_mb: None,
             allow_fallback: false,
             mtp: false,

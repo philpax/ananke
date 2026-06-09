@@ -31,9 +31,6 @@ pub struct EstimatorInputs<'a> {
     pub cache_type_v: Option<&'a str>,
     /// `override_tensor` regex rules to pin specific tensors to CPU / a GPU.
     pub override_tensor: &'a [String],
-    /// MoE-specific: how many expert layers to offload to CPU via
-    /// `--n-cpu-moe`. Absent means 0.
-    pub n_cpu_moe: Option<u32>,
     /// Override for the compute-buffer reservation (MB per active device).
     /// Absent means the estimator's 400 MB default.
     pub compute_buffer_mb: Option<u32>,
@@ -63,7 +60,6 @@ impl<'a> EstimatorInputs<'a> {
             cache_type_k: lc.cache_type_k.as_deref(),
             cache_type_v: lc.cache_type_v.as_deref(),
             override_tensor: &lc.override_tensor,
-            n_cpu_moe: lc.n_cpu_moe,
             compute_buffer_mb: lc.estimation.compute_buffer_mb,
             allow_fallback: lc.estimation.allow_fallback.unwrap_or(false),
             mtp: lc.spec_type.as_deref() == Some("draft-mtp"),
@@ -89,7 +85,6 @@ impl<'a> EstimatorInputs<'a> {
         self.cache_type_k.hash(&mut hasher);
         self.cache_type_v.hash(&mut hasher);
         self.override_tensor.hash(&mut hasher);
-        self.n_cpu_moe.hash(&mut hasher);
         self.compute_buffer_mb.hash(&mut hasher);
         self.allow_fallback.hash(&mut hasher);
         self.mtp.hash(&mut hasher);
@@ -125,15 +120,58 @@ pub struct Estimate {
     /// Tensor-level overrides (from `override_tensor` rules) already
     /// resolved to per-device byte attributions by the estimator.
     pub override_tensor_bytes: BTreeMap<DeviceSlot, u64>,
-    /// Number of expert-bearing layers eligible for `n_cpu_moe` offload
-    /// (only meaningful for MoE).
+    /// Layer indices that carry expert (`_exps`) tensors — diagnostic only.
+    /// Empty for non-MoE architectures.
     pub expert_layers: Vec<u32>,
-    /// Per expert-layer, the bytes saved by offloading those experts to CPU.
-    pub expert_layer_cpu_bytes: BTreeMap<u32, u64>,
+    /// The offloadable expert tensors (fused `blk.N.ffn_{gate,up,down}_exps`),
+    /// `Some` for MoE architectures. The packer chooses which of these to move
+    /// off-GPU (to CPU or a secondary GPU) to make the model fit, and
+    /// synthesises the matching `-ot` rules. These bytes are *also* counted in
+    /// `per_layer_bytes[i]` (the full per-layer cost); when the packer offloads
+    /// an expert it subtracts that tensor's bytes from the layer's GPU share.
+    /// Keeping `per_layer_bytes` full means every non-expert-aware code path
+    /// (the plain layer walk, the sharded/tensor-split path, `override_tensor`
+    /// accounting) stays correct without special-casing MoE. `None` for non-MoE
+    /// architectures.
+    pub expert_tensors: Option<Vec<ExpertTensor>>,
     /// `context` that was used to compute `kv_per_token × context`.
     pub context: u32,
     /// Architecture string for diagnostics.
     pub architecture: SmolStr,
+}
+
+/// One offloadable fused expert tensor on a MoE layer. llama.cpp stacks every
+/// expert of a given projection into a single tensor per layer
+/// (`blk.N.ffn_gate_exps.weight`, …), so there are at most three per layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpertTensor {
+    /// Block/layer index this expert tensor belongs to.
+    pub layer: u32,
+    /// Which projection (gate / up / down) this is.
+    pub kind: ExpertKind,
+    /// Tensor weight bytes — the amount freed from GPU when offloaded.
+    pub bytes: u64,
+}
+
+/// The three expert projections a MoE layer can carry. Used to build precise
+/// `-ot blk.N.ffn_<kind>_exps.=<device>` rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExpertKind {
+    Gate,
+    Up,
+    Down,
+}
+
+impl ExpertKind {
+    /// The `ffn_<…>_exps` token as it appears in the GGUF tensor name and the
+    /// `-ot` regex.
+    pub fn tensor_token(self) -> &'static str {
+        match self {
+            ExpertKind::Gate => "gate",
+            ExpertKind::Up => "up",
+            ExpertKind::Down => "down",
+        }
+    }
 }
 
 /// Non-layer tensor footprint (matches llama.cpp's behaviour).

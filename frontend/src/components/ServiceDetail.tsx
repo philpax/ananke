@@ -256,6 +256,13 @@ function PlacementNowSection({
           No placement fits the allowed GPUs.
         </div>
       )}
+      {placement.expert_offload_bytes > 0 && (
+        <div className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+          Expert offload: {placement.expert_offload_layers}{" "}
+          {placement.expert_offload_layers === 1 ? "layer" : "layers"} ·{" "}
+          {formatBytes(placement.expert_offload_bytes)} → CPU
+        </div>
+      )}
     </section>
   );
 }

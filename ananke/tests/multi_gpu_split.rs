@@ -64,7 +64,7 @@ fn large_estimate() -> Estimate {
         non_layer: NonLayer::default(),
         override_tensor_bytes: BTreeMap::new(),
         expert_layers: Vec::new(),
-        expert_layer_cpu_bytes: BTreeMap::new(),
+        expert_tensors: None,
         context: 4096,
         architecture: SmolStr::new("qwen3"),
     }

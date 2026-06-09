@@ -4,6 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use ananke_api::{AnankeMetadata, Modality};
@@ -12,8 +13,8 @@ use tracing::warn;
 
 use crate::{
     config::parse::{
-        EstimationConfig, RawCommandService, RawConfig, RawLlamaCppService, RawService,
-        SamplingConfig,
+        EstimationConfig, RawCommandService, RawConfig, RawExpertOffload, RawLlamaCppService,
+        RawService, SamplingConfig,
     },
     errors::ExpectedError,
 };
@@ -83,6 +84,14 @@ pub struct ServiceConfig {
     /// [`SplitMode`]. Default [`SplitMode::Layer`] preserves the historical
     /// first-fit pipeline behaviour.
     pub split_mode: SplitMode,
+    /// Extra per-GPU VRAM (MiB) this service keeps free when packing, layered
+    /// on top of [`Self::reserves`]. From `[service.devices] gpu_headroom_mb`.
+    pub gpu_headroom_mb: u64,
+    /// Global device reserves (resolved from `[devices]`), shared here so the
+    /// packer reads them without a separate config handle. Identical across
+    /// every service in a config, so the `Arc` is cloned per service rather than
+    /// the map.
+    pub reserves: Arc<DeviceReserves>,
     pub filters: Filters,
     pub idle_timeout_ms: u64,
     pub drain_timeout_ms: u64,
@@ -171,7 +180,8 @@ pub struct LlamaCppConfig {
     pub mmproj: Option<PathBuf>,
     pub context: Option<u32>,
     pub n_gpu_layers: Option<i32>,
-    pub n_cpu_moe: Option<u32>,
+    /// MoE expert-offload policy. See [`OffloadMode`].
+    pub expert_offload: OffloadMode,
     pub flash_attn: Option<bool>,
     pub cache_type_k: Option<SmolStr>,
     pub cache_type_v: Option<SmolStr>,
@@ -385,6 +395,45 @@ impl SplitMode {
     }
 }
 
+/// MoE expert-offload policy for a llama-cpp service. Resolved from the
+/// `expert_offload` config value. The packer reads this to decide whether and
+/// how much expert weight to move off the GPU when the model doesn't fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OffloadMode {
+    /// No expert offload. The model packs whole layers, spilling entire layers
+    /// to CPU only under a CPU-allowing placement.
+    #[default]
+    Off,
+    /// The packer keeps each expert on its layer's home GPU while that GPU has
+    /// room, then greedily spills the experts that don't fit — to the most-free
+    /// other GPU first, then to CPU — so only the surplus over live VRAM moves.
+    Auto,
+    /// The packer offloads the experts of exactly the `N` tail-most
+    /// expert-bearing layers, regardless of fit.
+    Layers(u32),
+}
+
+impl OffloadMode {
+    /// Whether any expert offload is requested (i.e. not [`OffloadMode::Off`]).
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, OffloadMode::Off)
+    }
+}
+
+/// Per-device VRAM/RAM the daemon keeps free, resolved from the global
+/// `[devices]` config. Copied onto each [`ServiceConfig`] so the (pure) packer
+/// can read reserves without a separate config handle. The per-service
+/// `gpu_headroom_mb` is layered on top of these by the packer.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceReserves {
+    /// VRAM (MiB) kept free on every GPU that lacks a `per_gpu_mb` entry.
+    pub default_gpu_mb: u64,
+    /// VRAM (MiB) kept free on specific GPUs, keyed by GPU id.
+    pub per_gpu_mb: BTreeMap<u32, u64>,
+    /// Host RAM (bytes) kept free; bounds the packer's CPU expert offload.
+    pub cpu_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct HealthSettings {
     pub http_path: String,
@@ -446,6 +495,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;
     let mut private_ports = PrivatePortAllocator::new(private_port_range);
     let daemon_llama_server = cfg.daemon.llama_server.clone();
+    let device_reserves = Arc::new(resolve_device_reserves(&cfg.devices)?);
 
     let mut names: BTreeSet<SmolStr> = BTreeSet::new();
     let mut ports: BTreeSet<u16> = BTreeSet::new();
@@ -455,6 +505,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         defaults: &cfg.defaults,
         management_port,
         daemon_llama_server: daemon_llama_server.as_deref(),
+        reserves: &device_reserves,
     };
     let mut svc_state = ServiceValidationState {
         names: &mut names,
@@ -480,6 +531,32 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
     })
 }
 
+/// Resolve the global `[devices]` reserve knobs into a [`DeviceReserves`].
+/// `gpu_reserved_mb` keys are GPU id strings (`"0"`); a non-numeric key is a
+/// hard config error rather than a silently ignored reservation.
+fn resolve_device_reserves(
+    dev: &crate::config::parse::DevicesConfig,
+) -> Result<DeviceReserves, ExpectedError> {
+    let mut per_gpu_mb = BTreeMap::new();
+    for (key, mb) in &dev.gpu_reserved_mb {
+        let id: u32 = key.parse().map_err(|_| {
+            fail(format!(
+                "devices.gpu_reserved_mb: invalid GPU id key `{key}` (expected a number like \"0\")"
+            ))
+        })?;
+        per_gpu_mb.insert(id, *mb);
+    }
+    Ok(DeviceReserves {
+        default_gpu_mb: dev.default_gpu_reserved_mb.unwrap_or(0),
+        per_gpu_mb,
+        cpu_bytes: dev
+            .cpu
+            .reserved_gb
+            .unwrap_or(0)
+            .saturating_mul(1024 * 1024 * 1024),
+    })
+}
+
 /// Daemon-scoped inputs that don't change across services within a
 /// single `validate` call. Grouped into a struct so per-service
 /// validation doesn't need a long arg list (and so clippy stops
@@ -488,6 +565,9 @@ struct DaemonValidationCtx<'a> {
     defaults: &'a crate::config::parse::DefaultsConfig,
     management_port: Option<u16>,
     daemon_llama_server: Option<&'a std::path::Path>,
+    /// Global device reserves resolved from `[devices]`, shared with every
+    /// service so the packer can read them. The `Arc` is cloned per service.
+    reserves: &'a Arc<DeviceReserves>,
 }
 
 /// Mutable bookkeeping that accumulates across the per-service loop:
@@ -669,6 +749,7 @@ fn validate_service(
     }
 
     let gpu_allow = dev.gpu_allow.clone().unwrap_or_default();
+    let gpu_headroom_mb = dev.gpu_headroom_mb.unwrap_or(0);
 
     let split_mode = match dev.split.as_deref().unwrap_or("layer") {
         "layer" => SplitMode::Layer,
@@ -680,6 +761,27 @@ fn validate_service(
             )));
         }
     };
+
+    // Expert offload moves expert tensors to the CPU. That makes it
+    // incompatible with a sharded (tensor/row) split — which divides every
+    // layer across the GPUs in parallel with no CPU half — and it requires a
+    // CPU-allowing placement. Reject both combinations at load time rather than
+    // silently producing a placement that can't honour the request.
+    if let TemplateConfig::LlamaCpp(lc) = &template_config
+        && lc.expert_offload.is_enabled()
+    {
+        if split_mode.is_sharded() {
+            return Err(fail(format!(
+                "service {name}: expert_offload cannot be combined with devices.split=`{}` (sharded split is GPU-only; expert offload targets the CPU)",
+                split_mode.as_flag()
+            )));
+        }
+        if placement_policy != PlacementPolicy::Hybrid {
+            return Err(fail(format!(
+                "service {name}: expert_offload requires placement=hybrid (expert tensors offload to CPU)"
+            )));
+        }
+    }
     if split_mode.is_sharded() {
         // Tensor/row split shards every layer across all spanned GPUs in
         // parallel; there is no CPU half and no per-tensor override to honour.
@@ -837,6 +939,8 @@ fn validate_service(
         placement_policy,
         gpu_allow,
         split_mode,
+        gpu_headroom_mb,
+        reserves: Arc::clone(daemon.reserves),
         filters,
         idle_timeout_ms,
         drain_timeout_ms,
@@ -937,12 +1041,27 @@ fn validate_llama_cpp(
         .or_else(|| daemon_llama_server.map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("llama-server"));
 
+    let expert_offload = match &lc.expert_offload {
+        None => OffloadMode::Off,
+        Some(RawExpertOffload::Layers(n)) => OffloadMode::Layers(*n),
+        Some(RawExpertOffload::Mode(s)) => match s.as_str() {
+            "off" => OffloadMode::Off,
+            "auto" => OffloadMode::Auto,
+            other => {
+                return Err(fail(format!(
+                    "service {name}: expert_offload `{other}` is invalid \
+                     (expected \"off\", \"auto\", or an integer layer count)"
+                )));
+            }
+        },
+    };
+
     Ok(LlamaCppConfig {
         model,
         mmproj: lc.mmproj.clone(),
         context: lc.context,
         n_gpu_layers: lc.n_gpu_layers,
-        n_cpu_moe: lc.n_cpu_moe,
+        expert_offload,
         flash_attn: lc.flash_attn,
         cache_type_k: lc.cache_type_k.clone(),
         cache_type_v: lc.cache_type_v.clone(),
@@ -1242,14 +1361,14 @@ pub mod test_fixtures {
     //! fixtures, which previously ranged over the full struct surface and had
     //! to be updated in lockstep every time a field was added.
 
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
     use smol_str::SmolStr;
 
     use super::{
-        AllocationMode, CommandConfig, DEFAULT_SERVICE_PRIORITY, DeviceSlot, Filters,
-        HealthSettings, Lifecycle, LlamaCppConfig, Modality, PlacementPolicy, ServiceConfig,
-        SplitMode, Template, TemplateConfig, TrackingSettings,
+        AllocationMode, CommandConfig, DEFAULT_SERVICE_PRIORITY, DeviceReserves, DeviceSlot,
+        Filters, HealthSettings, Lifecycle, LlamaCppConfig, Modality, OffloadMode, PlacementPolicy,
+        ServiceConfig, SplitMode, Template, TemplateConfig, TrackingSettings,
     };
     use crate::config::parse::{EstimationConfig, SamplingConfig};
 
@@ -1279,6 +1398,8 @@ pub mod test_fixtures {
             placement_policy: PlacementPolicy::CpuOnly,
             gpu_allow: Vec::new(),
             split_mode: SplitMode::Layer,
+            gpu_headroom_mb: 0,
+            reserves: Arc::new(DeviceReserves::default()),
             idle_timeout_ms: 60_000,
             drain_timeout_ms: 1_000,
             extended_stream_drain_ms: 1_000,
@@ -1333,7 +1454,7 @@ pub mod test_fixtures {
             mmproj: None,
             context: None,
             n_gpu_layers: None,
-            n_cpu_moe: None,
+            expert_offload: OffloadMode::Off,
             flash_attn: None,
             cache_type_k: None,
             cache_type_v: None,
@@ -1407,6 +1528,145 @@ lifecycle = "persistent"
             ec.services[0].template_config,
             TemplateConfig::LlamaCpp(_)
         ));
+    }
+
+    #[test]
+    fn expert_offload_parses_auto_and_count() {
+        let auto = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+expert_offload = "auto"
+devices.placement = "hybrid"
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&auto).unwrap();
+        assert_eq!(
+            ec.services[0].llama_cpp().unwrap().expert_offload,
+            OffloadMode::Auto
+        );
+
+        let count = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+expert_offload = 16
+devices.placement = "hybrid"
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&count).unwrap();
+        assert_eq!(
+            ec.services[0].llama_cpp().unwrap().expert_offload,
+            OffloadMode::Layers(16)
+        );
+    }
+
+    #[test]
+    fn expert_offload_requires_hybrid_placement() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+expert_offload = "auto"
+devices.placement = "gpu-only"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("expert_offload requires placement=hybrid"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expert_offload_rejects_sharded_split() {
+        // A sharded (tensor/row) split has no CPU half, so it cannot honour an
+        // expert offload to host RAM — reject the combination explicitly rather
+        // than leaving the operator to infer it from the placement constraints.
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+expert_offload = "auto"
+devices.placement = "gpu-only"
+devices.split = "tensor"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("expert_offload cannot be combined with devices.split"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn n_cpu_moe_is_rejected_as_unknown_field() {
+        // The legacy knob no longer exists; deny_unknown_fields surfaces it.
+        let err = parse_toml(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+n_cpu_moe = 8
+"#,
+            Path::new("/t"),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("n_cpu_moe"),
+            "unknown-field error should name n_cpu_moe, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolves_global_reserves_and_headroom() {
+        let cfg = parse_and_merge(
+            r#"
+[devices]
+default_gpu_reserved_mb = 512
+gpu_reserved_mb = { "1" = 4096 }
+[devices.cpu]
+reserved_gb = 8
+
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "hybrid"
+devices.gpu_headroom_mb = 1024
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let svc = &ec.services[0];
+        assert_eq!(svc.gpu_headroom_mb, 1024);
+        assert_eq!(svc.reserves.default_gpu_mb, 512);
+        assert_eq!(svc.reserves.per_gpu_mb.get(&1).copied(), Some(4096));
+        assert_eq!(svc.reserves.cpu_bytes, 8 * 1024 * 1024 * 1024);
     }
 
     #[test]

@@ -137,6 +137,8 @@ enabled = true                   # Allow CPU placement for services
 reserved_gb = 8                  # Reserve 8GB of CPU RAM
 ```
 
+`default_gpu_reserved_mb` and `gpu_reserved_mb` are kept free on every GPU when the packer places a service; a per-service `gpu_headroom_mb` adds to them for one model. `[devices.cpu] reserved_gb` is host RAM the daemon keeps free — it bounds how much expert weight a hybrid MoE service may offload to the CPU, and a placement that would exceed it is rejected.
+
 ### Service Configuration
 
 Services are defined as an array of `[[service]]` blocks.
@@ -171,7 +173,7 @@ ananke oversubscribes GPU memory by dynamically managing which models are active
 
 - `gpu-only`: Service must reside entirely on GPU.
 - `cpu-only`: Service resides entirely on CPU.
-- `hybrid`: Allows a mix of GPU and CPU (e.g., using `override_tensor` for specific CPU offloading).
+- `hybrid`: Allows a mix of GPU and CPU. The packer fills the GPUs first and spills the remainder to CPU. For MoE models with `expert_offload` enabled it spills *expert tensors* before whole layers, keeping every layer's attention and KV cache on the GPU (see [MoE expert offload](#moe-expert-offload)). Manual `override_tensor` rules also work here for hand-picked CPU offloading.
 
 #### Multi-GPU split modes
 
@@ -239,6 +241,49 @@ top_p = 0.95
 #                         # layer(s) plus a ~1.7 GiB compute buffer).
 # spec_draft_n_max = 2    # --spec-draft-n-max: max draft tokens per step.
 # MTP composes with `parallel > 1` and `mmproj` (vision) on current llama.cpp.
+```
+
+#### MoE expert offload
+
+Large mixture-of-experts models often don't fit a card once their expert tensors are resident, even though the attention and KV cache do. The `expert_offload` knob lets ananke move expert tensors to the CPU — the GPU keeps every layer's attention and KV cache (latency-critical), while the bulky, sparsely-activated experts live in host RAM. ananke sizes the placement and emits the matching `-ot` rules itself, so the VRAM reservation matches what the model actually uses.
+
+`expert_offload` accepts three values, and any value other than `"off"` requires `placement = "hybrid"`:
+
+- `"off"` (default): no expert offload. The model packs whole layers, spilling entire layers to CPU only if a layer doesn't fit.
+- `"auto"`: ananke keeps each layer's experts on the GPU while there's room and greedily offloads only the surplus that doesn't fit the GPU's live free VRAM, preferring a second GPU before the CPU on multi-GPU hosts.
+- an integer `N`: offload the experts of the `N` tail-most expert layers, regardless of fit. Use this when you have measured the sweet spot and want a fixed, deterministic split.
+
+```toml
+# Auto-fit a large MoE: ananke offloads the minimum experts to fit live VRAM,
+# keeps 1 GiB free on the card, and emits the matching -ot rules itself.
+[[service]]
+name = "qwen3-moe"
+template = "llama-cpp"
+port = 8300
+model = "/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+context = 80000
+flash_attn = true
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+expert_offload = "auto"
+
+[service.devices]
+placement = "hybrid"
+gpu_headroom_mb = 1024   # keep 1 GiB free on the card for this service
+```
+
+```toml
+# Pin an exact offload count: offload the experts of the 16 tail-most expert
+# layers. Equivalent in spirit to launching llama-server with --n-cpu-moe 16.
+# (Set on the [[service]] block, alongside model/context/…; needs placement = "hybrid".)
+expert_offload = 16
+```
+
+```toml
+# Hand-picked tensor placement instead of auto-derivation: keep expert_offload
+# off and write the -ot rules yourself.
+expert_offload = "off"
+override_tensor = [ "blk\\.(1[6-9]|2[0-9])\\.ffn_(up|down)_exps\\.=CPU" ]
 ```
 
 #### Custom llama-server Binary or Wrapper

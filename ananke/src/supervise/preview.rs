@@ -141,6 +141,11 @@ pub struct PlacementOutcome {
     pub devices: BTreeMap<DeviceId, u64>,
     /// Whether it fits now, needs room freed, or can't fit at all.
     pub verdict: FitVerdict,
+    /// Total expert-tensor bytes the packer offloaded to the CPU (MoE). Zero
+    /// for non-MoE services or when nothing was offloaded.
+    pub expert_offload_bytes: u64,
+    /// Distinct layers with at least one expert offloaded to the CPU.
+    pub expert_offload_layers: u32,
 }
 
 /// Compute where a llama service's VRAM would land per device and whether it
@@ -178,13 +183,22 @@ pub fn preview_placement(
     // Prefer the strict allocation (what it would actually get now), then the
     // pledge-book shape, then the bare-hardware shape — so a service that
     // needs eviction still shows where it would land once room is freed.
-    let devices = strict
-        .or(optimistic)
-        .or(on_empty)
-        .map(|p| p.allocation.bytes)
-        .unwrap_or_default();
+    let (devices, expert_offload_bytes, expert_offload_layers) =
+        match strict.or(optimistic).or(on_empty) {
+            Some(p) => (
+                p.allocation.bytes,
+                p.expert_offload_bytes,
+                p.expert_offload_layers,
+            ),
+            None => (BTreeMap::new(), 0, 0),
+        };
 
-    PlacementOutcome { devices, verdict }
+    PlacementOutcome {
+        devices,
+        verdict,
+        expert_offload_bytes,
+        expert_offload_layers,
+    }
 }
 
 /// Placement for a service that declares a manual `placement_override`. The
@@ -223,7 +237,12 @@ pub fn preview_override_placement(
         FitVerdict::DoesNotFit
     };
 
-    PlacementOutcome { devices, verdict }
+    PlacementOutcome {
+        devices,
+        verdict,
+        expert_offload_bytes: 0,
+        expert_offload_layers: 0,
+    }
 }
 
 /// Placement for a command-template service that picks a GPU dynamically (no
@@ -254,6 +273,8 @@ pub fn preview_command_placement(
         return Some(PlacementOutcome {
             devices,
             verdict: FitVerdict::Fits,
+            expert_offload_bytes: 0,
+            expert_offload_layers: 0,
         });
     }
 
@@ -280,7 +301,12 @@ pub fn preview_command_placement(
     if let Some(gpu) = strict.or(on_empty) {
         devices.insert(DeviceId::Gpu(gpu), bytes);
     }
-    Some(PlacementOutcome { devices, verdict })
+    Some(PlacementOutcome {
+        devices,
+        verdict,
+        expert_offload_bytes: 0,
+        expert_offload_layers: 0,
+    })
 }
 
 #[cfg(test)]
@@ -350,7 +376,7 @@ mod tests {
             non_layer: NonLayer::default(),
             override_tensor_bytes: BTreeMap::new(),
             expert_layers: Vec::new(),
-            expert_layer_cpu_bytes: BTreeMap::new(),
+            expert_tensors: None,
             context: 4096,
             architecture: SmolStr::new("qwen3"),
         }

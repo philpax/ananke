@@ -1,13 +1,13 @@
 #![cfg(feature = "test-fakes")]
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use ananke::{
     config::{
         AllocationMode, CommandConfig, TemplateConfig,
         parse::DEFAULT_START_QUEUE_DEPTH,
         validate::{
-            DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig,
-            SplitMode,
+            DeviceReserves, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
+            ServiceConfig, SplitMode,
         },
     },
     devices::Allocation,
@@ -42,6 +42,8 @@ fn command_argv_substitutes_port() {
         placement_policy: PlacementPolicy::GpuOnly,
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
+        gpu_headroom_mb: 0,
+        reserves: Arc::new(DeviceReserves::default()),
         idle_timeout_ms: 600_000,
         drain_timeout_ms: 5_000,
         extended_stream_drain_ms: 5_000,

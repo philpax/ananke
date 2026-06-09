@@ -92,8 +92,13 @@ pub fn apply(estimate: &mut Estimate, summary: &GgufSummary, rules: &[OverrideRu
             {
                 per_layer[idx as usize] = per_layer[idx as usize].saturating_sub(tensor.byte_size);
             }
-            if let Some(existing) = estimate.expert_layer_cpu_bytes.get_mut(&idx) {
-                *existing = existing.saturating_sub(tensor.byte_size);
+            // An operator rule that pins an expert tensor takes it out of the
+            // packer's auto-offload pool: drop it from the itemised experts so
+            // the packer doesn't double-place or re-offload it.
+            if let Some(kind) = super::moe::expert_kind(tensor.name.as_str())
+                && let Some(experts) = estimate.expert_tensors.as_mut()
+            {
+                experts.retain(|e| !(e.layer == idx && e.kind == kind));
             }
         } else {
             match tensor.name.as_str() {
@@ -194,7 +199,7 @@ mod tests {
             non_layer: NonLayer::default(),
             override_tensor_bytes: BTreeMap::new(),
             expert_layers: Vec::new(),
-            expert_layer_cpu_bytes: BTreeMap::new(),
+            expert_tensors: None,
             context: 4096,
             architecture: SmolStr::new("qwen3moe"),
         }
@@ -302,7 +307,7 @@ mod tests {
             non_layer: NonLayer::default(),
             override_tensor_bytes: BTreeMap::new(),
             expert_layers: Vec::new(),
-            expert_layer_cpu_bytes: BTreeMap::new(),
+            expert_tensors: None,
             context: 4096,
             architecture: SmolStr::new("glm4moe"),
         };

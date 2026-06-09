@@ -132,7 +132,6 @@ mod tests {
             cache_type_k: Some("q8_0"),
             cache_type_v: Some("q8_0"),
             override_tensor: empty,
-            n_cpu_moe: None,
             compute_buffer_mb: None,
             allow_fallback: false,
             mtp,

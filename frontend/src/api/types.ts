@@ -772,6 +772,18 @@ export interface components {
        *     slot strings (`"cpu"`, `"gpu:0"`, …); values are bytes.
        */
       devices: components["schemas"]["DevicePlacement"][];
+      /**
+       * Format: int64
+       * @description Total expert-tensor bytes the packer offloaded to the CPU for a MoE
+       *     model (auto/manual `expert_offload`). Zero for non-MoE services or when
+       *     nothing was offloaded.
+       */
+      expert_offload_bytes: number;
+      /**
+       * Format: int32
+       * @description Number of distinct layers with at least one expert offloaded to the CPU.
+       */
+      expert_offload_layers: number;
       /** @description Whether the placement fits right now without eviction or reclaim. */
       verdict: components["schemas"]["FitVerdict"];
     };
