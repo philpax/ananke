@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use ananke::{
     allocator::{AllocationTable, placement},
-    config::{PlacementPolicy, ServiceConfig, TemplateConfig},
-    devices::{DeviceSnapshot, GpuSnapshot},
+    config::{OffloadMode, PlacementPolicy, ServiceConfig, TemplateConfig},
+    devices::{CpuSnapshot, DeviceId, DeviceSnapshot, GpuSnapshot},
     estimator,
 };
 use common::synth_gguf;
@@ -80,5 +80,81 @@ fn override_tensor_rules_propagate_to_command_args() {
     assert!(
         packed.args.override_tensor[1].contains("ffn_down_exps"),
         "second rule must reference ffn_down_exps"
+    );
+}
+
+#[test]
+fn auto_expert_offload_synthesizes_ot_under_hybrid() {
+    let path = std::path::Path::new("/fake/moe-auto.gguf");
+    // 4 layers, tiny attention, 256 MiB per fused expert tensor (≈3 GiB of
+    // experts) — far more than the 1 GiB card can hold.
+    let exp_elems = 128 * 1024 * 1024; // f16 → 256 MiB each
+    let mut builder = synth_gguf::Builder::new()
+        .kv_string("general.architecture", "qwen3moe")
+        .kv_u32("qwen3moe.block_count", 4)
+        .kv_u32("qwen3moe.attention.head_count_kv", 4)
+        .kv_u32("qwen3moe.attention.key_length", 128)
+        .kv_u32("qwen3moe.attention.value_length", 128);
+    for layer in 0..4 {
+        builder = builder
+            .tensor_f16(&format!("blk.{layer}.attn_q.weight"), 512 * 1024)
+            .tensor_f16(&format!("blk.{layer}.ffn_gate_exps.weight"), exp_elems)
+            .tensor_f16(&format!("blk.{layer}.ffn_up_exps.weight"), exp_elems)
+            .tensor_f16(&format!("blk.{layer}.ffn_down_exps.weight"), exp_elems);
+    }
+    let fs = builder.into_in_memory_fs(path);
+
+    let mut svc = common::minimal_llama_service("moe-auto-svc", 0);
+    svc.placement_override = BTreeMap::new();
+    svc.placement_policy = PlacementPolicy::Hybrid;
+    let TemplateConfig::LlamaCpp(lc) = &mut svc.template_config else {
+        unreachable!();
+    };
+    lc.model = path.to_path_buf();
+    lc.expert_offload = OffloadMode::Auto;
+
+    let inputs = estimator::EstimatorInputs::from_service(&svc).unwrap();
+    let est = estimator::estimate_from_path(&fs, &inputs).expect("estimate must succeed");
+
+    // 1 GiB card, generous host RAM.
+    let snap = DeviceSnapshot {
+        gpus: vec![GpuSnapshot {
+            id: 0,
+            name: "GPU 0".into(),
+            total_bytes: 24 * 1024 * 1024 * 1024,
+            free_bytes: 1024 * 1024 * 1024,
+        }],
+        cpu: Some(CpuSnapshot {
+            total_bytes: 128 * 1024 * 1024 * 1024,
+            available_bytes: 64 * 1024 * 1024 * 1024,
+        }),
+        taken_at_ms: 0,
+    };
+
+    let packed = placement::pack(&est, &svc, &snap, &AllocationTable::new())
+        .expect("hybrid auto-offload must pack on a 1 GiB card");
+
+    // Every layer's attention stays on the GPU.
+    assert_eq!(packed.args.ngl, Some(4));
+    // Surplus experts landed on the CPU, with a synthesised -ot rule.
+    assert!(
+        packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Cpu)
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "experts must offload to the CPU"
+    );
+    assert!(packed.expert_offload_bytes > 0);
+    assert!(
+        packed
+            .args
+            .override_tensor
+            .iter()
+            .any(|r| r.contains("_exps") && r.ends_with("=CPU")),
+        "a synthesised expert -ot rule must be present, got {:?}",
+        packed.args.override_tensor
     );
 }

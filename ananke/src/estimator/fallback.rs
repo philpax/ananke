@@ -41,7 +41,7 @@ pub fn estimate_fallback(summary: &GgufSummary, context: u32) -> Estimate {
         },
         override_tensor_bytes: BTreeMap::new(),
         expert_layers: Vec::new(),
-        expert_layer_cpu_bytes: BTreeMap::new(),
+        expert_tensors: None,
         context,
         architecture: SmolStr::new(summary.architecture.as_str()),
     }

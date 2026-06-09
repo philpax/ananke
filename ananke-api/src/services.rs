@@ -219,6 +219,12 @@ pub struct PlacementPreview {
     pub devices: Vec<DevicePlacement>,
     /// Whether the placement fits right now without eviction or reclaim.
     pub verdict: FitVerdict,
+    /// Total expert-tensor bytes the packer offloaded to the CPU for a MoE
+    /// model (auto/manual `expert_offload`). Zero for non-MoE services or when
+    /// nothing was offloaded.
+    pub expert_offload_bytes: u64,
+    /// Number of distinct layers with at least one expert offloaded to the CPU.
+    pub expert_offload_layers: u32,
 }
 
 /// One device's share of a [`PlacementPreview`], with enough context to draw a

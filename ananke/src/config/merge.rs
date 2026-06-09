@@ -139,7 +139,7 @@ fn merge_llama_cpp(
         mmproj: inherit!(mmproj),
         context: inherit!(context),
         n_gpu_layers: inherit!(n_gpu_layers),
-        n_cpu_moe: inherit!(n_cpu_moe),
+        expert_offload: inherit!(expert_offload),
         flash_attn: inherit!(flash_attn),
         cache_type_k: inherit!(cache_type_k),
         cache_type_v: inherit!(cache_type_v),
@@ -272,6 +272,7 @@ fn merge_common(
             placement: c.placement.or(p.placement),
             gpu_allow: c.gpu_allow.or(p.gpu_allow),
             placement_override: c.placement_override.or(p.placement_override),
+            gpu_headroom_mb: c.gpu_headroom_mb.or(p.gpu_headroom_mb),
             split: c.split.or(p.split),
         }),
     };

@@ -13,7 +13,7 @@ pub mod types;
 
 use smol_str::SmolStr;
 use tracing::{info, warn};
-pub use types::{Estimate, EstimatorInputs, NonLayer};
+pub use types::{Estimate, EstimatorInputs, ExpertKind, ExpertTensor, NonLayer};
 
 use crate::{
     gguf::{self, GgufSummary},
@@ -217,7 +217,6 @@ mod tests {
             cache_type_k: Some("f16"),
             cache_type_v: Some("f16"),
             override_tensor: empty_override,
-            n_cpu_moe: None,
             compute_buffer_mb: None,
             allow_fallback: true,
             mtp: false,

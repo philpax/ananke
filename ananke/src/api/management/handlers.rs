@@ -323,6 +323,8 @@ fn placement_preview(
         crate::supervise::PlacementOutcome {
             devices,
             verdict: ananke_api::FitVerdict::Fits,
+            expert_offload_bytes: 0,
+            expert_offload_layers: 0,
         }
     } else if !svc_cfg.placement_override.is_empty() {
         crate::supervise::preview_override_placement(svc_cfg, &snapshot, &table, running)
@@ -348,6 +350,8 @@ fn placement_preview(
         }
         _ => None,
     };
+    let expert_offload_bytes = outcome.expert_offload_bytes;
+    let expert_offload_layers = outcome.expert_offload_layers;
     let devices = outcome
         .devices
         .into_iter()
@@ -378,6 +382,8 @@ fn placement_preview(
     Some(PlacementPreview {
         devices,
         verdict: outcome.verdict,
+        expert_offload_bytes,
+        expert_offload_layers,
     })
 }
 

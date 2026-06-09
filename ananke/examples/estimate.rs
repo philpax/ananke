@@ -17,7 +17,7 @@
 //!
 //! The estimator is a pure function over the GGUF bytes plus a small set
 //! of service-level knobs (context, cache-type, override rules, mmproj,
-//! n_cpu_moe, compute_buffer override). This example builds an
+//! compute_buffer override). This example builds an
 //! [`EstimatorInputs`] from CLI args and prints the resulting `Estimate`
 //! as JSON — same code path the daemon uses at spawn time, without any
 //! packer / placement / NVML involvement.
@@ -40,7 +40,6 @@ struct Args {
     cache_type_k: Option<String>,
     cache_type_v: Option<String>,
     override_tensor: Vec<String>,
-    n_cpu_moe: Option<u32>,
     compute_buffer_mb: Option<u32>,
     active_devices: Option<u64>,
     allow_fallback: bool,
@@ -55,7 +54,6 @@ fn parse_args() -> Args {
     let mut cache_type_k: Option<String> = None;
     let mut cache_type_v: Option<String> = None;
     let mut override_tensor: Vec<String> = Vec::new();
-    let mut n_cpu_moe: Option<u32> = None;
     let mut compute_buffer_mb: Option<u32> = None;
     let mut active_devices: Option<u64> = None;
     let mut allow_fallback = false;
@@ -74,7 +72,6 @@ fn parse_args() -> Args {
                     override_tensor.push(rule);
                 }
             }
-            "--n-cpu-moe" => n_cpu_moe = it.next().and_then(|s| s.parse().ok()),
             "--compute-buffer-mb" => compute_buffer_mb = it.next().and_then(|s| s.parse().ok()),
             "--active-devices" => active_devices = it.next().and_then(|s| s.parse().ok()),
             "--allow-fallback" => allow_fallback = true,
@@ -96,7 +93,6 @@ fn parse_args() -> Args {
         cache_type_k,
         cache_type_v,
         override_tensor,
-        n_cpu_moe,
         compute_buffer_mb,
         active_devices,
         allow_fallback,
@@ -114,7 +110,6 @@ fn main() {
         cache_type_k: args.cache_type_k.as_deref(),
         cache_type_v: args.cache_type_v.as_deref(),
         override_tensor: &args.override_tensor,
-        n_cpu_moe: args.n_cpu_moe,
         compute_buffer_mb: args.compute_buffer_mb,
         allow_fallback: args.allow_fallback,
         mtp: args.mtp,
@@ -150,14 +145,10 @@ fn main() {
 
     // "GPU VRAM" estimate: subtract the tensors llama.cpp keeps on CPU
     // by default (token embeddings — plus the per-layer token embeddings
-    // for gemma4 E-variants) along with any expert layers `n_cpu_moe`
-    // sent to CPU. Matches what an nvidia-smi sum will report, which is
-    // what calibration compares against.
-    let expert_cpu_bytes: u64 = estimate.expert_layer_cpu_bytes.values().sum();
-    let cpu_resident_bytes = estimate
-        .non_layer
-        .token_embd_bytes
-        .saturating_add(expert_cpu_bytes);
+    // for gemma4 E-variants). Expert offload is a placement-time decision
+    // the packer makes from live VRAM, so this estimator-only view counts
+    // experts on the GPU; run the daemon to see the offloaded placement.
+    let cpu_resident_bytes = estimate.non_layer.token_embd_bytes;
     let gpu_weights_bytes = estimate.weights_bytes.saturating_sub(cpu_resident_bytes);
     let gpu_total_bytes = gpu_weights_bytes
         .saturating_add(kv_total_bytes)
@@ -184,7 +175,11 @@ fn main() {
         "non_layer_token_embd_bytes": estimate.non_layer.token_embd_bytes,
         "non_layer_other_bytes": estimate.non_layer.other_bytes,
         "expert_layer_count": estimate.expert_layers.len(),
-        "expert_layer_cpu_bytes": estimate.expert_layer_cpu_bytes,
+        "expert_tensor_count": estimate.expert_tensors.as_ref().map(|v| v.len()),
+        "expert_total_bytes": estimate
+            .expert_tensors
+            .as_ref()
+            .map(|v| v.iter().map(|e| e.bytes).sum::<u64>()),
         "override_tensor_bytes": estimate.override_tensor_bytes
             .iter()
             .map(|(k, v)| (format!("{k:?}"), serde_json::Value::from(*v)))

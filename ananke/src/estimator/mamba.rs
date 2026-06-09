@@ -84,7 +84,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         non_layer,
         override_tensor_bytes: BTreeMap::new(),
         expert_layers: Vec::new(),
-        expert_layer_cpu_bytes: BTreeMap::new(),
+        expert_tensors: None,
         context,
         architecture: SmolStr::new(arch),
     }

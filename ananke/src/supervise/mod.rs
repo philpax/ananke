@@ -1460,6 +1460,8 @@ impl RunLoop {
             self.packed_for_spawn = Some(crate::allocator::placement::Packed {
                 allocation: alloc,
                 args: crate::allocator::placement::CommandArgs::default(),
+                expert_offload_bytes: 0,
+                expert_offload_layers: 0,
             });
             return Ok(map);
         }
@@ -1476,6 +1478,8 @@ impl RunLoop {
             self.packed_for_spawn = Some(crate::allocator::placement::Packed {
                 allocation: alloc,
                 args: crate::allocator::placement::CommandArgs::default(),
+                expert_offload_bytes: 0,
+                expert_offload_layers: 0,
             });
             return Ok(map);
         }
@@ -1508,6 +1512,8 @@ impl RunLoop {
         self.packed_for_spawn = Some(crate::allocator::placement::Packed {
             allocation: alloc,
             args: crate::allocator::placement::CommandArgs::default(),
+            expert_offload_bytes: 0,
+            expert_offload_layers: 0,
         });
         Ok(map)
     }

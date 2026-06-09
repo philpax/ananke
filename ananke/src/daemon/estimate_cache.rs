@@ -9,7 +9,7 @@
 //!   1. The configured `model` / `mmproj` paths change — the operator
 //!      pointed the service at a different file.
 //!   2. The estimator-relevant config fingerprint changes (context,
-//!      override_tensor, cache_type_*, n_cpu_moe, compute_buffer_mb,
+//!      override_tensor, cache_type_*, compute_buffer_mb,
 //!      allow_fallback). The model on disk is the same but the
 //!      estimate's numbers aren't, so the cached entry is stale.
 //!
@@ -226,7 +226,7 @@ mod tests {
                 non_layer: crate::estimator::NonLayer::default(),
                 override_tensor_bytes: std::collections::BTreeMap::new(),
                 expert_layers: Vec::new(),
-                expert_layer_cpu_bytes: std::collections::BTreeMap::new(),
+                expert_tensors: None,
                 context: 4096,
                 architecture: SmolStr::new("llama"),
             },
