@@ -751,18 +751,6 @@ fn validate_service(
     let gpu_allow = dev.gpu_allow.clone().unwrap_or_default();
     let gpu_headroom_mb = dev.gpu_headroom_mb.unwrap_or(0);
 
-    // Expert offload moves expert tensors to the CPU, so it only makes sense
-    // under a CPU-allowing placement. Reject the combination at load time
-    // rather than silently producing a placement that can't honour it.
-    if let TemplateConfig::LlamaCpp(lc) = &template_config
-        && lc.expert_offload.is_enabled()
-        && placement_policy != PlacementPolicy::Hybrid
-    {
-        return Err(fail(format!(
-            "service {name}: expert_offload requires placement=hybrid (expert tensors offload to CPU)"
-        )));
-    }
-
     let split_mode = match dev.split.as_deref().unwrap_or("layer") {
         "layer" => SplitMode::Layer,
         "row" => SplitMode::Row,
@@ -773,6 +761,27 @@ fn validate_service(
             )));
         }
     };
+
+    // Expert offload moves expert tensors to the CPU. That makes it
+    // incompatible with a sharded (tensor/row) split — which divides every
+    // layer across the GPUs in parallel with no CPU half — and it requires a
+    // CPU-allowing placement. Reject both combinations at load time rather than
+    // silently producing a placement that can't honour the request.
+    if let TemplateConfig::LlamaCpp(lc) = &template_config
+        && lc.expert_offload.is_enabled()
+    {
+        if split_mode.is_sharded() {
+            return Err(fail(format!(
+                "service {name}: expert_offload cannot be combined with devices.split=`{}` (sharded split is GPU-only; expert offload targets the CPU)",
+                split_mode.as_flag()
+            )));
+        }
+        if placement_policy != PlacementPolicy::Hybrid {
+            return Err(fail(format!(
+                "service {name}: expert_offload requires placement=hybrid (expert tensors offload to CPU)"
+            )));
+        }
+    }
     if split_mode.is_sharded() {
         // Tensor/row split shards every layer across all spanned GPUs in
         // parallel; there is no CPU half and no per-tensor override to honour.
@@ -1580,6 +1589,32 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         assert!(
             format!("{err}").contains("expert_offload requires placement=hybrid"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn expert_offload_rejects_sharded_split() {
+        // A sharded (tensor/row) split has no CPU half, so it cannot honour an
+        // expert offload to host RAM — reject the combination explicitly rather
+        // than leaving the operator to infer it from the placement constraints.
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+expert_offload = "auto"
+devices.placement = "gpu-only"
+devices.split = "tensor"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("expert_offload cannot be combined with devices.split"),
             "got: {err}"
         );
     }
