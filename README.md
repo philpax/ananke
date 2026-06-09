@@ -250,7 +250,7 @@ Large mixture-of-experts models often don't fit a card once their expert tensors
 `expert_offload` accepts three values, and any value other than `"off"` requires `placement = "hybrid"`:
 
 - `"off"` (default): no expert offload. The model packs whole layers, spilling entire layers to CPU only if a layer doesn't fit.
-- `"auto"`: ananke offloads the minimum number of layers' experts needed to fit the model in the GPU's live free VRAM, preferring a second GPU before the CPU on multi-GPU hosts.
+- `"auto"`: ananke keeps each layer's experts on the GPU while there's room and greedily offloads only the surplus that doesn't fit the GPU's live free VRAM, preferring a second GPU before the CPU on multi-GPU hosts.
 - an integer `N`: offload the experts of the `N` tail-most expert layers, regardless of fit. Use this when you have measured the sweet spot and want a fixed, deterministic split.
 
 ```toml

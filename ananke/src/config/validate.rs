@@ -404,8 +404,9 @@ pub enum OffloadMode {
     /// to CPU only under a CPU-allowing placement.
     #[default]
     Off,
-    /// The packer offloads the minimum number of layers' experts (to CPU or a
-    /// secondary GPU) needed to fit the model in live VRAM.
+    /// The packer keeps each expert on its layer's home GPU while that GPU has
+    /// room, then greedily spills the experts that don't fit — to the most-free
+    /// other GPU first, then to CPU — so only the surplus over live VRAM moves.
     Auto,
     /// The packer offloads the experts of exactly the `N` tail-most
     /// expert-bearing layers, regardless of fit.
