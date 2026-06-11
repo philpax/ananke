@@ -138,8 +138,14 @@ pub struct DefaultsConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "template", rename_all = "kebab-case")]
 pub enum RawService {
-    LlamaCpp(RawLlamaCppService),
-    Command(RawCommandService),
+    /// Both variants are boxed: each inner struct flattens
+    /// `RawServiceCommon` and so runs to several hundred bytes, and the
+    /// llama-cpp side carries ~1 KiB of optional knobs on top. Boxing
+    /// keeps `RawService` pointer-sized and the two variants uniform,
+    /// mirroring the boxing on the validated
+    /// [`crate::config::validate::TemplateConfig`].
+    LlamaCpp(Box<RawLlamaCppService>),
+    Command(Box<RawCommandService>),
 }
 
 impl RawService {
@@ -204,6 +210,30 @@ pub struct RawLlamaCppService {
     /// Maximum number of draft tokens per step, passed to
     /// `--spec-draft-n-max`. Only meaningful when `spec_type` is set.
     pub spec_draft_n_max: Option<u32>,
+    /// Separate draft-model GGUF for speculative decoding, passed to
+    /// llama-server's `-md` / `--model-draft`. Used with
+    /// `spec_type = "draft-mtp"` for model families that ship their MTP
+    /// head as a standalone file (e.g. Gemma 4's `gemma4-assistant` head)
+    /// rather than embedded in the target GGUF (Qwen 3.6). When set, the
+    /// estimator reads this file to add the draft model's resident-weight
+    /// plus compute-buffer overhead; its attention layers reuse the
+    /// target's KV cache, so it adds no context-scaling KV. See
+    /// [`crate::estimator::mtp`].
+    pub draft_model: Option<PathBuf>,
+    /// Use a single unified KV cache pool shared across all parallel
+    /// slots (`-kvu` / `--kv-unified`) instead of statically partitioning
+    /// the context window per slot. With `parallel > 1` this lets idle
+    /// slots lend their share to active ones; the total KV footprint is
+    /// unchanged, so the estimate does not depend on it.
+    pub kv_unified: Option<bool>,
+    /// When `false`, pass `--no-cache-idle-slots` so llama-server does not
+    /// retain idle slots' prompt-cache state. Unset leaves llama-server's
+    /// default (idle-slot caching on).
+    pub cache_idle_slots: Option<bool>,
+    /// Expose the Prometheus `/metrics` endpoint (`--metrics`).
+    pub metrics: Option<bool>,
+    /// Expose the `/slots` introspection endpoint (`--slots`).
+    pub slots: Option<bool>,
     pub batch_size: Option<u32>,
     pub ubatch_size: Option<u32>,
     pub threads: Option<u32>,
@@ -439,17 +469,30 @@ name = "demo"
 template = "llama-cpp"
 model = "/m/x.gguf"
 port = 11435
-parallel = 2
+parallel = 4
 spec_type = "draft-mtp"
 spec_draft_n_max = 2
+draft_model = "/m/mtp-draft.gguf"
+kv_unified = true
+cache_idle_slots = false
+metrics = true
+slots = true
 "#;
         let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
         let RawService::LlamaCpp(lc) = &cfg.services[0] else {
             panic!("expected LlamaCpp variant");
         };
-        assert_eq!(lc.parallel, Some(2));
+        assert_eq!(lc.parallel, Some(4));
         assert_eq!(lc.spec_type.as_deref(), Some("draft-mtp"));
         assert_eq!(lc.spec_draft_n_max, Some(2));
+        assert_eq!(
+            lc.draft_model.as_deref(),
+            Some(std::path::Path::new("/m/mtp-draft.gguf"))
+        );
+        assert_eq!(lc.kv_unified, Some(true));
+        assert_eq!(lc.cache_idle_slots, Some(false));
+        assert_eq!(lc.metrics, Some(true));
+        assert_eq!(lc.slots, Some(true));
     }
 
     #[test]

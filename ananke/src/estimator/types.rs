@@ -44,6 +44,11 @@ pub struct EstimatorInputs<'a> {
     /// estimator adds the MTP draft context's KV + compute overhead. See
     /// [`crate::estimator::mtp`].
     pub mtp: bool,
+    /// Optional separate draft-model GGUF (`-md`). When `mtp` is set and
+    /// this is present, the estimator reads this file's resident weights
+    /// plus a draft compute buffer rather than the target model's embedded
+    /// MTP head. See [`crate::estimator::mtp`].
+    pub draft_model: Option<&'a Path>,
 }
 
 impl<'a> EstimatorInputs<'a> {
@@ -63,6 +68,7 @@ impl<'a> EstimatorInputs<'a> {
             compute_buffer_mb: lc.estimation.compute_buffer_mb,
             allow_fallback: lc.estimation.allow_fallback.unwrap_or(false),
             mtp: lc.spec_type.as_deref() == Some("draft-mtp"),
+            draft_model: lc.draft_model.as_deref(),
         })
     }
 
@@ -77,6 +83,8 @@ impl<'a> EstimatorInputs<'a> {
     /// `model` and `mmproj` paths are deliberately excluded because
     /// the cache keys on them separately (any path change is a
     /// different model, not a different config of the same model).
+    /// `draft_model` *is* hashed here because the cache does not key on
+    /// it separately, yet swapping the draft GGUF changes the estimate.
     /// `name` is excluded because it's a log-context-only field.
     pub fn config_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -88,6 +96,7 @@ impl<'a> EstimatorInputs<'a> {
         self.compute_buffer_mb.hash(&mut hasher);
         self.allow_fallback.hash(&mut hasher);
         self.mtp.hash(&mut hasher);
+        self.draft_model.hash(&mut hasher);
         hasher.finish()
     }
 }

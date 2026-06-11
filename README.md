@@ -228,17 +228,31 @@ top_p = 0.95
 # parallel = 4            # Request parallelism (-np). With a non-unified KV
 #                         # this splits the context budget across slots, so
 #                         # each request caps at context / parallel.
+# kv_unified = true       # -kvu: one shared KV pool across slots, so idle
+#                         # slots lend capacity instead of a static per-slot
+#                         # split. Total KV footprint is unchanged.
 # batch_size = 512        # Context batch size
 # mmap = true             # Memory-map the model file
 # jinja = true            # Use Jinja chat templates
+# cache_idle_slots = false # Pass --no-cache-idle-slots: drop idle slots'
+#                         # prompt-cache state (a stability mitigation).
+# metrics = true          # Expose llama-server's Prometheus /metrics endpoint
+# slots = true            # Expose the /slots endpoint (note: reveals prompt
+#                         # contents — avoid on network-reachable ports)
 
 # Speculative decoding via multi-token prediction (MTP / NextN):
-# spec_type = "draft-mtp" # --spec-type. For models with an embedded MTP head
-#                         # (nextn_predict_layers > 0, e.g. Qwen 3.6), this
-#                         # drafts ahead using the same weights — no separate
-#                         # draft model. ananke's estimator adds the MTP draft
-#                         # context's VRAM (a small f16 KV over the nextn
-#                         # layer(s) plus a ~1.7 GiB compute buffer).
+# spec_type = "draft-mtp" # --spec-type. ananke's estimator adds the MTP draft
+#                         # context's VRAM. Two shapes:
+#                         #  - Embedded head (nextn_predict_layers > 0, e.g.
+#                         #    Qwen 3.6): drafts using the same weights, no
+#                         #    separate file — a small f16 KV over the nextn
+#                         #    layer(s) plus a ~1.7 GiB compute buffer.
+#                         #  - Separate draft model (e.g. Gemma 4): set
+#                         #    draft_model below. Its attention reuses the
+#                         #    target's KV, so the cost is just the draft's
+#                         #    weights plus a small buffer (~0.4 GiB).
+# draft_model = "/path/to/mtp-head.gguf" # -md: separate MTP/draft GGUF.
+#                         # Requires spec_type to be set.
 # spec_draft_n_max = 2    # --spec-draft-n-max: max draft tokens per step.
 # MTP composes with `parallel > 1` and `mmproj` (vision) on current llama.cpp.
 ```

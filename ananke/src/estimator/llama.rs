@@ -368,6 +368,7 @@ mod tests {
             compute_buffer_mb: None,
             allow_fallback: false,
             mtp: false,
+            draft_model: None,
         }
     }
 

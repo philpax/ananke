@@ -102,12 +102,12 @@ fn merge_service(
     child_name: &SmolStr,
 ) -> Result<RawService, ExpectedError> {
     match (parent, child) {
-        (RawService::LlamaCpp(p), RawService::LlamaCpp(c)) => {
-            Ok(RawService::LlamaCpp(merge_llama_cpp(p, c, child_name)?))
-        }
-        (RawService::Command(p), RawService::Command(c)) => {
-            Ok(RawService::Command(merge_command(p, c, child_name)?))
-        }
+        (RawService::LlamaCpp(p), RawService::LlamaCpp(c)) => Ok(RawService::LlamaCpp(Box::new(
+            merge_llama_cpp(p, c, child_name)?,
+        ))),
+        (RawService::Command(p), RawService::Command(c)) => Ok(RawService::Command(Box::new(
+            merge_command(p, c, child_name)?,
+        ))),
         _ => Err(ExpectedError::config_unparseable(
             std::path::PathBuf::from("<config>"),
             format!(
@@ -148,6 +148,11 @@ fn merge_llama_cpp(
         parallel: inherit!(parallel),
         spec_type: inherit!(spec_type),
         spec_draft_n_max: inherit!(spec_draft_n_max),
+        draft_model: inherit!(draft_model),
+        kv_unified: inherit!(kv_unified),
+        cache_idle_slots: inherit!(cache_idle_slots),
+        metrics: inherit!(metrics),
+        slots: inherit!(slots),
         batch_size: inherit!(batch_size),
         ubatch_size: inherit!(ubatch_size),
         threads: inherit!(threads),

@@ -193,6 +193,17 @@ pub struct LlamaCppConfig {
     pub spec_type: Option<SmolStr>,
     /// `--spec-draft-n-max` value.
     pub spec_draft_n_max: Option<u32>,
+    /// Separate draft-model GGUF (`-md` / `--model-draft`). See
+    /// [`crate::config::parse::RawLlamaCppService::draft_model`].
+    pub draft_model: Option<PathBuf>,
+    /// `-kvu` / `--kv-unified` unified KV pool toggle.
+    pub kv_unified: Option<bool>,
+    /// When `Some(false)`, emit `--no-cache-idle-slots`.
+    pub cache_idle_slots: Option<bool>,
+    /// `--metrics` endpoint toggle.
+    pub metrics: Option<bool>,
+    /// `--slots` endpoint toggle.
+    pub slots: Option<bool>,
     pub batch_size: Option<u32>,
     pub ubatch_size: Option<u32>,
     pub threads: Option<u32>,
@@ -1023,6 +1034,13 @@ fn validate_llama_cpp(
         }
     }
 
+    if lc.draft_model.is_some() && lc.spec_type.is_none() {
+        return Err(fail(format!(
+            "service {name}: draft_model requires spec_type to be set \
+             (e.g. spec_type = \"draft-mtp\")"
+        )));
+    }
+
     let launcher = match &lc.launcher {
         None => None,
         Some(argv) => {
@@ -1070,6 +1088,11 @@ fn validate_llama_cpp(
         parallel: lc.parallel,
         spec_type: lc.spec_type.clone(),
         spec_draft_n_max: lc.spec_draft_n_max,
+        draft_model: lc.draft_model.clone(),
+        kv_unified: lc.kv_unified,
+        cache_idle_slots: lc.cache_idle_slots,
+        metrics: lc.metrics,
+        slots: lc.slots,
         batch_size: lc.batch_size,
         ubatch_size: lc.ubatch_size,
         threads: lc.threads,
@@ -1463,6 +1486,11 @@ pub mod test_fixtures {
             parallel: None,
             spec_type: None,
             spec_draft_n_max: None,
+            draft_model: None,
+            kv_unified: None,
+            cache_idle_slots: None,
+            metrics: None,
+            slots: None,
             batch_size: None,
             ubatch_size: None,
             threads: None,
@@ -1569,6 +1597,59 @@ lifecycle = "persistent"
             ec.services[0].llama_cpp().unwrap().expert_offload,
             OffloadMode::Layers(16)
         );
+    }
+
+    #[test]
+    fn draft_model_requires_spec_type() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+draft_model = "/m/mtp-draft.gguf"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("draft_model requires spec_type"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn draft_model_with_spec_type_validates() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+flash_attn = true
+spec_type = "draft-mtp"
+draft_model = "/m/mtp-draft.gguf"
+kv_unified = true
+cache_idle_slots = false
+metrics = true
+slots = true
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        let lc = ec.services[0].llama_cpp().unwrap();
+        assert_eq!(
+            lc.draft_model.as_deref(),
+            Some(std::path::Path::new("/m/mtp-draft.gguf"))
+        );
+        assert_eq!(lc.kv_unified, Some(true));
+        assert_eq!(lc.cache_idle_slots, Some(false));
+        assert_eq!(lc.metrics, Some(true));
+        assert_eq!(lc.slots, Some(true));
     }
 
     #[test]

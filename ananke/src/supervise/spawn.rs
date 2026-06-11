@@ -177,6 +177,18 @@ fn render_llama_server_flags(
         args.push("-np".into());
         args.push(p.to_string());
     }
+    if lc.kv_unified == Some(true) {
+        args.push("--kv-unified".into());
+    }
+    if lc.cache_idle_slots == Some(false) {
+        args.push("--no-cache-idle-slots".into());
+    }
+    if lc.metrics == Some(true) {
+        args.push("--metrics".into());
+    }
+    if lc.slots == Some(true) {
+        args.push("--slots".into());
+    }
     if let Some(st) = &lc.spec_type {
         args.push("--spec-type".into());
         args.push(st.to_string());
@@ -184,6 +196,10 @@ fn render_llama_server_flags(
     if let Some(n) = lc.spec_draft_n_max {
         args.push("--spec-draft-n-max".into());
         args.push(n.to_string());
+    }
+    if let Some(md) = &lc.draft_model {
+        args.push("-md".into());
+        args.push(md.to_string_lossy().into_owned());
     }
 
     if let Some(ca) = cmd_args {
@@ -399,6 +415,47 @@ mod tests {
             .position(|a| a == "--spec-draft-n-max")
             .unwrap();
         assert_eq!(cmd.args[n + 1], "2");
+    }
+
+    #[test]
+    fn renders_separate_draft_and_server_flags() {
+        let mut svc = base_service();
+        {
+            let lc = expect_llama_cpp(&mut svc);
+            lc.flash_attn = Some(true);
+            lc.cache_type_k = Some(SmolStr::new("f16"));
+            lc.cache_type_v = Some(SmolStr::new("f16"));
+            lc.parallel = Some(4);
+            lc.kv_unified = Some(true);
+            lc.cache_idle_slots = Some(false);
+            lc.metrics = Some(true);
+            lc.slots = Some(true);
+            lc.spec_type = Some(SmolStr::new("draft-mtp"));
+            lc.spec_draft_n_max = Some(2);
+            lc.draft_model = Some(PathBuf::from("/m/mtp-draft.gguf"));
+        }
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(cmd.args.iter().any(|a| a == "--kv-unified"));
+        assert!(cmd.args.iter().any(|a| a == "--no-cache-idle-slots"));
+        assert!(cmd.args.iter().any(|a| a == "--metrics"));
+        assert!(cmd.args.iter().any(|a| a == "--slots"));
+        let md = cmd.args.iter().position(|a| a == "-md").unwrap();
+        assert_eq!(cmd.args[md + 1], "/m/mtp-draft.gguf");
+    }
+
+    #[test]
+    fn omits_server_toggle_flags_when_unset() {
+        // The base service leaves kv_unified/cache_idle_slots/metrics/slots
+        // and draft_model unset; none of their flags should appear.
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(!cmd.args.iter().any(|a| a == "--kv-unified"));
+        assert!(!cmd.args.iter().any(|a| a == "--no-cache-idle-slots"));
+        assert!(!cmd.args.iter().any(|a| a == "--metrics"));
+        assert!(!cmd.args.iter().any(|a| a == "--slots"));
+        assert!(!cmd.args.iter().any(|a| a == "-md"));
     }
 
     #[test]

@@ -145,9 +145,26 @@ pub fn estimate_with_summary(
 
     // MTP / NextN draft-context overhead is architecture-independent
     // post-processing: it reads `nextn_predict_layers` + the full-attention
-    // head dims straight from the GGUF, so it applies uniformly to whichever
-    // family dispatched above rather than living in each one.
-    est.mtp_bytes = mtp::mtp_overhead_bytes(&summary, inputs);
+    // head dims straight from the GGUF (embedded head), or — when a separate
+    // draft GGUF is configured via `-md` — that file's resident weights. It
+    // applies uniformly to whichever family dispatched above rather than
+    // living in each one.
+    let draft_summary = match inputs.draft_model {
+        Some(path) if inputs.mtp => match gguf::read(fs, path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                warn!(
+                    service = %inputs.name,
+                    error = %e,
+                    path = %path.display(),
+                    "draft model read failed; MTP overhead will be under-estimated",
+                );
+                None
+            }
+        },
+        _ => None,
+    };
+    est.mtp_bytes = mtp::mtp_overhead_bytes(&summary, draft_summary.as_ref(), inputs);
 
     info!(
         service = %inputs.name,
@@ -220,6 +237,7 @@ mod tests {
             compute_buffer_mb: None,
             allow_fallback: true,
             mtp: false,
+            draft_model: None,
         }
     }
 

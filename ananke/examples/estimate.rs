@@ -10,6 +10,8 @@
 //!     [--n-cpu-moe N] \
 //!     [--compute-buffer-mb N] \
 //!     [--active-devices N] \
+//!     [--mtp] \
+//!     [--draft-model /path/to/draft.gguf] \
 //!     [--allow-fallback]
 //!
 //! Unknown architectures now hard-reject by default; pass `--allow-fallback`
@@ -44,6 +46,7 @@ struct Args {
     active_devices: Option<u64>,
     allow_fallback: bool,
     mtp: bool,
+    draft_model: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -58,6 +61,7 @@ fn parse_args() -> Args {
     let mut active_devices: Option<u64> = None;
     let mut allow_fallback = false;
     let mut mtp = false;
+    let mut draft_model: Option<PathBuf> = None;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--model" => model = it.next().map(PathBuf::from),
@@ -76,6 +80,7 @@ fn parse_args() -> Args {
             "--active-devices" => active_devices = it.next().and_then(|s| s.parse().ok()),
             "--allow-fallback" => allow_fallback = true,
             "--mtp" => mtp = true,
+            "--draft-model" => draft_model = it.next().map(PathBuf::from),
             _ => {
                 eprintln!("unknown argument: {arg}");
                 process::exit(2);
@@ -96,7 +101,10 @@ fn parse_args() -> Args {
         compute_buffer_mb,
         active_devices,
         allow_fallback,
-        mtp,
+        // A separate draft model only contributes overhead under MTP, so
+        // `--draft-model` implies `--mtp` for convenience.
+        mtp: mtp || draft_model.is_some(),
+        draft_model,
     }
 }
 
@@ -113,6 +121,7 @@ fn main() {
         compute_buffer_mb: args.compute_buffer_mb,
         allow_fallback: args.allow_fallback,
         mtp: args.mtp,
+        draft_model: args.draft_model.as_deref(),
     };
 
     let estimate = match estimator::estimate_from_path(&LocalFs, &inputs) {
