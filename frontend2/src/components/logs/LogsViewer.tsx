@@ -1,6 +1,6 @@
 // Logs viewer for a service. REST seed + WebSocket live tail, with
-// stream filter, auto-follow, and a simple scroll container.
-// Virtualisation will be added once the view is functional.
+// time window presets, stream filter, auto-follow, and a scroll
+// container. Virtualisation will be added once the view is functional.
 
 import { useEffect, useRef, useState } from "react";
 import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
@@ -11,10 +11,24 @@ type LogsViewerProps = {
   name: string;
 };
 
-const LIVE_WINDOW: LogWindow = { kind: "relative", durationMs: 5 * 60 * 1000 };
+type WindowPreset = {
+  label: string;
+  window: LogWindow;
+};
+
+const WINDOW_PRESETS: WindowPreset[] = [
+  { label: "5m", window: { kind: "relative", durationMs: 5 * 60 * 1000 } },
+  { label: "1h", window: { kind: "relative", durationMs: 60 * 60 * 1000 } },
+  { label: "6h", window: { kind: "relative", durationMs: 6 * 60 * 60 * 1000 } },
+  {
+    label: "24h",
+    window: { kind: "relative", durationMs: 24 * 60 * 60 * 1000 },
+  },
+];
 
 export function LogsViewer({ name }: LogsViewerProps) {
-  const win = useLogWindow(name, LIVE_WINDOW);
+  const [windowIdx, setWindowIdx] = useState(0);
+  const win = useLogWindow(name, WINDOW_PRESETS[windowIdx]!.window);
   const [streamFilter, setStreamFilter] = useState<
     "both" | "stdout" | "stderr"
   >("both");
@@ -36,6 +50,22 @@ export function LogsViewer({ name }: LogsViewerProps) {
     <div className="flex h-72 flex-col">
       {/* Toolbar */}
       <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
+        <div className="flex items-center gap-0.5">
+          {WINDOW_PRESETS.map((preset, i) => (
+            <button
+              key={preset.label}
+              onClick={() => setWindowIdx(i)}
+              className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
+                windowIdx === i
+                  ? "bg-elevated text-primary"
+                  : "text-tertiary hover:text-secondary"
+              }`}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="mx-1 h-3 w-px bg-border-default" />
         <div className="flex items-center gap-0.5">
           {(["both", "stdout", "stderr"] as const).map((s) => (
             <button
