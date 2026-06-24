@@ -91,6 +91,7 @@ fn oneshot_request_optional_fields_omitted() {
         priority: Some(40),
         ttl: Some("2h".into()),
         port: None,
+        health: None,
         metadata: Default::default(),
     };
     let json = serde_json::to_value(&v).unwrap();
@@ -98,6 +99,7 @@ fn oneshot_request_optional_fields_omitted() {
     assert!(!obj.contains_key("name"));
     assert!(!obj.contains_key("workdir"));
     assert!(!obj.contains_key("port"));
+    assert!(!obj.contains_key("health"));
     assert!(!obj.contains_key("metadata"));
 }
 

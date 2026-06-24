@@ -34,7 +34,7 @@ fn command_argv_substitutes_port() {
         lifecycle: Lifecycle::OnDemand,
         priority: 50,
         health: HealthSettings {
-            http_path: "/system_stats".into(),
+            http_path: Some("/system_stats".into()),
             timeout_ms: 60_000,
             probe_interval_ms: 500,
         },

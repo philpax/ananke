@@ -78,6 +78,7 @@ pub async fn run(
         priority: Some(priority),
         ttl,
         port: None,
+        health: None,
         metadata: Default::default(),
     };
     let resp: OneshotResponse = client.post_json("/api/oneshot", &req).await?;

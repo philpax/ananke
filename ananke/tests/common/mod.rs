@@ -239,7 +239,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         lifecycle: Lifecycle::OnDemand,
         priority: 50,
         health: HealthSettings {
-            http_path: "/health".into(),
+            http_path: Some("/health".into()),
             timeout_ms: 5_000,
             probe_interval_ms: 200,
         },

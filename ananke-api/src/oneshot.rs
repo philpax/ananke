@@ -33,9 +33,27 @@ pub struct OneshotRequest {
     /// Explicit port request; `None` means daemon picks from the pool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// Health check configuration. When `None` (the default), the oneshot
+    /// transitions to Running immediately after spawn without waiting for
+    /// a health probe. Set to enable HTTP-based readiness checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<OneshotHealth>,
     /// Free-form metadata passed through to responses.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+/// Health-check configuration for a oneshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+pub struct OneshotHealth {
+    /// HTTP path to probe (e.g. `"/health"`, `"/system_stats"`).
+    pub http: String,
+    /// Timeout duration string (e.g. `"30s"`, `"2m"`). Defaults to 3 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+    /// Probe interval duration string. Defaults to 5 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_interval: Option<String>,
 }
 
 /// Allocation-mode knobs for [`OneshotRequest`].

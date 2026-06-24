@@ -11,11 +11,9 @@ use crate::{
         parse::DEFAULT_START_QUEUE_DEPTH,
         validate::{
             AllocationMode, CommandConfig, DEFAULT_DRAIN_TIMEOUT_MS,
-            DEFAULT_EXTENDED_STREAM_DRAIN_MS, DEFAULT_HEALTH_PROBE_INTERVAL_MS,
-            DEFAULT_HEALTH_TIMEOUT_MS, DEFAULT_MAX_REQUEST_DURATION_MS,
+            DEFAULT_EXTENDED_STREAM_DRAIN_MS, DEFAULT_MAX_REQUEST_DURATION_MS,
             DEFAULT_MIN_BORROWER_RUNTIME_MS, DEFAULT_SERVICE_PRIORITY, DeviceReserves, Filters,
-            HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, SplitMode, Template,
-            TemplateConfig,
+            Lifecycle, PlacementPolicy, ServiceConfig, SplitMode, Template, TemplateConfig,
         },
     },
     daemon::app_state::AppState,
@@ -81,17 +79,49 @@ pub async fn spawn_oneshot(
 
     // Construct the ServiceConfig directly, bypassing validate()'s
     // port-uniqueness checks which would conflict with the running config.
+    // Oneshots default to no health check — the service transitions to
+    // Running immediately after spawn. The caller can opt in via the
+    // `health` field on the request.
+    let health = match &req.health {
+        Some(h) => {
+            let timeout_ms = h
+                .timeout
+                .as_deref()
+                .map(|s| {
+                    crate::config::validate::parse_duration_ms(s)
+                        .map_err(|e| format!("health.timeout: {e}"))
+                })
+                .transpose()?
+                .unwrap_or(crate::config::validate::DEFAULT_HEALTH_TIMEOUT_MS);
+            let probe_interval_ms = h
+                .probe_interval
+                .as_deref()
+                .map(|s| {
+                    crate::config::validate::parse_duration_ms(s)
+                        .map_err(|e| format!("health.probe_interval: {e}"))
+                })
+                .transpose()?
+                .unwrap_or(crate::config::validate::DEFAULT_HEALTH_PROBE_INTERVAL_MS);
+            crate::config::HealthSettings {
+                http_path: Some(h.http.clone()),
+                timeout_ms,
+                probe_interval_ms,
+            }
+        }
+        None => crate::config::HealthSettings {
+            http_path: None,
+            timeout_ms: crate::config::validate::DEFAULT_HEALTH_TIMEOUT_MS,
+            probe_interval_ms: crate::config::validate::DEFAULT_HEALTH_PROBE_INTERVAL_MS,
+        },
+    };
+
     let svc = ServiceConfig {
         name: id.clone(),
         port,
         private_port,
         lifecycle: Lifecycle::OnDemand,
         priority: req.priority.unwrap_or(DEFAULT_SERVICE_PRIORITY),
-        health: HealthSettings {
-            http_path: "/v1/models".into(),
-            timeout_ms: DEFAULT_HEALTH_TIMEOUT_MS,
-            probe_interval_ms: DEFAULT_HEALTH_PROBE_INTERVAL_MS,
-        },
+        health,
         placement_override: BTreeMap::new(),
         placement_policy: PlacementPolicy::GpuOnly,
         gpu_allow: Vec::new(),

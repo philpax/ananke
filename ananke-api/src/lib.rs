@@ -20,7 +20,7 @@ pub use events::Event;
 pub use lifecycle::{DisableResponse, EnableResponse, StartResponse, StopResponse};
 pub use logs::{LogLine, LogStreamMessage, LogsResponse};
 pub use metadata::AnankeMetadata;
-pub use oneshot::{OneshotRequest, OneshotResponse, OneshotStatus};
+pub use oneshot::{OneshotHealth, OneshotRequest, OneshotResponse, OneshotStatus};
 pub use services::{
     DevicePlacement, EnvVar, EstimateSummary, FitVerdict, LaunchCommand, LaunchCommandSource,
     Modality, ModelInfo, PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse,

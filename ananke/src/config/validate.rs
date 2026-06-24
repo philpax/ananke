@@ -448,7 +448,9 @@ pub struct DeviceReserves {
 
 #[derive(Debug, Clone)]
 pub struct HealthSettings {
-    pub http_path: String,
+    /// HTTP path to probe for readiness. `None` means no health check —
+    /// the service transitions to Running immediately after spawn.
+    pub http_path: Option<String>,
     pub timeout_ms: u64,
     pub probe_interval_ms: u64,
 }
@@ -823,7 +825,11 @@ fn validate_service(
 
     let health_raw = common.health.clone().unwrap_or_default();
     let health = HealthSettings {
-        http_path: health_raw.http.unwrap_or_else(|| "/v1/models".into()),
+        http_path: match &health_raw.http {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s.clone()),
+            None => Some("/v1/models".into()),
+        },
         timeout_ms: health_raw
             .timeout
             .map(|s| {
@@ -1415,7 +1421,7 @@ pub mod test_fixtures {
             lifecycle: Lifecycle::OnDemand,
             priority: DEFAULT_SERVICE_PRIORITY,
             health: HealthSettings {
-                http_path: "/health".into(),
+                http_path: Some("/health".into()),
                 timeout_ms: 5_000,
                 probe_interval_ms: 200,
             },
