@@ -67,6 +67,7 @@ pub struct DaemonSettings {
     pub shutdown_timeout_ms: u64,
     pub allow_external_management: bool,
     pub allow_external_services: bool,
+    pub openai_allow_cors: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -537,6 +538,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             shutdown_timeout_ms,
             allow_external_management: cfg.daemon.allow_external_management,
             allow_external_services: cfg.daemon.allow_external_services,
+            openai_allow_cors: cfg.openai_api.allow_cors,
         },
         services: out,
     })

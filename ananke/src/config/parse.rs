@@ -122,6 +122,12 @@ pub struct OpenAiApiConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
     pub max_request_duration: Option<String>,
+    /// Allow cross-origin requests from browsers. Defaults to `true`
+    /// since ananke is unauthenticated and designed for trusted-network
+    /// deployment; operators who want to block browser-based access to
+    /// the OpenAI API can set `allow_cors = false`.
+    #[serde(default = "default_true")]
+    pub allow_cors: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]

@@ -160,6 +160,16 @@ pub async fn run() -> Result<(), ExpectedError> {
                 ExpectedError::bind_failed(effective.daemon.openai_listen.clone(), e.to_string())
             })?;
     let openai_router = crate::api::openai::router(app_state.clone());
+    let openai_router = if effective.daemon.openai_allow_cors {
+        openai_router.layer(
+            tower_http::cors::CorsLayer::permissive()
+                .allow_headers(tower_http::cors::Any)
+                .allow_methods(tower_http::cors::Any)
+                .allow_origin(tower_http::cors::Any),
+        )
+    } else {
+        openai_router
+    };
     let openai_listener = TcpListener::bind(openai_listen)
         .await
         .map_err(|e| ExpectedError::bind_failed(openai_listen.to_string(), e.to_string()))?;

@@ -76,6 +76,7 @@ mod tests {
                 shutdown_timeout_ms: 5000,
                 allow_external_management: false,
                 allow_external_services: false,
+                openai_allow_cors: false,
             },
             services: vec![svc.clone()],
         };

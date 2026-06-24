@@ -77,6 +77,7 @@ fn build_harness(service: &str, min_mb: u64, max_mb: u64) -> Harness {
                 shutdown_timeout_ms: 5_000,
                 allow_external_management: false,
                 allow_external_services: false,
+                openai_allow_cors: false,
             },
             services: Vec::new(),
         },
