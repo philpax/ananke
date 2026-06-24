@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
-    db::models::{RunningService, Service, ServiceLog},
+    db::models::{DeviceSample, RequestMetric, RunningService, Service, ServiceLog},
     errors::ExpectedError,
 };
 
@@ -349,6 +349,162 @@ impl Database {
     fn db_err(&self, e: rusqlite::Error) -> ExpectedError {
         ExpectedError::database_open_failed(self.path.clone(), e.to_string())
     }
+
+    /// Insert a single request metric row. Called by the proxy after the
+    /// response stream completes.
+    pub async fn insert_request_metric(&self, row: &RequestMetric) -> Result<(), ExpectedError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO request_metrics
+                 (service_id, run_id, timestamp_ms, endpoint, model,
+                  prompt_tokens, completion_tokens, duration_ms, ttft_ms, status_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                row.service_id,
+                row.run_id,
+                row.timestamp_ms,
+                row.endpoint,
+                row.model,
+                row.prompt_tokens,
+                row.completion_tokens,
+                row.duration_ms,
+                row.ttft_ms,
+                row.status_code,
+            ],
+        )
+        .map_err(|e| self.db_err(e))?;
+        Ok(())
+    }
+
+    /// Query aggregated request metrics for the JSON `/api/metrics` endpoint.
+    /// Returns pre-bucketed time-series data — the frontend doesn't aggregate.
+    pub async fn query_request_metrics(
+        &self,
+        service_id: Option<i64>,
+        since_ms: i64,
+        until_ms: i64,
+        bucket_ms: i64,
+    ) -> Result<Vec<MetricBucket>, ExpectedError> {
+        let conn = self.conn.lock();
+        // Use SUM(CASE WHEN ...) for error count — simpler than a LEFT JOIN
+        // and avoids the subquery. The bucket is floor(timestamp / bucket) *
+        // bucket so all rows in the same window group together.
+        let sql = "SELECT
+                (timestamp_ms / ?1) * ?1 AS bucket,
+                COUNT(*) AS request_count,
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                AVG(duration_ms) AS avg_duration_ms,
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count
+             FROM request_metrics
+             WHERE timestamp_ms >= ?2 AND timestamp_ms <= ?3
+               AND (?4 IS NULL OR service_id = ?4)
+             GROUP BY bucket
+             ORDER BY bucket";
+        let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
+        let rows = stmt
+            .query_map(params![bucket_ms, since_ms, until_ms, service_id], |row| {
+                Ok(MetricBucket {
+                    bucket_start: row.get(0)?,
+                    request_count: row.get(1)?,
+                    prompt_tokens: row.get(2)?,
+                    completion_tokens: row.get(3)?,
+                    avg_duration_ms: row.get::<_, Option<f64>>(4)?,
+                    error_count: row.get(5)?,
+                })
+            })
+            .map_err(|e| self.db_err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.db_err(e))
+    }
+
+    /// Insert a device sample row. Called periodically by the snapshotter.
+    pub async fn insert_device_sample(
+        &self,
+        device: &str,
+        timestamp_ms: i64,
+        total_bytes: i64,
+        free_bytes: i64,
+    ) -> Result<(), ExpectedError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO device_samples (device, timestamp_ms, total_bytes, free_bytes, used_bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                device,
+                timestamp_ms,
+                total_bytes,
+                free_bytes,
+                total_bytes - free_bytes
+            ],
+        )
+        .map_err(|e| self.db_err(e))?;
+        Ok(())
+    }
+
+    /// Query device samples for a time range.
+    pub async fn query_device_samples(
+        &self,
+        device: Option<&str>,
+        since_ms: i64,
+        until_ms: i64,
+    ) -> Result<Vec<DeviceSample>, ExpectedError> {
+        let conn = self.conn.lock();
+        let sql = "SELECT sample_id, device, timestamp_ms, total_bytes, free_bytes, used_bytes
+             FROM device_samples
+             WHERE timestamp_ms >= ?1 AND timestamp_ms <= ?2
+               AND (?3 IS NULL OR device = ?3)
+             ORDER BY timestamp_ms";
+        let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
+        let rows = stmt
+            .query_map(params![since_ms, until_ms, device], |row| {
+                Ok(DeviceSample {
+                    sample_id: row.get(0)?,
+                    device: row.get(1)?,
+                    timestamp_ms: row.get(2)?,
+                    total_bytes: row.get(3)?,
+                    free_bytes: row.get(4)?,
+                    used_bytes: row.get(5)?,
+                })
+            })
+            .map_err(|e| self.db_err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.db_err(e))
+    }
+
+    /// Prune request metrics older than `cutoff_ms`.
+    pub async fn prune_request_metrics(&self, cutoff_ms: i64) -> Result<u64, ExpectedError> {
+        let conn = self.conn.lock();
+        let n = conn
+            .execute(
+                "DELETE FROM request_metrics WHERE timestamp_ms < ?1",
+                params![cutoff_ms],
+            )
+            .map_err(|e| self.db_err(e))?;
+        Ok(n as u64)
+    }
+
+    /// Prune device samples older than `cutoff_ms`.
+    pub async fn prune_device_samples(&self, cutoff_ms: i64) -> Result<u64, ExpectedError> {
+        let conn = self.conn.lock();
+        let n = conn
+            .execute(
+                "DELETE FROM device_samples WHERE timestamp_ms < ?1",
+                params![cutoff_ms],
+            )
+            .map_err(|e| self.db_err(e))?;
+        Ok(n as u64)
+    }
+}
+
+/// One time bucket of aggregated request metrics.
+pub struct MetricBucket {
+    pub bucket_start: i64,
+    pub request_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub avg_duration_ms: Option<f64>,
+    pub error_count: i64,
 }
 
 #[cfg(test)]

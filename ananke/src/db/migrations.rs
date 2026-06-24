@@ -28,11 +28,18 @@ pub struct Migration {
 }
 
 /// Chain of migrations in application order. Append-only.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial_schema",
-    sql: include_str!("migrations/0001_initial_schema.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial_schema",
+        sql: include_str!("migrations/0001_initial_schema.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "metrics",
+        sql: include_str!("migrations/0002_metrics.sql"),
+    },
+];
 
 /// SQL applied before the first migration ever runs. Creates the version
 /// tracker and sets the file-persistent pragmas. Idempotent — reruns every
