@@ -219,6 +219,8 @@ pub async fn run() -> Result<(), ExpectedError> {
     }
 
     let retention_task = tokio::spawn(retention::run_loop(db.clone(), shutdown_rx.clone()));
+    let sampler_task =
+        crate::tracking::sampler::spawn(db.clone(), shared_snapshot.clone(), shutdown_rx.clone());
     let persistent_watcher_task = tokio::spawn(crate::supervise::persistent_watcher::run_loop(
         app_state.clone(),
         shutdown_rx.clone(),
@@ -251,6 +253,8 @@ pub async fn run() -> Result<(), ExpectedError> {
     let _ = snapshotter_join.await;
     retention_task.abort();
     let _ = retention_task.await;
+    sampler_task.abort();
+    let _ = sampler_task.await;
     persistent_watcher_task.abort();
     let _ = persistent_watcher_task.await;
     for t in balloon_tasks {

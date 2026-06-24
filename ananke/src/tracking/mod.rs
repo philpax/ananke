@@ -5,6 +5,7 @@ pub mod activity;
 pub mod inflight;
 pub mod observation;
 pub mod rolling;
+pub mod sampler;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

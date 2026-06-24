@@ -13,6 +13,12 @@ const RETENTION_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Per-service row cap; oldest rows beyond this are deleted.
 const MAX_ROWS_PER_SERVICE: usize = 50_000;
 
+/// Retention for request_metrics rows (7 days, same as logs).
+const METRICS_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Retention for device_samples rows (24 hours).
+const DEVICE_SAMPLES_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Cadence for both the retention trim and the incremental vacuum.
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -21,11 +27,12 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const INCREMENTAL_VACUUM_PAGES: u64 = 1000;
 
 /// Per-service log retention: 7 days or 50,000 lines, whichever tighter.
+/// Also prunes request_metrics (7 days) and device_samples (24h).
 /// Runs once when called; call from a daily scheduled task.
 pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, ExpectedError> {
     let cutoff_ms = now_ms - RETENTION_WINDOW.as_millis() as i64;
 
-    // 1. Drop rows older than the retention window in one pass.
+    // 1. Drop log rows older than the retention window in one pass.
     let mut deleted = db.delete_logs_older_than(cutoff_ms).await?;
 
     // 2. Per-service row cap. For each live service, trim anything beyond
@@ -36,6 +43,14 @@ pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, ExpectedE
             .trim_logs_to_cap(svc.service_id, MAX_ROWS_PER_SERVICE)
             .await?;
     }
+
+    // 3. Prune request_metrics older than the metrics retention window.
+    let metrics_cutoff = now_ms - METRICS_RETENTION.as_millis() as i64;
+    deleted += db.prune_request_metrics(metrics_cutoff).await?;
+
+    // 4. Prune device_samples older than 24h.
+    let samples_cutoff = now_ms - DEVICE_SAMPLES_RETENTION.as_millis() as i64;
+    deleted += db.prune_device_samples(samples_cutoff).await?;
 
     Ok(deleted)
 }
