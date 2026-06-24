@@ -1,0 +1,75 @@
+{
+  "common": {
+    "loading": "Loading…",
+    "error": "Error",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "close": "Close",
+    "refresh": "Refresh",
+    "search": "Search",
+    "copy": "Copy",
+    "copied": "Copied",
+    "noData": "No data",
+    "unknown": "Unknown"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "services": "Services",
+    "devices": "Devices",
+    "chat": "Chat",
+    "oneshots": "Oneshots",
+    "config": "Config",
+    "events": "Events",
+    "metrics": "Metrics"
+  },
+  "services": {
+    "title": "Services",
+    "table": {
+      "name": "Name",
+      "state": "State",
+      "lifecycle": "Lifecycle",
+      "priority": "Priority",
+      "port": "Port",
+      "pid": "PID",
+      "modality": "Modality",
+      "inflight": "In-flight",
+      "actions": "Actions"
+    },
+    "actions": {
+      "start": "Start",
+      "stop": "Stop",
+      "restart": "Restart",
+      "enable": "Enable",
+      "disable": "Disable"
+    },
+    "states": {
+      "idle": "idle",
+      "starting": "starting",
+      "running": "running",
+      "draining": "draining",
+      "stopped": "stopped",
+      "evicted": "evicted",
+      "failed": "failed",
+      "disabled": "disabled"
+    }
+  },
+  "devices": {
+    "title": "Devices",
+    "totalVram": "Total VRAM",
+    "freeVram": "Free VRAM",
+    "usedVram": "Used VRAM",
+    "reservations": "Reservations"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "daemonEndpoint": "Daemon endpoint",
+    "openaiPort": "OpenAI port",
+    "totalServices": "Services",
+    "runningServices": "Running",
+    "totalVramInUse": "VRAM in use",
+    "tokensToday": "Tokens today",
+    "recentEvents": "Recent events"
+  }
+}
