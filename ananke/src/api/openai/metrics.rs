@@ -241,3 +241,125 @@ impl<B: hyper::body::Body<Data = Bytes>> hyper::body::Body for MetricsBody<B> {
         self.body.size_hint()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_recorder(is_streaming: bool) -> MetricsRecorder {
+        MetricsRecorder::new(
+            Instant::now(),
+            1,
+            Some(1),
+            "demo".into(),
+            "/v1/chat/completions",
+            is_streaming,
+        )
+    }
+
+    /// Streaming: usage is extracted from the final SSE chunk that
+    /// carries a `usage` object.
+    #[test]
+    fn streaming_extracts_usage_from_final_chunk() {
+        let mut rec = make_recorder(true);
+
+        // Content chunk with delta.
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        ));
+        assert!(rec.first_token_at.is_some(), "TTFT should be set");
+
+        // Final chunk with usage.
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7}}\n\n",
+        ));
+        rec.ingest(&Bytes::from("data: [DONE]\n\n"));
+
+        assert_eq!(rec.prompt_tokens, Some(42));
+        assert_eq!(rec.completion_tokens, Some(7));
+    }
+
+    /// Streaming: TTFT is only set on the first content-bearing chunk,
+    /// not on chunks that carry only role or empty content.
+    #[test]
+    fn streaming_ttft_ignores_empty_content() {
+        let mut rec = make_recorder(true);
+
+        // First chunk has role but no content — should NOT set TTFT.
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+        ));
+        assert!(rec.first_token_at.is_none());
+
+        // Second chunk has content — should set TTFT.
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+        ));
+        assert!(rec.first_token_at.is_some());
+    }
+
+    /// Streaming: reasoning_content also triggers TTFT (DeepSeek-style).
+    #[test]
+    fn streaming_ttft_on_reasoning_content() {
+        let mut rec = make_recorder(true);
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"}}]}\n\n",
+        ));
+        assert!(rec.first_token_at.is_some());
+    }
+
+    /// Streaming: a `data:` line split across two chunks is reassembled
+    /// before parsing — the partial line buffer handles the boundary.
+    #[test]
+    fn streaming_handles_split_data_line() {
+        let mut rec = make_recorder(true);
+
+        rec.ingest(&Bytes::from("data: {\"choices\":[{\"delta\":{\"co"));
+        rec.ingest(&Bytes::from("ntent\":\"hi\"}}]}\n\n"));
+
+        assert!(rec.first_token_at.is_some());
+    }
+
+    /// Non-streaming: the entire body is buffered and parsed as JSON.
+    #[test]
+    fn non_streaming_extracts_usage_from_json() {
+        let mut rec = make_recorder(false);
+        rec.ingest(&Bytes::from(
+            r#"{"id":"chatcmpl-1","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":3}}"#,
+        ));
+
+        // finish() does the JSON parse — simulate it by calling the
+        // non-streaming parse path directly. We can't call finish()
+        // because it spawns a tokio task, so we replicate the check.
+        assert!(!rec.buf.is_empty());
+        let v: Value = serde_json::from_str(&rec.buf).unwrap();
+        let usage = v.get("usage").unwrap();
+        assert_eq!(
+            usage.get("prompt_tokens").and_then(|t| t.as_i64()),
+            Some(10)
+        );
+        assert_eq!(
+            usage.get("completion_tokens").and_then(|t| t.as_i64()),
+            Some(3)
+        );
+    }
+
+    /// Buffer cap: once the cap is reached for a non-streaming response,
+    /// further data is dropped. For streaming, the buffer clears so only
+    /// recent data (containing usage) is kept.
+    #[test]
+    fn streaming_clears_buffer_past_cap() {
+        let mut rec = make_recorder(true);
+        rec.buf_cap = 50; // tiny cap for testing
+        rec.buf = "x".repeat(50);
+
+        // Ingest more data — the buffer should clear (streaming path).
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n",
+        ));
+
+        // The old buffer was cleared and replaced with new data.
+        assert!(rec.buf.len() < 60);
+        assert!(rec.first_token_at.is_some(), "TTFT should still be set");
+    }
+}

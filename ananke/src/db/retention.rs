@@ -127,4 +127,81 @@ mod tests {
         let remaining = db.fetch_service_logs(svc).await.unwrap();
         assert_eq!(remaining.len(), 50_000);
     }
+
+    #[tokio::test]
+    async fn trims_old_request_metrics() {
+        use crate::db::models::RequestMetric;
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
+        let now = 10_000_000_000i64;
+        let eight_days_ago = now - 8 * 24 * 60 * 60 * 1000;
+
+        // One old metric (older than 7-day retention).
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: eight_days_ago,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            duration_ms: Some(100),
+            ttft_ms: None,
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+
+        // One recent metric.
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: now,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(20),
+            completion_tokens: Some(10),
+            duration_ms: Some(200),
+            ttft_ms: None,
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+
+        let deleted = trim_logs_once(&db, now).await.unwrap();
+        assert!(deleted >= 1, "should have deleted at least 1 old metric");
+
+        let remaining = db
+            .query_request_metrics(Some(svc), 0, now + 1, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn trims_old_device_samples() {
+        let db = Database::open_in_memory().await.unwrap();
+        let now = 10_000_000_000i64;
+        let two_days_ago = now - 2 * 24 * 60 * 60 * 1000;
+
+        // One old sample (older than 24h retention).
+        db.insert_device_sample("gpu:0", two_days_ago, 1000, 500)
+            .await
+            .unwrap();
+
+        // One recent sample.
+        db.insert_device_sample("gpu:0", now, 1000, 400)
+            .await
+            .unwrap();
+
+        let deleted = trim_logs_once(&db, now).await.unwrap();
+        assert!(deleted >= 1, "should have deleted at least 1 old sample");
+
+        let remaining = db.query_device_samples(None, 0, now + 1).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].timestamp_ms, now);
+    }
 }

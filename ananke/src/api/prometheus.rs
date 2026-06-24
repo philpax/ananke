@@ -223,3 +223,48 @@ pub fn register(router: Router, state: AppState) -> Router {
         .with_state(state);
     router.merge(mgmt)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_prometheus_single_family() {
+        let families = vec![{
+            let mut f = MetricFamily::new("test_metric", "A test.", "counter");
+            f.sample(vec![("svc", "alpha".into())], 42.0);
+            f.sample(vec![("svc", "beta".into())], 7.0);
+            f
+        }];
+        let out = format_prometheus(&families);
+        assert!(out.contains("# HELP test_metric A test."));
+        assert!(out.contains("# TYPE test_metric counter"));
+        assert!(out.contains(r#"test_metric{svc="alpha"} 42"#));
+        assert!(out.contains(r#"test_metric{svc="beta"} 7"#));
+    }
+
+    #[test]
+    fn format_prometheus_unlabelled_sample() {
+        let families = vec![{
+            let mut f = MetricFamily::new("up", "Is up.", "gauge");
+            f.sample(vec![], 1.0);
+            f
+        }];
+        let out = format_prometheus(&families);
+        assert!(out.contains("up 1\n"));
+    }
+
+    #[test]
+    fn format_prometheus_multi_label() {
+        let families = vec![{
+            let mut f = MetricFamily::new("tokens", "Tokens.", "counter");
+            f.sample(
+                vec![("service", "demo".into()), ("type", "prompt".into())],
+                100.0,
+            );
+            f
+        }];
+        let out = format_prometheus(&families);
+        assert!(out.contains(r#"tokens{service="demo",type="prompt"} 100"#));
+    }
+}

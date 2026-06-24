@@ -543,4 +543,193 @@ mod tests {
         assert!(live_names.contains(&"new-name"));
         assert!(!live_names.contains(&"old-name"));
     }
+
+    #[tokio::test]
+    async fn request_metrics_insert_and_query() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 1000).await.unwrap();
+
+        // Insert two requests 5 minutes apart, one success + one error.
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 10_000,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_ms: Some(1200),
+            ttft_ms: Some(200),
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 10_000 + 5 * 60_000,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(200),
+            completion_tokens: Some(80),
+            duration_ms: Some(800),
+            ttft_ms: None,
+            status_code: 500,
+        })
+        .await
+        .unwrap();
+
+        // Query with a 10-minute bucket — both should land in the same bucket.
+        let buckets = db
+            .query_request_metrics(Some(svc), 0, 20 * 60_000, 10 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(buckets.len(), 1);
+        let b = &buckets[0];
+        assert_eq!(b.request_count, 2);
+        assert_eq!(b.prompt_tokens, 300);
+        assert_eq!(b.completion_tokens, 130);
+        assert!((b.avg_duration_ms.unwrap() - 1000.0).abs() < 0.1);
+        assert_eq!(b.error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn request_metrics_filter_by_service() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc_a = db.upsert_service("alpha", 1000).await.unwrap();
+        let svc_b = db.upsert_service("beta", 2000).await.unwrap();
+
+        for svc_id in [svc_a, svc_b] {
+            db.insert_request_metric(&RequestMetric {
+                metric_id: 0,
+                service_id: svc_id,
+                run_id: Some(1),
+                timestamp_ms: 1000,
+                endpoint: "/v1/chat/completions".into(),
+                model: "test".into(),
+                prompt_tokens: Some(10),
+                completion_tokens: Some(5),
+                duration_ms: None,
+                ttft_ms: None,
+                status_code: 200,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Query all services (None).
+        let all = db
+            .query_request_metrics(None, 0, 10_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].request_count, 2);
+
+        // Query only svc_a.
+        let filtered = db
+            .query_request_metrics(Some(svc_a), 0, 10_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn request_metrics_prune_old() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 1000).await.unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 100,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 2000,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+
+        let deleted = db.prune_request_metrics(1000).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = db
+            .query_request_metrics(Some(svc), 0, 10_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn device_samples_insert_and_query() {
+        let db = Database::open_in_memory().await.unwrap();
+
+        db.insert_device_sample("gpu:0", 1000, 24_000_000_000, 20_000_000_000)
+            .await
+            .unwrap();
+        db.insert_device_sample("gpu:0", 2000, 24_000_000_000, 18_000_000_000)
+            .await
+            .unwrap();
+        db.insert_device_sample("cpu", 1000, 64_000_000_000, 32_000_000_000)
+            .await
+            .unwrap();
+
+        // Query all devices.
+        let all = db.query_device_samples(None, 0, 10_000).await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Query only gpu:0.
+        let gpu0 = db
+            .query_device_samples(Some("gpu:0"), 0, 10_000)
+            .await
+            .unwrap();
+        assert_eq!(gpu0.len(), 2);
+        assert_eq!(gpu0[0].device, "gpu:0");
+        assert_eq!(gpu0[0].used_bytes, 4_000_000_000);
+
+        // Time range filter.
+        let recent = db.query_device_samples(None, 1500, 10_000).await.unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].device, "gpu:0");
+    }
+
+    #[tokio::test]
+    async fn device_samples_prune_old() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.insert_device_sample("gpu:0", 100, 1000, 500)
+            .await
+            .unwrap();
+        db.insert_device_sample("gpu:0", 2000, 1000, 500)
+            .await
+            .unwrap();
+
+        let deleted = db.prune_device_samples(1000).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = db.query_device_samples(None, 0, 10_000).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].timestamp_ms, 2000);
+    }
 }
