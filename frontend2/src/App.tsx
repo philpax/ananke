@@ -29,7 +29,6 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<DashboardView />} />
-          <Route path="/services" element={<Placeholder title="Services" />} />
           <Route
             path="/services/:name"
             element={<Placeholder title="Service detail" />}

@@ -20,11 +20,6 @@ const NAV_ITEMS: NavItem[] = [
     icon: <DashboardIcon />,
   },
   {
-    to: "/services",
-    labelKey: "nav.services",
-    icon: <ServicesIcon />,
-  },
-  {
     to: "/devices",
     labelKey: "nav.devices",
     icon: <DevicesIcon />,
@@ -126,22 +121,6 @@ function DashboardIcon({ className = baseClass }: IconProps) {
       <rect width="7" height="5" x="14" y="3" rx="1" />
       <rect width="7" height="9" x="14" y="12" rx="1" />
       <rect width="7" height="5" x="3" y="16" rx="1" />
-    </svg>
-  );
-}
-
-function ServicesIcon({ className = baseClass }: IconProps) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 6h16M4 12h16M4 18h16" />
     </svg>
   );
 }

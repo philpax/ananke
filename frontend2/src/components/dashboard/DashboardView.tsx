@@ -1,11 +1,16 @@
-// Dashboard overview — the landing page. Answers "what's happening
-// right now?" with device summaries, service cards, recent events,
-// and quick stats.
+// Dashboard overview — the landing page and primary management view.
+// Answers "what's happening right now?" with quick stats, a full
+// service list with inline actions, and device summary cards.
 
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
-import { useDevices, useServices, useMetrics } from "../../api/hooks.ts";
+import {
+  useDevices,
+  useServices,
+  useMetrics,
+  useLifecycle,
+} from "../../api/hooks.ts";
 import type { DeviceSummary, ServiceSummary } from "../../api/client.ts";
 import { formatBytes } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
@@ -20,6 +25,7 @@ export function DashboardView() {
   const { t } = useTranslation();
   const services = useServices();
   const devices = useDevices();
+  const lifecycle = useLifecycle();
 
   // Let the daemon default to "last 1h" by omitting since/until.
   // The refetch interval (30s) keeps this fresh.
@@ -76,54 +82,48 @@ export function DashboardView() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        {/* Device summary */}
-        <Card header={t("nav.devices")} className="lg:col-span-1">
-          {devices.isPending ? (
-            <Spinner />
-          ) : devices.data ? (
-            <div className="space-y-2">
-              {devices.data
-                .filter((d) => !d.id.startsWith("cpu"))
-                .map((d) => (
-                  <DeviceMiniCard key={d.id} device={d} />
-                ))}
-              {devices.data
-                .filter((d) => d.id.startsWith("cpu"))
-                .map((d) => (
-                  <DeviceMiniCard key={d.id} device={d} />
-                ))}
-            </div>
-          ) : (
-            <span className="text-sm text-danger">
-              {devices.error?.message}
-            </span>
-          )}
-        </Card>
+      {/* Device summary */}
+      <Card header={t("nav.devices")}>
+        {devices.isPending ? (
+          <Spinner />
+        ) : devices.data ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {devices.data.map((d) => (
+              <DeviceMiniCard key={d.id} device={d} />
+            ))}
+          </div>
+        ) : (
+          <span className="text-sm text-danger">{devices.error?.message}</span>
+        )}
+      </Card>
 
-        {/* Service grid */}
-        <Card
-          header={t("nav.services")}
-          className="lg:col-span-2"
-          bodyClassName="p-0"
-        >
-          {services.isPending ? (
-            <div className="p-3">
-              <Spinner />
-            </div>
-          ) : services.data ? (
-            <div className="divide-y divide-border-default">
-              {sortedServices.map((s) => (
-                <ServiceMiniRow key={s.name} svc={s} />
-              ))}
-            </div>
-          ) : (
-            <span className="text-sm text-danger p-3">
-              {services.error?.message}
-            </span>
-          )}
-        </Card>
-      </div>
+      {/* Service list (full-width, primary view) */}
+      <Card header={t("nav.services")} bodyClassName="p-0">
+        {services.isPending ? (
+          <div className="p-3">
+            <Spinner />
+          </div>
+        ) : services.data ? (
+          <div className="divide-y divide-border-default">
+            {sortedServices.map((s) => (
+              <ServiceRow
+                key={s.name}
+                svc={s}
+                pending={
+                  lifecycle.isPending && lifecycle.variables?.name === s.name
+                }
+                onAction={(action) =>
+                  lifecycle.mutate({ action, name: s.name })
+                }
+              />
+            ))}
+          </div>
+        ) : (
+          <span className="p-3 text-sm text-danger">
+            {services.error?.message}
+          </span>
+        )}
+      </Card>
     </div>
   );
 }
@@ -155,25 +155,205 @@ function DeviceMiniCard({ device }: { device: DeviceSummary }) {
   );
 }
 
-function ServiceMiniRow({ svc }: { svc: ServiceSummary }) {
+function ServiceRow({
+  svc,
+  pending,
+  onAction,
+}: {
+  svc: ServiceSummary;
+  pending: boolean;
+  onAction: (
+    action: "start" | "stop" | "restart" | "enable" | "disable",
+  ) => void;
+}) {
+  const { t } = useTranslation();
+
+  const canStart = ["idle", "stopped", "failed", "evicted"].includes(svc.state);
+  const canStop = ["running", "starting", "draining"].includes(svc.state);
+  const isDisabled = svc.state.startsWith("disabled");
+
   return (
-    <Link
-      to={`/services/${encodeURIComponent(svc.name)}`}
-      className="flex items-center gap-3 px-3 py-1.5 hover:bg-elevated transition-colors"
+    <div className="flex items-center gap-3 px-3 py-1.5 hover:bg-elevated transition-colors">
+      <Link
+        to={`/services/${encodeURIComponent(svc.name)}`}
+        className="flex flex-1 items-center gap-3 overflow-hidden"
+      >
+        <StatusDot state={svc.state} />
+        <span className="font-mono text-sm text-primary">{svc.name}</span>
+        {svc.has_mmproj && <Badge variant="vision">vision</Badge>}
+        {svc.modality === "embedding" && (
+          <Badge variant="embedding">embedding</Badge>
+        )}
+        {(svc.inflight_count ?? 0) > 0 && (
+          <Badge variant="accent">{svc.inflight_count} in-flight</Badge>
+        )}
+        <span className="ml-auto shrink-0 font-mono text-xs text-tertiary">
+          :{svc.port}
+        </span>
+      </Link>
+      <div className="flex w-[92px] shrink-0 items-center justify-end gap-0.5">
+        {canStart && (
+          <IconButton
+            label={t("services.actions.start")}
+            variant="primary"
+            onClick={() => onAction("start")}
+            disabled={pending}
+          >
+            <PlayIcon />
+          </IconButton>
+        )}
+        {canStop && (
+          <>
+            <IconButton
+              label={t("services.actions.stop")}
+              variant="danger"
+              onClick={() => onAction("stop")}
+              disabled={pending}
+            >
+              <StopIcon />
+            </IconButton>
+            <IconButton
+              label={t("services.actions.restart")}
+              variant="secondary"
+              onClick={() => onAction("restart")}
+              disabled={pending}
+            >
+              <RestartIcon />
+            </IconButton>
+          </>
+        )}
+        {isDisabled ? (
+          <IconButton
+            label={t("services.actions.enable")}
+            variant="secondary"
+            onClick={() => onAction("enable")}
+            disabled={pending}
+          >
+            <PowerIcon />
+          </IconButton>
+        ) : (
+          <IconButton
+            label={t("services.actions.disable")}
+            variant="ghost"
+            onClick={() => onAction("disable")}
+            disabled={pending}
+          >
+            <DisableIcon />
+          </IconButton>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type IconButtonProps = {
+  label: string;
+  variant: "primary" | "secondary" | "ghost" | "danger";
+  onClick: () => void;
+  disabled: boolean;
+  children: React.ReactNode;
+};
+
+const ICON_VARIANT: Record<IconButtonProps["variant"], string> = {
+  primary: "text-accent hover:bg-accent/15",
+  secondary: "text-secondary hover:bg-elevated",
+  ghost: "text-tertiary hover:bg-elevated hover:text-secondary",
+  danger: "text-danger hover:bg-danger/15",
+};
+
+function IconButton({
+  label,
+  variant,
+  onClick,
+  disabled,
+  children,
+}: IconButtonProps) {
+  return (
+    <button
+      type="button"
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onClick();
+      }}
+      disabled={disabled}
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors disabled:opacity-40 ${ICON_VARIANT[variant]}`}
     >
-      <StatusDot state={svc.state} />
-      <span className="font-mono text-sm text-primary">{svc.name}</span>
-      {svc.has_mmproj && <Badge variant="vision">vision</Badge>}
-      {svc.modality === "embedding" && (
-        <Badge variant="embedding">embedding</Badge>
-      )}
-      {(svc.inflight_count ?? 0) > 0 && (
-        <Badge variant="accent">{svc.inflight_count} in-flight</Badge>
-      )}
-      <span className="ml-auto font-mono text-xs text-tertiary">
-        :{svc.port}
-      </span>
-    </Link>
+      {children}
+    </button>
+  );
+}
+
+/* --- Icons --- */
+
+function PlayIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" rx="1" />
+    </svg>
+  );
+}
+
+function RestartIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
+  );
+}
+
+function PowerIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 2v10" />
+      <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
+    </svg>
+  );
+}
+
+function DisableIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M4.93 4.93l14.14 14.14" />
+    </svg>
   );
 }
 
