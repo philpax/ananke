@@ -740,6 +740,7 @@ Available at `http://<host>:7071`. Used by `anankectl` to orchestrate the daemon
 | `/api/services/:name/logs`        | GET      | Get recent logs for a service         |
 | `/api/services/:name/logs/stream` | GET (WS) | Stream logs for a service             |
 | `/api/devices`                    | GET      | Device/VRAM status                    |
+| `/api/devices/samples`            | GET      | Historical VRAM samples               |
 | `/api/config`                     | GET      | Get current config (with ETag hash)   |
 | `/api/config`                     | PUT      | Atomically update config              |
 | `/api/config/validate`            | POST     | Validate TOML without persisting      |
@@ -748,4 +749,6 @@ Available at `http://<host>:7071`. Used by `anankectl` to orchestrate the daemon
 | `/api/oneshot/:id`                | GET      | Get oneshot status                    |
 | `/api/oneshot/:id`                | DELETE   | Delete a oneshot service              |
 | `/api/events`                     | GET (WS) | WebSocket for real-time events        |
+| `/api/metrics`                    | GET      | Aggregated request metrics (JSON)     |
+| `/metrics`                        | GET      | Prometheus text-format metrics        |
 | `/api/openapi.json`               | GET      | OpenAPI spec                          |

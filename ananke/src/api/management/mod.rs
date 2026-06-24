@@ -1,5 +1,5 @@
-//! Read-only management API — `/api/services`, `/api/devices`, and
-//! `/api/openapi.json`.
+//! Read-only management API — `/api/services`, `/api/devices`, `/api/metrics`,
+//! and `/api/openapi.json`.
 
 pub mod config;
 pub mod events_ws;
@@ -7,6 +7,7 @@ pub mod handlers;
 pub mod lifecycle;
 pub mod logs;
 pub mod logs_ws;
+pub mod metrics;
 
 use axum::{
     Router,
@@ -32,7 +33,12 @@ pub fn register(router: Router, state: AppState) -> Router {
         .route("/api/events", any(events_ws::get_events_ws))
         .with_state(state.clone());
     handlers::register(router, state.clone())
+        .merge(metrics::register(Router::new(), state.clone()))
         .merge(crate::api::openapi::register(Router::new(), state.clone()))
+        .merge(crate::api::prometheus::register(
+            Router::new(),
+            state.clone(),
+        ))
         .merge(crate::oneshot::handlers::register(Router::new(), state))
         .merge(mgmt)
 }
