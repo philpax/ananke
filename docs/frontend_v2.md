@@ -99,6 +99,7 @@ A small component library in `src/components/ui/`:
 - `Tooltip` — hover/focus tooltip for dense data.
 - `EmptyState` — icon + message for empty lists.
 - `Spinner` — small loading indicator.
+- `CopyButton` — icon button that copies a value to the clipboard. Shows a brief check icon on success. Used on any value an operator might need to paste elsewhere: model names, server URLs, ports, PIDs, device IDs, file paths, run IDs, launch commands. Inline next to the value, with `text-tertiary` colour so it doesn't compete with the data itself.
 
 ### internationalisation
 
