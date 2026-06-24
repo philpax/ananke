@@ -2,9 +2,11 @@
 
 use ananke_api::{
     ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DevicePlacement,
-    DeviceReservation, DeviceSummary, DisableResponse, EnableResponse, EnvVar, FitVerdict,
-    LaunchCommand, LaunchCommandSource, LogLine, LogStreamMessage, LogsResponse, PlacementPreview,
-    ServiceDetail, ServiceSummary, ServicesResponse, StartResponse, StopResponse, ValidationError,
+    DeviceReservation, DeviceSampleResponse, DeviceSamplesResponse, DeviceSummary,
+    DisableResponse, EnableResponse, EnvVar, FitVerdict, LaunchCommand, LaunchCommandSource,
+    LogLine, LogStreamMessage, LogsResponse, MetricBucketResponse, MetricsResponse,
+    PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse, StartResponse,
+    StopResponse, ValidationError,
     oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
 };
 use axum::{
@@ -19,7 +21,7 @@ use crate::{
     api::{
         management::{
             config as mgmt_config, handlers as mgmt_handlers, lifecycle as mgmt_lifecycle,
-            logs as mgmt_logs,
+            logs as mgmt_logs, metrics as mgmt_metrics,
         },
         openai::{handlers as openai_handlers, schema as openai_schema},
     },
@@ -47,6 +49,8 @@ use crate::{
         mgmt_config::get_config,
         mgmt_config::put_config,
         mgmt_config::post_validate,
+        mgmt_metrics::get_metrics,
+        mgmt_metrics::get_device_samples,
         oneshot_handlers::post_oneshot,
         oneshot_handlers::list_oneshots,
         oneshot_handlers::get_oneshot,
@@ -82,6 +86,10 @@ use crate::{
         ConfigValidateRequest,
         ConfigValidateResponse,
         ValidationError,
+        MetricsResponse,
+        MetricBucketResponse,
+        DeviceSamplesResponse,
+        DeviceSampleResponse,
         ApiError,
         OneshotRequest,
         OneshotAllocation,
