@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AppShell } from "./components/layout/AppShell.tsx";
 import { useEvents } from "./api/events.ts";
+import { DashboardView } from "./components/dashboard/DashboardView.tsx";
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -27,7 +28,7 @@ export default function App() {
     <BrowserRouter>
       <AppShell>
         <Routes>
-          <Route path="/" element={<Placeholder title="Dashboard" />} />
+          <Route path="/" element={<DashboardView />} />
           <Route path="/services" element={<Placeholder title="Services" />} />
           <Route
             path="/services/:name"
