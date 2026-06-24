@@ -28,6 +28,7 @@ fn service_summary_roundtrips() {
         port: 11435,
         run_id: Some(1),
         pid: Some(1234),
+        inflight_count: 0,
         elastic_borrower: None,
         has_mmproj: Some(true),
         modality: ananke_api::Modality::Chat,

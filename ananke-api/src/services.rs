@@ -61,6 +61,10 @@ pub struct ServiceSummary {
     pub run_id: Option<i64>,
     /// Child PID if currently running.
     pub pid: Option<i32>,
+    /// Number of requests currently in flight through the proxy for this
+    /// service. Zero when the service is not running.
+    #[serde(default)]
+    pub inflight_count: u64,
     /// Placeholder for elastic-borrower tracking (future work).
     pub elastic_borrower: Option<String>,
     /// `true` when the service's `[[service.llama_cpp]]` config has a

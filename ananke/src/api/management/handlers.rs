@@ -55,6 +55,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             port: svc_cfg.port,
             run_id: peek.as_ref().and_then(|p| p.run_id),
             pid: peek.as_ref().and_then(|p| p.pid),
+            inflight_count: state.inflight.current(&svc_cfg.name),
             // Placeholder: elastic borrower tracking is deferred to a later phase.
             elastic_borrower: None,
             // Config-only check, no GGUF read — safe to ship in the
