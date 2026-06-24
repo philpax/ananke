@@ -1,8 +1,11 @@
 // Logs viewer for a service. REST seed + WebSocket live tail, with
-// time window presets, stream filter, auto-follow, and a scroll
-// container. Virtualisation will be added once the view is functional.
+// time window presets, custom time range, text search, run filter,
+// stream filter, auto-follow, and a scroll container.
+//
+// Aims for GCP Log Explorer parity on the essentials: jump-to-time,
+// text search within the buffer, run filtering, and live tail.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
 import type { LogLine } from "../../api/client.ts";
 import { formatTimestamp } from "../../util.ts";
@@ -10,6 +13,8 @@ import { formatTimestamp } from "../../util.ts";
 type LogsViewerProps = {
   name: string;
 };
+
+type WindowMode = "preset" | "custom";
 
 type WindowPreset = {
   label: string;
@@ -26,18 +31,66 @@ const WINDOW_PRESETS: WindowPreset[] = [
   },
 ];
 
+// Convert a datetime-local string (e.g. "2026-06-24T14:30") to ms
+// since epoch. Returns null for empty/invalid input.
+function datetimeToMs(dt: string): number | null {
+  if (!dt) return null;
+  const t = new Date(dt).getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
+// Convert ms since epoch to a datetime-local string suitable for an
+// <input type="datetime-local"> value.
+function msToDatetime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function LogsViewer({ name }: LogsViewerProps) {
-  const [windowIdx, setWindowIdx] = useState(0);
-  const win = useLogWindow(name, WINDOW_PRESETS[windowIdx]!.window);
+  const [windowMode, setWindowMode] = useState<WindowMode>("preset");
+  const [presetIdx, setPresetIdx] = useState(0);
+
+  // Custom time range state. Empty until the user selects "custom".
+  const [sinceInput, setSinceInput] = useState("");
+  const [untilInput, setUntilInput] = useState("");
+
+  const window: LogWindow = useMemo(() => {
+    if (windowMode === "preset") return WINDOW_PRESETS[presetIdx]!.window;
+    const since = datetimeToMs(sinceInput);
+    const until = untilInput ? datetimeToMs(untilInput) : null;
+    if (since === null) return { kind: "relative", durationMs: 5 * 60 * 1000 };
+    return { kind: "absolute", sinceMs: since, untilMs: until };
+  }, [windowMode, presetIdx, sinceInput, untilInput]);
+
+  const win = useLogWindow(name, window);
   const [streamFilter, setStreamFilter] = useState<
     "both" | "stdout" | "stderr"
   >("both");
+  const [search, setSearch] = useState("");
+  const [runFilter, setRunFilter] = useState<number | null>(null);
   const [autoFollow, setAutoFollow] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const lines = win.lines.filter(
-    (l) => streamFilter === "both" || l.stream === streamFilter,
-  );
+  // Collect unique run IDs from loaded lines.
+  const runIds = useMemo(() => {
+    const set = new Set<number>();
+    for (const l of win.lines) set.add(l.run_id);
+    return [...set].sort((a, b) => b - a);
+  }, [win.lines]);
+
+  const lines = useMemo(() => {
+    let result = win.lines;
+    if (streamFilter !== "both")
+      result = result.filter((l) => l.stream === streamFilter);
+    if (runFilter !== null)
+      result = result.filter((l) => l.run_id === runFilter);
+    if (search) {
+      const lower = search.toLowerCase();
+      result = result.filter((l) => l.line.toLowerCase().includes(lower));
+    }
+    return result;
+  }, [win.lines, streamFilter, runFilter, search]);
 
   // Auto-follow: scroll to bottom when new lines arrive.
   useEffect(() => {
@@ -46,17 +99,30 @@ export function LogsViewer({ name }: LogsViewerProps) {
     }
   }, [lines, autoFollow]);
 
+  // When switching to custom mode, pre-fill the since field if empty.
+  function selectCustom() {
+    if (windowMode !== "custom") {
+      const now = Date.now();
+      setSinceInput(msToDatetime(now - 60 * 60 * 1000));
+      setUntilInput("");
+    }
+    setWindowMode("custom");
+  }
+
   return (
     <div className="flex h-72 flex-col">
-      {/* Toolbar */}
+      {/* Toolbar row 1: time + stream + status */}
       <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
         <div className="flex items-center gap-0.5">
           {WINDOW_PRESETS.map((preset, i) => (
             <button
               key={preset.label}
-              onClick={() => setWindowIdx(i)}
+              onClick={() => {
+                setPresetIdx(i);
+                setWindowMode("preset");
+              }}
               className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                windowIdx === i
+                windowMode === "preset" && presetIdx === i
                   ? "bg-elevated text-primary"
                   : "text-tertiary hover:text-secondary"
               }`}
@@ -64,6 +130,16 @@ export function LogsViewer({ name }: LogsViewerProps) {
               {preset.label}
             </button>
           ))}
+          <button
+            onClick={selectCustom}
+            className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
+              windowMode === "custom"
+                ? "bg-elevated text-primary"
+                : "text-tertiary hover:text-secondary"
+            }`}
+          >
+            custom
+          </button>
         </div>
         <div className="mx-1 h-3 w-px bg-border-default" />
         <div className="flex items-center gap-0.5">
@@ -100,6 +176,57 @@ export function LogsViewer({ name }: LogsViewerProps) {
         </div>
       </div>
 
+      {/* Toolbar row 2: custom time range (shown only in custom mode) */}
+      {windowMode === "custom" && (
+        <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
+          <input
+            type="datetime-local"
+            value={sinceInput}
+            onChange={(e) => setSinceInput(e.target.value)}
+            className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
+          />
+          <span className="text-xs text-tertiary">→</span>
+          <input
+            type="datetime-local"
+            value={untilInput}
+            onChange={(e) => setUntilInput(e.target.value)}
+            placeholder="now"
+            className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
+          />
+          {!untilInput && <span className="text-xs text-tertiary">(live)</span>}
+        </div>
+      )}
+
+      {/* Toolbar row 3: search + run filter */}
+      <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="search…"
+          className="h-6 w-40 rounded-sm border border-border-default bg-base px-2 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
+        />
+        {runIds.length > 1 && (
+          <select
+            value={runFilter ?? ""}
+            onChange={(e) =>
+              setRunFilter(e.target.value ? Number(e.target.value) : null)
+            }
+            className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
+          >
+            <option value="">all runs</option>
+            {runIds.map((r) => (
+              <option key={r} value={r}>
+                run {r}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="ml-auto font-mono text-xs text-tertiary">
+          {lines.length} lines
+        </span>
+      </div>
+
       {/* Log lines */}
       <div
         ref={scrollRef}
@@ -115,7 +242,11 @@ export function LogsViewer({ name }: LogsViewerProps) {
           </div>
         ) : (
           lines.map((line) => (
-            <LogRow key={`${line.run_id}:${line.seq}`} line={line} />
+            <LogRow
+              key={`${line.run_id}:${line.seq}`}
+              line={line}
+              search={search}
+            />
           ))
         )}
       </div>
@@ -123,12 +254,13 @@ export function LogsViewer({ name }: LogsViewerProps) {
   );
 }
 
-function LogRow({ line }: { line: LogLine }) {
+function LogRow({ line, search }: { line: LogLine; search: string }) {
   return (
     <div className="flex gap-2 py-0.5 hover:bg-elevated">
       <span className="shrink-0 text-tertiary">
         {formatTimestamp(line.timestamp_ms)}
       </span>
+      <span className="shrink-0 text-tertiary">r{line.run_id}</span>
       <span
         className={`shrink-0 ${
           line.stream === "stderr" ? "text-danger" : "text-tertiary"
@@ -137,8 +269,33 @@ function LogRow({ line }: { line: LogLine }) {
         {line.stream === "stderr" ? "err" : "out"}
       </span>
       <span className="whitespace-pre-wrap break-all text-primary">
-        {line.line}
+        {search ? highlightSearch(line.line, search) : line.line}
       </span>
     </div>
   );
+}
+
+// Split text around search matches and wrap matches in a <mark>.
+function highlightSearch(text: string, search: string): React.ReactNode {
+  if (!search) return text;
+  const lower = text.toLowerCase();
+  const query = search.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < text.length) {
+    const idx = lower.indexOf(query, i);
+    if (idx === -1) {
+      parts.push(text.slice(i));
+      break;
+    }
+    if (idx > i) parts.push(text.slice(i, idx));
+    parts.push(
+      <mark key={key++} className="bg-warning/30 text-primary">
+        {text.slice(idx, idx + query.length)}
+      </mark>,
+    );
+    i = idx + query.length;
+  }
+  return parts;
 }
