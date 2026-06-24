@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell.tsx";
 import { useEvents } from "./api/events.ts";
 import { DashboardView } from "./components/dashboard/DashboardView.tsx";
+import { ServiceDetailView } from "./components/services/ServiceDetailView.tsx";
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -29,10 +30,7 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<DashboardView />} />
-          <Route
-            path="/services/:name"
-            element={<Placeholder title="Service detail" />}
-          />
+          <Route path="/services/:name" element={<ServiceDetailView />} />
           <Route path="/devices" element={<Placeholder title="Devices" />} />
           <Route path="/chat" element={<Placeholder title="Chat" />} />
           <Route path="/oneshots" element={<Placeholder title="Oneshots" />} />

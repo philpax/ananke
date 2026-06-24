@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@source "./**/*.{ts,tsx}";
+
 /*
  * Design tokens for the ananke dashboard. Dark mode is the default
  * (values in @theme → :root). Light mode overrides via a `.light`

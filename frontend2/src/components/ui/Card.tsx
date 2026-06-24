@@ -25,7 +25,7 @@ export function Card({
           {header}
         </div>
       )}
-      <div className={`p-3 ${bodyClassName}`}>{children}</div>
+      <div className={bodyClassName || "p-3"}>{children}</div>
     </div>
   );
 }
