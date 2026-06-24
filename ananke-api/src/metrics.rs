@@ -10,9 +10,12 @@ pub struct MetricsResponse {
     pub buckets: Vec<MetricBucketResponse>,
 }
 
-/// One time bucket of aggregated request metrics.
+/// One time bucket of aggregated request metrics, scoped to a single service.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct MetricBucketResponse {
+    /// Service name these metrics belong to. `None` if the service has been
+    /// deleted from the database but metric rows remain.
+    pub service: Option<String>,
     /// Start of the bucket (ms since epoch).
     pub bucket_start: i64,
     /// Number of requests in the bucket.

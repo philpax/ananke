@@ -67,6 +67,7 @@ pub async fn get_metrics(State(state): State<AppState>, Query(q): Query<MetricsQ
                 buckets: buckets
                     .into_iter()
                     .map(|b: MetricBucket| MetricBucketResponse {
+                        service: b.service,
                         bucket_start: b.bucket_start,
                         request_count: b.request_count,
                         prompt_tokens: b.prompt_tokens,

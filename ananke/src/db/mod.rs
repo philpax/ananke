@@ -378,6 +378,8 @@ impl Database {
 
     /// Query aggregated request metrics for the JSON `/api/metrics` endpoint.
     /// Returns pre-bucketed time-series data — the frontend doesn't aggregate.
+    /// Each bucket is scoped to a single service so the frontend can distinguish
+    /// per-service contributions when no service filter is given.
     pub async fn query_request_metrics(
         &self,
         service_id: Option<i64>,
@@ -386,31 +388,35 @@ impl Database {
         bucket_ms: i64,
     ) -> Result<Vec<MetricBucket>, ExpectedError> {
         let conn = self.conn.lock();
-        // Use SUM(CASE WHEN ...) for error count — simpler than a LEFT JOIN
-        // and avoids the subquery. The bucket is floor(timestamp / bucket) *
-        // bucket so all rows in the same window group together.
+        // LEFT JOIN services so that orphaned metrics (service deleted but
+        // rows remain) still appear with service = NULL. Grouping by
+        // service_id in addition to the bucket ensures per-service breakdown
+        // when no filter is given.
         let sql = "SELECT
-                (timestamp_ms / ?1) * ?1 AS bucket,
+                (rm.timestamp_ms / ?1) * ?1 AS bucket,
+                s.name AS service_name,
                 COUNT(*) AS request_count,
-                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-                AVG(duration_ms) AS avg_duration_ms,
-                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count
-             FROM request_metrics
-             WHERE timestamp_ms >= ?2 AND timestamp_ms <= ?3
-               AND (?4 IS NULL OR service_id = ?4)
-             GROUP BY bucket
-             ORDER BY bucket";
+                COALESCE(SUM(rm.prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(rm.completion_tokens), 0) AS completion_tokens,
+                AVG(rm.duration_ms) AS avg_duration_ms,
+                SUM(CASE WHEN rm.status_code >= 400 THEN 1 ELSE 0 END) AS error_count
+             FROM request_metrics rm
+             LEFT JOIN services s ON s.service_id = rm.service_id
+             WHERE rm.timestamp_ms >= ?2 AND rm.timestamp_ms <= ?3
+               AND (?4 IS NULL OR rm.service_id = ?4)
+             GROUP BY bucket, rm.service_id
+             ORDER BY bucket, service_name";
         let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
         let rows = stmt
             .query_map(params![bucket_ms, since_ms, until_ms, service_id], |row| {
                 Ok(MetricBucket {
+                    service: row.get::<_, Option<String>>(1)?,
                     bucket_start: row.get(0)?,
-                    request_count: row.get(1)?,
-                    prompt_tokens: row.get(2)?,
-                    completion_tokens: row.get(3)?,
-                    avg_duration_ms: row.get::<_, Option<f64>>(4)?,
-                    error_count: row.get(5)?,
+                    request_count: row.get(2)?,
+                    prompt_tokens: row.get(3)?,
+                    completion_tokens: row.get(4)?,
+                    avg_duration_ms: row.get::<_, Option<f64>>(5)?,
+                    error_count: row.get(6)?,
                 })
             })
             .map_err(|e| self.db_err(e))?;
@@ -497,8 +503,10 @@ impl Database {
     }
 }
 
-/// One time bucket of aggregated request metrics.
+/// One time bucket of aggregated request metrics, scoped to a single service.
 pub struct MetricBucket {
+    /// Service name, or `None` if the service was deleted but metric rows remain.
+    pub service: Option<String>,
     pub bucket_start: i64,
     pub request_count: i64,
     pub prompt_tokens: i64,
@@ -588,6 +596,7 @@ mod tests {
             .unwrap();
         assert_eq!(buckets.len(), 1);
         let b = &buckets[0];
+        assert_eq!(b.service.as_deref(), Some("demo"));
         assert_eq!(b.request_count, 2);
         assert_eq!(b.prompt_tokens, 300);
         assert_eq!(b.completion_tokens, 130);
@@ -619,13 +628,17 @@ mod tests {
             .unwrap();
         }
 
-        // Query all services (None).
+        // Query all services (None) — should get one bucket per service.
         let all = db
             .query_request_metrics(None, 0, 10_000, 60_000)
             .await
             .unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].request_count, 2);
+        assert_eq!(all.len(), 2);
+        // Buckets are ordered by (bucket, service_name) — alpha before beta.
+        assert_eq!(all[0].service.as_deref(), Some("alpha"));
+        assert_eq!(all[0].request_count, 1);
+        assert_eq!(all[1].service.as_deref(), Some("beta"));
+        assert_eq!(all[1].request_count, 1);
 
         // Query only svc_a.
         let filtered = db
@@ -633,6 +646,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].service.as_deref(), Some("alpha"));
         assert_eq!(filtered[0].request_count, 1);
     }
 
