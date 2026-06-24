@@ -5,7 +5,7 @@
 //! through to the client. When the stream ends, the recorded data is
 //! written to the `request_metrics` table via a spawned task.
 
-use std::time::Instant;
+use std::{pin::Pin, time::Instant};
 
 use bytes::Bytes;
 use hyper::body::Frame;
@@ -167,21 +167,19 @@ impl MetricsRecorder {
     }
 }
 
-pin_project_lite::pin_project! {
-    /// Wraps a body with a [`MetricsRecorder`]. Passes all data through
-    /// unchanged while feeding bytes to the recorder. When the stream
-    /// ends, the recorder writes the metric to the database.
-    pub struct MetricsBody<B> {
-        #[pin]
-        body: B,
-        recorder: Option<MetricsRecorder>,
-        db: Option<Database>,
-        status_code: u16,
-        recorded: bool,
-    }
+/// Wraps a body with a [`MetricsRecorder`]. Passes all data through
+/// unchanged while feeding bytes to the recorder. When the stream ends
+/// (or the body is dropped), the recorder writes the metric to the
+/// database via a spawned task.
+pub struct MetricsBody<B> {
+    body: B,
+    recorder: Option<MetricsRecorder>,
+    db: Option<Database>,
+    status_code: u16,
+    recorded: bool,
 }
 
-impl<B: hyper::body::Body> MetricsBody<B> {
+impl<B> MetricsBody<B> {
     pub fn new(body: B, recorder: MetricsRecorder, db: Database, status_code: u16) -> Self {
         Self {
             body,
@@ -191,6 +189,22 @@ impl<B: hyper::body::Body> MetricsBody<B> {
             recorded: false,
         }
     }
+
+    fn record_metric(&mut self) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        if let (Some(recorder), Some(db)) = (self.recorder.take(), self.db.take()) {
+            recorder.finish(db, self.status_code);
+        }
+    }
+}
+
+impl<B> Drop for MetricsBody<B> {
+    fn drop(&mut self) {
+        self.record_metric();
+    }
 }
 
 impl<B: hyper::body::Body<Data = Bytes>> hyper::body::Body for MetricsBody<B> {
@@ -198,18 +212,17 @@ impl<B: hyper::body::Body<Data = Bytes>> hyper::body::Body for MetricsBody<B> {
     type Error = B::Error;
 
     fn poll_frame(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.project();
-        match this.body.poll_frame(cx) {
+        // Safety: we never move `body` out of self, and the other fields
+        // are not pinned (only `body` needs pinning for the Body trait).
+        // This is the standard manual pin-projection pattern.
+        let this = unsafe { self.get_unchecked_mut() };
+        let body = unsafe { Pin::new_unchecked(&mut this.body) };
+        match body.poll_frame(cx) {
             std::task::Poll::Ready(None) => {
-                if !*this.recorded {
-                    *this.recorded = true;
-                    if let (Some(recorder), Some(db)) = (this.recorder.take(), this.db.take()) {
-                        recorder.finish(db, *this.status_code);
-                    }
-                }
+                this.record_metric();
                 std::task::Poll::Ready(None)
             }
             std::task::Poll::Ready(Some(Ok(frame))) => {
@@ -221,12 +234,7 @@ impl<B: hyper::body::Body<Data = Bytes>> hyper::body::Body for MetricsBody<B> {
                 std::task::Poll::Ready(Some(Ok(frame)))
             }
             std::task::Poll::Ready(Some(Err(e))) => {
-                if !*this.recorded {
-                    *this.recorded = true;
-                    if let (Some(recorder), Some(db)) = (this.recorder.take(), this.db.take()) {
-                        recorder.finish(db, *this.status_code);
-                    }
-                }
+                this.record_metric();
                 std::task::Poll::Ready(Some(Err(e)))
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
