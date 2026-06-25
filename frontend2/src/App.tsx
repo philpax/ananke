@@ -9,6 +9,7 @@ import { useEvents } from "./api/events.ts";
 import { DashboardView } from "./components/dashboard/DashboardView.tsx";
 import { ServiceDetailView } from "./components/services/ServiceDetailView.tsx";
 import { EventsView } from "./components/events/EventsView.tsx";
+import { ChatView } from "./components/chat/ChatView.tsx";
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -33,7 +34,7 @@ export default function App() {
           <Route path="/" element={<DashboardView />} />
           <Route path="/services/:name" element={<ServiceDetailView />} />
           <Route path="/devices" element={<Placeholder title="Devices" />} />
-          <Route path="/chat" element={<Placeholder title="Chat" />} />
+          <Route path="/chat" element={<ChatView />} />
           <Route path="/oneshots" element={<Placeholder title="Oneshots" />} />
           <Route path="/config" element={<Placeholder title="Config" />} />
           <Route path="/events" element={<EventsView />} />

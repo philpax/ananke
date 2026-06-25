@@ -33,9 +33,10 @@ import {
   type StartResponse,
   type StopResponse,
 } from "./client.ts";
+import { isEventsConnected } from "./events.ts";
 
-const SERVICES_POLL_MS = 2_000;
-const DEVICES_POLL_MS = 2_000;
+const SERVICES_POLL_MS = 5_000;
+const DEVICES_POLL_MS = 5_000;
 const METRICS_STALE_MS = 30_000;
 const LOGS_PAGE_SIZE = 1_000;
 const LOGS_MAX_SEED_PAGES = 5;
@@ -45,7 +46,7 @@ export function useServices(): UseQueryResult<ServiceSummary[], Error> {
     queryKey: ["services"],
     queryFn: () =>
       api.listServices().then((resp: ServicesResponse) => resp.services),
-    refetchInterval: SERVICES_POLL_MS,
+    refetchInterval: () => (isEventsConnected() ? false : SERVICES_POLL_MS),
   });
 }
 
@@ -53,7 +54,7 @@ export function useDevices(): UseQueryResult<DeviceSummary[], Error> {
   return useQuery({
     queryKey: ["devices"],
     queryFn: api.listDevices,
-    refetchInterval: DEVICES_POLL_MS,
+    refetchInterval: () => (isEventsConnected() ? false : DEVICES_POLL_MS),
   });
 }
 
@@ -64,7 +65,7 @@ export function useServiceDetail(
     queryKey: ["service-detail", name],
     queryFn: () => api.serviceDetail(name ?? ""),
     enabled: name !== null,
-    refetchInterval: SERVICES_POLL_MS,
+    refetchInterval: () => (isEventsConnected() ? false : SERVICES_POLL_MS),
   });
 }
 
@@ -76,7 +77,9 @@ export function useServiceCommand(
     queryKey: ["service-command", name],
     queryFn: () => api.serviceCommand(name ?? ""),
     enabled: enabled && name !== null,
-    refetchInterval: enabled ? SERVICES_POLL_MS : false,
+    refetchInterval: enabled
+      ? () => (isEventsConnected() ? false : SERVICES_POLL_MS)
+      : false,
   });
 }
 

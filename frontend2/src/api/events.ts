@@ -3,6 +3,9 @@
 // reloads, and estimator drift events. This hook opens a single
 // connection on mount and drives TanStack Query invalidation so
 // the UI updates near-instantly without polling.
+//
+// The connection state is tracked in a module-level flag so that
+// query hooks can disable polling while the WebSocket is live.
 
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -22,6 +25,12 @@ export type EventsState = {
 
 const MAX_EVENTS = 1_000;
 
+let eventsConnected = false;
+
+export function isEventsConnected(): boolean {
+  return eventsConnected;
+}
+
 export function useEvents(): EventsState {
   const [state, setState] = useState<EventsState>({
     events: [],
@@ -37,10 +46,24 @@ export function useEvents(): EventsState {
 
     const connect = () => {
       socket = new WebSocket(api.eventsStreamUrl());
-      socket.onopen = () => setState((prev) => ({ ...prev, connected: true }));
+      socket.onopen = () => {
+        eventsConnected = true;
+        setState((prev) => ({ ...prev, connected: true }));
+        // Invalidate to trigger a refetch; the refetchInterval
+        // function will now return false (WS connected), stopping
+        // polling until the socket drops again.
+        void qc.invalidateQueries({ queryKey: ["services"] });
+        void qc.invalidateQueries({ queryKey: ["devices"] });
+      };
       socket.onclose = () => {
         if (cancelled.current) return;
+        eventsConnected = false;
         setState((prev) => ({ ...prev, connected: false }));
+        // Invalidate to trigger a refetch; the refetchInterval
+        // function will now return the fallback poll interval,
+        // restarting polling until the socket reconnects.
+        void qc.invalidateQueries({ queryKey: ["services"] });
+        void qc.invalidateQueries({ queryKey: ["devices"] });
         reconnectTimer = window.setTimeout(connect, 2_000);
       };
       socket.onerror = () => {
