@@ -53,9 +53,10 @@ export function ServiceDetailView() {
   const pending = lifecycle.isPending && lifecycle.variables?.name === name;
 
   return (
-    <div className="space-y-3 p-3">
-      {/* Header */}
-      <div className="flex items-center gap-3 border-b border-border-default pb-3">
+    <div className="flex h-full flex-col">
+      {/* Header — fixed height to align with the sidebar wordmark and
+          the other views' headers, forming one continuous rule. */}
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
         <Link to="/" className="text-tertiary hover:text-secondary">
           <svg
             width="16"
@@ -71,7 +72,7 @@ export function ServiceDetailView() {
           </svg>
         </Link>
         <StatusDot state={d.state} className="h-2.5 w-2.5" />
-        <h1 className="font-mono text-base font-medium text-primary">
+        <h1 className="min-w-0 truncate font-mono text-sm font-semibold tracking-[0.02em] text-primary">
           {d.name}
         </h1>
         {d.model_info?.has_mmproj && <Badge variant="vision">vision</Badge>}
@@ -84,56 +85,58 @@ export function ServiceDetailView() {
           <Stat label="priority" value={d.priority} />
           <Stat label="lifecycle" value={d.lifecycle} />
         </div>
-      </div>
+      </header>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {/* Model info */}
-        {d.model_info && (
-          <Card header="Model">
-            <ModelInfoGrid model={d.model_info} />
-          </Card>
-        )}
+      <div className="flex-1 space-y-4 overflow-auto p-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Model info */}
+          {d.model_info && (
+            <Card header="Model">
+              <ModelInfoGrid model={d.model_info} />
+            </Card>
+          )}
 
-        {/* VRAM estimate */}
-        {d.estimate && (
-          <Card header="VRAM estimate">
-            <EstimateGrid
-              estimate={d.estimate}
-              observedPeakBytes={d.observed_peak_bytes}
-            />
-          </Card>
-        )}
-      </div>
+          {/* VRAM estimate */}
+          {d.estimate && (
+            <Card header="VRAM estimate">
+              <EstimateGrid
+                estimate={d.estimate}
+                observedPeakBytes={d.observed_peak_bytes}
+              />
+            </Card>
+          )}
+        </div>
 
-      {/* Lifecycle actions */}
-      <Card header="Actions">
-        <LifecycleActions
-          state={d.state}
-          pending={pending}
-          onAction={(action) => lifecycle.mutate({ action, name: d.name })}
-        />
-      </Card>
-
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {/* Placement */}
-        <Card header="Placement" className="lg:col-span-2">
-          <PlacementSection
-            current={d.current_allocation}
-            placementOverride={d.placement_override}
-            placement={d.placement_preview ?? null}
+        {/* Lifecycle actions */}
+        <Card header="Actions">
+          <LifecycleActions
+            state={d.state}
+            pending={pending}
+            onAction={(action) => lifecycle.mutate({ action, name: d.name })}
           />
         </Card>
 
-        {/* Launch command */}
-        <Card header="Launch command" className="lg:col-span-2">
-          <LaunchCommandSection name={d.name} />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Placement */}
+          <Card header="Placement" className="lg:col-span-2">
+            <PlacementSection
+              current={d.current_allocation}
+              placementOverride={d.placement_override}
+              placement={d.placement_preview ?? null}
+            />
+          </Card>
+
+          {/* Launch command */}
+          <Card header="Launch command" className="lg:col-span-2">
+            <LaunchCommandSection name={d.name} />
+          </Card>
+        </div>
+
+        {/* Logs */}
+        <Card header="Logs" bodyClassName="p-0">
+          <LogsViewer name={d.name} />
         </Card>
       </div>
-
-      {/* Logs */}
-      <Card header="Logs" bodyClassName="p-0">
-        <LogsViewer name={d.name} />
-      </Card>
     </div>
   );
 }
@@ -517,7 +520,7 @@ function LifecycleActions({
 type ActionVariant = "primary" | "secondary" | "ghost" | "danger";
 
 const ACTION_VARIANT: Record<ActionVariant, string> = {
-  primary: "bg-accent text-white hover:bg-accent/90",
+  primary: "bg-accent text-[var(--color-base)] hover:bg-accent/90",
   secondary: "bg-elevated text-primary hover:bg-border-strong",
   ghost: "text-tertiary hover:bg-elevated hover:text-secondary",
   danger: "bg-danger text-white hover:bg-danger/90",

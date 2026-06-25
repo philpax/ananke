@@ -12,8 +12,10 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   children: ReactNode;
 };
 
+// Filled iris is luminous, so primary uses dark ink text for legible
+// contrast rather than white (which falls below 3:1 on the accent).
 const VARIANT_CLASSES: Record<Variant, string> = {
-  primary: "bg-accent text-white hover:bg-accent/90",
+  primary: "bg-accent text-[var(--color-base)] hover:bg-accent/90",
   secondary: "bg-elevated text-primary hover:bg-border-strong",
   ghost: "text-secondary hover:text-primary hover:bg-elevated",
   danger: "bg-danger text-white hover:bg-danger/90",

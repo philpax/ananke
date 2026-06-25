@@ -36,8 +36,10 @@ export function EventsView() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 border-b border-border-default px-3 py-2">
-        <h1 className="text-base font-medium text-primary">Events</h1>
+      <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border-default px-4">
+        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          Events
+        </h1>
         <div className="mx-2 h-3 w-px bg-border-default" />
         {EVENT_TYPES.map((type) => (
           <button
@@ -89,12 +91,12 @@ export function EventsView() {
 function EventRow({ event }: { event: SystemEvent }) {
   const variant = EVENT_VARIANTS[event.type] ?? "neutral";
   return (
-    <div className="flex items-center gap-3 border-b border-border-default px-3 py-1.5 hover:bg-elevated">
+    <div className="flex items-center gap-3 border-b border-border-default px-4 py-2 hover:bg-elevated/60">
       <span className="shrink-0 font-mono text-xs text-tertiary">
         {formatTimestamp(event.timestamp)}
       </span>
       <span
-        className={`shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium ${variant}`}
+        className={`shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[0.625rem] font-medium uppercase tracking-[0.08em] ring-1 ring-inset ${variant}`}
       >
         {event.type}
       </span>
@@ -111,10 +113,10 @@ function EventRow({ event }: { event: SystemEvent }) {
 }
 
 const EVENT_VARIANTS: Record<string, string> = {
-  state_changed: "bg-success/15 text-success",
-  allocation_changed: "bg-accent/15 text-accent",
-  config_reloaded: "bg-warning/15 text-warning",
-  estimator_drift: "bg-vision/15 text-vision",
+  state_changed: "bg-success/12 text-success ring-success/25",
+  allocation_changed: "bg-accent/12 text-accent ring-accent/25",
+  config_reloaded: "bg-warning/12 text-warning ring-warning/25",
+  estimator_drift: "bg-vision/12 text-vision ring-vision/25",
 };
 
 function summarizeEvent(event: SystemEvent): string {

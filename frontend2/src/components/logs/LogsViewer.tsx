@@ -112,7 +112,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
   return (
     <div className="flex h-72 flex-col">
       {/* Toolbar row 1: time + stream + status */}
-      <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
+      <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
         <div className="flex items-center gap-0.5">
           {WINDOW_PRESETS.map((preset, i) => (
             <button
@@ -178,7 +178,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
 
       {/* Toolbar row 2: custom time range (shown only in custom mode) */}
       {windowMode === "custom" && (
-        <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
+        <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
           <input
             type="datetime-local"
             value={sinceInput}
@@ -198,7 +198,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
       )}
 
       {/* Toolbar row 3: search + run filter */}
-      <div className="flex items-center gap-2 border-b border-border-default px-3 py-1.5">
+      <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
         <input
           type="text"
           value={search}
@@ -230,7 +230,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
       {/* Log lines */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-auto px-3 py-1 font-mono text-xs"
+        className="flex-1 overflow-auto px-4 py-2 font-mono text-xs"
       >
         {win.loading ? (
           <div className="text-tertiary">Loading…</div>

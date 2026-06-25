@@ -64,22 +64,25 @@ export function Sidebar() {
       : "bg-warning";
 
   return (
-    <aside className="hidden md:flex w-14 lg:w-48 flex-col border-r border-border-default bg-surface">
-      <div className="flex items-center gap-2 px-3 py-3 border-b border-border-default">
-        <span className="text-sm font-bold text-primary">ananke</span>
+    <aside className="hidden md:flex w-14 lg:w-52 flex-col border-r border-border-default bg-surface">
+      <div className="flex h-14 items-center gap-2.5 border-b border-border-default px-3 lg:px-4">
+        <SpindleMark />
+        <span className="hidden font-mono text-sm font-semibold tracking-[0.04em] text-primary lg:block">
+          ananke
+        </span>
       </div>
 
-      <nav className="flex-1 py-2">
+      <nav className="flex-1 py-3">
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === "/"}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 text-sm transition-colors ${
+              `flex items-center gap-3 px-4 py-2 text-sm transition-colors ${
                 isActive
-                  ? "text-primary bg-elevated"
-                  : "text-secondary hover:text-primary hover:bg-elevated"
+                  ? "bg-elevated/60 text-primary shadow-[inset_2px_0_0_var(--color-accent)]"
+                  : "text-secondary hover:bg-elevated/40 hover:text-primary"
               }`
             }
           >
@@ -89,15 +92,45 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="border-t border-border-default px-3 py-2">
+      <div className="border-t border-border-default px-4 py-3">
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${healthVariant}`} />
-          <span className="hidden lg:inline text-xs text-tertiary font-mono">
+          <span className="hidden truncate font-mono text-xs text-tertiary lg:inline">
             {window.location.host}
           </span>
         </div>
       </div>
     </aside>
+  );
+}
+
+// The spindle of Necessity — Ananke's whorl, rendered as an instrument
+// dial. The lone brass mark in the chrome.
+function SpindleMark() {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      className="shrink-0 text-brass"
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+      <path
+        d="M12 1.5v4M12 18.5v4"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

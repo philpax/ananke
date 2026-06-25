@@ -44,46 +44,64 @@ The existing frontend is five components in a single-column page: a devices pane
 
 ## design language
 
-### aesthetic: dense + clean hybrid
+This section documents the identity as built. It keeps the original "dense + clean" intent — terminal-level data density with the restraint of a well-designed tool — but spends the freedom the first frontend left on the table, rather than settling for the neutral zinc-and-blue default.
 
-Terminal-level data density paired with Linear-style cleanliness. The dashboard should feel like a power tool — crammed with information but not visually noisy. Think: a modern terminal emulator's aesthetic applied to a monitoring dashboard, but with the polish and restraint of a well-designed SaaS product.
+### aesthetic: the instrument console
+
+The dashboard is styled as a precision instrument panel for an inference rig, not a SaaS dashboard. The name is the anchor: Ananke is the goddess of necessity and constraint, and the daemon's whole job is fitting models into a fixed VRAM budget. The identity makes *constraint* the thing the eye lands on — a cool, engraved surface where the one warm element is the resource gauge.
 
 Core visual properties:
 
-- **Thin 1px borders** in `zinc-800` (dark) / `zinc-200` (light) define structure. No drop shadows. Depth is conveyed by background contrast (`zinc-950` → `zinc-900` → `zinc-800`), not elevation.
-- **No rounded corners larger than `rounded-md`** (6px). Cards, buttons, badges use `rounded-md`; inputs use `rounded-sm`. No `rounded-xl` or `rounded-2xl`.
-- **Compact vertical rhythm.** Rows are 28–32px tall. Spacing between sections is `gap-3` (12px), not `gap-8`. The dashboard optimises for information per screen.
-- **Monospace for all numeric/data** — PIDs, ports, byte counts, token counts, timestamps, device IDs, VRAM bars. Sans-serif for prose (descriptions, help text, labels). The contrast between the two faces signals "this is data" vs. "this is explanation".
-- **Restrained colour.** A neutral zinc base with semantic colours used precisely: emerald for healthy/running, amber for warning/needs-eviction, red for error/failed, blue for the primary action, purple for vision/multimodal, teal for embeddings. No gradients, no glassmorphism, no decorative colour.
-- **Dark mode as default.** An operator watching a GPU rack at 2am does not want a white page. Dark is the primary theme; light mode is a toggle.
-- **Motion is meaning.** A state transition animates. A new log line slides in. A placement bar grows. But nothing animates just to animate — every transition signals a state change the operator needs to perceive.
-- **Keyboard-first.** The dashboard should be navigable by keyboard. Service rows, log views, chat input — all reachable and operable without a mouse.
+- **Cool ink, not neutral zinc.** The background is a blue-shifted near-black (`#0b0e14` → `#111620` → `#1a212e`), which reads as instrument glass rather than a generic dark theme. Depth is still background contrast, not elevation — 1px borders, no drop shadows, with inset rings standing in where a surface needs to feel recessed.
+- **One brand accent: iris.** A single iris/indigo (`#8b7cf8`) carries everything interactive — active navigation, links, focus rings, primary buttons, the in-flight badge, the user's chat turn. It sits deliberately outside the status hue range so it never competes with green/amber/red.
+- **Brass is the signature, used once.** A warm brass (`#c8a24a`) appears only on the allocation rail's pledged segment, the spindle wordmark, and the favicon. It is the page's one indulgence; everything else stays quiet.
+- **Conventional status colours.** Green = running/fits, amber = transitional/needs-eviction, red = failed/error — kept conventional so an operator trusts them at a glance. Vision moved off purple (now magenta) so iris owns the brand outright; embedding stays teal.
+- **Radius cap unchanged.** `rounded-md` (6px) for cards and buttons, `rounded-sm` for inputs, `rounded-[3px]` for badges and the rail. No large radii.
+- **Dark as default**, with a designed light mode — every token flips, including the dark-ink-on-iris button label becoming light-on-iris.
+- **Motion is meaning**, and `prefers-reduced-motion` collapses it. Visible keyboard focus everywhere, tuned to the iris accent.
 
 ### colour system
 
-Tailwind CSS 4 theme tokens, centralised in `index.css` via `@theme`:
+Tailwind CSS 4 theme tokens, centralised in `index.css` via `@theme`. The accent is iris, brass is reserved for the signature, and status hues stay conventional:
 
 | Token | Dark value | Light value | Usage |
 | --- | --- | --- | --- |
-| `bg-base` | `zinc-950` | `white` | page background |
-| `bg-surface` | `zinc-900` | `zinc-50` | cards, panels |
-| `bg-elevated` | `zinc-800` | `zinc-100` | hover, nested |
-| `border-default` | `zinc-800` | `zinc-200` | dividers, borders |
-| `text-primary` | `zinc-100` | `zinc-900` | body text |
-| `text-secondary` | `zinc-400` | `zinc-500` | labels, hints |
-| `text-tertiary` | `zinc-600` | `zinc-400` | timestamps, de-emphasised |
-| `accent` | `blue-500` | `blue-600` | primary actions, links |
-| `success` | `emerald-500` | `emerald-600` | running, fits |
-| `warning` | `amber-500` | `amber-600` | needs-eviction, starting |
-| `danger` | `red-500` | `red-600` | failed, error |
-| `vision` | `purple-500` | `purple-600` | multimodal badge |
-| `embedding` | `teal-500` | `teal-600` | embedding badge |
+| `bg-base` | `#0b0e14` | `#fbfbfd` | page background |
+| `bg-surface` | `#111620` | `#ffffff` | cards, panels |
+| `bg-elevated` | `#1a212e` | `#f1f3f7` | hover, nested |
+| `border-default` | `#232b3a` | `#e3e7ef` | dividers, borders |
+| `border-strong` | `#333d4f` | `#cdd3df` | emphasis borders, rail ticks |
+| `text-primary` | `#e7eaf0` | `#161b26` | body text |
+| `text-secondary` | `#99a2b5` | `#5b6477` | labels, hints |
+| `text-tertiary` | `#5b6477` | `#99a2b5` | timestamps, de-emphasised |
+| `accent` (iris) | `#8b7cf8` | `#6f5fe6` | actions, links, focus, active nav |
+| `brass` | `#c8a24a` | `#a9842f` | signature only: rail, wordmark |
+| `success` | `#45c98a` | `#1f9d6b` | running, fits |
+| `warning` | `#e0a83c` | `#c4881f` | starting, needs-eviction |
+| `danger` | `#ef5a5a` | `#d6453f` | failed, error |
+| `vision` | `#d96fb8` | `#c14a98` | multimodal badge |
+| `embedding` | `#38bdc4` | `#1f9aa1` | embedding badge |
+
+One accessibility note: white text on the luminous iris falls below 3:1, so filled primary buttons set their label to the ink colour (`text-[var(--color-base)]`), which flips to near-white automatically in light mode.
 
 ### typography
 
-- Sans: system stack (`-apple-system, BlinkMacSystemFont, "Segoe UI", …`), Tailwind's default.
-- Mono: `"SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace`. Applied via a `font-mono` utility or a `data-mono` attribute on data-bearing elements.
-- Scale: `text-xs` (12px) for dense data, `text-sm` (14px) for body, `text-base` (16px) for headings, `text-lg` for page titles. No `text-2xl` or larger — the dashboard isn't a landing page.
+The UI commits to IBM Plex — an engineering-instrument register that isn't the system-font default — self-hosted via `@fontsource`, so there is no network dependency.
+
+- **Sans:** `IBM Plex Sans Variable` for prose, labels, and headings.
+- **Mono:** `IBM Plex Mono` for all data — names, ports, byte counts, token counts, timestamps, device IDs, and the bars. Mono carries tabular figures and the slashed-zero feature so columns and gauges line up.
+- **Scale:** `text-xs` (12px) for dense data, `text-sm` (14px) for body. Page mastheads and panel labels use the eyebrow treatment (below) rather than a large display size — the dashboard isn't a landing page.
+
+### structural system: the eyebrow and the 4px grid
+
+- **The eyebrow** is the one structural device: a tracked-out mono uppercase label (the `.eyebrow` class). It marks every panel header (`Card`), every stat label, every modality/state badge, and the event-type chips, so the whole UI reads as an engraved instrument. Page mastheads are a slightly larger, higher-contrast tier of the same idea (`text-xs`, primary colour, wider tracking). Numbered markers and decorative dividers are avoided; the engraved label is the only labelling motif.
+- **A 4px spacing scale, strictly applied.** Card padding is `p-4`, list rows are `px-4 py-2`, section gaps are `gap-4`, tightly-related items are `gap-2`/`gap-3`. This replaced the original ad hoc mix of `p-3` / `py-1.5` / `gap-1.5`.
+- **An aligned header rule.** Every top-level view opens with a fixed `h-14` header bar whose bottom border lines up with the sidebar wordmark, so the two borders meet as one continuous horizontal rule across the window. The view body scrolls beneath in a `flex-1 overflow-auto` region; the header stays put.
+
+### signature: the allocation rail and the spindle
+
+- **The allocation rail** is the page's signature element. VRAM is a fixed budget, so the bar (`Bar`) is drawn as an instrument gauge: a recessed track with quarter ticks, segments filling left-to-right, and the *pledged/growth* segment — capacity reserved but not yet resident — rendered in the lone brass. It makes the daemon's actual job, constraint-driven placement, the thing the eye lands on, across the dashboard, the devices view, and the placement preview.
+- **The spindle of Necessity** — Ananke's whorl, drawn as an instrument dial — is the sidebar wordmark and the favicon, and the only other place brass appears. The active nav item carries an iris inset bar; running services get a faint coloured halo on their status dot, like a lit indicator lamp.
 
 ### shared primitives
 
@@ -92,7 +110,7 @@ A small component library in `src/components/ui/`:
 - `Button` — variants: `primary`, `secondary`, `ghost`, `danger`; sizes: `sm`, `md`. Icon + label composition.
 - `Badge` — coloured pill, used for states, modalities, fit verdicts.
 - `Card` — surface container with optional header.
-- `Bar` — horizontal proportion bar (the VRAM/placement bars, generalised).
+- `Bar` — the allocation rail (see [signature](#signature-the-allocation-rail-and-the-spindle)): a recessed, tick-marked capacity gauge with a brass pledged segment. Used for every VRAM/placement bar.
 - `Stat` — label + value + optional unit, monospace value.
 - `Table` — sticky-header, sortable, with row expansion support.
 - `VirtualList` — windowed list renderer (see [virtualisation](#virtualisation)).
@@ -116,7 +134,7 @@ The dashboard is responsive. On mobile (`< sm`, 640px):
 - The sidebar collapses to a bottom tab bar with icon-only navigation.
 - Tables become card lists — each row renders as a stacked card with the key fields.
 - Charts simplify to sparklines or single-value stat cards.
-- The chat interface adapts to a narrow column: message boxes fill the width, the input area docks to the bottom, and the model picker collapses to a dropdown.
+- The chat interface adapts to a narrow column: message boxes fill the width and the bottom composer holds the model picker and live token stats next to the input, so the controls in heaviest use stay within reach of the textbox. The picker opens as an upward dropdown to avoid running off the bottom edge.
 - The config editor remains usable (CodeMirror adapts to width), though it's a secondary use case on mobile.
 
 Breakpoints: `sm` (640px) and `md` (768px). Below `sm` is mobile; `sm` to `md` is tablet (sidebar visible but collapsed); above `md` is desktop (full layout).

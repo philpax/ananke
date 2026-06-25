@@ -56,17 +56,18 @@ export function DashboardView() {
     : [];
 
   return (
-    <div className="space-y-3 p-3">
-      {/* Header strip */}
-      <div className="flex items-center gap-4 border-b border-border-default pb-3">
-        <h1 className="text-base font-medium text-primary">
+    <div className="flex h-full flex-col">
+      {/* Header strip — fixed height so its bottom border lines up with
+          the sidebar wordmark and forms one continuous rule. */}
+      <header className="flex h-14 shrink-0 items-center gap-5 border-b border-border-default px-4">
+        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
           {t("dashboard.title")}
         </h1>
-        <div className="flex items-center gap-1.5 text-xs text-tertiary">
+        <div className="hidden items-center gap-1.5 text-xs text-tertiary sm:flex">
           <span className="font-mono">{window.location.host}</span>
           <CopyButton value={window.location.host} />
         </div>
-        <div className="ml-auto flex items-center gap-4">
+        <div className="ml-auto flex items-center gap-5">
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />
           <Stat
@@ -80,50 +81,54 @@ export function DashboardView() {
             />
           )}
         </div>
-      </div>
+      </header>
 
-      {/* Device summary */}
-      <Card header={t("nav.devices")}>
-        {devices.isPending ? (
-          <Spinner />
-        ) : devices.data ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {devices.data.map((d) => (
-              <DeviceMiniCard key={d.id} device={d} />
-            ))}
-          </div>
-        ) : (
-          <span className="text-sm text-danger">{devices.error?.message}</span>
-        )}
-      </Card>
-
-      {/* Service list (full-width, primary view) */}
-      <Card header={t("nav.services")} bodyClassName="p-0">
-        {services.isPending ? (
-          <div className="p-3">
+      <div className="flex-1 space-y-4 overflow-auto p-4">
+        {/* Device summary */}
+        <Card header={t("nav.devices")}>
+          {devices.isPending ? (
             <Spinner />
-          </div>
-        ) : services.data ? (
-          <div className="divide-y divide-border-default">
-            {sortedServices.map((s) => (
-              <ServiceRow
-                key={s.name}
-                svc={s}
-                pending={
-                  lifecycle.isPending && lifecycle.variables?.name === s.name
-                }
-                onAction={(action) =>
-                  lifecycle.mutate({ action, name: s.name })
-                }
-              />
-            ))}
-          </div>
-        ) : (
-          <span className="p-3 text-sm text-danger">
-            {services.error?.message}
-          </span>
-        )}
-      </Card>
+          ) : devices.data ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {devices.data.map((d) => (
+                <DeviceMiniCard key={d.id} device={d} />
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-danger">
+              {devices.error?.message}
+            </span>
+          )}
+        </Card>
+
+        {/* Service list (full-width, primary view) */}
+        <Card header={t("nav.services")} bodyClassName="p-0">
+          {services.isPending ? (
+            <div className="p-4">
+              <Spinner />
+            </div>
+          ) : services.data ? (
+            <div className="divide-y divide-border-default">
+              {sortedServices.map((s) => (
+                <ServiceRow
+                  key={s.name}
+                  svc={s}
+                  pending={
+                    lifecycle.isPending && lifecycle.variables?.name === s.name
+                  }
+                  onAction={(action) =>
+                    lifecycle.mutate({ action, name: s.name })
+                  }
+                />
+              ))}
+            </div>
+          ) : (
+            <span className="p-4 text-sm text-danger">
+              {services.error?.message}
+            </span>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -173,7 +178,7 @@ function ServiceRow({
   const isDisabled = svc.state.startsWith("disabled");
 
   return (
-    <div className="flex items-center gap-3 px-3 py-1.5 hover:bg-elevated transition-colors">
+    <div className="flex items-center gap-3 px-4 py-2 transition-colors hover:bg-elevated/60">
       <Link
         to={`/services/${encodeURIComponent(svc.name)}`}
         className="flex flex-1 items-center gap-3 overflow-hidden"

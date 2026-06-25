@@ -13,10 +13,35 @@ import { ChatView } from "./components/chat/ChatView.tsx";
 
 function Placeholder({ title }: { title: string }) {
   return (
-    <div className="flex h-full items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-lg font-medium text-primary">{title}</h1>
-        <p className="mt-1 text-sm text-tertiary">coming soon</p>
+    <div className="flex h-full items-center justify-center p-4">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <svg
+          width="32"
+          height="32"
+          viewBox="0 0 24 24"
+          className="text-border-strong"
+          aria-hidden="true"
+        >
+          <circle
+            cx="12"
+            cy="12"
+            r="8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+          <path
+            d="M12 1.5v4M12 18.5v4"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-secondary">
+          {title}
+        </h1>
+        <p className="text-sm text-tertiary">Not yet instrumented.</p>
       </div>
     </div>
   );

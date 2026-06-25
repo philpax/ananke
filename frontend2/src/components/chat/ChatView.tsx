@@ -429,30 +429,14 @@ export function ChatView() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex items-center gap-2 border-b border-border-default px-3 py-2">
-        <h1 className="text-base font-medium text-primary">Chat</h1>
-        <ModelDropdown
-          models={chatModels}
-          selected={selectedModel}
-          onSelect={selectModel}
-          className="flex-1"
-        />
-        {selectedModel && <CopyButton value={selectedModel} />}
-        <div className="ml-auto flex items-center gap-2">
-          {selectedModel && (
-            <button
-              onClick={clearConversation}
-              className="rounded-sm px-2 py-0.5 text-xs text-tertiary hover:text-secondary"
-            >
-              clear
-            </button>
-          )}
-          <StatBar stats={stats} />
-        </div>
+      <div className="flex h-14 shrink-0 items-center border-b border-border-default px-4">
+        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          Chat
+        </h1>
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-auto px-3 py-2">
+      <div ref={scrollRef} className="flex-1 overflow-auto px-4 py-4">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-tertiary">
             <span>Send a message to start chatting.</span>
@@ -483,8 +467,8 @@ export function ChatView() {
 
       {/* System prompt */}
       {selectedModel && (
-        <details className="border-t border-border-default px-3 py-1.5">
-          <summary className="cursor-pointer select-none text-xs text-tertiary hover:text-secondary">
+        <details className="border-t border-border-default px-4 py-2">
+          <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
             System prompt
           </summary>
           <textarea
@@ -498,7 +482,7 @@ export function ChatView() {
 
       {/* Attachments preview */}
       {attachments.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border-default px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
           {attachments.map((att, i) => (
             <div
               key={i}
@@ -525,8 +509,27 @@ export function ChatView() {
         </div>
       )}
 
-      {/* Input */}
-      <div className="border-t border-border-default p-3">
+      {/* Composer: model picker + stats sit next to the input, so the
+          controls you use most are all within reach of the textbox. */}
+      <div className="border-t border-border-default px-4 py-3">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <ModelDropdown
+            models={chatModels}
+            selected={selectedModel}
+            onSelect={selectModel}
+            className="min-w-0 flex-1"
+          />
+          {selectedModel && <CopyButton value={selectedModel} />}
+          <StatBar stats={stats} />
+          {selectedModel && (
+            <button
+              onClick={clearConversation}
+              className="rounded-sm px-2 py-0.5 text-xs text-tertiary hover:text-secondary"
+            >
+              clear
+            </button>
+          )}
+        </div>
         <div className="flex items-stretch gap-2">
           <textarea
             ref={inputRef}
@@ -573,7 +576,7 @@ export function ChatView() {
             <button
               onClick={send}
               disabled={!selectedModel || !input.trim()}
-              className="shrink-0 rounded-md bg-accent px-3 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40"
+              className="shrink-0 rounded-md bg-accent px-3 text-sm font-medium text-[var(--color-base)] hover:bg-accent/90 disabled:opacity-40"
             >
               Send
             </button>
@@ -675,7 +678,7 @@ function ModelDropdown({
         </button>
       )}
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 max-h-72 w-full overflow-auto rounded-md border border-border-default bg-surface shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1 max-h-72 w-full overflow-auto rounded-md border border-border-default bg-surface shadow-lg">
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-sm text-tertiary">
               No matching models.
@@ -718,11 +721,13 @@ function MessageBubble({
   const label = isAssistant ? (modelName ?? "assistant") : message.role;
 
   return (
-    <div className={`mb-3 ${isSystem ? "opacity-60" : ""}`}>
-      <div className="mb-0.5 font-mono text-xs text-tertiary">{label}</div>
+    <div className={`mb-4 ${isSystem ? "opacity-60" : ""}`}>
+      <div className="eyebrow mb-1">{label}</div>
       <div
-        className={`px-3 py-2 text-sm ${
-          isUser ? "bg-accent/10" : "bg-elevated"
+        className={`rounded-md px-4 py-3 text-sm ring-1 ring-inset ${
+          isUser
+            ? "bg-accent/10 ring-accent/20"
+            : "bg-elevated ring-border-default/60"
         } ${isSystem ? "text-secondary" : "text-primary"}`}
       >
         {isAssistant && message.reasoning && (
@@ -740,11 +745,10 @@ function MessageBubble({
         )}
         {isAssistant ? (
           message.content ? (
-            <div className="prose-sm">
+            <div className="flex flex-col gap-3">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  p: ({ children }) => <p>{children}</p>,
                   code: ({ children, className }) => {
                     const lang = className?.replace("language-", "");
                     return (

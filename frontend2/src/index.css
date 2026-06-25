@@ -3,66 +3,138 @@
 @source "./**/*.{ts,tsx}";
 
 /*
- * Design tokens for the ananke dashboard. Dark mode is the default
- * (values in @theme → :root). Light mode overrides via a `.light`
- * class on the <html> element.
+ * Design tokens for the ananke console.
+ *
+ * Identity: an instrument panel for an inference rig. Ananke is the
+ * goddess of necessity and constraint — the daemon's whole job is
+ * fitting models into a fixed VRAM budget — so the palette is a cool,
+ * blue-shifted ink with a single iris accent for everything
+ * interactive, and a warm brass reserved exclusively for the
+ * signature allocation rail and the wordmark. Status hues stay
+ * conventional (green/amber/red) so operators keep trusting them.
+ *
+ * Dark mode is the default (values in @theme). Light mode overrides
+ * via a `.light` class on the <html> element.
  *
  * Token naming: `--color-{name}` so Tailwind generates utilities like
  * `bg-base`, `text-primary`, `border-default`, etc.
  */
 
 @theme {
-  /* Backgrounds */
-  --color-base: #09090b; /* zinc-950 */
-  --color-surface: #18181b; /* zinc-900 */
-  --color-elevated: #27272a; /* zinc-800 */
+  /* Typeface roles: Plex Sans for UI prose, Plex Mono for all data. */
+  --font-sans:
+    "IBM Plex Sans Variable", ui-sans-serif, system-ui, -apple-system,
+    sans-serif;
+  --font-mono:
+    "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
+
+  /* Backgrounds — cool blue-shifted ink, not neutral zinc. */
+  --color-base: #0b0e14;
+  --color-surface: #111620;
+  --color-elevated: #1a212e;
 
   /* Borders */
-  --color-border-default: #27272a; /* zinc-800 */
-  --color-border-strong: #3f3f46; /* zinc-700 */
+  --color-border-default: #232b3a;
+  --color-border-strong: #333d4f;
 
   /* Text */
-  --color-primary: #f4f4f5; /* zinc-100 */
-  --color-secondary: #a1a1aa; /* zinc-400 */
-  --color-tertiary: #52525b; /* zinc-600 */
+  --color-primary: #e7eaf0;
+  --color-secondary: #99a2b5;
+  --color-tertiary: #5b6477;
 
-  /* Semantic */
-  --color-accent: #3b82f6; /* blue-500 */
-  --color-success: #10b981; /* emerald-500 */
-  --color-warning: #f59e0b; /* amber-500 */
-  --color-danger: #ef4444; /* red-500 */
-  --color-vision: #a855f7; /* purple-500 */
-  --color-embedding: #14b8a6; /* teal-500 */
+  /* Brand + signature. `accent` is iris (interactive); `brass` is the
+   * instrument metal, reserved for the allocation rail and wordmark. */
+  --color-accent: #8b7cf8;
+  --color-brass: #c8a24a;
 
-  /* Fonts */
-  --font-mono:
-    "SF Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", monospace;
+  /* Status — kept conventional for at-a-glance trust. */
+  --color-success: #45c98a;
+  --color-warning: #e0a83c;
+  --color-danger: #ef5a5a;
+  --color-vision: #d96fb8; /* moved off purple so iris owns the brand */
+  --color-embedding: #38bdc4;
 }
 
 /* Light mode overrides. Applied when <html> has class="light". */
 .light {
-  --color-base: #ffffff;
-  --color-surface: #fafafa; /* zinc-50 */
-  --color-elevated: #f4f4f5; /* zinc-100 */
+  --color-base: #fbfbfd;
+  --color-surface: #ffffff;
+  --color-elevated: #f1f3f7;
 
-  --color-border-default: #e4e4e7; /* zinc-200 */
-  --color-border-strong: #d4d4d8; /* zinc-300 */
+  --color-border-default: #e3e7ef;
+  --color-border-strong: #cdd3df;
 
-  --color-primary: #18181b; /* zinc-900 */
-  --color-secondary: #71717a; /* zinc-500 */
-  --color-tertiary: #a1a1aa; /* zinc-400 */
+  --color-primary: #161b26;
+  --color-secondary: #5b6477;
+  --color-tertiary: #99a2b5;
 
-  --color-accent: #2563eb; /* blue-600 */
-  --color-success: #059669; /* emerald-600 */
-  --color-warning: #d97706; /* amber-600 */
-  --color-danger: #dc2626; /* red-600 */
-  --color-vision: #9333ea; /* purple-600 */
-  --color-embedding: #0d9488; /* teal-600 */
+  --color-accent: #6f5fe6;
+  --color-brass: #a9842f;
+
+  --color-success: #1f9d6b;
+  --color-warning: #c4881f;
+  --color-danger: #d6453f;
+  --color-vision: #c14a98;
+  --color-embedding: #1f9aa1;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-base);
+    color: var(--color-primary);
+    /* Plex Sans benefits from a touch of optical weight on dark ink. */
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular figures everywhere mono is used: numbers in stat columns
+   * and bars line up vertically when digits don't reflow. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "zero" 1;
+  }
+
+  /* Visible keyboard focus, tuned to the iris accent. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-radius: 2px;
+  }
+
+  /* Respect reduced-motion: collapse transitions and the spinner. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+@layer components {
+  /*
+   * Eyebrow: the structural device. Tracked-out mono capitals mark
+   * every section and panel header, echoing an instrument's engraved
+   * labels. Expressible as utilities but centralised here because it
+   * recurs on every panel and view header.
+   */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-tertiary);
+  }
 }
 
 /*
- * Scrollbar styling. Keeps the dense aesthetic — thin, unobtrusive,
- * matching the surface colour.
+ * Scrollbar styling. Thin and unobtrusive, matching the surface so the
+ * dense log/feed views don't sprout heavy chrome.
  */
 * {
   scrollbar-width: thin;
