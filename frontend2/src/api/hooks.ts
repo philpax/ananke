@@ -97,6 +97,7 @@ export function useMetrics(
     queryFn: () => api.getMetrics(query),
     staleTime: METRICS_STALE_MS,
     refetchInterval: METRICS_STALE_MS,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -111,6 +112,7 @@ export function useDeviceSamples(
       api.getDeviceSamples(device, since, until).then((r) => r.samples),
     staleTime: METRICS_STALE_MS,
     refetchInterval: METRICS_STALE_MS,
+    placeholderData: (prev) => prev,
   });
 }
 

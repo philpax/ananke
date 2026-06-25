@@ -9,11 +9,13 @@ import {
   useServiceDetail,
   useServiceCommand,
   useLifecycle,
+  useMetrics,
 } from "../../api/hooks.ts";
 import type {
   DevicePlacement,
   EstimateSummary,
   LaunchCommand,
+  MetricBucketResponse,
   ModelInfo,
   PlacementPreview,
   ServiceDetail,
@@ -26,6 +28,8 @@ import { Bar, type BarSegment } from "../ui/Bar.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
+import { Chart } from "../ui/Chart.tsx";
+import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import { LogsViewer } from "../logs/LogsViewer.tsx";
 
 export function ServiceDetailView() {
@@ -80,6 +84,14 @@ export function ServiceDetailView() {
           <Badge variant="embedding">embedding</Badge>
         )}
         <div className="ml-auto flex items-center gap-4">
+          {d.modality !== "embedding" && (
+            <Link
+              to={`/chat?model=${encodeURIComponent(d.name)}`}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md bg-accent px-2 text-xs font-medium text-[var(--color-base)] transition-colors hover:bg-accent/90"
+            >
+              Chat
+            </Link>
+          )}
           <Stat label="port" value={`:${d.port}`} />
           <Stat label="pid" value={d.pid ?? "—"} />
           <Stat label="priority" value={d.priority} />
@@ -96,9 +108,9 @@ export function ServiceDetailView() {
             </Card>
           )}
 
-          {/* VRAM estimate */}
+          {/* Memory estimate */}
           {d.estimate && (
-            <Card header="VRAM estimate">
+            <Card header="Memory estimate">
               <EstimateGrid
                 estimate={d.estimate}
                 observedPeakBytes={d.observed_peak_bytes}
@@ -131,6 +143,9 @@ export function ServiceDetailView() {
             <LaunchCommandSection name={d.name} />
           </Card>
         </div>
+
+        {/* Per-service metrics */}
+        {d.modality !== "embedding" && <ServiceMetrics name={d.name} />}
 
         {/* Logs */}
         <Card header="Logs" bodyClassName="p-0">
@@ -645,4 +660,152 @@ function shellQuote(s: string): string {
   if (s.length === 0) return "''";
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+type AggregatedBucket = {
+  ts: number;
+  requestCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  errorCount: number;
+  totalDurationMs: number;
+  timedRequests: number;
+};
+
+function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
+  const map = new Map<number, AggregatedBucket>();
+  for (const b of buckets) {
+    const ts = Math.floor(b.bucket_start / 1000);
+    const ex = map.get(ts);
+    if (ex) {
+      ex.requestCount += b.request_count;
+      ex.promptTokens += b.prompt_tokens;
+      ex.completionTokens += b.completion_tokens;
+      ex.errorCount += b.error_count;
+      if (b.avg_duration_ms != null) {
+        ex.totalDurationMs += b.avg_duration_ms * b.request_count;
+        ex.timedRequests += b.request_count;
+      }
+    } else {
+      map.set(ts, {
+        ts,
+        requestCount: b.request_count,
+        promptTokens: b.prompt_tokens,
+        completionTokens: b.completion_tokens,
+        errorCount: b.error_count,
+        totalDurationMs:
+          b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
+        timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
+      });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
+}
+
+function ServiceMetrics({ name }: { name: string }) {
+  const [rangeIdx, setRangeIdx] = useState(0);
+  const [since, setSince] = useState(() => Date.now() - 3_600_000);
+  const bucket = ["1m", "5m", "1h"][rangeIdx];
+  const rangeLabel = ["1h", "6h", "24h"][rangeIdx];
+  const rangeMs = [3_600_000, 6 * 3_600_000, 24 * 3_600_000][rangeIdx];
+  const xMin = since / 1000;
+  const xMax = (since + rangeMs) / 1000;
+
+  const metrics = useMetrics({ service: name, since, bucket });
+  const buckets = aggregateBuckets(metrics.data?.buckets ?? []);
+
+  const totalRequests = buckets.reduce((s, b) => s + b.requestCount, 0);
+  const totalErrors = buckets.reduce((s, b) => s + b.errorCount, 0);
+  const totalTokens = buckets.reduce(
+    (s, b) => s + b.promptTokens + b.completionTokens,
+    0,
+  );
+  const avgLatency =
+    buckets.reduce((s, b) => s + b.totalDurationMs, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.timedRequests, 0),
+    );
+
+  return (
+    <div className="space-y-4">
+      <Card
+        header="Metrics"
+        headerAction={
+          <div className="flex items-center gap-1">
+            {["1h", "6h", "24h"].map((label, i) => (
+              <button
+                key={label}
+                onClick={() => {
+                  setRangeIdx(i);
+                  setSince(
+                    Date.now() - [3_600_000, 6 * 3_600_000, 24 * 3_600_000][i],
+                  );
+                }}
+                className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
+                  i === rangeIdx
+                    ? "bg-elevated text-primary"
+                    : "text-tertiary hover:text-secondary"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        }
+      >
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Stat label={`Requests (${rangeLabel})`} value={totalRequests} />
+          <Stat label="Errors" value={totalErrors} />
+          <Stat label="Tokens" value={totalTokens.toLocaleString()} />
+          <Stat
+            label="Avg latency"
+            value={totalRequests > 0 ? `${Math.round(avgLatency)}ms` : "—"}
+          />
+        </div>
+      </Card>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card header="Request rate">
+          <Chart
+            xMin={xMin}
+            xMax={xMax}
+            data={[
+              buckets.map((b) => b.ts),
+              buckets.map((b) => b.requestCount),
+            ]}
+            series={[
+              {
+                label: "Requests",
+                stroke: CHART_PALETTE[0],
+                fill: "rgba(139,124,248,0.08)",
+              },
+            ]}
+          />
+        </Card>
+        <Card header="Token throughput">
+          <Chart
+            xMin={xMin}
+            xMax={xMax}
+            data={[
+              buckets.map((b) => b.ts),
+              buckets.map((b) => b.promptTokens),
+              buckets.map((b) => b.completionTokens),
+            ]}
+            series={[
+              {
+                label: "Prompt",
+                stroke: CHART_PALETTE[0],
+                fill: "rgba(139,124,248,0.08)",
+              },
+              {
+                label: "Completion",
+                stroke: CHART_PALETTE[1],
+                fill: "rgba(69,201,138,0.08)",
+              },
+            ]}
+          />
+        </Card>
+      </div>
+    </div>
+  );
 }
