@@ -1,12 +1,12 @@
 //! Aggregated OpenAPI document for the daemon.
 
 use ananke_api::{
-    ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DevicePlacement,
-    DeviceReservation, DeviceSampleResponse, DeviceSamplesResponse, DeviceSummary,
+    ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, DaemonInfoResponse,
+    DevicePlacement, DeviceReservation, DeviceSampleResponse, DeviceSamplesResponse, DeviceSummary,
     DisableResponse, EnableResponse, EnvVar, FitVerdict, LaunchCommand, LaunchCommandSource,
     LogLine, LogStreamMessage, LogsResponse, MetricBucketResponse, MetricsResponse,
-    PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse, StartResponse,
-    StopResponse, ValidationError,
+    PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse, StartResponse, StopResponse,
+    ValidationError,
     oneshot::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse, OneshotStatus},
 };
 use axum::{
@@ -20,8 +20,8 @@ use utoipa::OpenApi;
 use crate::{
     api::{
         management::{
-            config as mgmt_config, handlers as mgmt_handlers, lifecycle as mgmt_lifecycle,
-            logs as mgmt_logs, metrics as mgmt_metrics,
+            config as mgmt_config, handlers as mgmt_handlers, info as mgmt_info,
+            lifecycle as mgmt_lifecycle, logs as mgmt_logs, metrics as mgmt_metrics,
         },
         openai::{handlers as openai_handlers, schema as openai_schema},
     },
@@ -40,6 +40,7 @@ use crate::{
         mgmt_handlers::service_detail,
         mgmt_handlers::service_command,
         mgmt_handlers::list_devices,
+        mgmt_info::get_info,
         mgmt_lifecycle::post_start,
         mgmt_lifecycle::post_stop,
         mgmt_lifecycle::post_restart,
@@ -90,6 +91,7 @@ use crate::{
         MetricBucketResponse,
         DeviceSamplesResponse,
         DeviceSampleResponse,
+        DaemonInfoResponse,
         ApiError,
         OneshotRequest,
         OneshotAllocation,

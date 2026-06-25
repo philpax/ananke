@@ -7,6 +7,7 @@ pub mod defaults;
 pub mod devices;
 pub mod errors;
 pub mod events;
+pub mod info;
 pub mod lifecycle;
 pub mod logs;
 pub mod metadata;
@@ -18,6 +19,7 @@ pub use config::{ConfigResponse, ConfigValidateRequest, ConfigValidateResponse, 
 pub use devices::{DeviceReservation, DeviceSummary};
 pub use errors::{ApiError, ApiErrorBody};
 pub use events::Event;
+pub use info::DaemonInfoResponse;
 pub use lifecycle::{DisableResponse, EnableResponse, StartResponse, StopResponse};
 pub use logs::{LogLine, LogStreamMessage, LogsResponse};
 pub use metadata::AnankeMetadata;
