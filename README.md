@@ -111,6 +111,7 @@ listen = "0.0.0.0:7070"
 enabled = true                   # Set to false to disable the OpenAI API
 max_request_duration = "10m"     # Max wall-clock duration per proxied request
 allow_cors = true                # Allow cross-origin requests from browsers (default: true)
+max_body_mb = 64                 # Max request body size in MiB (default: 64; raise for large or many images)
 ```
 
 ### Global Defaults

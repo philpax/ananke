@@ -159,7 +159,9 @@ pub async fn run() -> Result<(), ExpectedError> {
             .map_err(|e: std::net::AddrParseError| {
                 ExpectedError::bind_failed(effective.daemon.openai_listen.clone(), e.to_string())
             })?;
-    let openai_router = crate::api::openai::router(app_state.clone());
+    let openai_router = crate::api::openai::router(app_state.clone()).layer(
+        axum::extract::DefaultBodyLimit::max(effective.daemon.openai_max_body_bytes),
+    );
     let openai_router = if effective.daemon.openai_allow_cors {
         openai_router.layer(
             tower_http::cors::CorsLayer::permissive()

@@ -127,7 +127,7 @@ async fn handle_reload(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
     use parking_lot::Mutex;
     use smol_str::SmolStr;
@@ -153,15 +153,7 @@ mod tests {
         services: Vec<crate::config::ServiceConfig>,
     ) -> (ServiceRegistry, EventBus, Arc<ConfigManager>) {
         let effective = EffectiveConfig {
-            daemon: crate::config::DaemonSettings {
-                management_listen: String::new(),
-                openai_listen: String::new(),
-                data_dir: PathBuf::new(),
-                shutdown_timeout_ms: 5_000,
-                allow_external_management: false,
-                allow_external_services: false,
-                openai_allow_cors: false,
-            },
+            daemon: crate::config::DaemonSettings::default(),
             services: services.clone(),
         };
         let events = EventBus::new();

@@ -94,10 +94,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             openai_listen: "127.0.0.1:0".into(),
             // Synthetic path — nothing writes to it because `fs` is in-memory.
             data_dir: std::path::PathBuf::from("/tmp/ananke-test"),
-            shutdown_timeout_ms: 5_000,
-            allow_external_management: false,
-            allow_external_services: false,
-            openai_allow_cors: false,
+            ..DaemonSettings::default()
         },
         services: services_rewritten.clone(),
     });

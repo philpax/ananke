@@ -70,15 +70,7 @@ fn build_harness(service: &str, min_mb: u64, max_mb: u64) -> Harness {
     let snapshot = snapshotter::new_shared();
     let config = ConfigManager::in_memory(
         EffectiveConfig {
-            daemon: DaemonSettings {
-                management_listen: String::new(),
-                openai_listen: String::new(),
-                data_dir: std::path::PathBuf::new(),
-                shutdown_timeout_ms: 5_000,
-                allow_external_management: false,
-                allow_external_services: false,
-                openai_allow_cors: false,
-            },
+            daemon: DaemonSettings::default(),
             services: Vec::new(),
         },
         events.clone(),
