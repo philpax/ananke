@@ -325,7 +325,15 @@ async fn forward_json_post(
     };
 
     let mut out = Response::from_parts(parts, axum_body);
+    // Strip hop-by-hop headers. These are per-connection directives
+    // between the proxy and its upstream (llama.cpp); forwarding them
+    // to the browser is incorrect and can cause the browser to close
+    // the connection prematurely (e.g. llama.cpp sends
+    // `keep-alive: timeout=5`, which the browser interprets as a
+    // 5-second inactivity deadline — cutting off slow streaming
+    // responses like image inference that takes >5s to first token).
     out.headers_mut().remove(hyper::header::CONNECTION);
     out.headers_mut().remove("transfer-encoding");
+    out.headers_mut().remove("keep-alive");
     out
 }
