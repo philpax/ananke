@@ -17,6 +17,7 @@ import {
 import {
   api,
   type ConfigResponse,
+  type DaemonInfoResponse,
   type DeviceSampleResponse,
   type DeviceSummary,
   type DisableResponse,
@@ -114,6 +115,14 @@ export function useConfig(): UseQueryResult<ConfigResponse, Error> {
   return useQuery({
     queryKey: ["config"],
     queryFn: api.getConfig,
+  });
+}
+
+export function useInfo(): UseQueryResult<DaemonInfoResponse, Error> {
+  return useQuery({
+    queryKey: ["info"],
+    queryFn: api.getInfo,
+    staleTime: Infinity,
   });
 }
 

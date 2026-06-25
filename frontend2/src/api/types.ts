@@ -68,6 +68,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/info": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_info"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/metrics": {
     parameters: {
       query?: never;
@@ -375,6 +391,13 @@ export interface components {
       errors: components["schemas"]["ValidationError"][];
       /** @description `true` iff no errors were found. */
       valid: boolean;
+    };
+    /** @description `GET /api/info` response body. */
+    DaemonInfoResponse: {
+      /** @description The management API listen address (e.g. `"0.0.0.0:7071"`). */
+      management_listen: string;
+      /** @description The OpenAI-compatible API listen address (e.g. `"0.0.0.0:7070"`). */
+      openai_listen: string;
     };
     /**
      * @description One device's share of a [`PlacementPreview`], with enough context to draw a
@@ -1247,6 +1270,25 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DeviceSamplesResponse"];
+        };
+      };
+    };
+  };
+  get_info: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DaemonInfoResponse"];
         };
       };
     };

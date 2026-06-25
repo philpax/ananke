@@ -55,12 +55,12 @@ export function serviceProxyUrl(port: number): string {
   return `${window.location.protocol}//${window.location.hostname}:${port}`;
 }
 
-export function openaiApiUrl(): string {
-  // The OpenAI API runs on a separate port (default 7070). In dev,
-  // the frontend is served from Vite (5173); in production, from the
-  // management API port (7071). The OpenAI port is always one less
-  // than the management port, so we derive it from the current host's
-  // port minus one. This matches ananke's default listener layout.
-  const port = parseInt(window.location.port || "7071", 10);
-  return `${window.location.protocol}//${window.location.hostname}:${port - 1}`;
+// Construct the OpenAI API base URL from the daemon's `openai_listen`
+// address (e.g. "0.0.0.0:7070"). Uses the browser's hostname (not
+// 0.0.0.0) with the port from the listen address. CORS is enabled on
+// the daemon, so cross-origin requests work.
+export function openaiBaseUrlFromListen(listen: string | undefined): string {
+  const parts = (listen ?? "0.0.0.0:7070").split(":");
+  const port = parts[parts.length - 1];
+  return `http://${window.location.hostname}:${port}`;
 }

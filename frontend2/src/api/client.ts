@@ -29,6 +29,7 @@ export type MetricsResponse = Schemas["MetricsResponse"];
 export type MetricBucketResponse = Schemas["MetricBucketResponse"];
 export type DeviceSamplesResponse = Schemas["DeviceSamplesResponse"];
 export type DeviceSampleResponse = Schemas["DeviceSampleResponse"];
+export type DaemonInfoResponse = Schemas["DaemonInfoResponse"];
 
 export type LogsQuery = {
   since?: number;
@@ -157,6 +158,7 @@ export const api = {
     );
   },
   getPrometheusMetrics: () => fetch("/metrics").then((r) => r.text()),
+  getInfo: () => getJson<DaemonInfoResponse>("/api/info"),
   start: (name: string) =>
     postJson<StartResponse>(`/api/services/${encodeURIComponent(name)}/start`),
   stop: (name: string) =>
