@@ -1,8 +1,9 @@
-// The allocation rail — the console's signature element. A VRAM budget
-// is fixed, so this reads like an instrument gauge: segments fill a
-// recessed track marked with quarter ticks, and the `growth` segment
-// (pledged-but-not-yet-resident headroom) is the one place the brass
-// accent appears, spotlighting the constraint the daemon plans around.
+// The allocation rail — the console's signature element. A memory
+// budget is fixed, so this reads like an instrument gauge: segments
+// fill a recessed track marked with quarter ticks, and the `growth`
+// segment (pledged-but-not-yet-resident headroom) is the one place the
+// brass accent appears, spotlighting the constraint the daemon plans
+// around.
 
 export type BarSegment = {
   variant: "used" | "reserved" | "headroom" | "growth";

@@ -153,27 +153,29 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
         );
     }
 
-    // --- Gauges: device VRAM/RAM ---
+    // --- Gauges: device memory (GPU VRAM + CPU RAM) ---
     let snap = state.snapshot.read().clone();
-    let mut vram_total = MetricFamily::new(
-        "ananke_vram_bytes",
-        "Total VRAM capacity in bytes.",
+    let mut mem_total = MetricFamily::new(
+        "ananke_memory_bytes",
+        "Total memory capacity in bytes.",
         "gauge",
     );
-    let mut vram_free = MetricFamily::new("ananke_vram_free_bytes", "Free VRAM in bytes.", "gauge");
-    let mut vram_used = MetricFamily::new("ananke_vram_used_bytes", "Used VRAM in bytes.", "gauge");
+    let mut mem_free =
+        MetricFamily::new("ananke_memory_free_bytes", "Free memory in bytes.", "gauge");
+    let mut mem_used =
+        MetricFamily::new("ananke_memory_used_bytes", "Used memory in bytes.", "gauge");
     for g in &snap.gpus {
         let device = format!("gpu:{}", g.id);
         let used = g.total_bytes.saturating_sub(g.free_bytes);
-        vram_total.sample(vec![("device", device.clone())], g.total_bytes as f64);
-        vram_free.sample(vec![("device", device.clone())], g.free_bytes as f64);
-        vram_used.sample(vec![("device", device)], used as f64);
+        mem_total.sample(vec![("device", device.clone())], g.total_bytes as f64);
+        mem_free.sample(vec![("device", device.clone())], g.free_bytes as f64);
+        mem_used.sample(vec![("device", device)], used as f64);
     }
     if let Some(c) = &snap.cpu {
         let used = c.total_bytes.saturating_sub(c.available_bytes);
-        vram_total.sample(vec![("device", "cpu".into())], c.total_bytes as f64);
-        vram_free.sample(vec![("device", "cpu".into())], c.available_bytes as f64);
-        vram_used.sample(vec![("device", "cpu".into())], used as f64);
+        mem_total.sample(vec![("device", "cpu".into())], c.total_bytes as f64);
+        mem_free.sample(vec![("device", "cpu".into())], c.available_bytes as f64);
+        mem_used.sample(vec![("device", "cpu".into())], used as f64);
     }
 
     // --- Gauges: service state ---
@@ -192,7 +194,7 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
     }
 
     vec![
-        requests, tokens, inflight, vram_total, vram_free, vram_used, svc_state,
+        requests, tokens, inflight, mem_total, mem_free, mem_used, svc_state,
     ]
 }
 

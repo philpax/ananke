@@ -118,7 +118,7 @@ pub struct ServiceDetail {
     pub rolling_mean: Option<f32>,
     /// Sample count backing the rolling mean.
     pub rolling_samples: u64,
-    /// Observed VRAM peak across the service's lifetime.
+    /// Observed memory peak (VRAM + RSS) across the service's lifetime.
     pub observed_peak_bytes: u64,
     /// Placeholder for elastic-borrower tracking.
     pub elastic_borrower: Option<String>,
@@ -128,7 +128,7 @@ pub struct ServiceDetail {
     /// after the first successful read so repeated detail polls don't
     /// re-parse the file.
     pub model_info: Option<ModelInfo>,
-    /// VRAM estimate computed against the service's configured context
+    /// Memory estimate computed against the service's configured context
     /// and KV cache settings. Same caching rules as `model_info`.
     pub estimate: Option<EstimateSummary>,
     /// Per-device placement the service would take under current conditions,
@@ -213,12 +213,12 @@ pub struct EstimateSummary {
     pub compute_buffer_bytes_per_device: u64,
 }
 
-/// Where a service's VRAM would land per device under current conditions, and
+/// Where a service's memory would land per device under current conditions, and
 /// whether it fits without the daemon having to evict or reclaim. Computed by
 /// running the placement engine against the live snapshot and pledge book.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct PlacementPreview {
-    /// Per-device VRAM the service would occupy, sorted by device. Keys are
+    /// Per-device memory the service would occupy, sorted by device. Keys are
     /// slot strings (`"cpu"`, `"gpu:0"`, …); values are bytes.
     pub devices: Vec<DevicePlacement>,
     /// Whether the placement fits right now without eviction or reclaim.
@@ -238,18 +238,18 @@ pub struct PlacementPreview {
 pub struct DevicePlacement {
     /// Slot string: `"cpu"` or `"gpu:N"`.
     pub device: String,
-    /// VRAM bytes this service reserves on the device — the pledge floor for a
+    /// Memory bytes this service reserves on the device — the pledge floor for a
     /// dynamic service.
     pub bytes: u64,
     /// Upper bound this service could grow to on the device. Equals `bytes`
     /// for fixed-size services; larger for a dynamic command service that may
     /// borrow up to its configured maximum.
     pub max_bytes: u64,
-    /// VRAM bytes already in use on the device by everything except this
-    /// service (for a running service, its own resident VRAM is excluded so
+    /// Memory bytes already in use on the device by everything except this
+    /// service (for a running service, its own resident memory is excluded so
     /// `used_by_others_bytes + bytes` doesn't double-count it).
     pub used_by_others_bytes: u64,
-    /// Total VRAM capacity of the device, in bytes. Zero if unknown.
+    /// Total memory capacity of the device, in bytes. Zero if unknown.
     pub total_bytes: u64,
 }
 
@@ -257,9 +257,9 @@ pub struct DevicePlacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FitVerdict {
-    /// Starts now in currently-free VRAM — no eviction needed.
+    /// Starts now in currently-free memory — no eviction needed.
     Fits,
-    /// Fits within the hardware, but currently-free VRAM is insufficient, so
+    /// Fits within the hardware, but currently-free memory is insufficient, so
     /// the daemon would reclaim or evict lower-priority peers to make room.
     NeedsEviction,
     /// Too large for the allowed GPUs even with everything else gone.

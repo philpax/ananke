@@ -1,4 +1,4 @@
-//! Periodic device VRAM/RAM sampler. Reads the shared device snapshot
+//! Periodic device memory sampler. Reads the shared device snapshot
 //! at a fixed cadence and writes `device_samples` rows to the database
 //! for historical charting.
 

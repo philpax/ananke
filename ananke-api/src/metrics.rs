@@ -37,7 +37,7 @@ pub struct DeviceSamplesResponse {
     pub samples: Vec<DeviceSampleResponse>,
 }
 
-/// One device VRAM/RAM sample.
+/// One device memory sample.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct DeviceSampleResponse {
     /// Device id (`"gpu:0"`, `"cpu"`, etc.).
