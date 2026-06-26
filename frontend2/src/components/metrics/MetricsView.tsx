@@ -411,6 +411,21 @@ export function MetricsView() {
               />
             </Card>
 
+            {/* Memory utilisation */}
+            <Card header="Memory utilisation">
+              <Chart
+                xMin={xMin}
+                xMax={xMax}
+                data={toMemoryData(memorySeries)}
+                series={memorySeries.map((s, i) => ({
+                  label: s.device,
+                  stroke: CHART_PALETTE[i % CHART_PALETTE.length],
+                  fill: `rgba(139,124,248,${0.04 + 0.06 * i})`,
+                  unit: "GB",
+                }))}
+              />
+            </Card>
+
             {/* Per-service output TPS */}
             {perService.length > 1 && !serviceFilter && (
               <Card header="Per-service output TPS" className="lg:col-span-2">
@@ -443,22 +458,6 @@ export function MetricsView() {
                 />
               </Card>
             )}
-
-            {/* Memory utilisation */}
-            <Card header="Memory utilisation" className="lg:col-span-2">
-              <Chart
-                xMin={xMin}
-                xMax={xMax}
-                height={200}
-                data={toMemoryData(memorySeries)}
-                series={memorySeries.map((s, i) => ({
-                  label: s.device,
-                  stroke: CHART_PALETTE[i % CHART_PALETTE.length],
-                  fill: `rgba(139,124,248,${0.04 + 0.06 * i})`,
-                  unit: "GB",
-                }))}
-              />
-            </Card>
           </div>
         )}
       </div>
