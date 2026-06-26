@@ -74,6 +74,9 @@ pub async fn get_metrics(State(state): State<AppState>, Query(q): Query<MetricsQ
                         completion_tokens: b.completion_tokens,
                         avg_duration_ms: b.avg_duration_ms,
                         error_count: b.error_count,
+                        avg_ttft_ms: b.avg_ttft_ms,
+                        output_tps: b.output_tps,
+                        input_tps: b.input_tps,
                     })
                     .collect(),
             };

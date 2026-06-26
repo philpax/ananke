@@ -399,7 +399,16 @@ impl Database {
                 COALESCE(SUM(rm.prompt_tokens), 0) AS prompt_tokens,
                 COALESCE(SUM(rm.completion_tokens), 0) AS completion_tokens,
                 AVG(rm.duration_ms) AS avg_duration_ms,
-                SUM(CASE WHEN rm.status_code >= 400 THEN 1 ELSE 0 END) AS error_count
+                SUM(CASE WHEN rm.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+                AVG(rm.ttft_ms) AS avg_ttft_ms,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
+                                  THEN rm.completion_tokens ELSE 0 END), 0) AS timed_completion_tokens,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL AND rm.duration_ms IS NOT NULL
+                                  THEN rm.duration_ms - rm.ttft_ms ELSE 0 END), 0) AS completion_ms,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
+                                  THEN rm.prompt_tokens ELSE 0 END), 0) AS timed_prompt_tokens,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
+                                  THEN rm.ttft_ms ELSE 0 END), 0) AS total_ttft_ms
              FROM request_metrics rm
              LEFT JOIN services s ON s.service_id = rm.service_id
              WHERE rm.timestamp_ms >= ?2 AND rm.timestamp_ms <= ?3
@@ -409,6 +418,20 @@ impl Database {
         let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
         let rows = stmt
             .query_map(params![bucket_ms, since_ms, until_ms, service_id], |row| {
+                let timed_completion_tokens: i64 = row.get(8)?;
+                let completion_ms: i64 = row.get(9)?;
+                let output_tps = if completion_ms > 0 {
+                    Some(timed_completion_tokens as f64 / (completion_ms as f64 / 1000.0))
+                } else {
+                    None
+                };
+                let timed_prompt_tokens: i64 = row.get(10)?;
+                let total_ttft_ms: i64 = row.get(11)?;
+                let input_tps = if total_ttft_ms > 0 {
+                    Some(timed_prompt_tokens as f64 / (total_ttft_ms as f64 / 1000.0))
+                } else {
+                    None
+                };
                 Ok(MetricBucket {
                     service: row.get::<_, Option<String>>(1)?,
                     bucket_start: row.get(0)?,
@@ -417,6 +440,9 @@ impl Database {
                     completion_tokens: row.get(4)?,
                     avg_duration_ms: row.get::<_, Option<f64>>(5)?,
                     error_count: row.get(6)?,
+                    avg_ttft_ms: row.get::<_, Option<f64>>(7)?,
+                    output_tps,
+                    input_tps,
                 })
             })
             .map_err(|e| self.db_err(e))?;
@@ -513,6 +539,14 @@ pub struct MetricBucket {
     pub completion_tokens: i64,
     pub avg_duration_ms: Option<f64>,
     pub error_count: i64,
+    /// Average time-to-first-token in milliseconds (streaming requests only).
+    pub avg_ttft_ms: Option<f64>,
+    /// Output tokens per second during decode: completion tokens divided
+    /// by total decode time. `None` if no timed requests in the bucket.
+    pub output_tps: Option<f64>,
+    /// Input tokens per second during prompt processing: prompt tokens
+    /// divided by total TTFT. `None` if no timed requests in the bucket.
+    pub input_tps: Option<f64>,
 }
 
 #[cfg(test)]

@@ -178,6 +178,62 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
         mem_used.sample(vec![("device", "cpu".into())], used as f64);
     }
 
+    // --- Gauges: tokens per second (last 5 minutes) ---
+    let tps_since = now - 5 * 60 * 1000;
+    let mut output_tps_gauge = MetricFamily::new(
+        "ananke_output_tokens_per_second",
+        "Average output tokens per second during decode over the last 5 minutes.",
+        "gauge",
+    );
+    let mut input_tps_gauge = MetricFamily::new(
+        "ananke_input_tokens_per_second",
+        "Average input tokens per second during prompt processing over the last 5 minutes.",
+        "gauge",
+    );
+    for svc in &eff.services {
+        let sid = state.db.resolve_service_id(&svc.name).await.ok().flatten();
+        let (avg_output_tps, avg_input_tps) = if let Some(sid) = sid {
+            match state
+                .db
+                .query_request_metrics(Some(sid), tps_since, now, 5 * 60 * 1000)
+                .await
+            {
+                Ok(buckets) => {
+                    let weighted_out: f64 = buckets
+                        .iter()
+                        .filter_map(|b| b.output_tps.map(|v| v * b.request_count as f64))
+                        .sum();
+                    let timed_out: i64 = buckets
+                        .iter()
+                        .filter(|b| b.output_tps.is_some())
+                        .map(|b| b.request_count)
+                        .sum();
+                    let weighted_in: f64 = buckets
+                        .iter()
+                        .filter_map(|b| b.input_tps.map(|v| v * b.request_count as f64))
+                        .sum();
+                    let timed_in: i64 = buckets
+                        .iter()
+                        .filter(|b| b.input_tps.is_some())
+                        .map(|b| b.request_count)
+                        .sum();
+                    (
+                        if timed_out > 0 { weighted_out / timed_out as f64 } else { 0.0 },
+                        if timed_in > 0 { weighted_in / timed_in as f64 } else { 0.0 },
+                    )
+                }
+                Err(e) => {
+                    warn!(error = %e, service = %svc.name, "prometheus: tps query failed");
+                    (0.0, 0.0)
+                }
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        output_tps_gauge.sample(vec![("service", svc.name.to_string())], avg_output_tps);
+        input_tps_gauge.sample(vec![("service", svc.name.to_string())], avg_input_tps);
+    }
+
     // --- Gauges: service state ---
     let mut svc_state = MetricFamily::new(
         "ananke_service_state",
@@ -194,7 +250,8 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
     }
 
     vec![
-        requests, tokens, inflight, mem_total, mem_free, mem_used, svc_state,
+        requests, tokens, inflight, mem_total, mem_free, mem_used,
+        output_tps_gauge, input_tps_gauge, svc_state,
     ]
 }
 

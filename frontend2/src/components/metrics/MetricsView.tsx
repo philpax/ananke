@@ -29,6 +29,10 @@ type AggregatedBucket = {
   errorCount: number;
   totalDurationMs: number;
   timedRequests: number;
+  totalWeightedOutputTps: number;
+  outputTpsRequests: number;
+  totalWeightedInputTps: number;
+  inputTpsRequests: number;
 };
 
 function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
@@ -45,6 +49,14 @@ function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
         ex.totalDurationMs += b.avg_duration_ms * b.request_count;
         ex.timedRequests += b.request_count;
       }
+      if (b.output_tps != null) {
+        ex.totalWeightedOutputTps += b.output_tps * b.request_count;
+        ex.outputTpsRequests += b.request_count;
+      }
+      if (b.input_tps != null) {
+        ex.totalWeightedInputTps += b.input_tps * b.request_count;
+        ex.inputTpsRequests += b.request_count;
+      }
     } else {
       map.set(ts, {
         ts,
@@ -55,6 +67,12 @@ function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
         totalDurationMs:
           b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
         timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
+        totalWeightedOutputTps:
+          b.output_tps != null ? b.output_tps * b.request_count : 0,
+        outputTpsRequests: b.output_tps != null ? b.request_count : 0,
+        totalWeightedInputTps:
+          b.input_tps != null ? b.input_tps * b.request_count : 0,
+        inputTpsRequests: b.input_tps != null ? b.request_count : 0,
       });
     }
   }
@@ -82,6 +100,14 @@ function groupByService(buckets: MetricBucketResponse[]): PerServiceSeries[] {
         ex.totalDurationMs += b.avg_duration_ms * b.request_count;
         ex.timedRequests += b.request_count;
       }
+      if (b.output_tps != null) {
+        ex.totalWeightedOutputTps += b.output_tps * b.request_count;
+        ex.outputTpsRequests += b.request_count;
+      }
+      if (b.input_tps != null) {
+        ex.totalWeightedInputTps += b.input_tps * b.request_count;
+        ex.inputTpsRequests += b.request_count;
+      }
     } else {
       arr.push({
         ts,
@@ -92,6 +118,12 @@ function groupByService(buckets: MetricBucketResponse[]): PerServiceSeries[] {
         totalDurationMs:
           b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
         timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
+        totalWeightedOutputTps:
+          b.output_tps != null ? b.output_tps * b.request_count : 0,
+        outputTpsRequests: b.output_tps != null ? b.request_count : 0,
+        totalWeightedInputTps:
+          b.input_tps != null ? b.input_tps * b.request_count : 0,
+        inputTpsRequests: b.input_tps != null ? b.request_count : 0,
       });
     }
   }
@@ -128,24 +160,42 @@ function groupDeviceSamples(samples: DeviceSampleResponse[]): MemorySeries[] {
   }));
 }
 
+type ChartField =
+  | "requestCount"
+  | "promptTokens"
+  | "completionTokens"
+  | "errorCount"
+  | "totalDurationMs"
+  | "outputTps"
+  | "inputTps";
+
+function resolveField(b: AggregatedBucket, field: ChartField): number | null {
+  switch (field) {
+    case "totalDurationMs":
+      return b.timedRequests > 0 ? b.totalDurationMs / b.timedRequests : null;
+    case "outputTps":
+      return b.outputTpsRequests > 0
+        ? b.totalWeightedOutputTps / b.outputTpsRequests
+        : null;
+    case "inputTps":
+      return b.inputTpsRequests > 0
+        ? b.totalWeightedInputTps / b.inputTpsRequests
+        : null;
+    default:
+      return b[field] as number;
+  }
+}
+
 function toLineData(
   buckets: AggregatedBucket[],
-  field: keyof AggregatedBucket,
+  field: ChartField,
 ): (number | null)[][] {
-  return [
-    buckets.map((b) => b.ts),
-    buckets.map((b) => {
-      if (field === "totalDurationMs" || field === "timedRequests") {
-        return b.timedRequests > 0 ? b.totalDurationMs / b.timedRequests : null;
-      }
-      return b[field] as number;
-    }),
-  ];
+  return [buckets.map((b) => b.ts), buckets.map((b) => resolveField(b, field))];
 }
 
 function toMultiSeriesData(
   seriesList: PerServiceSeries[],
-  field: keyof AggregatedBucket,
+  field: ChartField,
 ): (number | null)[][] {
   const allTs = new Set<number>();
   for (const s of seriesList) {
@@ -158,10 +208,7 @@ function toMultiSeriesData(
     const values = ts.map((t) => {
       const b = map.get(t);
       if (!b) return null;
-      if (field === "totalDurationMs" || field === "timedRequests") {
-        return b.timedRequests > 0 ? b.totalDurationMs / b.timedRequests : null;
-      }
-      return b[field] as number;
+      return resolveField(b, field);
     });
     result.push(values);
   }
@@ -336,6 +383,50 @@ export function MetricsView() {
                 ]}
               />
             </Card>
+
+            {/* Tokens per second */}
+            <Card header="Tokens per second">
+              <Chart
+                xMin={xMin}
+                xMax={xMax}
+                data={[
+                  aggregated.map((b) => b.ts),
+                  aggregated.map((b) => resolveField(b, "inputTps")),
+                  aggregated.map((b) => resolveField(b, "outputTps")),
+                ]}
+                series={[
+                  {
+                    label: "Input",
+                    stroke: CHART_PALETTE[0],
+                    fill: "rgba(139,124,248,0.08)",
+                    unit: "tok/s",
+                  },
+                  {
+                    label: "Output",
+                    stroke: CHART_PALETTE[1],
+                    fill: "rgba(69,201,138,0.08)",
+                    unit: "tok/s",
+                  },
+                ]}
+              />
+            </Card>
+
+            {/* Per-service output TPS */}
+            {perService.length > 1 && !serviceFilter && (
+              <Card header="Per-service output TPS" className="lg:col-span-2">
+                <Chart
+                  xMin={xMin}
+                  xMax={xMax}
+                  height={200}
+                  data={toMultiSeriesData(perService, "outputTps")}
+                  series={perService.map((s, i) => ({
+                    label: s.serviceName,
+                    stroke: CHART_PALETTE[i % CHART_PALETTE.length],
+                    unit: "tok/s",
+                  }))}
+                />
+              </Card>
+            )}
 
             {/* Per-service request breakdown */}
             {perService.length > 1 && !serviceFilter && (

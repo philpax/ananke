@@ -647,6 +647,11 @@ export interface components {
        */
       avg_duration_ms?: number | null;
       /**
+       * Format: double
+       * @description Average time-to-first-token in milliseconds (streaming requests only).
+       */
+      avg_ttft_ms?: number | null;
+      /**
        * Format: int64
        * @description Start of the bucket (ms since epoch).
        */
@@ -676,6 +681,18 @@ export interface components {
        *     deleted from the database but metric rows remain.
        */
       service?: string | null;
+      /**
+       * Format: double
+       * @description Input tokens per second during prompt processing: prompt tokens
+       *     divided by total TTFT. `None` if no timed requests in the bucket.
+       */
+      input_tps?: number | null;
+      /**
+       * Format: double
+       * @description Output tokens per second during decode: completion tokens divided by
+       *     total decode time. `None` if no timed requests in the bucket.
+       */
+      output_tps?: number | null;
     };
     /** @description `GET /api/metrics` response body. */
     MetricsResponse: {

@@ -28,6 +28,14 @@ pub struct MetricBucketResponse {
     pub avg_duration_ms: Option<f64>,
     /// Number of requests with a 4xx/5xx status code.
     pub error_count: i64,
+    /// Average time-to-first-token in milliseconds (streaming requests only).
+    pub avg_ttft_ms: Option<f64>,
+    /// Output tokens per second during decode: completion tokens divided by
+    /// total decode time. `None` if no timed requests in the bucket.
+    pub output_tps: Option<f64>,
+    /// Input tokens per second during prompt processing: prompt tokens
+    /// divided by total TTFT. `None` if no timed requests in the bucket.
+    pub input_tps: Option<f64>,
 }
 
 /// `GET /api/devices/samples` response body.

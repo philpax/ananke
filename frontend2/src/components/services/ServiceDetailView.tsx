@@ -670,6 +670,10 @@ type AggregatedBucket = {
   errorCount: number;
   totalDurationMs: number;
   timedRequests: number;
+  totalWeightedOutputTps: number;
+  outputTpsRequests: number;
+  totalWeightedInputTps: number;
+  inputTpsRequests: number;
 };
 
 function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
@@ -686,6 +690,14 @@ function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
         ex.totalDurationMs += b.avg_duration_ms * b.request_count;
         ex.timedRequests += b.request_count;
       }
+      if (b.output_tps != null) {
+        ex.totalWeightedOutputTps += b.output_tps * b.request_count;
+        ex.outputTpsRequests += b.request_count;
+      }
+      if (b.input_tps != null) {
+        ex.totalWeightedInputTps += b.input_tps * b.request_count;
+        ex.inputTpsRequests += b.request_count;
+      }
     } else {
       map.set(ts, {
         ts,
@@ -696,6 +708,12 @@ function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
         totalDurationMs:
           b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
         timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
+        totalWeightedOutputTps:
+          b.output_tps != null ? b.output_tps * b.request_count : 0,
+        outputTpsRequests: b.output_tps != null ? b.request_count : 0,
+        totalWeightedInputTps:
+          b.input_tps != null ? b.input_tps * b.request_count : 0,
+        inputTpsRequests: b.input_tps != null ? b.request_count : 0,
       });
     }
   }
@@ -726,6 +744,18 @@ function ServiceMetrics({ name }: { name: string }) {
       1,
       buckets.reduce((s, b) => s + b.timedRequests, 0),
     );
+  const avgOutputTps =
+    buckets.reduce((s, b) => s + b.totalWeightedOutputTps, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.outputTpsRequests, 0),
+    );
+  const avgInputTps =
+    buckets.reduce((s, b) => s + b.totalWeightedInputTps, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.inputTpsRequests, 0),
+    );
 
   return (
     <div className="space-y-4">
@@ -754,13 +784,21 @@ function ServiceMetrics({ name }: { name: string }) {
           </div>
         }
       >
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
           <Stat label={`Requests (${rangeLabel})`} value={totalRequests} />
           <Stat label="Errors" value={totalErrors} />
           <Stat label="Tokens" value={totalTokens.toLocaleString()} />
           <Stat
             label="Avg latency"
             value={totalRequests > 0 ? `${Math.round(avgLatency)}ms` : "—"}
+          />
+          <Stat
+            label="Avg in TPS"
+            value={totalRequests > 0 ? avgInputTps.toFixed(1) : "—"}
+          />
+          <Stat
+            label="Avg out TPS"
+            value={totalRequests > 0 ? avgOutputTps.toFixed(1) : "—"}
           />
         </div>
       </Card>
@@ -806,6 +844,39 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         </Card>
       </div>
+      <Card header="Tokens per second">
+        <Chart
+          xMin={xMin}
+          xMax={xMax}
+          data={[
+            buckets.map((b) => b.ts),
+            buckets.map((b) =>
+              b.inputTpsRequests > 0
+                ? b.totalWeightedInputTps / b.inputTpsRequests
+                : null,
+            ),
+            buckets.map((b) =>
+              b.outputTpsRequests > 0
+                ? b.totalWeightedOutputTps / b.outputTpsRequests
+                : null,
+            ),
+          ]}
+          series={[
+            {
+              label: "Input",
+              stroke: CHART_PALETTE[0],
+              fill: "rgba(139,124,248,0.08)",
+              unit: "tok/s",
+            },
+            {
+              label: "Output",
+              stroke: CHART_PALETTE[1],
+              fill: "rgba(69,201,138,0.08)",
+              unit: "tok/s",
+            },
+          ]}
+        />
+      </Card>
     </div>
   );
 }
