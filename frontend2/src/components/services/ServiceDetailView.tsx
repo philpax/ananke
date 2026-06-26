@@ -84,14 +84,6 @@ export function ServiceDetailView() {
           <Badge variant="embedding">embedding</Badge>
         )}
         <div className="ml-auto flex items-center gap-4">
-          {d.modality !== "embedding" && (
-            <Link
-              to={`/chat?model=${encodeURIComponent(d.name)}`}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md bg-accent px-2 text-xs font-medium text-[var(--color-base)] transition-colors hover:bg-accent/90"
-            >
-              Chat
-            </Link>
-          )}
           <Stat label="port" value={`:${d.port}`} />
           <Stat label="pid" value={d.pid ?? "—"} />
           <Stat label="priority" value={d.priority} />
@@ -121,11 +113,21 @@ export function ServiceDetailView() {
 
         {/* Lifecycle actions */}
         <Card header="Actions">
-          <LifecycleActions
-            state={d.state}
-            pending={pending}
-            onAction={(action) => lifecycle.mutate({ action, name: d.name })}
-          />
+          <div className="flex items-center gap-2">
+            {d.modality !== "embedding" && (
+              <ActionLink
+                label="Chat"
+                variant="primary"
+                to={`/chat?model=${encodeURIComponent(d.name)}`}
+                icon={<ChatIcon />}
+              />
+            )}
+            <LifecycleActions
+              state={d.state}
+              pending={pending}
+              onAction={(action) => lifecycle.mutate({ action, name: d.name })}
+            />
+          </div>
         </Card>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -563,6 +565,45 @@ function ActionButton({
       {icon}
       {label}
     </button>
+  );
+}
+
+function ActionLink({
+  label,
+  variant,
+  to,
+  icon,
+}: {
+  label: string;
+  variant: ActionVariant;
+  to: string;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <Link
+      to={to}
+      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${ACTION_VARIANT[variant]}`}
+    >
+      {icon}
+      {label}
+    </Link>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
   );
 }
 

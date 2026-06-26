@@ -12,6 +12,8 @@ import { useServices, useInfo } from "../../api/hooks.ts";
 import { api, type ServiceSummary } from "../../api/client.ts";
 import { openaiBaseUrlFromListen } from "../../util.ts";
 import { Spinner } from "../ui/Spinner.tsx";
+import { Button } from "../ui/Button.tsx";
+import { ButtonLink } from "../ui/ButtonLink.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
@@ -21,6 +23,7 @@ type Message = {
   content: string;
   reasoning?: string;
   images?: string[];
+  stats?: StreamStats;
 };
 
 type ChatState =
@@ -194,6 +197,23 @@ export function ChatView() {
 
     const startTime = performance.now();
     let firstTokenTime: number | null = null;
+    const finalStats: StreamStats = {
+      ttftMs: null,
+      promptTokens: null,
+      completionTokens: null,
+      predictedPerSecond: null,
+    };
+
+    function attachStats() {
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") {
+          next[next.length - 1] = { ...last, stats: { ...finalStats } };
+        }
+        return next;
+      });
+    }
 
     type ApiContentPart =
       | { type: "text"; text: string }
@@ -289,10 +309,8 @@ export function ChatView() {
             if (contentDelta || reasoningDelta) {
               if (firstTokenTime === null) {
                 firstTokenTime = performance.now();
-                setStats((s) => ({
-                  ...s,
-                  ttftMs: firstTokenTime! - startTime,
-                }));
+                finalStats.ttftMs = firstTokenTime! - startTime;
+                setStats({ ...finalStats });
                 // Clear the textbox now that the model is responding.
                 setInput("");
               }
@@ -323,13 +341,11 @@ export function ChatView() {
             if (chunk.usage) {
               const elapsed = (performance.now() - startTime) / 1000;
               const completionTokens = chunk.usage.completion_tokens ?? 0;
-              setStats((s) => ({
-                ...s,
-                promptTokens: chunk.usage?.prompt_tokens ?? null,
-                completionTokens,
-                predictedPerSecond:
-                  elapsed > 0 ? completionTokens / elapsed : null,
-              }));
+              finalStats.promptTokens = chunk.usage?.prompt_tokens ?? null;
+              finalStats.completionTokens = completionTokens;
+              finalStats.predictedPerSecond =
+                elapsed > 0 ? completionTokens / elapsed : null;
+              setStats({ ...finalStats });
             }
           } catch {
             // Skip unparseable lines.
@@ -338,9 +354,11 @@ export function ChatView() {
       }
       // Clear input in case no tokens arrived (empty response).
       setInput("");
+      attachStats();
       setChatState({ kind: "idle" });
     } catch (e) {
       setInput("");
+      attachStats();
       if (e instanceof DOMException && e.name === "AbortError") {
         setChatState({ kind: "idle" });
       } else {
@@ -449,7 +467,18 @@ export function ChatView() {
           </div>
         ) : (
           messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} modelName={selectedModel} />
+            <MessageBubble
+              key={i}
+              message={msg}
+              modelName={selectedModel}
+              liveStats={
+                chatState.kind === "streaming" &&
+                i === messages.length - 1 &&
+                msg.role === "assistant"
+                  ? stats
+                  : null
+              }
+            />
           ))
         )}
         {messages.length > 0 && chatState.kind === "starting" && (
@@ -519,15 +548,31 @@ export function ChatView() {
             onSelect={selectModel}
             className="min-w-0 flex-1"
           />
-          {selectedModel && <CopyButton value={selectedModel} />}
-          <StatBar stats={stats} />
           {selectedModel && (
-            <button
-              onClick={clearConversation}
-              className="rounded-sm px-2 py-0.5 text-xs text-tertiary hover:text-secondary"
+            <CopyButton
+              value={selectedModel}
+              className="h-7 rounded-md bg-elevated px-2 text-xs font-medium text-primary hover:bg-border-strong"
+            />
+          )}
+          {selectedModel && (
+            <ButtonLink
+              to={`/services/${encodeURIComponent(selectedModel)}`}
+              variant="secondary"
+              size="sm"
+              className="w-7 justify-center px-0"
             >
-              clear
-            </button>
+              <ExternalLinkIcon />
+            </ButtonLink>
+          )}
+          {selectedModel && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="w-7 justify-center px-0"
+              onClick={clearConversation}
+            >
+              <TrashIcon />
+            </Button>
           )}
         </div>
         <div className="flex items-stretch gap-2">
@@ -710,19 +755,35 @@ function ModelDropdown({
 function MessageBubble({
   message,
   modelName,
+  liveStats,
 }: {
   message: Message;
   modelName: string | null;
+  liveStats: StreamStats | null;
 }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isAssistant = message.role === "assistant";
 
   const label = isAssistant ? (modelName ?? "assistant") : message.role;
+  const displayStats = liveStats ?? message.stats ?? null;
 
   return (
     <div className={`mb-4 ${isSystem ? "opacity-60" : ""}`}>
-      <div className="eyebrow mb-1">{label}</div>
+      <div className="mb-1 flex items-center gap-3">
+        <span className="eyebrow">{label}</span>
+        {isAssistant && displayStats && displayStats.promptTokens !== null && (
+          <span className="flex items-center gap-3 text-xs text-tertiary">
+            <span>prompt {displayStats.promptTokens} tokens</span>
+            {displayStats.completionTokens !== null && (
+              <span>output {displayStats.completionTokens} tokens</span>
+            )}
+            {displayStats.predictedPerSecond !== null && (
+              <span>{displayStats.predictedPerSecond.toFixed(1)} tokens/s</span>
+            )}
+          </span>
+        )}
+      </div>
       <div
         className={`rounded-md px-4 py-3 text-sm ring-1 ring-inset ${
           isUser
@@ -787,18 +848,39 @@ function MessageBubble({
   );
 }
 
-function StatBar({ stats }: { stats: StreamStats }) {
-  if (stats.ttftMs === null) return null;
+function ExternalLinkIcon() {
   return (
-    <div className="flex items-center gap-3 text-xs text-tertiary">
-      <span>ttft {stats.ttftMs.toFixed(0)}ms</span>
-      {stats.completionTokens !== null && (
-        <span>{stats.completionTokens} tokens</span>
-      )}
-      {stats.predictedPerSecond !== null && (
-        <span>{stats.predictedPerSecond.toFixed(1)} tok/s</span>
-      )}
-      {stats.promptTokens !== null && <span>prompt {stats.promptTokens}</span>}
-    </div>
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M15 3h6v6" />
+      <path d="M10 14L21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 6h18" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
   );
 }
