@@ -106,6 +106,17 @@ export function ChatView() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const autoScrollRef = useRef(true);
+
+  // Track whether the user is scrolled to the bottom. When they scroll
+  // up, stop auto-scrolling; when they scroll back to the bottom,
+  // resume.
+  function onScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+    autoScrollRef.current = atBottom;
+  }
 
   function saveSystemPrompt(value: string) {
     setSystemPrompt(value);
@@ -119,7 +130,7 @@ export function ChatView() {
   }
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && autoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
@@ -139,7 +150,8 @@ export function ChatView() {
 
     // Check if the model is running; start it if not.
     const svc = (services.data ?? []).find((s) => s.name === selectedModel);
-    if (svc && svc.state !== "running") {
+    const needsStart = svc != null && svc.state !== "running";
+    if (needsStart) {
       setChatState({ kind: "starting" });
       try {
         await api.start(selectedModel);
@@ -185,6 +197,12 @@ export function ChatView() {
       },
     ]);
     setAttachments([]);
+    // For hot models the message is already visible as a bubble, so
+    // clear the textarea immediately. Cold models keep the text until
+    // the model starts responding (cleared on first token).
+    if (!needsStart) {
+      setInput("");
+    }
     setStats({
       ttftMs: null,
       promptTokens: null,
@@ -454,7 +472,11 @@ export function ChatView() {
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-auto px-4 py-4">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="flex-1 overflow-auto px-4 py-4"
+      >
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-tertiary">
             <span>Send a message to start chatting.</span>
