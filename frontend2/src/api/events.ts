@@ -1,41 +1,60 @@
 // System-wide event subscription via the `/api/events` WebSocket.
 // The daemon publishes state changes, allocation shifts, config
-// reloads, and estimator drift events. This hook opens a single
-// connection on mount and drives TanStack Query invalidation so
-// the UI updates near-instantly without polling.
+// reloads, and estimator drift events.
 //
-// The connection state is tracked in a module-level flag so that
-// query hooks can disable polling while the WebSocket is live.
+// Two exports:
+//   - useEventsConnection(): opens the socket on app mount, drives
+//     TanStack Query invalidation. Called once in App.
+//   - useEventFeed(): subscribes to the in-memory event buffer for the
+//     events tab. Does not open a second socket.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "./client.ts";
 
 export type SystemEvent = {
   type: string;
   service?: string;
-  timestamp: number;
+  at_ms?: number;
   [key: string]: unknown;
-};
-
-export type EventsState = {
-  events: SystemEvent[];
-  connected: boolean;
 };
 
 const MAX_EVENTS = 1_000;
 
+// --- Module-level event store ---
+
+type Listener = () => void;
+
+const eventBuffer: SystemEvent[] = [];
+const listeners = new Set<Listener>();
 let eventsConnected = false;
+
+function emit(event: SystemEvent) {
+  eventBuffer.push(event);
+  if (eventBuffer.length > MAX_EVENTS) {
+    eventBuffer.splice(0, eventBuffer.length - MAX_EVENTS);
+  }
+  for (const l of listeners) l();
+}
+
+function subscribe(l: Listener): () => void {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}
+
+function getSnapshot(): readonly SystemEvent[] {
+  return eventBuffer;
+}
 
 export function isEventsConnected(): boolean {
   return eventsConnected;
 }
 
-export function useEvents(): EventsState {
-  const [state, setState] = useState<EventsState>({
-    events: [],
-    connected: false,
-  });
+// --- Hooks ---
+
+/// Opens the events WebSocket on mount and drives query invalidation.
+/// Call once in App. Does not return event data.
+export function useEventsConnection(): void {
   const qc = useQueryClient();
   const cancelled = useRef(false);
 
@@ -43,31 +62,26 @@ export function useEvents(): EventsState {
     cancelled.current = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let shouldReconnect = true;
 
     const connect = () => {
+      if (!shouldReconnect) return;
       socket = new WebSocket(api.eventsStreamUrl());
       socket.onopen = () => {
         eventsConnected = true;
-        setState((prev) => ({ ...prev, connected: true }));
-        // Invalidate to trigger a refetch; the refetchInterval
-        // function will now return false (WS connected), stopping
-        // polling until the socket drops again.
         void qc.invalidateQueries({ queryKey: ["services"] });
         void qc.invalidateQueries({ queryKey: ["devices"] });
       };
       socket.onclose = () => {
-        if (cancelled.current) return;
         eventsConnected = false;
-        setState((prev) => ({ ...prev, connected: false }));
-        // Invalidate to trigger a refetch; the refetchInterval
-        // function will now return the fallback poll interval,
-        // restarting polling until the socket reconnects.
-        void qc.invalidateQueries({ queryKey: ["services"] });
-        void qc.invalidateQueries({ queryKey: ["devices"] });
+        if (!shouldReconnect) return;
         reconnectTimer = window.setTimeout(connect, 2_000);
       };
       socket.onerror = () => {
-        setState((prev) => ({ ...prev, connected: false }));
+        // onerror doesn't always trigger onclose promptly, so close
+        // the socket explicitly to force the reconnect cycle.
+        eventsConnected = false;
+        socket?.close();
       };
       socket.onmessage = (ev) => {
         if (typeof ev.data !== "string") return;
@@ -77,13 +91,7 @@ export function useEvents(): EventsState {
         } catch {
           return;
         }
-        setState((prev) => {
-          const events = [...prev.events, event];
-          if (events.length > MAX_EVENTS) {
-            events.splice(0, events.length - MAX_EVENTS);
-          }
-          return { ...prev, events };
-        });
+        emit(event);
 
         // Drive query invalidation based on event type.
         switch (event.type) {
@@ -115,11 +123,31 @@ export function useEvents(): EventsState {
     connect();
 
     return () => {
+      shouldReconnect = false;
       cancelled.current = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
   }, [qc]);
+}
 
-  return state;
+/// Returns the current event buffer and connection state. Uses
+/// useSyncExternalStore so multiple components can subscribe without
+/// opening additional sockets.
+export function useEventFeed(): {
+  events: readonly SystemEvent[];
+  connected: boolean;
+} {
+  const events = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const [connected, setConnected] = useState(eventsConnected);
+
+  useEffect(() => {
+    const l = () => setConnected(eventsConnected);
+    listeners.add(l);
+    return () => {
+      listeners.delete(l);
+    };
+  }, []);
+
+  return { events, connected };
 }

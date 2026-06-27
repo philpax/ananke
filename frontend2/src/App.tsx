@@ -5,7 +5,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AppShell } from "./components/layout/AppShell.tsx";
-import { useEvents } from "./api/events.ts";
+import { useEventsConnection } from "./api/events.ts";
 import { DashboardView } from "./components/dashboard/DashboardView.tsx";
 import { ServiceDetailView } from "./components/services/ServiceDetailView.tsx";
 import { EventsView } from "./components/events/EventsView.tsx";
@@ -53,7 +53,7 @@ function Placeholder({ title }: { title: string }) {
 export default function App() {
   // Open the events WebSocket on mount. It drives query invalidation
   // for near-instant updates.
-  useEvents();
+  useEventsConnection();
 
   return (
     <BrowserRouter>

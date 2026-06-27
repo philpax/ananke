@@ -1,28 +1,27 @@
-// Event feed — live, virtualised feed of system events from the
-// /api/events WebSocket. Shows timestamp, event type, service name,
-// and key fields as one-line summaries.
+// Event feed — live feed of system events from the /api/events
+// WebSocket. Shows timestamp, event type, service name, and key
+// fields as one-line summaries in a table layout.
 
 import { useState } from "react";
-import { useEvents, type SystemEvent } from "../../api/events.ts";
-import { formatTimestamp } from "../../util.ts";
+import { useEventFeed, type SystemEvent } from "../../api/events.ts";
 
 const EVENT_TYPES = [
   "state_changed",
   "allocation_changed",
   "config_reloaded",
   "estimator_drift",
+  "overflow",
 ] as const;
 
 export function EventsView() {
-  const { events, connected } = useEvents();
-  const [paused, setPaused] = useState(false);
+  const { events, connected } = useEventFeed();
   const [typeFilter, setTypeFilter] = useState<Set<string>>(
     new Set(EVENT_TYPES),
   );
 
-  const filtered = paused
-    ? events
-    : events.filter((e) => typeFilter.size === 0 || typeFilter.has(e.type));
+  const filtered = events.filter(
+    (e) => typeFilter.size === 0 || typeFilter.has(e.type),
+  );
 
   function toggleType(type: string) {
     setTypeFilter((prev) => {
@@ -60,28 +59,39 @@ export function EventsView() {
           ) : (
             <span className="text-danger">disconnected</span>
           )}
-          <button
-            onClick={() => setPaused((p) => !p)}
-            className={`rounded-sm px-2 py-0.5 transition-colors ${
-              paused ? "text-warning" : "text-tertiary hover:text-secondary"
-            }`}
-          >
-            {paused ? "paused" : "pause"}
-          </button>
-          <span className="font-mono">{filtered.length}</span>
         </div>
       </div>
 
-      {/* Event list */}
+      {/* Event table */}
       <div className="flex-1 overflow-auto">
         {filtered.length === 0 ? (
           <div className="flex min-h-[200px] items-center justify-center text-sm text-tertiary">
             No events yet.
           </div>
         ) : (
-          [...filtered]
-            .reverse()
-            .map((event, i) => <EventRow key={i} event={event} />)
+          <table className="w-full">
+            <thead className="sticky top-0 bg-surface">
+              <tr className="border-b border-border-default text-left">
+                <th className="w-28 px-4 py-1.5 text-xs font-medium text-tertiary">
+                  Time
+                </th>
+                <th className="w-40 px-4 py-1.5 text-xs font-medium text-tertiary">
+                  Type
+                </th>
+                <th className="w-40 px-4 py-1.5 text-xs font-medium text-tertiary">
+                  Service
+                </th>
+                <th className="px-4 py-1.5 text-xs font-medium text-tertiary">
+                  Summary
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...filtered].reverse().map((event, i) => (
+                <EventRow key={i} event={event} />
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>
@@ -91,24 +101,22 @@ export function EventsView() {
 function EventRow({ event }: { event: SystemEvent }) {
   const variant = EVENT_VARIANTS[event.type] ?? "neutral";
   return (
-    <div className="flex items-center gap-3 border-b border-border-default px-4 py-2 hover:bg-elevated/60">
-      <span className="shrink-0 font-mono text-xs text-tertiary">
-        {formatTimestamp(event.timestamp)}
-      </span>
-      <span
-        className={`shrink-0 rounded-[3px] px-1.5 py-0.5 font-mono text-[0.625rem] font-medium uppercase tracking-[0.08em] ring-1 ring-inset ${variant}`}
-      >
-        {event.type}
-      </span>
-      {event.service && (
-        <span className="shrink-0 font-mono text-xs text-primary">
-          {event.service}
+    <tr className="border-b border-border-default/50 text-xs hover:bg-elevated/60">
+      <td className="px-4 py-1.5 font-mono text-tertiary">
+        {formatEventTime(event.at_ms)}
+      </td>
+      <td className="px-4 py-1.5">
+        <span
+          className={`inline-block rounded-[3px] px-1.5 py-0.5 font-mono text-[0.625rem] font-medium uppercase tracking-[0.08em] ring-1 ring-inset ${variant}`}
+        >
+          {event.type}
         </span>
-      )}
-      <span className="truncate text-xs text-secondary">
-        {summarizeEvent(event)}
-      </span>
-    </div>
+      </td>
+      <td className="px-4 py-1.5 font-mono text-primary">
+        {event.service ?? "—"}
+      </td>
+      <td className="px-4 py-1.5 text-secondary">{summarizeEvent(event)}</td>
+    </tr>
   );
 }
 
@@ -117,6 +125,7 @@ const EVENT_VARIANTS: Record<string, string> = {
   allocation_changed: "bg-accent/12 text-accent ring-accent/25",
   config_reloaded: "bg-warning/12 text-warning ring-warning/25",
   estimator_drift: "bg-vision/12 text-vision ring-vision/25",
+  overflow: "bg-danger/12 text-danger ring-danger/25",
 };
 
 function summarizeEvent(event: SystemEvent): string {
@@ -124,7 +133,7 @@ function summarizeEvent(event: SystemEvent): string {
     case "state_changed": {
       const from = event.from ?? "?";
       const to = event.to ?? "?";
-      return `${from} → ${to}`;
+      return `${from} \u2192 ${to}`;
     }
     case "allocation_changed":
       return "device allocation shifted";
@@ -132,13 +141,36 @@ function summarizeEvent(event: SystemEvent): string {
       return "configuration reloaded from disk";
     case "estimator_drift": {
       const mean = event.rolling_mean;
-      const samples = event.rolling_samples;
-      if (typeof mean === "number" && typeof samples === "number") {
-        return `correction ${mean.toFixed(3)} (n=${samples})`;
+      if (typeof mean === "number") {
+        return `correction ${mean.toFixed(3)}`;
       }
       return "estimate correction updated";
     }
+    case "overflow": {
+      const dropped = event.dropped;
+      return typeof dropped === "number"
+        ? `${dropped} events dropped`
+        : "events dropped";
+    }
     default:
-      return "";
+      return JSON.stringify(
+        Object.fromEntries(
+          Object.entries(event).filter(
+            ([k]) => k !== "type" && k !== "service" && k !== "at_ms",
+          ),
+        ),
+      );
   }
+}
+
+function formatEventTime(ts: number | undefined): string {
+  if (!ts || !Number.isFinite(ts)) return "\u2014";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleTimeString(undefined, {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
