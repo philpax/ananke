@@ -68,8 +68,8 @@
     "openaiPort": "OpenAI port",
     "totalServices": "Services",
     "runningServices": "Running",
-    "totalVramInUse": "VRAM in use",
-    "tokensToday": "Tokens today",
+    "inputTokens": "Tokens (in)",
+    "outputTokens": "Tokens (out)",
     "recentEvents": "Recent events"
   }
 }

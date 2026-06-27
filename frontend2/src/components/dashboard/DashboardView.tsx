@@ -90,17 +90,10 @@ export function DashboardView() {
     services.data?.filter((s) => s.state === "running").length ?? 0;
   const totalCount = services.data?.length ?? 0;
 
-  const totalVramUsed =
-    devices.data?.reduce((sum, d) => {
-      if (d.id.startsWith("cpu")) return sum;
-      return sum + (d.total_bytes - d.free_bytes);
-    }, 0) ?? 0;
-
-  const tokensRecent =
-    metrics.data?.buckets.reduce(
-      (sum, b) => sum + b.prompt_tokens + b.completion_tokens,
-      0,
-    ) ?? 0;
+  const inputTokens =
+    metrics.data?.buckets.reduce((sum, b) => sum + b.prompt_tokens, 0) ?? 0;
+  const outputTokens =
+    metrics.data?.buckets.reduce((sum, b) => sum + b.completion_tokens, 0) ?? 0;
 
   const sortedServices = services.data
     ? [...services.data].sort((a, b) => {
@@ -142,12 +135,12 @@ export function DashboardView() {
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />
           <Stat
-            label={t("dashboard.totalVramInUse")}
-            value={formatBytes(totalVramUsed)}
+            label={t("dashboard.inputTokens")}
+            value={inputTokens.toLocaleString()}
           />
           <Stat
-            label={t("dashboard.tokensToday")}
-            value={tokensRecent.toLocaleString()}
+            label={t("dashboard.outputTokens")}
+            value={outputTokens.toLocaleString()}
           />
         </div>
       </header>
