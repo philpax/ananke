@@ -59,13 +59,11 @@ export default function App() {
         <Routes>
           <Route path="/" element={<DashboardView />} />
           <Route path="/services/:name" element={<ServiceDetailView />} />
-          <Route path="/devices" element={<Placeholder title="Devices" />} />
           <Route path="/chat" element={<ChatView />} />
           <Route path="/oneshots" element={<Placeholder title="Oneshots" />} />
           <Route path="/config" element={<Placeholder title="Config" />} />
           <Route path="/events" element={<EventsView />} />
           <Route path="/metrics" element={<MetricsView />} />
-          <Route path="/metrics" element={<Placeholder title="Metrics" />} />
           <Route path="*" element={<Placeholder title="Not found" />} />
         </Routes>
       </AppShell>

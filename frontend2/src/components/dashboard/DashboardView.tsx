@@ -1,7 +1,9 @@
 // Dashboard overview — the landing page and primary management view.
-// Answers "what's happening right now?" with quick stats, a full
-// service list with inline actions, and device summary cards.
+// Answers "what's happening right now?" with quick stats, device cards
+// with memory sparklines, and a full service list with inline activity
+// sparklines. A header time range toggle controls all charts.
 
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
@@ -9,10 +11,16 @@ import {
   useDevices,
   useServices,
   useMetrics,
+  useDeviceSamples,
   useLifecycle,
 } from "../../api/hooks.ts";
-import type { DeviceSummary, ServiceSummary } from "../../api/client.ts";
-import { formatBytes } from "../../util.ts";
+import type {
+  DeviceSummary,
+  ServiceSummary,
+  DeviceSampleResponse,
+  MetricBucketResponse,
+} from "../../api/client.ts";
+import { formatBytes, serviceProxyUrl } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { Stat } from "../ui/Stat.tsx";
 import { Bar, type BarSegment } from "../ui/Bar.tsx";
@@ -20,6 +28,43 @@ import { StatusDot } from "../ui/StatusDot.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
+import { Sparkline } from "../ui/Sparkline.tsx";
+import { Chart } from "../ui/Chart.tsx";
+import { CHART_PALETTE } from "../ui/chart-palette.ts";
+
+type TimeRange = { label: string; ms: number; bucket: string };
+const RANGES: TimeRange[] = [
+  { label: "1h", ms: 3_600_000, bucket: "1m" },
+  { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
+  { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
+];
+
+type ServiceSparkData = Map<string, { ts: number[]; counts: number[] }>;
+
+function buildServiceSparkline(
+  buckets: MetricBucketResponse[],
+): ServiceSparkData {
+  const byService = new Map<string, Map<number, number>>();
+  for (const b of buckets) {
+    const name = b.service ?? "unknown";
+    let m = byService.get(name);
+    if (!m) {
+      m = new Map();
+      byService.set(name, m);
+    }
+    const ts = Math.floor(b.bucket_start / 1000);
+    m.set(ts, (m.get(ts) ?? 0) + b.request_count);
+  }
+  const result = new Map<string, { ts: number[]; counts: number[] }>();
+  for (const [name, m] of byService) {
+    const sorted = [...m.entries()].sort((a, b) => a[0] - b[0]);
+    result.set(name, {
+      ts: sorted.map((e) => e[0]),
+      counts: sorted.map((e) => e[1]),
+    });
+  }
+  return result;
+}
 
 export function DashboardView() {
   const { t } = useTranslation();
@@ -27,9 +72,19 @@ export function DashboardView() {
   const devices = useDevices();
   const lifecycle = useLifecycle();
 
-  // Let the daemon default to "last 1h" by omitting since/until.
-  // The refetch interval (30s) keeps this fresh.
-  const metrics = useMetrics({ bucket: "1h" });
+  const [rangeIdx, setRangeIdx] = useState(0);
+  const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
+  const range = RANGES[rangeIdx];
+  const xMin = since / 1000;
+  const xMax = (since + range.ms) / 1000;
+
+  const metrics = useMetrics({ since, bucket: range.bucket });
+  const deviceSamples = useDeviceSamples(undefined, since);
+
+  const serviceSpark = useMemo(
+    () => buildServiceSparkline(metrics.data?.buckets ?? []),
+    [metrics.data],
+  );
 
   const runningCount =
     services.data?.filter((s) => s.state === "running").length ?? 0;
@@ -57,8 +112,6 @@ export function DashboardView() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header strip — fixed height so its bottom border lines up with
-          the sidebar wordmark and forms one continuous rule. */}
       <header className="flex h-14 shrink-0 items-center gap-5 border-b border-border-default px-4">
         <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
           {t("dashboard.title")}
@@ -67,6 +120,24 @@ export function DashboardView() {
           <span className="font-mono">{window.location.host}</span>
           <CopyButton value={window.location.host} />
         </div>
+        <div className="flex items-center gap-1">
+          {RANGES.map((r, i) => (
+            <button
+              key={r.label}
+              onClick={() => {
+                setRangeIdx(i);
+                setSince(Date.now() - RANGES[i].ms);
+              }}
+              className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
+                i === rangeIdx
+                  ? "bg-elevated text-primary"
+                  : "text-tertiary hover:text-secondary"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
         <div className="ml-auto flex items-center gap-5">
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />
@@ -74,24 +145,28 @@ export function DashboardView() {
             label={t("dashboard.totalVramInUse")}
             value={formatBytes(totalVramUsed)}
           />
-          {tokensRecent > 0 && (
-            <Stat
-              label={t("dashboard.tokensToday")}
-              value={tokensRecent.toLocaleString()}
-            />
-          )}
+          <Stat
+            label={t("dashboard.tokensToday")}
+            value={tokensRecent.toLocaleString()}
+          />
         </div>
       </header>
 
       <div className="flex-1 space-y-4 overflow-auto p-4">
-        {/* Device summary */}
+        {/* Device cards with memory sparklines */}
         <Card header={t("nav.devices")}>
           {devices.isPending ? (
             <Spinner />
           ) : devices.data ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {devices.data.map((d) => (
-                <DeviceMiniCard key={d.id} device={d} />
+                <DeviceCard
+                  key={d.id}
+                  device={d}
+                  samples={deviceSamples.data ?? []}
+                  xMin={xMin}
+                  xMax={xMax}
+                />
               ))}
             </div>
           ) : (
@@ -101,7 +176,7 @@ export function DashboardView() {
           )}
         </Card>
 
-        {/* Service list (full-width, primary view) */}
+        {/* Service list with activity sparklines */}
         <Card header={t("nav.services")} bodyClassName="p-0">
           {services.isPending ? (
             <div className="p-4">
@@ -113,6 +188,9 @@ export function DashboardView() {
                 <ServiceRow
                   key={s.name}
                   svc={s}
+                  sparkData={serviceSpark.get(s.name)}
+                  xMin={xMin}
+                  xMax={xMax}
                   pending={
                     lifecycle.isPending && lifecycle.variables?.name === s.name
                   }
@@ -133,7 +211,17 @@ export function DashboardView() {
   );
 }
 
-function DeviceMiniCard({ device }: { device: DeviceSummary }) {
+function DeviceCard({
+  device,
+  samples,
+  xMin,
+  xMax,
+}: {
+  device: DeviceSummary;
+  samples: DeviceSampleResponse[];
+  xMin: number;
+  xMax: number;
+}) {
   const total = device.total_bytes;
   const used = total - device.free_bytes;
   const pledged = device.reservations.reduce((sum, r) => sum + r.bytes, 0);
@@ -145,27 +233,75 @@ function DeviceMiniCard({ device }: { device: DeviceSummary }) {
     { variant: "headroom", bytes: Math.max(0, total - used - pledgedExtra) },
   ];
 
+  const chartData = useMemo(() => {
+    const filtered = samples
+      .filter((s) => s.device === device.id)
+      .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+    return [
+      filtered.map((s) => Math.floor(s.timestamp_ms / 1000)),
+      filtered.map((s) => s.used_bytes / 1e9),
+    ] as (number | null)[][];
+  }, [samples, device.id]);
+
   return (
-    <Link to="/devices" className="block">
+    <div className="space-y-2">
       <div className="flex items-baseline justify-between">
         <span className="font-mono text-xs text-primary">{device.id}</span>
         <span className="text-xs text-tertiary">{device.name}</span>
       </div>
-      <Bar total={total} segments={segments} className="mt-1" />
-      <div className="mt-1 text-xs text-tertiary">
+      <Chart
+        data={chartData}
+        series={[
+          {
+            label: "Used",
+            stroke: CHART_PALETTE[0],
+            fill: "rgba(139,124,248,0.08)",
+            unit: "GB",
+          },
+        ]}
+        height={100}
+        xMin={xMin}
+        xMax={xMax}
+      />
+      <Bar total={total} segments={segments} />
+      <div className="text-xs text-tertiary">
         {formatBytes(used)} / {formatBytes(total)}
         {pledged > 0 && <> · {formatBytes(pledged)} pledged</>}
       </div>
-    </Link>
+      {device.reservations.length > 0 && (
+        <div className="space-y-0.5">
+          {device.reservations.map((r) => (
+            <div key={r.service} className="flex items-center gap-2 text-sm">
+              <Link
+                to={`/services/${encodeURIComponent(r.service)}`}
+                className="font-mono text-xs text-accent hover:underline"
+              >
+                {r.service}
+              </Link>
+              <span className="font-mono text-xs text-tertiary">
+                {formatBytes(r.bytes)}
+              </span>
+              {r.elastic && <Badge variant="accent">elastic</Badge>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 function ServiceRow({
   svc,
+  sparkData,
+  xMin,
+  xMax,
   pending,
   onAction,
 }: {
   svc: ServiceSummary;
+  sparkData?: { ts: number[]; counts: number[] };
+  xMin: number;
+  xMax: number;
   pending: boolean;
   onAction: (
     action: "start" | "stop" | "restart" | "enable" | "disable",
@@ -176,6 +312,12 @@ function ServiceRow({
   const canStart = ["idle", "stopped", "failed", "evicted"].includes(svc.state);
   const canStop = ["running", "starting", "draining"].includes(svc.state);
   const isDisabled = svc.state.startsWith("disabled");
+
+  // Sparkline data — zeroFillGaps (applied inside Sparkline) handles
+  // the no-data and single-point cases.
+  const sparkLineData: (number | null)[][] = sparkData
+    ? [sparkData.ts, sparkData.counts]
+    : [[], []];
 
   return (
     <div className="flex items-center gap-3 px-4 py-2 transition-colors hover:bg-elevated/60">
@@ -192,11 +334,31 @@ function ServiceRow({
         {(svc.inflight_count ?? 0) > 0 && (
           <Badge variant="accent">{svc.inflight_count} in-flight</Badge>
         )}
-        <span className="ml-auto shrink-0 font-mono text-xs text-tertiary">
-          :{svc.port}
-        </span>
+        <div className="ml-auto flex shrink-0 items-center gap-3">
+          <div className="h-6 w-20 shrink-0">
+            <Sparkline
+              data={sparkLineData}
+              color={CHART_PALETTE[0]}
+              height={24}
+              xMin={xMin}
+              xMax={xMax}
+            />
+          </div>
+          <a
+            href={serviceProxyUrl(svc.port)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="rounded-[3px] bg-elevated px-1.5 py-0.5 font-mono text-xs text-accent ring-1 ring-inset ring-border-strong transition-colors hover:bg-border-strong"
+          >
+            :{svc.port}
+          </a>
+        </div>
       </Link>
-      <div className="flex w-[92px] shrink-0 items-center justify-end gap-0.5">
+      {/* Sized to hold the three-button case at full size with a tight
+          gap, so the right-aligned columns line up across rows however
+          many actions a row shows. */}
+      <div className="flex w-[110px] shrink-0 items-center justify-end gap-1.5 border-l border-border-default pl-3">
         {canStart && (
           <IconButton
             label={t("services.actions.start")}
@@ -210,20 +372,20 @@ function ServiceRow({
         {canStop && (
           <>
             <IconButton
-              label={t("services.actions.stop")}
-              variant="danger"
-              onClick={() => onAction("stop")}
-              disabled={pending}
-            >
-              <StopIcon />
-            </IconButton>
-            <IconButton
               label={t("services.actions.restart")}
               variant="secondary"
               onClick={() => onAction("restart")}
               disabled={pending}
             >
               <RestartIcon />
+            </IconButton>
+            <IconButton
+              label={t("services.actions.stop")}
+              variant="danger"
+              onClick={() => onAction("stop")}
+              disabled={pending}
+            >
+              <StopIcon />
             </IconButton>
           </>
         )}
