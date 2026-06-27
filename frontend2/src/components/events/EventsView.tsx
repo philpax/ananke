@@ -1,9 +1,15 @@
 // Event feed — live feed of system events from the /api/events
 // WebSocket. Shows timestamp, event type, service name, and key
-// fields as one-line summaries in a table layout.
+// fields as one-line summaries in a table layout. Oldest events at
+// the top, newest at the bottom; autoscrolls to the bottom when new
+// events arrive unless the user has scrolled up.
 
-import { useState } from "react";
-import { useEventFeed, type SystemEvent } from "../../api/events.ts";
+import { useEffect, useRef, useState } from "react";
+import {
+  reconnectEvents,
+  useEventFeed,
+  type SystemEvent,
+} from "../../api/events.ts";
 
 const EVENT_TYPES = [
   "state_changed",
@@ -32,6 +38,22 @@ export function EventsView() {
     });
   }
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+
+  function onScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+    autoScrollRef.current = atBottom;
+  }
+
+  useEffect(() => {
+    if (scrollRef.current && autoScrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [filtered.length]);
+
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
@@ -59,11 +81,18 @@ export function EventsView() {
           ) : (
             <span className="text-danger">disconnected</span>
           )}
+          <button
+            onClick={reconnectEvents}
+            className="rounded-sm px-2 py-0.5 text-tertiary transition-colors hover:text-secondary"
+            title="Force reconnect"
+          >
+            ↻
+          </button>
         </div>
       </div>
 
       {/* Event table */}
-      <div className="flex-1 overflow-auto">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">
         {filtered.length === 0 ? (
           <div className="flex min-h-[200px] items-center justify-center text-sm text-tertiary">
             No events yet.
@@ -87,7 +116,7 @@ export function EventsView() {
               </tr>
             </thead>
             <tbody>
-              {[...filtered].reverse().map((event, i) => (
+              {filtered.map((event, i) => (
                 <EventRow key={i} event={event} />
               ))}
             </tbody>

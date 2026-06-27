@@ -34,15 +34,20 @@ const MAX_EVENTS = 1_000;
 
 type Listener = () => void;
 
-const eventBuffer: SystemEvent[] = [];
+// Reassigned to a new array on each emit so useSyncExternalStore's
+// Object.is check detects the change — mutating in place would keep
+// the same reference and React would skip the re-render.
+let eventBuffer: readonly SystemEvent[] = [];
 const listeners = new Set<Listener>();
 let eventsConnected = false;
 
 function emit(event: SystemEvent) {
-  eventBuffer.push(event);
-  if (eventBuffer.length > MAX_EVENTS) {
-    eventBuffer.splice(0, eventBuffer.length - MAX_EVENTS);
-  }
+  const next =
+    eventBuffer.length >= MAX_EVENTS
+      ? eventBuffer.slice(eventBuffer.length - MAX_EVENTS + 1)
+      : eventBuffer.slice();
+  next.push(event);
+  eventBuffer = next;
   for (const l of listeners) l();
 }
 
@@ -57,6 +62,17 @@ function getSnapshot(): readonly SystemEvent[] {
 
 export function isEventsConnected(): boolean {
   return eventsConnected;
+}
+
+// --- Force reconnect ---
+
+// Set by useEventsConnection while the socket is live. Calling
+// reconnectEvents() closes the current socket and immediately opens
+// a fresh one — no 2-second delay.
+let reconnectTrigger: (() => void) | null = null;
+
+export function reconnectEvents(): void {
+  reconnectTrigger?.();
 }
 
 // --- Hooks ---
@@ -78,6 +94,7 @@ export function useEventsConnection(): void {
       socket = new WebSocket(api.eventsStreamUrl());
       socket.onopen = () => {
         eventsConnected = true;
+        for (const l of listeners) l();
         stopPolling();
         void refreshStore();
         void qc.invalidateQueries({ queryKey: ["config"] });
@@ -85,6 +102,7 @@ export function useEventsConnection(): void {
       };
       socket.onclose = () => {
         eventsConnected = false;
+        for (const l of listeners) l();
         startPolling();
         if (!shouldReconnect) return;
         reconnectTimer = window.setTimeout(connect, 2_000);
@@ -93,6 +111,7 @@ export function useEventsConnection(): void {
         // onerror doesn't always trigger onclose promptly, so close
         // the socket explicitly to force the reconnect cycle.
         eventsConnected = false;
+        for (const l of listeners) l();
         socket?.close();
       };
       socket.onmessage = (ev) => {
@@ -131,9 +150,25 @@ export function useEventsConnection(): void {
     };
     connect();
 
+    reconnectTrigger = () => {
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (socket) {
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        socket.close();
+        socket = null;
+      }
+      connect();
+    };
+
     return () => {
       shouldReconnect = false;
       cancelled.current = true;
+      reconnectTrigger = null;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
