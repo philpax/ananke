@@ -20,7 +20,11 @@ import type {
   PlacementPreview,
   ServiceDetail,
 } from "../../api/client.ts";
-import { formatBytes, formatParameterCount } from "../../util.ts";
+import {
+  formatBytes,
+  formatParameterCount,
+  serviceProxyUrl,
+} from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { Stat } from "../ui/Stat.tsx";
@@ -28,6 +32,9 @@ import { Bar, type BarSegment } from "../ui/Bar.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
+import { Button } from "../ui/Button.tsx";
+import { ButtonLink } from "../ui/ButtonLink.tsx";
+import { buttonClassName } from "../ui/buttonStyles.ts";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import { LogsViewer } from "../logs/LogsViewer.tsx";
@@ -114,13 +121,23 @@ export function ServiceDetailView() {
         {/* Lifecycle actions */}
         <Card header="Actions">
           <div className="flex items-center gap-2">
+            <a
+              href={serviceProxyUrl(d.port)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonClassName("blue")}
+            >
+              <ExternalLinkIcon />
+              Open
+            </a>
             {d.modality !== "embedding" && (
-              <ActionLink
-                label="Chat"
-                variant="primary"
+              <ButtonLink
+                variant="iris"
                 to={`/chat?model=${encodeURIComponent(d.name)}`}
-                icon={<ChatIcon />}
-              />
+              >
+                <ChatIcon />
+                Chat
+              </ButtonLink>
             )}
             <LifecycleActions
               state={d.state}
@@ -487,106 +504,55 @@ function LifecycleActions({
   return (
     <div className="flex items-center gap-2">
       {canStart && (
-        <ActionButton
-          label={t("services.actions.start")}
-          variant="primary"
+        <Button
+          variant="green"
           onClick={() => onAction("start")}
           disabled={pending}
-          icon={<PlayIcon />}
-        />
+        >
+          <PlayIcon />
+          {t("services.actions.start")}
+        </Button>
       )}
       {canStop && (
         <>
-          <ActionButton
-            label={t("services.actions.stop")}
-            variant="danger"
+          <Button
+            variant="red"
             onClick={() => onAction("stop")}
             disabled={pending}
-            icon={<StopIcon />}
-          />
-          <ActionButton
-            label={t("services.actions.restart")}
-            variant="secondary"
+          >
+            <StopIcon />
+            {t("services.actions.stop")}
+          </Button>
+          <Button
+            variant="cyan"
             onClick={() => onAction("restart")}
             disabled={pending}
-            icon={<RestartIcon />}
-          />
+          >
+            <RestartIcon />
+            {t("services.actions.restart")}
+          </Button>
         </>
       )}
       {isDisabled ? (
-        <ActionButton
-          label={t("services.actions.enable")}
-          variant="secondary"
+        <Button
+          variant="orange"
           onClick={() => onAction("enable")}
           disabled={pending}
-          icon={<PowerIcon />}
-        />
+        >
+          <PowerIcon />
+          {t("services.actions.enable")}
+        </Button>
       ) : (
-        <ActionButton
-          label={t("services.actions.disable")}
-          variant="ghost"
+        <Button
+          variant="magenta"
           onClick={() => onAction("disable")}
           disabled={pending}
-          icon={<DisableIcon />}
-        />
+        >
+          <DisableIcon />
+          {t("services.actions.disable")}
+        </Button>
       )}
     </div>
-  );
-}
-
-type ActionVariant = "primary" | "secondary" | "ghost" | "danger";
-
-const ACTION_VARIANT: Record<ActionVariant, string> = {
-  primary: "bg-accent text-[var(--color-base)] hover:bg-accent/90",
-  secondary: "bg-elevated text-primary hover:bg-border-strong",
-  ghost: "text-tertiary hover:bg-elevated hover:text-secondary",
-  danger: "bg-danger text-white hover:bg-danger/90",
-};
-
-function ActionButton({
-  label,
-  variant,
-  onClick,
-  disabled,
-  icon,
-}: {
-  label: string;
-  variant: ActionVariant;
-  onClick: () => void;
-  disabled: boolean;
-  icon: React.ReactNode;
-}) {
-  return (
-    <button
-      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 ${ACTION_VARIANT[variant]}`}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
-
-function ActionLink({
-  label,
-  variant,
-  to,
-  icon,
-}: {
-  label: string;
-  variant: ActionVariant;
-  to: string;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <Link
-      to={to}
-      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${ACTION_VARIANT[variant]}`}
-    >
-      {icon}
-      {label}
-    </Link>
   );
 }
 
@@ -608,6 +574,25 @@ function ChatIcon() {
 }
 
 /* --- Icons --- */
+
+function ExternalLinkIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </svg>
+  );
+}
 
 function PlayIcon() {
   return (
