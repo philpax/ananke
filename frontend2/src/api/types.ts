@@ -413,7 +413,7 @@ export interface components {
     DevicePlacement: {
       /**
        * Format: int64
-       * @description VRAM bytes this service reserves on the device — the pledge floor for a
+       * @description Memory bytes this service reserves on the device — the pledge floor for a
        *     dynamic service.
        */
       bytes: number;
@@ -428,13 +428,13 @@ export interface components {
       max_bytes: number;
       /**
        * Format: int64
-       * @description Total VRAM capacity of the device, in bytes. Zero if unknown.
+       * @description Total memory capacity of the device, in bytes. Zero if unknown.
        */
       total_bytes: number;
       /**
        * Format: int64
-       * @description VRAM bytes already in use on the device by everything except this
-       *     service (for a running service, its own resident VRAM is excluded so
+       * @description Memory bytes already in use on the device by everything except this
+       *     service (for a running service, its own resident memory is excluded so
        *     `used_by_others_bytes + bytes` doesn't double-count it).
        */
       used_by_others_bytes: number;
@@ -451,7 +451,7 @@ export interface components {
       /** @description Service holding the reservation. */
       service: string;
     };
-    /** @description One device VRAM/RAM sample. */
+    /** @description One device memory sample. */
     DeviceSampleResponse: {
       /** @description Device id (`"gpu:0"`, `"cpu"`, etc.). */
       device: string;
@@ -673,6 +673,18 @@ export interface components {
        */
       error_count: number;
       /**
+       * Format: double
+       * @description Input tokens per second during prompt processing: prompt tokens
+       *     divided by total TTFT. `None` if no timed requests in the bucket.
+       */
+      input_tps?: number | null;
+      /**
+       * Format: double
+       * @description Output tokens per second during decode: completion tokens divided by
+       *     total decode time. `None` if no timed requests in the bucket.
+       */
+      output_tps?: number | null;
+      /**
        * Format: int64
        * @description Total prompt tokens across all requests in the bucket.
        */
@@ -687,18 +699,6 @@ export interface components {
        *     deleted from the database but metric rows remain.
        */
       service?: string | null;
-      /**
-       * Format: double
-       * @description Input tokens per second during prompt processing: prompt tokens
-       *     divided by total TTFT. `None` if no timed requests in the bucket.
-       */
-      input_tps?: number | null;
-      /**
-       * Format: double
-       * @description Output tokens per second during decode: completion tokens divided by
-       *     total decode time. `None` if no timed requests in the bucket.
-       */
-      output_tps?: number | null;
     };
     /** @description `GET /api/metrics` response body. */
     MetricsResponse: {
@@ -923,13 +923,13 @@ export interface components {
       submitted_at_ms: number;
     };
     /**
-     * @description Where a service's VRAM would land per device under current conditions, and
+     * @description Where a service's memory would land per device under current conditions, and
      *     whether it fits without the daemon having to evict or reclaim. Computed by
      *     running the placement engine against the live snapshot and pledge book.
      */
     PlacementPreview: {
       /**
-       * @description Per-device VRAM the service would occupy, sorted by device. Keys are
+       * @description Per-device memory the service would occupy, sorted by device. Keys are
        *     slot strings (`"cpu"`, `"gpu:0"`, …); values are bytes.
        */
       devices: components["schemas"]["DevicePlacement"][];
@@ -983,7 +983,7 @@ export interface components {
       name: string;
       /**
        * Format: int64
-       * @description Observed VRAM peak across the service's lifetime.
+       * @description Observed memory peak (VRAM + RSS) across the service's lifetime.
        */
       observed_peak_bytes: number;
       /**
@@ -1044,6 +1044,7 @@ export interface components {
       ananke_metadata?: Record<string, never>;
       /** @description Placeholder for elastic-borrower tracking (future work). */
       elastic_borrower?: string | null;
+      fit_verdict?: null | components["schemas"]["FitVerdict"];
       /**
        * @description `true` when the service's `[[service.llama_cpp]]` config has a
        *     `mmproj` entry — the standard signal that it supports vision /

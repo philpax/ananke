@@ -47,6 +47,22 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             .as_ref()
             .map(|p| p.state.name().to_string())
             .unwrap_or_else(|| "unknown".into());
+        let running = peek.as_ref().and_then(|p| p.pid).is_some();
+
+        // Compute the fit verdict so the frontend can flag services
+        // that can't start under current device conditions. Running
+        // services short-circuit to `Fits` via the live pledge; the
+        // estimate cache is usually warm after the first detail view
+        // or service start.
+        let entry = model_estimate_entry(&state, svc_cfg);
+        let fit_verdict = placement_preview(
+            &state,
+            svc_cfg,
+            entry.as_ref().map(|e| &e.estimate_full),
+            running,
+        )
+        .map(|p| p.verdict);
+
         services.push(ServiceSummary {
             name: svc_cfg.name.to_string(),
             state: state_name,
@@ -63,6 +79,7 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             has_mmproj: svc_cfg.llama_cpp().map(|lc| lc.mmproj.is_some()),
             modality: svc_cfg.modality,
             ananke_metadata: svc_cfg.metadata.clone(),
+            fit_verdict,
         });
     }
     // Extract the port from the OpenAI bind address (e.g. "127.0.0.1:7070").

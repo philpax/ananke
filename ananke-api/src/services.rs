@@ -85,6 +85,12 @@ pub struct ServiceSummary {
     #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
     #[schema(value_type = Object)]
     pub ananke_metadata: AnankeMetadata,
+    /// Whether the service's estimated placement fits under current
+    /// device conditions. `None` when the verdict can't be computed
+    /// (e.g. a llama-cpp service whose GGUF hasn't been read yet).
+    /// Running services are always `Fits`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_verdict: Option<FitVerdict>,
 }
 
 /// `GET /api/services/{name}` response body.

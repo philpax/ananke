@@ -33,6 +33,7 @@ fn service_summary_roundtrips() {
         has_mmproj: Some(true),
         modality: ananke_api::Modality::Chat,
         ananke_metadata,
+        fit_verdict: None,
     };
     assert_eq!(v.clone(), roundtrip(v));
 }

@@ -326,7 +326,12 @@ function ServiceRow({
         className="flex flex-1 items-center gap-3 overflow-hidden"
       >
         <StatusDot state={svc.state} />
-        <span className="font-mono text-sm text-primary">{svc.name}</span>
+        <span
+          className={`font-mono text-sm ${fitVerdictColor(svc.fit_verdict)}`}
+          title={fitVerdictTitle(svc.fit_verdict)}
+        >
+          {svc.name}
+        </span>
         {svc.has_mmproj && <Badge variant="vision">vision</Badge>}
         {svc.modality === "embedding" && (
           <Badge variant="embedding">embedding</Badge>
@@ -533,4 +538,28 @@ function stateRank(state: string): number {
   if (state === "failed") return 6;
   if (state.startsWith("disabled")) return 7;
   return 8;
+}
+
+function fitVerdictColor(verdict: string | null | undefined): string {
+  switch (verdict) {
+    case "does_not_fit":
+      return "text-danger";
+    case "needs_eviction":
+      return "text-warning";
+    default:
+      return "text-primary";
+  }
+}
+
+function fitVerdictTitle(
+  verdict: string | null | undefined,
+): string | undefined {
+  switch (verdict) {
+    case "does_not_fit":
+      return "does not fit under current conditions";
+    case "needs_eviction":
+      return "needs eviction to start";
+    default:
+      return undefined;
+  }
 }
