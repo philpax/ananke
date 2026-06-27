@@ -12,6 +12,7 @@
     "gen-types": "cargo run --quiet --manifest-path ../Cargo.toml --example dump-openapi | openapi-typescript /dev/stdin -o src/api/types.ts && prettier --write src/api/types.ts"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.4",
     "@codemirror/language": "^6.11.0",
     "@codemirror/legacy-modes": "^6.5.3",
     "@codemirror/state": "^6.5.2",

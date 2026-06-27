@@ -11,6 +11,8 @@ import { ServiceDetailView } from "./components/services/ServiceDetailView.tsx";
 import { EventsView } from "./components/events/EventsView.tsx";
 import { ChatView } from "./components/chat/ChatView.tsx";
 import { MetricsView } from "./components/metrics/MetricsView.tsx";
+import { ConfigEditorView } from "./components/config/ConfigEditorView.tsx";
+import { OneshotsView } from "./components/oneshots/OneshotsView.tsx";
 
 function Placeholder({ title }: { title: string }) {
   return (
@@ -60,8 +62,8 @@ export default function App() {
           <Route path="/" element={<DashboardView />} />
           <Route path="/services/:name" element={<ServiceDetailView />} />
           <Route path="/chat" element={<ChatView />} />
-          <Route path="/oneshots" element={<Placeholder title="Oneshots" />} />
-          <Route path="/config" element={<Placeholder title="Config" />} />
+          <Route path="/oneshots" element={<OneshotsView />} />
+          <Route path="/config" element={<ConfigEditorView />} />
           <Route path="/events" element={<EventsView />} />
           <Route path="/metrics" element={<MetricsView />} />
           <Route path="*" element={<Placeholder title="Not found" />} />

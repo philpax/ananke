@@ -24,12 +24,17 @@ export type StopResponse = Schemas["StopResponse"];
 export type EnableResponse = Schemas["EnableResponse"];
 export type DisableResponse = Schemas["DisableResponse"];
 export type ConfigResponse = Schemas["ConfigResponse"];
+export type ConfigValidateResponse = Schemas["ConfigValidateResponse"];
+export type ValidationError = Schemas["ValidationError"];
 export type ApiError = Schemas["ApiError"];
 export type MetricsResponse = Schemas["MetricsResponse"];
 export type MetricBucketResponse = Schemas["MetricBucketResponse"];
 export type DeviceSamplesResponse = Schemas["DeviceSamplesResponse"];
 export type DeviceSampleResponse = Schemas["DeviceSampleResponse"];
 export type DaemonInfoResponse = Schemas["DaemonInfoResponse"];
+export type OneshotRequest = Schemas["OneshotRequest"];
+export type OneshotResponse = Schemas["OneshotResponse"];
+export type OneshotStatus = Schemas["OneshotStatus"];
 
 export type LogsQuery = {
   since?: number;
@@ -67,25 +72,6 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return (await resp.json()) as T;
 }
 
-async function putJson<T>(
-  path: string,
-  body: unknown,
-  headers?: Record<string, string>,
-): Promise<T> {
-  const resp = await fetch(path, {
-    method: "PUT",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      ...headers,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok && resp.status !== 202)
-    throw new Error(await errorMessage(resp));
-  return (await resp.json()) as T;
-}
-
 async function errorMessage(resp: Response): Promise<string> {
   const fallback = `${resp.status} ${resp.statusText}`;
   try {
@@ -100,6 +86,37 @@ async function errorMessage(resp: Response): Promise<string> {
   } catch {
     return fallback;
   }
+}
+
+export type ConfigSaveResult =
+  | { kind: "ok" }
+  | { kind: "hash_mismatch"; serverHash: string }
+  | { kind: "validation_errors"; errors: ValidationError[] }
+  | { kind: "error"; message: string };
+
+async function putConfigRaw(
+  toml: string,
+  hash: string,
+): Promise<ConfigSaveResult> {
+  const resp = await fetch("/api/config", {
+    method: "PUT",
+    headers: {
+      "content-type": "text/plain",
+      "if-match": `"${hash}"`,
+    },
+    body: toml,
+  });
+  if (resp.status === 202) return { kind: "ok" };
+  if (resp.status === 412) {
+    const etag = resp.headers.get("etag");
+    const serverHash = etag ? etag.replace(/"/g, "") : "";
+    return { kind: "hash_mismatch", serverHash };
+  }
+  if (resp.status === 422) {
+    const body = (await resp.json()) as ConfigValidateResponse;
+    return { kind: "validation_errors", errors: body.errors };
+  }
+  return { kind: "error", message: await errorMessage(resp) };
 }
 
 export const api = {
@@ -132,12 +149,9 @@ export const api = {
     return `${proto}//${window.location.host}/api/services/${encodeURIComponent(name)}/logs/stream`;
   },
   getConfig: () => getJson<ConfigResponse>("/api/config"),
-  validateConfig: (toml: string) =>
-    postJson<{ valid: boolean; errors?: string[] }>("/api/config/validate", {
-      toml,
-    }),
-  putConfig: (toml: string, hash: string) =>
-    putJson<ConfigResponse>("/api/config", { toml }, { "if-match": hash }),
+  validateConfig: (content: string) =>
+    postJson<ConfigValidateResponse>("/api/config/validate", { content }),
+  putConfig: (toml: string, hash: string) => putConfigRaw(toml, hash),
   getMetrics: (query: MetricsQuery = {}) => {
     const params = new URLSearchParams();
     if (query.service !== undefined) params.set("service", query.service);
@@ -159,6 +173,22 @@ export const api = {
   },
   getPrometheusMetrics: () => fetch("/metrics").then((r) => r.text()),
   getInfo: () => getJson<DaemonInfoResponse>("/api/info"),
+  listOneshots: () =>
+    getJson<
+      paths["/api/oneshot"]["get"]["responses"]["200"]["content"]["application/json"]
+    >("/api/oneshot"),
+  createOneshot: (req: OneshotRequest) =>
+    postJson<OneshotResponse>("/api/oneshot", req),
+  getOneshot: (id: string) =>
+    getJson<OneshotStatus>(`/api/oneshot/${encodeURIComponent(id)}`),
+  deleteOneshot: async (id: string): Promise<void> => {
+    const resp = await fetch(`/api/oneshot/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    if (!resp.ok && resp.status !== 204) {
+      throw new Error(await errorMessage(resp));
+    }
+  },
   start: (name: string) =>
     postJson<StartResponse>(`/api/services/${encodeURIComponent(name)}/start`),
   stop: (name: string) =>
