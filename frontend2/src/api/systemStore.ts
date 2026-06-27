@@ -55,7 +55,7 @@ function subscribe(l: () => void): () => void {
   };
 }
 
-function getSnapshot(): SystemSnapshot {
+export function getSnapshot(): SystemSnapshot {
   return snapshot;
 }
 

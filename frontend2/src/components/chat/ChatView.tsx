@@ -1,6 +1,10 @@
 // Chat interface — a web equivalent of `anankectl chat`. The operator
 // picks a model, enters a system prompt, and chats with streaming
 // responses, token stats, and file attachments.
+//
+// Chat state (messages, system prompt, input, attachments, streaming
+// state) lives in the module-level chatStore so it survives navigation
+// away and back within the same tab session.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -9,8 +13,21 @@ import remarkGfm from "remark-gfm";
 import DOMPurify from "dompurify";
 
 import { useServices, useInfo } from "../../api/hooks.ts";
-import { api, type ServiceSummary } from "../../api/client.ts";
+import { type ServiceSummary } from "../../api/client.ts";
 import { openaiBaseUrlFromListen } from "../../util.ts";
+import {
+  addAttachment,
+  cancel as cancelSend,
+  clearConversation,
+  removeAttachment,
+  saveSystemPrompt,
+  selectModel,
+  send,
+  setInput,
+  useChat,
+  type Message,
+  type StreamStats,
+} from "../../api/chatStore.ts";
 import { Spinner } from "../ui/Spinner.tsx";
 import { Button } from "../ui/Button.tsx";
 import { ButtonLink } from "../ui/ButtonLink.tsx";
@@ -18,38 +35,11 @@ import { Badge } from "../ui/Badge.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
 
-type Message = {
-  role: "system" | "user" | "assistant";
-  content: string;
-  reasoning?: string;
-  images?: string[];
-  stats?: StreamStats;
-};
-
-type ChatState =
-  | { kind: "idle" }
-  | { kind: "starting" }
-  | { kind: "streaming"; controller: AbortController }
-  | { kind: "error"; message: string };
-
-type StreamStats = {
-  ttftMs: number | null;
-  promptTokens: number | null;
-  completionTokens: number | null;
-  predictedPerSecond: number | null;
-};
-
-type Attachment = {
-  name: string;
-  size: number;
-  type: "text" | "image";
-  content: string;
-};
-
 export function ChatView() {
   const services = useServices();
   const info = useInfo();
   const [searchParams, setSearchParams] = useSearchParams();
+  const chat = useChat();
 
   const chatModels = (services.data ?? [])
     .filter(
@@ -63,54 +53,22 @@ export function ChatView() {
       return a.name.localeCompare(b.name);
     });
   const paramModel = searchParams.get("model");
-  const selectedModel = paramModel ?? null;
 
-  function selectModel(name: string) {
-    try {
-      const saved = localStorage.getItem(`ananke-chat-sys-${name}`);
-      setSystemPrompt(saved ?? "");
-    } catch {
-      // localStorage unavailable.
-    }
-    setMessages([]);
-    setStats({
-      ttftMs: null,
-      promptTokens: null,
-      completionTokens: null,
-      predictedPerSecond: null,
-    });
-    setChatState({ kind: "idle" });
-    setSearchParams({ model: name });
+  // Sync URL → store, but only when the URL explicitly specifies a
+  // model. The store is the source of truth for session persistence;
+  // navigating to /chat without ?model= should not wipe the session.
+  if (paramModel && paramModel !== chat.currentModel) {
+    selectModel(paramModel);
   }
 
-  const [systemPrompt, setSystemPrompt] = useState(() => {
-    if (paramModel) {
-      try {
-        return localStorage.getItem(`ananke-chat-sys-${paramModel}`) ?? "";
-      } catch {
-        // localStorage unavailable.
-      }
-    }
-    return "";
-  });
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [chatState, setChatState] = useState<ChatState>({ kind: "idle" });
-  const [stats, setStats] = useState<StreamStats>({
-    ttftMs: null,
-    promptTokens: null,
-    completionTokens: null,
-    predictedPerSecond: null,
-  });
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // The store's currentModel is the effective selection — it survives
+  // navigation away and back even when the URL lacks ?model=.
+  const selectedModel = chat.currentModel;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const autoScrollRef = useRef(true);
 
-  // Track whether the user is scrolled to the bottom. When they scroll
-  // up, stop auto-scrolling; when they scroll back to the bottom,
-  // resume.
   function onScroll() {
     const el = scrollRef.current;
     if (!el) return;
@@ -118,22 +76,11 @@ export function ChatView() {
     autoScrollRef.current = atBottom;
   }
 
-  function saveSystemPrompt(value: string) {
-    setSystemPrompt(value);
-    if (selectedModel) {
-      try {
-        localStorage.setItem(`ananke-chat-sys-${selectedModel}`, value);
-      } catch {
-        // Best-effort.
-      }
-    }
-  }
-
   useEffect(() => {
     if (scrollRef.current && autoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [chat.messages]);
 
   useLayoutEffect(() => {
     const el = inputRef.current;
@@ -142,275 +89,23 @@ export function ChatView() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   });
 
-  async function send() {
-    if (!selectedModel || !input.trim() || chatState.kind === "streaming")
-      return;
-
-    const userContent = input.trim();
-
-    // Check if the model is running; start it if not.
-    const svc = (services.data ?? []).find((s) => s.name === selectedModel);
-    const needsStart = svc != null && svc.state !== "running";
-    if (needsStart) {
-      setChatState({ kind: "starting" });
-      try {
-        await api.start(selectedModel);
-        const deadline = Date.now() + 3 * 60 * 1000;
-        while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 2000));
-          const resp = await api.listServices();
-          const s = resp.services.find((x) => x.name === selectedModel);
-          if (s?.state === "running") break;
-          if (s?.state === "failed") {
-            setChatState({
-              kind: "error",
-              message: `service ${selectedModel} failed to start`,
-            });
-            return;
-          }
-        }
-      } catch (e) {
-        setChatState({
-          kind: "error",
-          message: `failed to start ${selectedModel}: ${e instanceof Error ? e.message : String(e)}`,
-        });
-        return;
-      }
-    }
-
-    const imageAttachments = attachments.filter((a) => a.type === "image");
-    const textAttachments = attachments.filter((a) => a.type === "text");
-
-    let fullContent = userContent;
-    for (const att of textAttachments) {
-      fullContent += `\n\n${att.name}:\n${att.content}`;
-    }
-
-    const displayImages = imageAttachments.map((a) => a.content);
-
-    setMessages([
-      ...messages,
-      {
-        role: "user",
-        content: userContent,
-        images: displayImages.length > 0 ? displayImages : undefined,
-      },
-    ]);
-    setAttachments([]);
-    // For hot models the message is already visible as a bubble, so
-    // clear the textarea immediately. Cold models keep the text until
-    // the model starts responding (cleared on first token).
-    if (!needsStart) {
-      setInput("");
-    }
-    setStats({
-      ttftMs: null,
-      promptTokens: null,
-      completionTokens: null,
-      predictedPerSecond: null,
-    });
-
-    const controller = new AbortController();
-    setChatState({ kind: "streaming", controller });
-
-    const startTime = performance.now();
-    let firstTokenTime: number | null = null;
-    const finalStats: StreamStats = {
-      ttftMs: null,
-      promptTokens: null,
-      completionTokens: null,
-      predictedPerSecond: null,
-    };
-
-    function attachStats() {
-      setMessages((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last?.role === "assistant") {
-          next[next.length - 1] = { ...last, stats: { ...finalStats } };
-        }
-        return next;
-      });
-    }
-
-    type ApiContentPart =
-      | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string } };
-
-    type ApiMessage = {
-      role: string;
-      content: string | ApiContentPart[];
-    };
-
-    const apiMessages: ApiMessage[] = [];
-    if (systemPrompt.trim()) {
-      apiMessages.push({ role: "system", content: systemPrompt.trim() });
-    }
-    for (const m of messages) {
-      apiMessages.push({ role: m.role, content: m.content });
-    }
-    if (imageAttachments.length > 0) {
-      const parts: ApiContentPart[] = [{ type: "text", text: fullContent }];
-      for (const img of imageAttachments) {
-        parts.push({ type: "image_url", image_url: { url: img.content } });
-      }
-      apiMessages.push({ role: "user", content: parts });
-    } else {
-      apiMessages.push({ role: "user", content: fullContent });
-    }
-
-    try {
-      const resp = await fetch(
-        `${openaiBaseUrlFromListen(info.data?.openai_listen ?? "0.0.0.0:7070")}/v1/chat/completions`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            model: selectedModel,
-            messages: apiMessages,
-            stream: true,
-            stream_options: { include_usage: true },
-          }),
-        },
-      );
-
-      if (!resp.ok) {
-        const text = await resp.text();
-        setInput("");
-        setChatState({
-          kind: "error",
-          message: `${resp.status} ${resp.statusText}: ${text}`,
-        });
-        return;
-      }
-
-      const reader = resp.body?.getReader();
-      if (!reader) return;
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          const data = trimmed.slice(6);
-          if (data === "[DONE]") continue;
-
-          try {
-            const chunk = JSON.parse(data) as {
-              choices?: Array<{
-                delta?: {
-                  content?: string;
-                  reasoning_content?: string;
-                };
-              }>;
-              usage?: {
-                prompt_tokens?: number;
-                completion_tokens?: number;
-              };
-            };
-
-            const delta = chunk.choices?.[0]?.delta;
-            const contentDelta = delta?.content;
-            const reasoningDelta = delta?.reasoning_content;
-
-            if (contentDelta || reasoningDelta) {
-              if (firstTokenTime === null) {
-                firstTokenTime = performance.now();
-                finalStats.ttftMs = firstTokenTime! - startTime;
-                setStats({ ...finalStats });
-                // Clear the textbox now that the model is responding.
-                setInput("");
-              }
-              setMessages((prev) => {
-                const next = [...prev];
-                const last = next[next.length - 1];
-                if (last?.role === "assistant") {
-                  next[next.length - 1] = {
-                    ...last,
-                    content: contentDelta
-                      ? last.content + contentDelta
-                      : last.content,
-                    reasoning: reasoningDelta
-                      ? (last.reasoning ?? "") + reasoningDelta
-                      : last.reasoning,
-                  };
-                } else {
-                  next.push({
-                    role: "assistant",
-                    content: contentDelta ?? "",
-                    reasoning: reasoningDelta || undefined,
-                  });
-                }
-                return next;
-              });
-            }
-
-            if (chunk.usage) {
-              const elapsed = (performance.now() - startTime) / 1000;
-              const completionTokens = chunk.usage.completion_tokens ?? 0;
-              finalStats.promptTokens = chunk.usage?.prompt_tokens ?? null;
-              finalStats.completionTokens = completionTokens;
-              finalStats.predictedPerSecond =
-                elapsed > 0 ? completionTokens / elapsed : null;
-              setStats({ ...finalStats });
-            }
-          } catch {
-            // Skip unparseable lines.
-          }
-        }
-      }
-      // Clear input in case no tokens arrived (empty response).
-      setInput("");
-      attachStats();
-      setChatState({ kind: "idle" });
-    } catch (e) {
-      setInput("");
-      attachStats();
-      if (e instanceof DOMException && e.name === "AbortError") {
-        setChatState({ kind: "idle" });
-      } else {
-        setChatState({
-          kind: "error",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
+  async function handleSend() {
+    if (!selectedModel) return;
+    const baseUrl = openaiBaseUrlFromListen(
+      info.data?.openai_listen ?? "0.0.0.0:7070",
+    );
+    await send(selectedModel, baseUrl);
   }
 
-  function cancel() {
-    if (chatState.kind === "streaming") {
-      chatState.controller.abort();
-      setChatState({ kind: "idle" });
-    }
-  }
-
-  function clearConversation() {
-    setMessages([]);
-    setStats({
-      ttftMs: null,
-      promptTokens: null,
-      completionTokens: null,
-      predictedPerSecond: null,
-    });
-    setChatState({ kind: "idle" });
+  function handleSelectModel(name: string) {
+    setSearchParams({ model: name });
   }
 
   async function handleFiles(files: FileList) {
-    const selected = selectedModel
+    const svc = selectedModel
       ? (services.data ?? []).find((s) => s.name === selectedModel)
       : null;
-    const hasVision = selected?.has_mmproj ?? false;
+    const hasVision = svc?.has_mmproj ?? false;
 
     for (const file of Array.from(files)) {
       if (file.type.startsWith("image/")) {
@@ -419,15 +114,12 @@ export function ChatView() {
         reader.onload = () => {
           const result = reader.result;
           if (typeof result === "string") {
-            setAttachments((prev) => [
-              ...prev,
-              {
-                name: file.name,
-                size: file.size,
-                type: "image",
-                content: result,
-              },
-            ]);
+            addAttachment({
+              name: file.name,
+              size: file.size,
+              type: "image",
+              content: result,
+            });
           }
         };
         reader.readAsDataURL(file);
@@ -436,15 +128,12 @@ export function ChatView() {
         reader.onload = () => {
           const result = reader.result;
           if (typeof result === "string") {
-            setAttachments((prev) => [
-              ...prev,
-              {
-                name: file.name,
-                size: file.size,
-                type: "text",
-                content: result,
-              },
-            ]);
+            addAttachment({
+              name: file.name,
+              size: file.size,
+              type: "text",
+              content: result,
+            });
           }
         };
         reader.readAsText(file);
@@ -460,7 +149,7 @@ export function ChatView() {
     );
   }
 
-  const inputDisabled = !selectedModel || chatState.kind === "starting";
+  const inputDisabled = !selectedModel || chat.chatState.kind === "starting";
 
   return (
     <div className="flex h-full flex-col">
@@ -477,10 +166,10 @@ export function ChatView() {
         onScroll={onScroll}
         className="flex-1 overflow-auto px-4 py-4"
       >
-        {messages.length === 0 ? (
+        {chat.messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-tertiary">
             <span>Send a message to start chatting.</span>
-            {chatState.kind === "starting" && (
+            {chat.chatState.kind === "starting" && (
               <span className="flex items-center gap-2">
                 <Spinner />
                 Starting {selectedModel}…
@@ -488,30 +177,30 @@ export function ChatView() {
             )}
           </div>
         ) : (
-          messages.map((msg, i) => (
+          chat.messages.map((msg, i) => (
             <MessageBubble
               key={i}
               message={msg}
               modelName={selectedModel}
               liveStats={
-                chatState.kind === "streaming" &&
-                i === messages.length - 1 &&
+                chat.chatState.kind === "streaming" &&
+                i === chat.messages.length - 1 &&
                 msg.role === "assistant"
-                  ? stats
+                  ? chat.stats
                   : null
               }
             />
           ))
         )}
-        {messages.length > 0 && chatState.kind === "starting" && (
+        {chat.messages.length > 0 && chat.chatState.kind === "starting" && (
           <div className="flex items-center gap-2 py-2 text-sm text-tertiary">
             <Spinner />
             Starting {selectedModel}…
           </div>
         )}
-        {chatState.kind === "error" && (
+        {chat.chatState.kind === "error" && (
           <div className="mt-2 rounded-sm border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {chatState.message}
+            {chat.chatState.message}
           </div>
         )}
       </div>
@@ -523,7 +212,7 @@ export function ChatView() {
             System prompt
           </summary>
           <textarea
-            value={systemPrompt}
+            value={chat.systemPrompt}
             onChange={(e) => saveSystemPrompt(e.target.value)}
             placeholder="You are a helpful assistant…"
             className="mt-1 h-20 w-full resize-none rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
@@ -532,9 +221,9 @@ export function ChatView() {
       )}
 
       {/* Attachments preview */}
-      {attachments.length > 0 && (
+      {chat.attachments.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
-          {attachments.map((att, i) => (
+          {chat.attachments.map((att, i) => (
             <div
               key={i}
               className="flex items-center gap-1 rounded-sm bg-elevated px-2 py-0.5 text-xs text-secondary"
@@ -548,9 +237,7 @@ export function ChatView() {
               )}
               <span>{att.name}</span>
               <button
-                onClick={() =>
-                  setAttachments((prev) => prev.filter((_, j) => j !== i))
-                }
+                onClick={() => removeAttachment(i)}
                 className="text-tertiary hover:text-danger"
               >
                 ×
@@ -567,7 +254,7 @@ export function ChatView() {
           <ModelDropdown
             models={chatModels}
             selected={selectedModel}
-            onSelect={selectModel}
+            onSelect={handleSelectModel}
             className="min-w-0 flex-1"
           />
           {selectedModel && (
@@ -600,17 +287,17 @@ export function ChatView() {
         <div className="flex items-stretch gap-2">
           <textarea
             ref={inputRef}
-            value={input}
+            value={chat.input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void send();
+                void handleSend();
               }
             }}
             placeholder={
               selectedModel
-                ? chatState.kind === "starting"
+                ? chat.chatState.kind === "starting"
                   ? "Starting model…"
                   : "Type a message… (Enter to send, Shift+Enter for newline)"
                 : "Select a model first"
@@ -631,18 +318,19 @@ export function ChatView() {
             />
             +
           </label>
-          {chatState.kind === "streaming" || chatState.kind === "starting" ? (
+          {chat.chatState.kind === "streaming" ||
+          chat.chatState.kind === "starting" ? (
             <button
-              onClick={cancel}
-              disabled={chatState.kind === "starting"}
+              onClick={cancelSend}
+              disabled={chat.chatState.kind === "starting"}
               className="shrink-0 rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
             >
               Stop
             </button>
           ) : (
             <button
-              onClick={send}
-              disabled={!selectedModel || !input.trim()}
+              onClick={handleSend}
+              disabled={!selectedModel || !chat.input.trim()}
               className="shrink-0 rounded-md bg-accent px-3 text-sm font-medium text-[var(--color-base)] hover:bg-accent/90 disabled:opacity-40"
             >
               Send
@@ -794,6 +482,9 @@ function MessageBubble({
     <div className={`mb-4 ${isSystem ? "opacity-60" : ""}`}>
       <div className="mb-1 flex items-center gap-3">
         <span className="eyebrow">{label}</span>
+        <span className="font-mono text-xs text-tertiary">
+          {message.timestamp}
+        </span>
         {isAssistant && displayStats && displayStats.promptTokens !== null && (
           <span className="flex items-center gap-3 text-xs text-tertiary">
             <span>prompt {displayStats.promptTokens} tokens</span>
