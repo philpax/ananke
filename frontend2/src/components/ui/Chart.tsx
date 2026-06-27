@@ -4,9 +4,11 @@
 // below the chart as a two-row grid: series labels on top, values on
 // hover.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+
+import { zeroFillGaps } from "../../util.ts";
 
 function readVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -19,13 +21,20 @@ function readVar(name: string, fallback: string): string {
 export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
-  const dataRef = useRef(data);
-  useEffect(() => {
-    dataRef.current = data;
-  }, [data]);
-  const seriesKey = JSON.stringify(series);
   const hasBounds = xMin != null && xMax != null;
   const boundsKey = hasBounds ? `${xMin}-${xMax}` : "none";
+
+  const filled = useMemo(
+    () => (hasBounds ? zeroFillGaps(data, xMin!, xMax!) : data),
+    [data, hasBounds, xMin, xMax],
+  );
+
+  const dataRef = useRef(filled);
+  useEffect(() => {
+    dataRef.current = filled;
+  }, [filled]);
+
+  const seriesKey = JSON.stringify(series);
 
   const [hoverValues, setHoverValues] = useState<(string | null)[]>(
     series.map(() => null),
@@ -58,7 +67,11 @@ export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
           auto: !hasBounds,
           ...(hasBounds ? { min: xMin!, max: xMax! } : {}),
         },
-        y: { auto: true },
+        y: {
+          auto: true,
+          range: (_u, min, max) =>
+            min === max ? [min - 1, max + 1] : [min, max],
+        },
       },
       axes: [
         {
@@ -116,7 +129,7 @@ export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
       },
     };
 
-    const plot = new uPlot(opts, data as uPlot.AlignedData, el);
+    const plot = new uPlot(opts, filled as uPlot.AlignedData, el);
     plotRef.current = plot;
 
     return () => {
@@ -127,12 +140,12 @@ export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
   }, [seriesKey, height, boundsKey]);
 
   useEffect(() => {
-    plotRef.current?.setData(data as uPlot.AlignedData);
+    plotRef.current?.setData(filled as uPlot.AlignedData);
     if (hasBounds) {
       plotRef.current?.setScale("x", { min: xMin!, max: xMax! });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, boundsKey]);
+  }, [filled, boundsKey]);
 
   useEffect(() => {
     const el = containerRef.current;

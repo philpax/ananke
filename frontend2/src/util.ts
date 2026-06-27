@@ -64,3 +64,83 @@ export function openaiBaseUrlFromListen(listen: string | undefined): string {
   const port = parts[parts.length - 1];
   return `http://${window.location.hostname}:${port}`;
 }
+
+// Preprocess time-series data so the line drops to 0 during gaps in
+// activity. When consecutive datapoints are more than `gapSec` apart,
+// inserts a zero just after the earlier point and another just before
+// the later one, creating a sharp drop and rise instead of a long
+// interpolation. Also pads the chart edges: if the first or last point
+// is far from xMin / xMax, inserts zero-points at the boundary so the
+// line starts and ends at 0.
+//
+// This naturally handles three edge cases without special-casing:
+//   - No data: returns a flat 0 line across [xMin, xMax].
+//   - One datapoint: returns 0 → value → 0 (a visible spike).
+//   - Multiple clusters: each cluster gets sharp 0 edges.
+//
+// The epsilon (`epsSec`) is a small time delta so the drop/rise reads
+// as a near-vertical edge rather than a gradual slope. All value
+// series share the same timestamps; existing nulls are preserved.
+export function zeroFillGaps(
+  data: (number | null)[][],
+  xMin: number,
+  xMax: number,
+  gapSec = 900,
+  epsSec = 1,
+): (number | null)[][] {
+  if (data.length === 0) return [[], []];
+
+  const ts = data[0] as number[];
+  const valueSeries = data.slice(1);
+
+  // No timestamps — flat 0 line across the full range.
+  if (ts.length === 0) {
+    const result: (number | null)[][] = [[xMin, xMax]];
+    for (let s = 0; s < valueSeries.length; s++) {
+      result.push([0, 0]);
+    }
+    return result;
+  }
+
+  const outTs: number[] = [];
+  const outVals: (number | null)[][] = valueSeries.map(() => []);
+
+  const pushZero = () => {
+    for (let s = 0; s < outVals.length; s++) outVals[s].push(0);
+  };
+
+  const pushPoint = (i: number) => {
+    for (let s = 0; s < valueSeries.length; s++) {
+      outVals[s].push(valueSeries[s][i] ?? null);
+    }
+  };
+
+  // Leading edge: pad from xMin to just before the first point.
+  if (ts[0]! - xMin > gapSec) {
+    outTs.push(xMin, ts[0]! - epsSec);
+    pushZero();
+    pushZero();
+  }
+
+  for (let i = 0; i < ts.length; i++) {
+    // Gap between consecutive points — drop to 0 and back up.
+    if (i > 0 && ts[i]! - ts[i - 1]! > gapSec) {
+      outTs.push(ts[i - 1]! + epsSec);
+      pushZero();
+      outTs.push(ts[i]! - epsSec);
+      pushZero();
+    }
+    outTs.push(ts[i]!);
+    pushPoint(i);
+  }
+
+  // Trailing edge: pad from just after the last point to xMax.
+  const last = ts[ts.length - 1]!;
+  if (xMax - last > gapSec) {
+    outTs.push(last + epsSec, xMax);
+    pushZero();
+    pushZero();
+  }
+
+  return [outTs, ...outVals];
+}
