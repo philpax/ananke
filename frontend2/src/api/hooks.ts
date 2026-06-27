@@ -1,9 +1,7 @@
-// TanStack Query hooks over the management API. Picks sensible refetch
-// cadences for a dashboard that's expected to be open while a human
-// pokes services on and off — fast enough that state transitions feel
-// instantaneous, slow enough that `/api/services` isn't being hit every
-// frame. The events WebSocket drives invalidation for near-instant
-// updates; polling is a fallback.
+// TanStack Query hooks over the management API. Services and devices
+// are served from the systemStore (event-driven, no polling when the
+// WebSocket is connected). Everything else uses TanStack Query with
+// sensible refetch cadences.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -20,7 +18,6 @@ import {
   type ConfigSaveResult,
   type DaemonInfoResponse,
   type DeviceSampleResponse,
-  type DeviceSummary,
   type DisableResponse,
   type EnableResponse,
   type LaunchCommand,
@@ -32,36 +29,20 @@ import {
   type OneshotResponse,
   type OneshotStatus,
   type ServiceDetail,
-  type ServiceSummary,
-  type ServicesResponse,
   type StartResponse,
   type StopResponse,
   type ValidationError,
 } from "./client.ts";
 import { isEventsConnected } from "./events.ts";
+import { refresh as refreshStore } from "./systemStore.ts";
+
+// Re-export so consumers keep importing from hooks.ts.
+export { useServices, useDevices } from "./systemStore.ts";
 
 const SERVICES_POLL_MS = 5_000;
-const DEVICES_POLL_MS = 5_000;
 const METRICS_STALE_MS = 30_000;
 const LOGS_PAGE_SIZE = 1_000;
 const LOGS_MAX_SEED_PAGES = 5;
-
-export function useServices(): UseQueryResult<ServiceSummary[], Error> {
-  return useQuery({
-    queryKey: ["services"],
-    queryFn: () =>
-      api.listServices().then((resp: ServicesResponse) => resp.services),
-    refetchInterval: () => (isEventsConnected() ? false : SERVICES_POLL_MS),
-  });
-}
-
-export function useDevices(): UseQueryResult<DeviceSummary[], Error> {
-  return useQuery({
-    queryKey: ["devices"],
-    queryFn: api.listDevices,
-    refetchInterval: () => (isEventsConnected() ? false : DEVICES_POLL_MS),
-  });
-}
 
 export function useServiceDetail(
   name: string | null,
@@ -339,8 +320,7 @@ export function useLifecycle(): UseMutationResult<
       }
     },
     onSettled: (_data, _err, vars) => {
-      void qc.invalidateQueries({ queryKey: ["services"] });
-      void qc.invalidateQueries({ queryKey: ["devices"] });
+      void refreshStore();
       void qc.invalidateQueries({ queryKey: ["service-detail", vars.name] });
     },
   });

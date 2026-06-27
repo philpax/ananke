@@ -3,14 +3,23 @@
 // reloads, and estimator drift events.
 //
 // Two exports:
-//   - useEventsConnection(): opens the socket on app mount, drives
-//     TanStack Query invalidation. Called once in App.
+//   - useEventsConnection(): opens the socket on app mount, feeds
+//     events into the systemStore and drives TanStack Query
+//     invalidation for non-store queries (config, service-detail).
+//     Called once in App.
 //   - useEventFeed(): subscribes to the in-memory event buffer for the
 //     events tab. Does not open a second socket.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+
 import { api } from "./client.ts";
+import {
+  handleEvent,
+  refresh as refreshStore,
+  startPolling,
+  stopPolling,
+} from "./systemStore.ts";
 
 export type SystemEvent = {
   type: string;
@@ -69,11 +78,14 @@ export function useEventsConnection(): void {
       socket = new WebSocket(api.eventsStreamUrl());
       socket.onopen = () => {
         eventsConnected = true;
-        void qc.invalidateQueries({ queryKey: ["services"] });
-        void qc.invalidateQueries({ queryKey: ["devices"] });
+        stopPolling();
+        void refreshStore();
+        void qc.invalidateQueries({ queryKey: ["config"] });
+        void qc.invalidateQueries({ queryKey: ["service-detail"] });
       };
       socket.onclose = () => {
         eventsConnected = false;
+        startPolling();
         if (!shouldReconnect) return;
         reconnectTimer = window.setTimeout(connect, 2_000);
       };
@@ -92,13 +104,12 @@ export function useEventsConnection(): void {
           return;
         }
         emit(event);
+        handleEvent(event);
 
-        // Drive query invalidation based on event type.
+        // Invalidate TanStack queries the store doesn't cover.
         switch (event.type) {
           case "state_changed":
           case "allocation_changed":
-            void qc.invalidateQueries({ queryKey: ["services"] });
-            void qc.invalidateQueries({ queryKey: ["devices"] });
             if (event.service) {
               void qc.invalidateQueries({
                 queryKey: ["service-detail", event.service],
@@ -107,8 +118,6 @@ export function useEventsConnection(): void {
             break;
           case "config_reloaded":
             void qc.invalidateQueries({ queryKey: ["config"] });
-            void qc.invalidateQueries({ queryKey: ["services"] });
-            void qc.invalidateQueries({ queryKey: ["devices"] });
             break;
           case "estimator_drift":
             if (event.service) {
