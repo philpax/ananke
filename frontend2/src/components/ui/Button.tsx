@@ -3,27 +3,16 @@
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
-type Size = "sm" | "md";
+import {
+  buttonClassName,
+  type ButtonSize,
+  type ButtonVariant,
+} from "./buttonStyles.ts";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: Variant;
-  size?: Size;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
   children: ReactNode;
-};
-
-// Filled iris is luminous, so primary uses dark ink text for legible
-// contrast rather than white (which falls below 3:1 on the accent).
-const VARIANT_CLASSES: Record<Variant, string> = {
-  primary: "bg-accent text-[var(--color-base)] hover:bg-accent/90",
-  secondary: "bg-elevated text-primary hover:bg-border-strong",
-  ghost: "text-secondary hover:text-primary hover:bg-elevated",
-  danger: "bg-danger text-white hover:bg-danger/90",
-};
-
-const SIZE_CLASSES: Record<Size, string> = {
-  sm: "h-7 px-2 text-xs",
-  md: "h-8 px-3 text-sm",
 };
 
 export function Button({
@@ -34,10 +23,7 @@ export function Button({
   ...props
 }: ButtonProps) {
   return (
-    <button
-      className={`inline-flex items-center gap-1.5 rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
-      {...props}
-    >
+    <button className={buttonClassName(variant, size, className)} {...props}>
       {children}
     </button>
   );
