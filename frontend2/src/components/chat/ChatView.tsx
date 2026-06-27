@@ -57,9 +57,11 @@ export function ChatView() {
   // Sync URL → store, but only when the URL explicitly specifies a
   // model. The store is the source of truth for session persistence;
   // navigating to /chat without ?model= should not wipe the session.
-  if (paramModel && paramModel !== chat.currentModel) {
-    selectModel(paramModel);
-  }
+  useEffect(() => {
+    if (paramModel && paramModel !== chat.currentModel) {
+      selectModel(paramModel);
+    }
+  }, [paramModel, chat.currentModel]);
 
   // The store's currentModel is the effective selection — it survives
   // navigation away and back even when the URL lacks ?model=.
