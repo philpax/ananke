@@ -10,7 +10,7 @@
 //   - useEventFeed(): subscribes to the in-memory event buffer for the
 //     events tab. Does not open a second socket.
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client.ts";
@@ -20,6 +20,7 @@ import {
   startPolling,
   stopPolling,
 } from "./systemStore.ts";
+import { useWebSocket } from "./useWebSocket.ts";
 
 export type SystemEvent = {
   type: string;
@@ -66,13 +67,10 @@ export function isEventsConnected(): boolean {
 
 // --- Force reconnect ---
 
-// Set by useEventsConnection while the socket is live. Calling
-// reconnectEvents() closes the current socket and immediately opens
-// a fresh one — no 2-second delay.
-let reconnectTrigger: (() => void) | null = null;
+let reconnectFn: (() => void) | null = null;
 
 export function reconnectEvents(): void {
-  reconnectTrigger?.();
+  reconnectFn?.();
 }
 
 // --- Hooks ---
@@ -81,44 +79,27 @@ export function reconnectEvents(): void {
 /// Call once in App. Does not return event data.
 export function useEventsConnection(): void {
   const qc = useQueryClient();
-  const cancelled = useRef(false);
 
-  useEffect(() => {
-    cancelled.current = false;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-    let shouldReconnect = true;
-
-    const connect = () => {
-      if (!shouldReconnect) return;
-      socket = new WebSocket(api.eventsStreamUrl());
-      socket.onopen = () => {
+  const { reconnect } = useWebSocket(
+    api.eventsStreamUrl(),
+    {
+      onOpen: () => {
         eventsConnected = true;
         for (const l of listeners) l();
         stopPolling();
         void refreshStore();
         void qc.invalidateQueries({ queryKey: ["config"] });
         void qc.invalidateQueries({ queryKey: ["service-detail"] });
-      };
-      socket.onclose = () => {
+      },
+      onClose: () => {
         eventsConnected = false;
         for (const l of listeners) l();
         startPolling();
-        if (!shouldReconnect) return;
-        reconnectTimer = window.setTimeout(connect, 2_000);
-      };
-      socket.onerror = () => {
-        // onerror doesn't always trigger onclose promptly, so close
-        // the socket explicitly to force the reconnect cycle.
-        eventsConnected = false;
-        for (const l of listeners) l();
-        socket?.close();
-      };
-      socket.onmessage = (ev) => {
-        if (typeof ev.data !== "string") return;
+      },
+      onMessage: (data) => {
         let event: SystemEvent;
         try {
-          event = JSON.parse(ev.data) as SystemEvent;
+          event = JSON.parse(data) as SystemEvent;
         } catch {
           return;
         }
@@ -146,33 +127,17 @@ export function useEventsConnection(): void {
             }
             break;
         }
-      };
-    };
-    connect();
+      },
+    },
+    2_000,
+  );
 
-    reconnectTrigger = () => {
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (socket) {
-        socket.onclose = null;
-        socket.onerror = null;
-        socket.onmessage = null;
-        socket.close();
-        socket = null;
-      }
-      connect();
-    };
-
+  useEffect(() => {
+    reconnectFn = reconnect;
     return () => {
-      shouldReconnect = false;
-      cancelled.current = true;
-      reconnectTrigger = null;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      socket?.close();
+      reconnectFn = null;
     };
-  }, [qc]);
+  }, [reconnect]);
 }
 
 /// Returns the current event buffer and connection state. Uses

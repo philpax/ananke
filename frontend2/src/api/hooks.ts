@@ -3,7 +3,7 @@
 // WebSocket is connected). Everything else uses TanStack Query with
 // sensible refetch cadences.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   useMutation,
   useQuery,
@@ -35,6 +35,7 @@ import {
 } from "./client.ts";
 import { isEventsConnected } from "./events.ts";
 import { refresh as refreshStore } from "./systemStore.ts";
+import { useWebSocket } from "./useWebSocket.ts";
 
 // Re-export so consumers keep importing from hooks.ts.
 export { useServices, useDevices } from "./systemStore.ts";
@@ -201,33 +202,18 @@ async function fetchSeedWindow(
 type LogStreamState = {
   lines: LogLine[];
   dropped: number;
-  connected: boolean;
 };
 
-function useLogStream(name: string | null): LogStreamState {
+function useLogStream(name: string | null): LogStreamState & {
+  connected: boolean;
+} {
   const [state, setState] = useState<LogStreamState>(EMPTY_STREAM_STATE);
-  const cancelled = useRef(false);
 
-  useEffect(() => {
-    if (name === null) return;
-    cancelled.current = false;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-
-    const connect = () => {
-      socket = new WebSocket(api.logStreamUrl(name));
-      socket.onopen = () => setState((prev) => ({ ...prev, connected: true }));
-      socket.onclose = () => {
-        if (cancelled.current) return;
-        setState((prev) => ({ ...prev, connected: false }));
-        reconnectTimer = window.setTimeout(connect, 1_000);
-      };
-      socket.onerror = () => {
-        setState((prev) => ({ ...prev, connected: false }));
-      };
-      socket.onmessage = (ev) => {
-        const data = ev.data;
-        if (typeof data !== "string") return;
+  const url = name !== null ? api.logStreamUrl(name) : null;
+  const { connected } = useWebSocket(
+    url,
+    {
+      onMessage: (data) => {
         let parsed: LogStreamMessage;
         try {
           parsed = JSON.parse(data) as LogStreamMessage;
@@ -247,24 +233,17 @@ function useLogStream(name: string | null): LogStreamState {
           };
           return { ...prev, lines: [...prev.lines, line] };
         });
-      };
-    };
-    connect();
+      },
+    },
+    1_000,
+  );
 
-    return () => {
-      cancelled.current = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      socket?.close();
-    };
-  }, [name]);
-
-  return state;
+  return { ...state, connected };
 }
 
 const EMPTY_STREAM_STATE: LogStreamState = {
   lines: [],
   dropped: 0,
-  connected: false,
 };
 
 function resolveBounds(window: LogWindow): {
