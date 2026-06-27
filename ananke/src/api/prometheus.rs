@@ -218,8 +218,16 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
                         .map(|b| b.request_count)
                         .sum();
                     (
-                        if timed_out > 0 { weighted_out / timed_out as f64 } else { 0.0 },
-                        if timed_in > 0 { weighted_in / timed_in as f64 } else { 0.0 },
+                        if timed_out > 0 {
+                            weighted_out / timed_out as f64
+                        } else {
+                            0.0
+                        },
+                        if timed_in > 0 {
+                            weighted_in / timed_in as f64
+                        } else {
+                            0.0
+                        },
                     )
                 }
                 Err(e) => {
@@ -250,8 +258,15 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
     }
 
     vec![
-        requests, tokens, inflight, mem_total, mem_free, mem_used,
-        output_tps_gauge, input_tps_gauge, svc_state,
+        requests,
+        tokens,
+        inflight,
+        mem_total,
+        mem_free,
+        mem_used,
+        output_tps_gauge,
+        input_tps_gauge,
+        svc_state,
     ]
 }
 

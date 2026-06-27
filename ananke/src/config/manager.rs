@@ -135,6 +135,12 @@ impl ConfigManager {
         &self.path
     }
 
+    /// Whether the config file can be written to. Used by the API to
+    /// tell the frontend whether to start the editor in read-only mode.
+    pub fn writable(&self) -> bool {
+        self.fs.writable(&self.path)
+    }
+
     /// Validate the given TOML without touching disk or the in-memory cache.
     pub fn validate(&self, toml: &str) -> Result<(), Vec<ValidationError>> {
         validate_toml(self.fs.as_ref(), &self.path, toml)

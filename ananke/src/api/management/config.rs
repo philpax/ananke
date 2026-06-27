@@ -17,7 +17,16 @@ use crate::{api::errors::ApiErrorCode, config::manager::ApplyError, daemon::app_
 )]
 pub async fn get_config(State(state): State<AppState>) -> Response {
     let (content, hash) = state.config.raw();
-    (StatusCode::OK, Json(ConfigResponse { content, hash })).into_response()
+    let writable = state.config.writable();
+    (
+        StatusCode::OK,
+        Json(ConfigResponse {
+            content,
+            hash,
+            writable,
+        }),
+    )
+        .into_response()
 }
 
 #[utoipa::path(
