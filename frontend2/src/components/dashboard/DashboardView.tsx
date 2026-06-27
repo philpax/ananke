@@ -344,17 +344,16 @@ function ServiceRow({
               xMax={xMax}
             />
           </div>
-          <a
-            href={serviceProxyUrl(svc.port)}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="rounded-[3px] bg-elevated px-1.5 py-0.5 font-mono text-xs text-accent ring-1 ring-inset ring-border-strong transition-colors hover:bg-border-strong"
-          >
-            :{svc.port}
-          </a>
         </div>
       </Link>
+      <a
+        href={serviceProxyUrl(svc.port)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="rounded-[3px] bg-elevated px-1.5 py-0.5 font-mono text-xs text-accent ring-1 ring-inset ring-border-strong transition-colors hover:bg-border-strong"
+      >
+        :{svc.port}
+      </a>
       {/* Sized to hold the three-button case at full size with a tight
           gap, so the right-aligned columns line up across rows however
           many actions a row shows. */}
