@@ -3,7 +3,7 @@
 // with memory sparklines, and a full service list with inline activity
 // sparklines. A header time range toggle controls all charts.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
@@ -86,7 +86,12 @@ export function DashboardView() {
 
   const [rangeIdx, setRangeIdx] = useState(0);
   const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
-  const [sortOrder, setSortOrder] = useState<SortOrder>("alpha");
+  const [sortOrder, setSortOrder] = useState<SortOrder>(
+    () => (localStorage.getItem("ananke-sort-order") as SortOrder) ?? "alpha",
+  );
+  useEffect(() => {
+    localStorage.setItem("ananke-sort-order", sortOrder);
+  }, [sortOrder]);
   const range = RANGES[rangeIdx];
   const xMin = since / 1000;
   const xMax = (since + range.ms) / 1000;
