@@ -171,7 +171,7 @@ export function ServiceDetailView() {
           </Card>
         </div>
 
-        {/* Per-service metrics */}
+        {/* Per-service stats */}
         {d.modality !== "embedding" && <ServiceMetrics name={d.name} />}
 
         {/* Logs */}
@@ -850,7 +850,7 @@ function ServiceMetrics({ name }: { name: string }) {
   return (
     <div className="space-y-4">
       <Card
-        header="Metrics"
+        header="Stats"
         headerAction={
           <div className="flex items-center gap-1">
             {["1h", "6h", "24h"].map((label, i) => (

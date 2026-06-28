@@ -40,9 +40,9 @@ const NAV_ITEMS: NavItem[] = [
     icon: <EventsIcon />,
   },
   {
-    to: "/metrics",
-    labelKey: "nav.metrics",
-    icon: <MetricsIcon />,
+    to: "/stats",
+    labelKey: "nav.stats",
+    icon: <StatsIcon />,
   },
 ];
 
@@ -219,7 +219,7 @@ function EventsIcon({ className = baseClass }: IconProps) {
   );
 }
 
-function MetricsIcon({ className = baseClass }: IconProps) {
+function StatsIcon({ className = baseClass }: IconProps) {
   return (
     <svg
       className={className}

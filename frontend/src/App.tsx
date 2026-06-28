@@ -65,7 +65,7 @@ export default function App() {
           <Route path="/oneshots" element={<OneshotsView />} />
           <Route path="/config" element={<ConfigEditorView />} />
           <Route path="/events" element={<EventsView />} />
-          <Route path="/metrics" element={<MetricsView />} />
+          <Route path="/stats" element={<MetricsView />} />
           <Route path="*" element={<Placeholder title="Not found" />} />
         </Routes>
       </AppShell>

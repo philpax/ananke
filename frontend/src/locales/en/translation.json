@@ -22,7 +22,7 @@
     "oneshots": "Oneshots",
     "config": "Config",
     "events": "Events",
-    "metrics": "Metrics"
+    "stats": "Stats"
   },
   "services": {
     "title": "Services",

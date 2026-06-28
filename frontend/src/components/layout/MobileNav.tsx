@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 const MOBILE_NAV_ITEMS = [
   { to: "/", labelKey: "nav.dashboard", icon: <DashboardIcon /> },
   { to: "/chat", labelKey: "nav.chat", icon: <ChatIcon /> },
-  { to: "/metrics", labelKey: "nav.metrics", icon: <MetricsIcon /> },
+  { to: "/stats", labelKey: "nav.stats", icon: <StatsIcon /> },
 ];
 
 export function MobileNav() {
@@ -74,7 +74,7 @@ function ChatIcon({ className = baseClass }: IconProps) {
   );
 }
 
-function MetricsIcon({ className = baseClass }: IconProps) {
+function StatsIcon({ className = baseClass }: IconProps) {
   return (
     <svg
       className={className}

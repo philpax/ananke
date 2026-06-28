@@ -1,4 +1,4 @@
-// Metrics / observability view (`/metrics`). Charts request rate, token
+// Stats / observability view (`/stats`). Charts request rate, token
 // throughput, error rate, avg latency, and per-device memory utilisation
 // from the daemon's `/api/metrics` and `/api/devices/samples` endpoints.
 
@@ -267,7 +267,7 @@ export function MetricsView() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
-        <h1 className="eyebrow !text-primary">Metrics</h1>
+        <h1 className="eyebrow !text-primary">Stats</h1>
         <div className="flex items-center gap-1">
           {RANGES.map((r, i) => (
             <button
