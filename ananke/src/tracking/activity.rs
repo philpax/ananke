@@ -22,6 +22,11 @@ pub type ActivityStamp = Arc<Mutex<tokio::time::Instant>>;
 #[derive(Clone, Default)]
 pub struct ActivityTable {
     inner: Arc<RwLock<BTreeMap<SmolStr, ActivityStamp>>>,
+    /// Parallel wall-clock timestamps (Unix ms), bumped alongside the
+    /// tokio `Instant` on every `ping`. Only populated after the first
+    /// request — a service that has started but never received traffic
+    /// has no entry here.
+    wall_ms: Arc<RwLock<BTreeMap<SmolStr, i64>>>,
 }
 
 impl ActivityTable {
@@ -46,16 +51,26 @@ impl ActivityTable {
             .clone()
     }
 
-    /// Bump the activity stamp for `service` to the current tokio instant.
+    /// Bump the activity stamp for `service` to the current tokio instant
+    /// and record the wall-clock time for API exposure.
     pub fn ping(&self, service: &SmolStr) {
         let stamp = self.get_or_init(service);
         *stamp.lock() = tokio::time::Instant::now();
+        self.wall_ms
+            .write()
+            .insert(service.clone(), crate::tracking::now_unix_ms());
     }
 
     /// Read the last activity instant for `service`. Returns `None` if
     /// the service has never been pinged and has no stamp yet.
     pub fn last(&self, service: &SmolStr) -> Option<tokio::time::Instant> {
         self.inner.read().get(service).map(|a| *a.lock())
+    }
+
+    /// Read the last activity as a Unix millisecond timestamp.
+    /// Returns `None` if the service has never received a request.
+    pub fn last_ms(&self, service: &SmolStr) -> Option<i64> {
+        self.wall_ms.read().get(service).copied()
     }
 }
 

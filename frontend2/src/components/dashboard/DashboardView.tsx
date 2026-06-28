@@ -39,6 +39,13 @@ const RANGES: TimeRange[] = [
   { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
 ];
 
+type SortOrder = "alpha" | "recent" | "size";
+const SORT_OPTIONS: { id: SortOrder; label: string }[] = [
+  { id: "alpha", label: "A-Z" },
+  { id: "recent", label: "Recent" },
+  { id: "size", label: "Size" },
+];
+
 type ServiceSparkData = Map<string, { ts: number[]; counts: number[] }>;
 
 function buildServiceSparkline(
@@ -74,6 +81,7 @@ export function DashboardView() {
 
   const [rangeIdx, setRangeIdx] = useState(0);
   const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
+  const [sortOrder, setSortOrder] = useState<SortOrder>("alpha");
   const range = RANGES[rangeIdx];
   const xMin = since / 1000;
   const xMax = (since + range.ms) / 1000;
@@ -97,8 +105,24 @@ export function DashboardView() {
 
   const sortedServices = services.data
     ? [...services.data].sort((a, b) => {
-        const rankDiff = stateRank(a.state) - stateRank(b.state);
-        if (rankDiff !== 0) return rankDiff;
+        // Active services (running/starting/draining) always sort
+        // above inactive ones, regardless of the selected criteria.
+        const aActive = isActive(a.state);
+        const bActive = isActive(b.state);
+        if (aActive !== bActive) return aActive ? -1 : 1;
+
+        if (sortOrder === "recent") {
+          const aTime = a.last_used_ms ?? 0;
+          const bTime = b.last_used_ms ?? 0;
+          if (aTime !== bTime) return bTime - aTime;
+          return a.name.localeCompare(b.name);
+        }
+        if (sortOrder === "size") {
+          const aSize = a.vram_bytes ?? 0;
+          const bSize = b.vram_bytes ?? 0;
+          if (aSize !== bSize) return bSize - aSize;
+          return a.name.localeCompare(b.name);
+        }
         return a.name.localeCompare(b.name);
       })
     : [];
@@ -170,7 +194,27 @@ export function DashboardView() {
         </Card>
 
         {/* Service list with activity sparklines */}
-        <Card header={t("nav.services")} bodyClassName="p-0">
+        <Card
+          header={t("nav.services")}
+          headerAction={
+            <div className="flex items-center gap-1">
+              {SORT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setSortOrder(opt.id)}
+                  className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
+                    sortOrder === opt.id
+                      ? "bg-elevated text-primary"
+                      : "text-tertiary hover:text-secondary"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          }
+          bodyClassName="p-0"
+        >
           {services.isPending ? (
             <div className="p-4">
               <Spinner />
@@ -325,12 +369,23 @@ function ServiceRow({
         >
           {svc.name}
         </span>
-        {svc.has_mmproj && <Badge variant="vision">vision</Badge>}
+        {svc.vram_bytes != null && (
+          <span className="shrink-0 font-mono text-xs text-tertiary">
+            {formatBytes(svc.vram_bytes)}
+          </span>
+        )}
+        {svc.has_mmproj && (
+          <span className="shrink-0 font-mono text-xs text-vision">vision</span>
+        )}
         {svc.modality === "embedding" && (
-          <Badge variant="embedding">embedding</Badge>
+          <span className="shrink-0 font-mono text-xs text-embedding">
+            embedding
+          </span>
         )}
         {(svc.inflight_count ?? 0) > 0 && (
-          <Badge variant="accent">{svc.inflight_count} in-flight</Badge>
+          <span className="shrink-0 font-mono text-xs text-accent">
+            {svc.inflight_count} in-flight
+          </span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-3">
           <div className="h-6 w-20 shrink-0">
@@ -521,16 +576,8 @@ function DisableIcon() {
   );
 }
 
-function stateRank(state: string): number {
-  if (state === "running") return 0;
-  if (state === "starting") return 1;
-  if (state === "draining") return 2;
-  if (state === "idle") return 3;
-  if (state === "evicted") return 4;
-  if (state === "stopped") return 5;
-  if (state === "failed") return 6;
-  if (state.startsWith("disabled")) return 7;
-  return 8;
+function isActive(state: string): boolean {
+  return state === "running" || state === "starting" || state === "draining";
 }
 
 function fitVerdictColor(verdict: string | null | undefined): string {

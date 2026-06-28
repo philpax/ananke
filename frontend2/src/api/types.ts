@@ -1058,6 +1058,13 @@ export interface components {
        *     service. Zero when the service is not running.
        */
       inflight_count?: number;
+      /**
+       * Format: int64
+       * @description Wall-clock timestamp (ms since epoch) of the last request the
+       *     service received. `None` if the service has never received
+       *     traffic.
+       */
+      last_used_ms?: number | null;
       /** @description `"persistent"` or `"ondemand"`. */
       lifecycle: string;
       /**
@@ -1091,6 +1098,14 @@ export interface components {
       run_id?: number | null;
       /** @description State like `"idle"`, `"running"`, `"disabled_user_disabled"`. */
       state: string;
+      /**
+       * Format: int64
+       * @description Total VRAM bytes the service would reserve across all devices
+       *     under current conditions (from the placement preview). Includes
+       *     weights, KV cache, and compute buffer. `None` when the placement
+       *     can't be computed (e.g. a command service that reserves no VRAM).
+       */
+      vram_bytes?: number | null;
     };
     /** @description Response from `GET /api/services`. */
     ServicesResponse: {

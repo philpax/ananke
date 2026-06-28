@@ -55,13 +55,17 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
         // estimate cache is usually warm after the first detail view
         // or service start.
         let entry = model_estimate_entry(&state, svc_cfg);
-        let fit_verdict = placement_preview(
+        let placement = placement_preview(
             &state,
             svc_cfg,
             entry.as_ref().map(|e| &e.estimate_full),
             running,
-        )
-        .map(|p| p.verdict);
+        );
+        let fit_verdict = placement.as_ref().map(|p| p.verdict);
+        let vram_bytes = placement
+            .as_ref()
+            .map(|p| p.devices.iter().map(|d| d.bytes).sum());
+        let last_used_ms = state.activity.last_ms(&svc_cfg.name);
 
         services.push(ServiceSummary {
             name: svc_cfg.name.to_string(),
@@ -80,6 +84,8 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             modality: svc_cfg.modality,
             ananke_metadata: svc_cfg.metadata.clone(),
             fit_verdict,
+            vram_bytes,
+            last_used_ms,
         });
     }
     // Extract the port from the OpenAI bind address (e.g. "127.0.0.1:7070").

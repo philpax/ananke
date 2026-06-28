@@ -34,6 +34,8 @@ fn service_summary_roundtrips() {
         modality: ananke_api::Modality::Chat,
         ananke_metadata,
         fit_verdict: None,
+        vram_bytes: None,
+        last_used_ms: None,
     };
     assert_eq!(v.clone(), roundtrip(v));
 }

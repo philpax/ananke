@@ -91,6 +91,17 @@ pub struct ServiceSummary {
     /// Running services are always `Fits`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit_verdict: Option<FitVerdict>,
+    /// Total VRAM bytes the service would reserve across all devices
+    /// under current conditions (from the placement preview). Includes
+    /// weights, KV cache, and compute buffer. `None` when the placement
+    /// can't be computed (e.g. a command service that reserves no VRAM).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_bytes: Option<u64>,
+    /// Wall-clock timestamp (ms since epoch) of the last request the
+    /// service received. `None` if the service has never received
+    /// traffic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_ms: Option<i64>,
 }
 
 /// `GET /api/services/{name}` response body.
