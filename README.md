@@ -110,6 +110,8 @@ llama_server = "/opt/llama-build/llama-server"  # Optional: default llama-server
 listen = "0.0.0.0:7070"
 enabled = true                   # Set to false to disable the OpenAI API
 max_request_duration = "10m"     # Max wall-clock duration per proxied request
+allow_cors = true                # Allow cross-origin requests from browsers (default: true)
+max_body_mb = 64                 # Max request body size in MiB (default: 64; raise for large or many images)
 ```
 
 ### Global Defaults
@@ -372,6 +374,8 @@ http = "/system_stats"
 timeout = "30s"
 ```
 
+The `http` field defaults to `/v1/models` when `[service.health]` is absent. Set `http = ""` to disable the health check entirely — the service transitions to Running immediately after spawn, with no readiness probe. This is useful for services that don't expose an HTTP endpoint, or when the operator knows the service is ready as soon as it starts.
+
 The child also inherits `CUDA_VISIBLE_DEVICES` set to the picked GPU id(s). Wrapper scripts that launch a container should forward this so the container only sees the picked GPU — for example, `docker run --device "nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:-all}" ...`.
 
 The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
@@ -570,6 +574,13 @@ vram_gb = 4.0
 
 [devices]
 placement = "gpu-only"
+
+# Optional: enable an HTTP health check before transitioning to Running.
+# When absent (the default), the oneshot is treated as ready immediately
+# after spawn — no health probe is performed.
+[health]
+http = "/health"
+timeout = "30s"
 ```
 
 ## Config Hot-Reload
@@ -730,6 +741,7 @@ Available at `http://<host>:7071`. Used by `anankectl` to orchestrate the daemon
 | `/api/services/:name/logs`        | GET      | Get recent logs for a service         |
 | `/api/services/:name/logs/stream` | GET (WS) | Stream logs for a service             |
 | `/api/devices`                    | GET      | Device/VRAM status                    |
+| `/api/devices/samples`            | GET      | Historical VRAM samples               |
 | `/api/config`                     | GET      | Get current config (with ETag hash)   |
 | `/api/config`                     | PUT      | Atomically update config              |
 | `/api/config/validate`            | POST     | Validate TOML without persisting      |
@@ -738,4 +750,6 @@ Available at `http://<host>:7071`. Used by `anankectl` to orchestrate the daemon
 | `/api/oneshot/:id`                | GET      | Get oneshot status                    |
 | `/api/oneshot/:id`                | DELETE   | Delete a oneshot service              |
 | `/api/events`                     | GET (WS) | WebSocket for real-time events        |
+| `/api/metrics`                    | GET      | Aggregated request metrics (JSON)     |
+| `/metrics`                        | GET      | Prometheus text-format metrics        |
 | `/api/openapi.json`               | GET      | OpenAPI spec                          |

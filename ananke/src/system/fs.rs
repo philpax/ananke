@@ -53,6 +53,12 @@ pub trait Fs: Send + Sync {
     fn remove_file(&self, path: &Path) -> io::Result<()>;
 
     fn exists(&self, path: &Path) -> bool;
+
+    /// Whether the file at `path` can be opened for writing. Used by the
+    /// config editor to decide whether to start in read-only mode (e.g.
+    /// when the config is managed externally by NixOS and lives on a
+    /// read-only store path).
+    fn writable(&self, path: &Path) -> bool;
 }
 
 /// Real filesystem. Every method forwards to `std::fs`.
@@ -92,6 +98,10 @@ impl Fs for LocalFs {
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+
+    fn writable(&self, path: &Path) -> bool {
+        std::fs::OpenOptions::new().write(true).open(path).is_ok()
     }
 }
 
@@ -161,6 +171,10 @@ impl Fs for InMemoryFs {
 
     fn exists(&self, path: &Path) -> bool {
         self.inner.read().contains_key(path)
+    }
+
+    fn writable(&self, _path: &Path) -> bool {
+        true
     }
 }
 

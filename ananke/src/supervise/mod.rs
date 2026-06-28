@@ -2048,40 +2048,54 @@ impl RunLoop {
             );
         }
 
-        let health_cfg = HealthConfig {
-            // `private_port` is fixed at boot (proxy binding can't move live),
-            // so read it from init; the rest of the health config is live.
-            url: format!(
-                "http://127.0.0.1:{}{}",
-                self.init.identity.private_port, current.health.http_path
-            ),
-            probe_interval: Duration::from_millis(current.health.probe_interval_ms),
-            timeout: Duration::from_millis(current.health.timeout_ms),
-        };
+        // When no health check path is configured, transition to Running
+        // immediately after spawn. The service is assumed ready as soon as
+        // the child process exists. Used by oneshots that don't expose an
+        // HTTP health endpoint.
+        if let Some(http_path) = &current.health.http_path {
+            let health_cfg = HealthConfig {
+                url: format!(
+                    "http://127.0.0.1:{}{}",
+                    self.init.identity.private_port, http_path
+                ),
+                probe_interval: Duration::from_millis(current.health.probe_interval_ms),
+                timeout: Duration::from_millis(current.health.timeout_ms),
+            };
 
-        let cancel_rx_h = self.cancel_rx.clone();
-        let health_task = tokio::spawn(wait_healthy(health_cfg, cancel_rx_h));
-        tokio::pin!(health_task);
+            let cancel_rx_h = self.cancel_rx.clone();
+            let health_task = tokio::spawn(wait_healthy(health_cfg, cancel_rx_h));
+            tokio::pin!(health_task);
 
-        loop {
-            tokio::select! {
-                exit = child.wait() => {
-                    return self.on_child_exit_during_start(exit, spawn_time);
-                }
-                outcome = &mut health_task => {
-                    match self.on_health_outcome(outcome, &mut *child, run_id).await {
-                        StartingOutcome::Continue => {}
-                        StartingOutcome::Break => break,
-                        StartingOutcome::Exit => return Step::Exit,
+            loop {
+                tokio::select! {
+                    exit = child.wait() => {
+                        return self.on_child_exit_during_start(exit, spawn_time);
+                    }
+                    outcome = &mut health_task => {
+                        match self.on_health_outcome(outcome, &mut *child, run_id).await {
+                            StartingOutcome::Continue => {}
+                            StartingOutcome::Break => break,
+                            StartingOutcome::Exit => return Step::Exit,
+                        }
+                    }
+                    cmd = self.rx.recv() => {
+                        match self.on_starting_command(cmd, &mut *child, run_id).await {
+                            StartingOutcome::Continue => {}
+                            StartingOutcome::Break => break,
+                            StartingOutcome::Exit => return Step::Exit,
+                        }
                     }
                 }
-                cmd = self.rx.recv() => {
-                    match self.on_starting_command(cmd, &mut *child, run_id).await {
-                        StartingOutcome::Continue => {}
-                        StartingOutcome::Break => break,
-                        StartingOutcome::Exit => return Step::Exit,
-                    }
-                }
+            }
+        } else {
+            // No health check: transition to Running immediately.
+            match self
+                .on_health_outcome(Ok(HealthOutcome::Healthy), &mut *child, run_id)
+                .await
+            {
+                StartingOutcome::Continue => {}
+                StartingOutcome::Break => {}
+                StartingOutcome::Exit => return Step::Exit,
             }
         }
         Step::Continue

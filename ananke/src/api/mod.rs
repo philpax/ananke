@@ -6,4 +6,5 @@ pub mod frontend;
 pub mod management;
 pub mod openai;
 pub mod openapi;
+pub mod prometheus;
 pub mod proxy;

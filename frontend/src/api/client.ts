@@ -6,24 +6,11 @@ import type { components, paths } from "./types.ts";
 
 type Schemas = components["schemas"];
 
-/// Query parameters for `GET /api/services/{name}/logs`. Mirrors the
-/// daemon's `LogsQuery` (see `ananke/src/api/management/logs.rs`).
-/// Times are millisecond UNIX timestamps. `before` is an opaque cursor
-/// from a previous response's `next_cursor` — the daemon pages
-/// backward (older) from there.
-export type LogsQuery = {
-  since?: number;
-  until?: number;
-  run?: number;
-  stream?: "stdout" | "stderr";
-  limit?: number;
-  before?: string;
-};
-
 export type ServiceSummary = Schemas["ServiceSummary"];
 export type ServicesResponse = Schemas["ServicesResponse"];
 export type ServiceDetail = Schemas["ServiceDetail"];
 export type LaunchCommand = Schemas["LaunchCommand"];
+export type LaunchCommandResponse = Schemas["LaunchCommandResponse"];
 export type ModelInfo = Schemas["ModelInfo"];
 export type EstimateSummary = Schemas["EstimateSummary"];
 export type PlacementPreview = Schemas["PlacementPreview"];
@@ -38,7 +25,33 @@ export type StopResponse = Schemas["StopResponse"];
 export type EnableResponse = Schemas["EnableResponse"];
 export type DisableResponse = Schemas["DisableResponse"];
 export type ConfigResponse = Schemas["ConfigResponse"];
+export type ConfigValidateResponse = Schemas["ConfigValidateResponse"];
+export type ValidationError = Schemas["ValidationError"];
 export type ApiError = Schemas["ApiError"];
+export type MetricsResponse = Schemas["MetricsResponse"];
+export type MetricBucketResponse = Schemas["MetricBucketResponse"];
+export type DeviceSamplesResponse = Schemas["DeviceSamplesResponse"];
+export type DeviceSampleResponse = Schemas["DeviceSampleResponse"];
+export type DaemonInfoResponse = Schemas["DaemonInfoResponse"];
+export type OneshotRequest = Schemas["OneshotRequest"];
+export type OneshotResponse = Schemas["OneshotResponse"];
+export type OneshotStatus = Schemas["OneshotStatus"];
+
+export type LogsQuery = {
+  since?: number;
+  until?: number;
+  run?: number;
+  stream?: "stdout" | "stderr";
+  limit?: number;
+  before?: string;
+};
+
+export type MetricsQuery = {
+  service?: string;
+  since?: number;
+  until?: number;
+  bucket?: string;
+};
 
 async function getJson<T>(path: string): Promise<T> {
   const resp = await fetch(path, { headers: { accept: "application/json" } });
@@ -46,10 +59,14 @@ async function getJson<T>(path: string): Promise<T> {
   return (await resp.json()) as T;
 }
 
-async function postJson<T>(path: string): Promise<T> {
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
     method: "POST",
-    headers: { accept: "application/json" },
+    headers: {
+      accept: "application/json",
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!resp.ok && resp.status !== 202)
     throw new Error(await errorMessage(resp));
@@ -59,9 +76,6 @@ async function postJson<T>(path: string): Promise<T> {
 async function errorMessage(resp: Response): Promise<string> {
   const fallback = `${resp.status} ${resp.statusText}`;
   try {
-    // Two error shapes are in play: the structured `ApiError`
-    // (`{ error: { message } }`) and the simpler inline form some handlers
-    // return (`{ error: "..." }`, e.g. the launch-command 422). Handle both.
     const body = (await resp.json()) as { error?: unknown };
     const e = body.error;
     if (typeof e === "string") return e;
@@ -75,6 +89,37 @@ async function errorMessage(resp: Response): Promise<string> {
   }
 }
 
+export type ConfigSaveResult =
+  | { kind: "ok" }
+  | { kind: "hash_mismatch"; serverHash: string }
+  | { kind: "validation_errors"; errors: ValidationError[] }
+  | { kind: "error"; message: string };
+
+async function putConfigRaw(
+  toml: string,
+  hash: string,
+): Promise<ConfigSaveResult> {
+  const resp = await fetch("/api/config", {
+    method: "PUT",
+    headers: {
+      "content-type": "text/plain",
+      "if-match": `"${hash}"`,
+    },
+    body: toml,
+  });
+  if (resp.status === 202) return { kind: "ok" };
+  if (resp.status === 412) {
+    const etag = resp.headers.get("etag");
+    const serverHash = etag ? etag.replace(/"/g, "") : "";
+    return { kind: "hash_mismatch", serverHash };
+  }
+  if (resp.status === 422) {
+    const body = (await resp.json()) as ConfigValidateResponse;
+    return { kind: "validation_errors", errors: body.errors };
+  }
+  return { kind: "error", message: await errorMessage(resp) };
+}
+
 export const api = {
   listServices: () =>
     getJson<
@@ -83,7 +128,9 @@ export const api = {
   serviceDetail: (name: string) =>
     getJson<ServiceDetail>(`/api/services/${encodeURIComponent(name)}`),
   serviceCommand: (name: string) =>
-    getJson<LaunchCommand>(`/api/services/${encodeURIComponent(name)}/command`),
+    getJson<LaunchCommandResponse>(
+      `/api/services/${encodeURIComponent(name)}/command`,
+    ),
   listDevices: () =>
     getJson<
       paths["/api/devices"]["get"]["responses"]["200"]["content"]["application/json"]
@@ -100,14 +147,51 @@ export const api = {
     const path = `/api/services/${encodeURIComponent(name)}/logs${qs ? `?${qs}` : ""}`;
     return getJson<LogsResponse>(path);
   },
-  /// Build the absolute WebSocket URL for `/logs/stream`. The frontend
-  /// is served from the same host:port as the management API, so the
-  /// scheme is mirrored (`ws` ↔ `http`, `wss` ↔ `https`).
   logStreamUrl: (name: string) => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/services/${encodeURIComponent(name)}/logs/stream`;
   },
   getConfig: () => getJson<ConfigResponse>("/api/config"),
+  validateConfig: (content: string) =>
+    postJson<ConfigValidateResponse>("/api/config/validate", { content }),
+  putConfig: (toml: string, hash: string) => putConfigRaw(toml, hash),
+  getMetrics: (query: MetricsQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.service !== undefined) params.set("service", query.service);
+    if (query.since !== undefined) params.set("since", String(query.since));
+    if (query.until !== undefined) params.set("until", String(query.until));
+    if (query.bucket !== undefined) params.set("bucket", query.bucket);
+    const qs = params.toString();
+    return getJson<MetricsResponse>(`/api/metrics${qs ? `?${qs}` : ""}`);
+  },
+  getDeviceSamples: (device?: string, since?: number, until?: number) => {
+    const params = new URLSearchParams();
+    if (device !== undefined) params.set("device", device);
+    if (since !== undefined) params.set("since", String(since));
+    if (until !== undefined) params.set("until", String(until));
+    const qs = params.toString();
+    return getJson<DeviceSamplesResponse>(
+      `/api/devices/samples${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getPrometheusMetrics: () => fetch("/metrics").then((r) => r.text()),
+  getInfo: () => getJson<DaemonInfoResponse>("/api/info"),
+  listOneshots: () =>
+    getJson<
+      paths["/api/oneshot"]["get"]["responses"]["200"]["content"]["application/json"]
+    >("/api/oneshot"),
+  createOneshot: (req: OneshotRequest) =>
+    postJson<OneshotResponse>("/api/oneshot", req),
+  getOneshot: (id: string) =>
+    getJson<OneshotStatus>(`/api/oneshot/${encodeURIComponent(id)}`),
+  deleteOneshot: async (id: string): Promise<void> => {
+    const resp = await fetch(`/api/oneshot/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    if (!resp.ok && resp.status !== 204) {
+      throw new Error(await errorMessage(resp));
+    }
+  },
   start: (name: string) =>
     postJson<StartResponse>(`/api/services/${encodeURIComponent(name)}/start`),
   stop: (name: string) =>
@@ -124,4 +208,8 @@ export const api = {
     postJson<DisableResponse>(
       `/api/services/${encodeURIComponent(name)}/disable`,
     ),
+  eventsStreamUrl: () => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/api/events`;
+  },
 };

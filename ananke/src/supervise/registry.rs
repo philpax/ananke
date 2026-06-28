@@ -69,14 +69,7 @@ mod tests {
         let mut svc = minimal_service("demo");
         svc.lifecycle = Lifecycle::Persistent;
         let effective = crate::config::EffectiveConfig {
-            daemon: crate::config::DaemonSettings {
-                management_listen: String::new(),
-                openai_listen: String::new(),
-                data_dir: std::path::PathBuf::new(),
-                shutdown_timeout_ms: 5000,
-                allow_external_management: false,
-                allow_external_services: false,
-            },
+            daemon: crate::config::DaemonSettings::default(),
             services: vec![svc.clone()],
         };
         let events = crate::daemon::events::EventBus::new();

@@ -22,6 +22,15 @@ use crate::{
 /// Default idle-before-drain timeout for on-demand services (10 minutes).
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
 
+/// Default OpenAI request body limit (64 MiB). Generous so multi-megabyte
+/// base64 vision payloads pass; axum's own default is only 2 MiB, which
+/// rejects most real images with `413 Payload Too Large`.
+pub const DEFAULT_OPENAI_MAX_BODY_MB: u64 = 64;
+
+/// [`DEFAULT_OPENAI_MAX_BODY_MB`] expressed in bytes, for the contexts that
+/// want a byte count directly (e.g. the [`DaemonSettings`] default).
+pub const DEFAULT_OPENAI_MAX_BODY_BYTES: usize = DEFAULT_OPENAI_MAX_BODY_MB as usize * 1024 * 1024;
+
 /// Default cadence for the health-probe loop (5 seconds).
 pub const DEFAULT_HEALTH_PROBE_INTERVAL_MS: u64 = 5_000;
 
@@ -67,6 +76,27 @@ pub struct DaemonSettings {
     pub shutdown_timeout_ms: u64,
     pub allow_external_management: bool,
     pub allow_external_services: bool,
+    pub openai_allow_cors: bool,
+    pub openai_max_body_bytes: usize,
+}
+
+/// Neutral settings for test construction. Production always derives
+/// `DaemonSettings` from validated config, never from `Default`, so this is
+/// gated to test builds.
+#[cfg(any(test, feature = "test-fakes"))]
+impl Default for DaemonSettings {
+    fn default() -> Self {
+        Self {
+            management_listen: String::new(),
+            openai_listen: String::new(),
+            data_dir: PathBuf::new(),
+            shutdown_timeout_ms: 5_000,
+            allow_external_management: false,
+            allow_external_services: false,
+            openai_allow_cors: false,
+            openai_max_body_bytes: DEFAULT_OPENAI_MAX_BODY_BYTES,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -447,7 +477,9 @@ pub struct DeviceReserves {
 
 #[derive(Debug, Clone)]
 pub struct HealthSettings {
-    pub http_path: String,
+    /// HTTP path to probe for readiness. `None` means no health check —
+    /// the service transitions to Running immediately after spawn.
+    pub http_path: Option<String>,
     pub timeout_ms: u64,
     pub probe_interval_ms: u64,
 }
@@ -502,6 +534,13 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .clone()
         .unwrap_or_else(|| ananke_api::defaults::OPENAI_LISTEN.into());
 
+    let openai_max_body_bytes = cfg
+        .openai_api
+        .max_body_mb
+        .unwrap_or(DEFAULT_OPENAI_MAX_BODY_MB)
+        .saturating_mul(1024 * 1024)
+        .min(usize::MAX as u64) as usize;
+
     let private_port_range =
         PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;
     let mut private_ports = PrivatePortAllocator::new(private_port_range);
@@ -537,6 +576,8 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
             shutdown_timeout_ms,
             allow_external_management: cfg.daemon.allow_external_management,
             allow_external_services: cfg.daemon.allow_external_services,
+            openai_allow_cors: cfg.openai_api.allow_cors,
+            openai_max_body_bytes,
         },
         services: out,
     })
@@ -821,7 +862,11 @@ fn validate_service(
 
     let health_raw = common.health.clone().unwrap_or_default();
     let health = HealthSettings {
-        http_path: health_raw.http.unwrap_or_else(|| "/v1/models".into()),
+        http_path: match &health_raw.http {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s.clone()),
+            None => Some("/v1/models".into()),
+        },
         timeout_ms: health_raw
             .timeout
             .map(|s| {
@@ -1413,7 +1458,7 @@ pub mod test_fixtures {
             lifecycle: Lifecycle::OnDemand,
             priority: DEFAULT_SERVICE_PRIORITY,
             health: HealthSettings {
-                http_path: "/health".into(),
+                http_path: Some("/health".into()),
                 timeout_ms: 5_000,
                 probe_interval_ms: 200,
             },

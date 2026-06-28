@@ -69,14 +69,7 @@ fn config_with_comfy_and_qwen(events: EventBus) -> Arc<ConfigManager> {
     qwen.priority = 50;
     ConfigManager::in_memory(
         EffectiveConfig {
-            daemon: DaemonSettings {
-                management_listen: String::new(),
-                openai_listen: String::new(),
-                data_dir: std::path::PathBuf::new(),
-                shutdown_timeout_ms: 5_000,
-                allow_external_management: false,
-                allow_external_services: false,
-            },
+            daemon: DaemonSettings::default(),
             services: vec![comfy, qwen],
         },
         events,
@@ -309,14 +302,7 @@ async fn growing_balloon_evicts_lower_priority_peer_before_physical_oom() {
         peer_cfg.priority = 50;
         ConfigManager::in_memory(
             EffectiveConfig {
-                daemon: DaemonSettings {
-                    management_listen: String::new(),
-                    openai_listen: String::new(),
-                    data_dir: std::path::PathBuf::new(),
-                    shutdown_timeout_ms: 5_000,
-                    allow_external_management: false,
-                    allow_external_services: false,
-                },
+                daemon: DaemonSettings::default(),
                 services: vec![comfy_cfg, peer_cfg],
             },
             events.clone(),

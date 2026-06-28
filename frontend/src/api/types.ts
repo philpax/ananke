@@ -52,6 +52,54 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/devices/samples": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_device_samples"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/info": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_info"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/metrics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_metrics"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/oneshot": {
     parameters: {
       query?: never;
@@ -331,6 +379,12 @@ export interface components {
       content: string;
       /** @description SHA-256 of `content`, base64-encoded; used as an `If-Match` value on PUT. */
       hash: string;
+      /**
+       * @description Whether the config file can be written to. `false` when the file
+       *     is on a read-only store (e.g. NixOS-managed); the frontend should
+       *     start the editor in read-only mode.
+       */
+      writable: boolean;
     };
     /** @description `POST /api/config/validate` request body. */
     ConfigValidateRequest: {
@@ -344,6 +398,13 @@ export interface components {
       /** @description `true` iff no errors were found. */
       valid: boolean;
     };
+    /** @description `GET /api/info` response body. */
+    DaemonInfoResponse: {
+      /** @description The management API listen address (e.g. `"0.0.0.0:7071"`). */
+      management_listen: string;
+      /** @description The OpenAI-compatible API listen address (e.g. `"0.0.0.0:7070"`). */
+      openai_listen: string;
+    };
     /**
      * @description One device's share of a [`PlacementPreview`], with enough context to draw a
      *     utilisation bar: this service's share, what is already in use by everything
@@ -352,7 +413,7 @@ export interface components {
     DevicePlacement: {
       /**
        * Format: int64
-       * @description VRAM bytes this service reserves on the device — the pledge floor for a
+       * @description Memory bytes this service reserves on the device — the pledge floor for a
        *     dynamic service.
        */
       bytes: number;
@@ -367,13 +428,13 @@ export interface components {
       max_bytes: number;
       /**
        * Format: int64
-       * @description Total VRAM capacity of the device, in bytes. Zero if unknown.
+       * @description Total memory capacity of the device, in bytes. Zero if unknown.
        */
       total_bytes: number;
       /**
        * Format: int64
-       * @description VRAM bytes already in use on the device by everything except this
-       *     service (for a running service, its own resident VRAM is excluded so
+       * @description Memory bytes already in use on the device by everything except this
+       *     service (for a running service, its own resident memory is excluded so
        *     `used_by_others_bytes + bytes` doesn't double-count it).
        */
       used_by_others_bytes: number;
@@ -389,6 +450,36 @@ export interface components {
       elastic: boolean;
       /** @description Service holding the reservation. */
       service: string;
+    };
+    /** @description One device memory sample. */
+    DeviceSampleResponse: {
+      /** @description Device id (`"gpu:0"`, `"cpu"`, etc.). */
+      device: string;
+      /**
+       * Format: int64
+       * @description Free bytes at sample time.
+       */
+      free_bytes: number;
+      /**
+       * Format: int64
+       * @description Sample timestamp (ms since epoch).
+       */
+      timestamp_ms: number;
+      /**
+       * Format: int64
+       * @description Total capacity in bytes.
+       */
+      total_bytes: number;
+      /**
+       * Format: int64
+       * @description Used bytes at sample time.
+       */
+      used_bytes: number;
+    };
+    /** @description `GET /api/devices/samples` response body. */
+    DeviceSamplesResponse: {
+      /** @description Samples ordered by timestamp ascending. */
+      samples: components["schemas"]["DeviceSampleResponse"][];
     };
     /** @description One entry in `GET /api/devices`. */
     DeviceSummary: {
@@ -482,10 +573,7 @@ export interface components {
      * @enum {string}
      */
     FitVerdict: "fits" | "needs_eviction" | "does_not_fit";
-    /**
-     * @description Response from `GET /api/services/{name}/command`: the full launch command
-     *     ananke uses (or would use) for a service.
-     */
+    /** @description One launch command — argv and environment. */
     LaunchCommand: {
       /**
        * @description The full argv. `argv[0]` is the binary; the rest are its arguments.
@@ -504,6 +592,19 @@ export interface components {
        *     next start (`preview`).
        */
       source: components["schemas"]["LaunchCommandSource"];
+    };
+    /**
+     * @description Response from `GET /api/services/{name}/command`: the launch command
+     *     computed under two scenarios.
+     */
+    LaunchCommandResponse: {
+      active?: null | components["schemas"]["LaunchCommand"];
+      /**
+       * @description Command on an empty cluster — what the service would launch with
+       *     if no other services held pledges. Always present when the service
+       *     can fit on the hardware at all.
+       */
+      on_empty: components["schemas"]["LaunchCommand"];
     };
     /**
      * @description Whether a [`LaunchCommand`] describes a live process or a what-if.
@@ -553,6 +654,66 @@ export interface components {
       logs: components["schemas"]["LogLine"][];
       /** @description Opaque cursor for paging further back; `None` when exhausted. */
       next_cursor?: string | null;
+    };
+    /** @description One time bucket of aggregated request metrics, scoped to a single service. */
+    MetricBucketResponse: {
+      /**
+       * Format: double
+       * @description Average request duration in milliseconds, if any requests had timing data.
+       */
+      avg_duration_ms?: number | null;
+      /**
+       * Format: double
+       * @description Average time-to-first-token in milliseconds (streaming requests only).
+       */
+      avg_ttft_ms?: number | null;
+      /**
+       * Format: int64
+       * @description Start of the bucket (ms since epoch).
+       */
+      bucket_start: number;
+      /**
+       * Format: int64
+       * @description Total completion tokens across all requests in the bucket.
+       */
+      completion_tokens: number;
+      /**
+       * Format: int64
+       * @description Number of requests with a 4xx/5xx status code.
+       */
+      error_count: number;
+      /**
+       * Format: double
+       * @description Input tokens per second during prompt processing: prompt tokens
+       *     divided by total TTFT. `None` if no timed requests in the bucket.
+       */
+      input_tps?: number | null;
+      /**
+       * Format: double
+       * @description Output tokens per second during decode: completion tokens divided by
+       *     total decode time. `None` if no timed requests in the bucket.
+       */
+      output_tps?: number | null;
+      /**
+       * Format: int64
+       * @description Total prompt tokens across all requests in the bucket.
+       */
+      prompt_tokens: number;
+      /**
+       * Format: int64
+       * @description Number of requests in the bucket.
+       */
+      request_count: number;
+      /**
+       * @description Service name these metrics belong to. `None` if the service has been
+       *     deleted from the database but metric rows remain.
+       */
+      service?: string | null;
+    };
+    /** @description `GET /api/metrics` response body. */
+    MetricsResponse: {
+      /** @description Time-series buckets, ordered by `bucket_start` ascending. */
+      buckets: components["schemas"]["MetricBucketResponse"][];
     };
     /**
      * @description What kind of model the service exposes through the OpenAI-compatible
@@ -681,6 +842,15 @@ export interface components {
       /** @description `"gpu-only"` / `"cpu-only"` / `"hybrid"`. */
       placement?: string | null;
     };
+    /** @description Health-check configuration for a oneshot. */
+    OneshotHealth: {
+      /** @description HTTP path to probe (e.g. `"/health"`, `"/system_stats"`). */
+      http: string;
+      /** @description Probe interval duration string. Defaults to 5 seconds. */
+      probe_interval?: string | null;
+      /** @description Timeout duration string (e.g. `"30s"`, `"2m"`). Defaults to 3 minutes. */
+      timeout?: string | null;
+    };
     /** @description `POST /api/oneshot` request body. */
     OneshotRequest: {
       /** @description Allocation mode + sizes. */
@@ -688,6 +858,7 @@ export interface components {
       /** @description Command + args for the `"command"` template. */
       command?: string[] | null;
       devices?: null | components["schemas"]["OneshotDevices"];
+      health?: null | components["schemas"]["OneshotHealth"];
       /** @description Free-form metadata passed through to responses. */
       metadata?: {
         [key: string]: unknown;
@@ -762,13 +933,13 @@ export interface components {
       submitted_at_ms: number;
     };
     /**
-     * @description Where a service's VRAM would land per device under current conditions, and
+     * @description Where a service's memory would land per device under current conditions, and
      *     whether it fits without the daemon having to evict or reclaim. Computed by
      *     running the placement engine against the live snapshot and pledge book.
      */
     PlacementPreview: {
       /**
-       * @description Per-device VRAM the service would occupy, sorted by device. Keys are
+       * @description Per-device memory the service would occupy, sorted by device. Keys are
        *     slot strings (`"cpu"`, `"gpu:0"`, …); values are bytes.
        */
       devices: components["schemas"]["DevicePlacement"][];
@@ -810,6 +981,13 @@ export interface components {
        * @description Idle-before-drain timeout.
        */
       idle_timeout_ms: number;
+      /**
+       * Format: int64
+       * @description Wall-clock timestamp (ms since epoch) of the last time the
+       *     service was provisioned or received a request. `None` if the
+       *     service has never been started.
+       */
+      last_used_ms?: number | null;
       /** @description `"persistent"` or `"ondemand"`. */
       lifecycle: string;
       /**
@@ -822,7 +1000,7 @@ export interface components {
       name: string;
       /**
        * Format: int64
-       * @description Observed VRAM peak across the service's lifetime.
+       * @description Observed memory peak (VRAM + RSS) across the service's lifetime.
        */
       observed_peak_bytes: number;
       /**
@@ -883,6 +1061,7 @@ export interface components {
       ananke_metadata?: Record<string, never>;
       /** @description Placeholder for elastic-borrower tracking (future work). */
       elastic_borrower?: string | null;
+      fit_verdict?: null | components["schemas"]["FitVerdict"];
       /**
        * @description `true` when the service's `[[service.llama_cpp]]` config has a
        *     `mmproj` entry — the standard signal that it supports vision /
@@ -890,6 +1069,19 @@ export interface components {
        *     enough (config-only check) to ship on every list entry.
        */
       has_mmproj?: boolean | null;
+      /**
+       * Format: int64
+       * @description Number of requests currently in flight through the proxy for this
+       *     service. Zero when the service is not running.
+       */
+      inflight_count?: number;
+      /**
+       * Format: int64
+       * @description Wall-clock timestamp (ms since epoch) of the last time the
+       *     service was provisioned or received a request. `None` if the
+       *     service has never been started.
+       */
+      last_used_ms?: number | null;
       /** @description `"persistent"` or `"ondemand"`. */
       lifecycle: string;
       /**
@@ -923,6 +1115,14 @@ export interface components {
       run_id?: number | null;
       /** @description State like `"idle"`, `"running"`, `"disabled_user_disabled"`. */
       state: string;
+      /**
+       * Format: int64
+       * @description Total VRAM bytes the service would reserve across all devices
+       *     under current conditions (from the placement preview). Includes
+       *     weights, KV cache, and compute buffer. `None` when the placement
+       *     can't be computed (e.g. a command service that reserves no VRAM).
+       */
+      vram_bytes?: number | null;
     };
     /** @description Response from `GET /api/services`. */
     ServicesResponse: {
@@ -1104,6 +1304,79 @@ export interface operations {
       };
     };
   };
+  get_device_samples: {
+    parameters: {
+      query?: {
+        /** @description Filter to one device (e.g. "gpu:0", "cpu") */
+        device?: string;
+        /** @description Earliest timestamp_ms (default: 1h ago) */
+        since?: number;
+        /** @description Latest timestamp_ms (default: now) */
+        until?: number;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeviceSamplesResponse"];
+        };
+      };
+    };
+  };
+  get_info: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DaemonInfoResponse"];
+        };
+      };
+    };
+  };
+  get_metrics: {
+    parameters: {
+      query?: {
+        /** @description Filter to one service name */
+        service?: string;
+        /** @description Earliest timestamp_ms, inclusive (default: 1h ago) */
+        since?: number;
+        /** @description Latest timestamp_ms, inclusive (default: now) */
+        until?: number;
+        /** @description Bucket size: "1m", "5m", "1h" (default: "5m") */
+        bucket?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MetricsResponse"];
+        };
+      };
+    };
+  };
   list_oneshots: {
     parameters: {
       query?: never;
@@ -1273,7 +1546,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["LaunchCommand"];
+          "application/json": components["schemas"]["LaunchCommandResponse"];
         };
       };
       404: {
@@ -1282,7 +1555,7 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description The command could not be computed (e.g. placement does not fit) */
+      /** @description The command could not be computed even on an empty cluster (e.g. the model does not fit on any single device) */
       422: {
         headers: {
           [name: string]: unknown;

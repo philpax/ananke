@@ -122,6 +122,17 @@ pub struct OpenAiApiConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
     pub max_request_duration: Option<String>,
+    /// Allow cross-origin requests from browsers. Defaults to `true`
+    /// since ananke is unauthenticated and designed for trusted-network
+    /// deployment; operators who want to block browser-based access to
+    /// the OpenAI API can set `allow_cors = false`.
+    #[serde(default = "default_true")]
+    pub allow_cors: bool,
+    /// Maximum request body size for the OpenAI endpoints, in mebibytes.
+    /// Vision requests carry base64-encoded images that routinely exceed
+    /// axum's 2 MiB default body limit, so ananke's default is generous.
+    /// Raise it if a single request carries very large or many images.
+    pub max_body_mb: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]

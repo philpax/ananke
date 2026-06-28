@@ -1,6 +1,9 @@
 //! Handlers for /v1/models and the three POST body-rewriting endpoints.
 
-use std::{task::Poll, time::Duration};
+use std::{
+    task::Poll,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json,
@@ -20,6 +23,7 @@ use tracing::{info, warn};
 use crate::{
     api::openai::{
         errors, filters,
+        metrics::{MetricsBody, MetricsRecorder},
         schema::{
             ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing,
             ModelsResponse,
@@ -157,6 +161,7 @@ async fn forward_json_post(
     headers: HeaderMap,
     body_bytes: Bytes,
 ) -> Response {
+    let request_start = Instant::now();
     let mut parsed: Value = match serde_json::from_slice(&body_bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -275,9 +280,11 @@ async fn forward_json_post(
     };
 
     let (parts, upstream_body) = resp.into_parts();
+    let status_code = parts.status.as_u16();
     // Convert the upstream body into a stream of data frames for axum to proxy.
     // Wrap in GuardedBody so the in-flight counter stays elevated for the full
-    // duration of the response, including SSE streams.
+    // duration of the response, including SSE streams. Then wrap in MetricsBody
+    // to extract usage/TTFT and record per-request metrics on stream completion.
     let stream = upstream_body.into_data_stream().map_ok(Frame::data);
     let boxed: http_body_util::combinators::BoxBody<
         Bytes,
@@ -291,9 +298,42 @@ async fn forward_json_post(
         body: boxed,
         _guard: guard,
     };
-    let axum_body = Body::new(guarded);
+
+    // Resolve the service_id and run_id for metric recording. If the
+    // service can't be resolved (not yet in the DB), skip metrics —
+    // the proxy still works, we just don't record this request.
+    let service_id = state.db.resolve_service_id(&model).await.ok().flatten();
+    let run_id = handle.peek().run_id;
+    let is_streaming = parsed
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let axum_body = if let Some(service_id) = service_id {
+        let recorder = MetricsRecorder::new(
+            request_start,
+            service_id,
+            run_id,
+            model.clone(),
+            path,
+            is_streaming,
+        );
+        let metrics_body = MetricsBody::new(guarded, recorder, state.db.clone(), status_code);
+        Body::new(metrics_body)
+    } else {
+        Body::new(guarded)
+    };
+
     let mut out = Response::from_parts(parts, axum_body);
+    // Strip hop-by-hop headers. These are per-connection directives
+    // between the proxy and its upstream (llama.cpp); forwarding them
+    // to the browser is incorrect and can cause the browser to close
+    // the connection prematurely (e.g. llama.cpp sends
+    // `keep-alive: timeout=5`, which the browser interprets as a
+    // 5-second inactivity deadline — cutting off slow streaming
+    // responses like image inference that takes >5s to first token).
     out.headers_mut().remove(hyper::header::CONNECTION);
     out.headers_mut().remove("transfer-encoding");
+    out.headers_mut().remove("keep-alive");
     out
 }

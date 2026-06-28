@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
-    db::models::{RunningService, Service, ServiceLog},
+    db::models::{DeviceSample, RequestMetric, RunningService, Service, ServiceLog},
     errors::ExpectedError,
 };
 
@@ -160,6 +160,30 @@ impl Database {
         let mut stmt = conn.prepare(&sql).map_err(|e| self.db_err(e))?;
         let rows = stmt
             .query_map([], Service::from_row)
+            .map_err(|e| self.db_err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.db_err(e))
+    }
+
+    /// Load `(name, last_request_ms)` pairs for every service that has
+    /// at least one row in `request_metrics`. Used on boot to seed
+    /// `ActivityTable::wall_ms` so `last_used_ms` survives restarts
+    /// without a dedicated persistence column.
+    pub async fn load_last_request_times(&self) -> Result<Vec<(String, i64)>, ExpectedError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.name, MAX(rm.timestamp_ms) AS last_used
+                 FROM services s
+                 JOIN request_metrics rm ON s.service_id = rm.service_id
+                 WHERE s.deleted_at IS NULL
+                 GROUP BY s.name",
+            )
+            .map_err(|e| self.db_err(e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .map_err(|e| self.db_err(e))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| self.db_err(e))
@@ -349,6 +373,204 @@ impl Database {
     fn db_err(&self, e: rusqlite::Error) -> ExpectedError {
         ExpectedError::database_open_failed(self.path.clone(), e.to_string())
     }
+
+    /// Insert a single request metric row. Called by the proxy after the
+    /// response stream completes.
+    pub async fn insert_request_metric(&self, row: &RequestMetric) -> Result<(), ExpectedError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO request_metrics
+                 (service_id, run_id, timestamp_ms, endpoint, model,
+                  prompt_tokens, completion_tokens, duration_ms, ttft_ms, status_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                row.service_id,
+                row.run_id,
+                row.timestamp_ms,
+                row.endpoint,
+                row.model,
+                row.prompt_tokens,
+                row.completion_tokens,
+                row.duration_ms,
+                row.ttft_ms,
+                row.status_code,
+            ],
+        )
+        .map_err(|e| self.db_err(e))?;
+        Ok(())
+    }
+
+    /// Query aggregated request metrics for the JSON `/api/metrics` endpoint.
+    /// Returns pre-bucketed time-series data — the frontend doesn't aggregate.
+    /// Each bucket is scoped to a single service so the frontend can distinguish
+    /// per-service contributions when no service filter is given.
+    pub async fn query_request_metrics(
+        &self,
+        service_id: Option<i64>,
+        since_ms: i64,
+        until_ms: i64,
+        bucket_ms: i64,
+    ) -> Result<Vec<MetricBucket>, ExpectedError> {
+        let conn = self.conn.lock();
+        // LEFT JOIN services so that orphaned metrics (service deleted but
+        // rows remain) still appear with service = NULL. Grouping by
+        // service_id in addition to the bucket ensures per-service breakdown
+        // when no filter is given.
+        let sql = "SELECT
+                (rm.timestamp_ms / ?1) * ?1 AS bucket,
+                s.name AS service_name,
+                COUNT(*) AS request_count,
+                COALESCE(SUM(rm.prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(rm.completion_tokens), 0) AS completion_tokens,
+                AVG(rm.duration_ms) AS avg_duration_ms,
+                SUM(CASE WHEN rm.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+                AVG(rm.ttft_ms) AS avg_ttft_ms,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
+                                  THEN rm.completion_tokens ELSE 0 END), 0) AS timed_completion_tokens,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL AND rm.duration_ms IS NOT NULL
+                                  THEN rm.duration_ms - rm.ttft_ms ELSE 0 END), 0) AS completion_ms,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
+                                  THEN rm.prompt_tokens ELSE 0 END), 0) AS timed_prompt_tokens,
+                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
+                                  THEN rm.ttft_ms ELSE 0 END), 0) AS total_ttft_ms
+             FROM request_metrics rm
+             LEFT JOIN services s ON s.service_id = rm.service_id
+             WHERE rm.timestamp_ms >= ?2 AND rm.timestamp_ms <= ?3
+               AND (?4 IS NULL OR rm.service_id = ?4)
+             GROUP BY bucket, rm.service_id
+             ORDER BY bucket, service_name";
+        let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
+        let rows = stmt
+            .query_map(params![bucket_ms, since_ms, until_ms, service_id], |row| {
+                let timed_completion_tokens: i64 = row.get(8)?;
+                let completion_ms: i64 = row.get(9)?;
+                let output_tps = if completion_ms > 0 {
+                    Some(timed_completion_tokens as f64 / (completion_ms as f64 / 1000.0))
+                } else {
+                    None
+                };
+                let timed_prompt_tokens: i64 = row.get(10)?;
+                let total_ttft_ms: i64 = row.get(11)?;
+                let input_tps = if total_ttft_ms > 0 {
+                    Some(timed_prompt_tokens as f64 / (total_ttft_ms as f64 / 1000.0))
+                } else {
+                    None
+                };
+                Ok(MetricBucket {
+                    service: row.get::<_, Option<String>>(1)?,
+                    bucket_start: row.get(0)?,
+                    request_count: row.get(2)?,
+                    prompt_tokens: row.get(3)?,
+                    completion_tokens: row.get(4)?,
+                    avg_duration_ms: row.get::<_, Option<f64>>(5)?,
+                    error_count: row.get(6)?,
+                    avg_ttft_ms: row.get::<_, Option<f64>>(7)?,
+                    output_tps,
+                    input_tps,
+                })
+            })
+            .map_err(|e| self.db_err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.db_err(e))
+    }
+
+    /// Insert a device sample row. Called periodically by the snapshotter.
+    pub async fn insert_device_sample(
+        &self,
+        device: &str,
+        timestamp_ms: i64,
+        total_bytes: i64,
+        free_bytes: i64,
+    ) -> Result<(), ExpectedError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO device_samples (device, timestamp_ms, total_bytes, free_bytes, used_bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                device,
+                timestamp_ms,
+                total_bytes,
+                free_bytes,
+                total_bytes - free_bytes
+            ],
+        )
+        .map_err(|e| self.db_err(e))?;
+        Ok(())
+    }
+
+    /// Query device samples for a time range.
+    pub async fn query_device_samples(
+        &self,
+        device: Option<&str>,
+        since_ms: i64,
+        until_ms: i64,
+    ) -> Result<Vec<DeviceSample>, ExpectedError> {
+        let conn = self.conn.lock();
+        let sql = "SELECT sample_id, device, timestamp_ms, total_bytes, free_bytes, used_bytes
+             FROM device_samples
+             WHERE timestamp_ms >= ?1 AND timestamp_ms <= ?2
+               AND (?3 IS NULL OR device = ?3)
+             ORDER BY timestamp_ms";
+        let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
+        let rows = stmt
+            .query_map(params![since_ms, until_ms, device], |row| {
+                Ok(DeviceSample {
+                    sample_id: row.get(0)?,
+                    device: row.get(1)?,
+                    timestamp_ms: row.get(2)?,
+                    total_bytes: row.get(3)?,
+                    free_bytes: row.get(4)?,
+                    used_bytes: row.get(5)?,
+                })
+            })
+            .map_err(|e| self.db_err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.db_err(e))
+    }
+
+    /// Prune request metrics older than `cutoff_ms`.
+    pub async fn prune_request_metrics(&self, cutoff_ms: i64) -> Result<u64, ExpectedError> {
+        let conn = self.conn.lock();
+        let n = conn
+            .execute(
+                "DELETE FROM request_metrics WHERE timestamp_ms < ?1",
+                params![cutoff_ms],
+            )
+            .map_err(|e| self.db_err(e))?;
+        Ok(n as u64)
+    }
+
+    /// Prune device samples older than `cutoff_ms`.
+    pub async fn prune_device_samples(&self, cutoff_ms: i64) -> Result<u64, ExpectedError> {
+        let conn = self.conn.lock();
+        let n = conn
+            .execute(
+                "DELETE FROM device_samples WHERE timestamp_ms < ?1",
+                params![cutoff_ms],
+            )
+            .map_err(|e| self.db_err(e))?;
+        Ok(n as u64)
+    }
+}
+
+/// One time bucket of aggregated request metrics, scoped to a single service.
+pub struct MetricBucket {
+    /// Service name, or `None` if the service was deleted but metric rows remain.
+    pub service: Option<String>,
+    pub bucket_start: i64,
+    pub request_count: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub avg_duration_ms: Option<f64>,
+    pub error_count: i64,
+    /// Average time-to-first-token in milliseconds (streaming requests only).
+    pub avg_ttft_ms: Option<f64>,
+    /// Output tokens per second during decode: completion tokens divided
+    /// by total decode time. `None` if no timed requests in the bucket.
+    pub output_tps: Option<f64>,
+    /// Input tokens per second during prompt processing: prompt tokens
+    /// divided by total TTFT. `None` if no timed requests in the bucket.
+    pub input_tps: Option<f64>,
 }
 
 #[cfg(test)]
@@ -386,5 +608,200 @@ mod tests {
         let live_names: Vec<_> = live.iter().map(|s| s.name.as_str()).collect();
         assert!(live_names.contains(&"new-name"));
         assert!(!live_names.contains(&"old-name"));
+    }
+
+    #[tokio::test]
+    async fn request_metrics_insert_and_query() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 1000).await.unwrap();
+
+        // Insert two requests 5 minutes apart, one success + one error.
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 10_000,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_ms: Some(1200),
+            ttft_ms: Some(200),
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 10_000 + 5 * 60_000,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(200),
+            completion_tokens: Some(80),
+            duration_ms: Some(800),
+            ttft_ms: None,
+            status_code: 500,
+        })
+        .await
+        .unwrap();
+
+        // Query with a 10-minute bucket — both should land in the same bucket.
+        let buckets = db
+            .query_request_metrics(Some(svc), 0, 20 * 60_000, 10 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(buckets.len(), 1);
+        let b = &buckets[0];
+        assert_eq!(b.service.as_deref(), Some("demo"));
+        assert_eq!(b.request_count, 2);
+        assert_eq!(b.prompt_tokens, 300);
+        assert_eq!(b.completion_tokens, 130);
+        assert!((b.avg_duration_ms.unwrap() - 1000.0).abs() < 0.1);
+        assert_eq!(b.error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn request_metrics_filter_by_service() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc_a = db.upsert_service("alpha", 1000).await.unwrap();
+        let svc_b = db.upsert_service("beta", 2000).await.unwrap();
+
+        for svc_id in [svc_a, svc_b] {
+            db.insert_request_metric(&RequestMetric {
+                metric_id: 0,
+                service_id: svc_id,
+                run_id: Some(1),
+                timestamp_ms: 1000,
+                endpoint: "/v1/chat/completions".into(),
+                model: "test".into(),
+                prompt_tokens: Some(10),
+                completion_tokens: Some(5),
+                duration_ms: None,
+                ttft_ms: None,
+                status_code: 200,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Query all services (None) — should get one bucket per service.
+        let all = db
+            .query_request_metrics(None, 0, 10_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
+        // Buckets are ordered by (bucket, service_name) — alpha before beta.
+        assert_eq!(all[0].service.as_deref(), Some("alpha"));
+        assert_eq!(all[0].request_count, 1);
+        assert_eq!(all[1].service.as_deref(), Some("beta"));
+        assert_eq!(all[1].request_count, 1);
+
+        // Query only svc_a.
+        let filtered = db
+            .query_request_metrics(Some(svc_a), 0, 10_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].service.as_deref(), Some("alpha"));
+        assert_eq!(filtered[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn request_metrics_prune_old() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 1000).await.unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 100,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 2000,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+
+        let deleted = db.prune_request_metrics(1000).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = db
+            .query_request_metrics(Some(svc), 0, 10_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].request_count, 1);
+    }
+
+    #[tokio::test]
+    async fn device_samples_insert_and_query() {
+        let db = Database::open_in_memory().await.unwrap();
+
+        db.insert_device_sample("gpu:0", 1000, 24_000_000_000, 20_000_000_000)
+            .await
+            .unwrap();
+        db.insert_device_sample("gpu:0", 2000, 24_000_000_000, 18_000_000_000)
+            .await
+            .unwrap();
+        db.insert_device_sample("cpu", 1000, 64_000_000_000, 32_000_000_000)
+            .await
+            .unwrap();
+
+        // Query all devices.
+        let all = db.query_device_samples(None, 0, 10_000).await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Query only gpu:0.
+        let gpu0 = db
+            .query_device_samples(Some("gpu:0"), 0, 10_000)
+            .await
+            .unwrap();
+        assert_eq!(gpu0.len(), 2);
+        assert_eq!(gpu0[0].device, "gpu:0");
+        assert_eq!(gpu0[0].used_bytes, 4_000_000_000);
+
+        // Time range filter.
+        let recent = db.query_device_samples(None, 1500, 10_000).await.unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].device, "gpu:0");
+    }
+
+    #[tokio::test]
+    async fn device_samples_prune_old() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.insert_device_sample("gpu:0", 100, 1000, 500)
+            .await
+            .unwrap();
+        db.insert_device_sample("gpu:0", 2000, 1000, 500)
+            .await
+            .unwrap();
+
+        let deleted = db.prune_device_samples(1000).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = db.query_device_samples(None, 0, 10_000).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].timestamp_ms, 2000);
     }
 }

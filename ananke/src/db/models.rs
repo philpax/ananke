@@ -80,3 +80,28 @@ impl ServiceLog {
 
     pub const COLUMNS: &'static str = "service_id, run_id, timestamp_ms, seq, stream, line";
 }
+
+#[derive(Debug, Clone)]
+pub struct RequestMetric {
+    pub metric_id: i64,
+    pub service_id: i64,
+    pub run_id: Option<i64>,
+    pub timestamp_ms: i64,
+    pub endpoint: String,
+    pub model: String,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub ttft_ms: Option<i64>,
+    pub status_code: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceSample {
+    pub sample_id: i64,
+    pub device: String,
+    pub timestamp_ms: i64,
+    pub total_bytes: i64,
+    pub free_bytes: i64,
+    pub used_bytes: i64,
+}

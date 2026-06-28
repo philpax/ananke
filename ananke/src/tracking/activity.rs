@@ -9,11 +9,17 @@
 //! A stale read only delays idle transitions, which is harmless for the
 //! scheduler — so we don't need to hold the lock across the whole
 //! deadline-compute window.
+//!
+//! The wall-clock `last_used_ms` map is seeded from `request_metrics` on
+//! boot so it survives daemon restarts without a dedicated persistence
+//! column. `ping()` updates it in real time; no per-request DB write.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use parking_lot::{Mutex, RwLock};
 use smol_str::SmolStr;
+
+use crate::db::Database;
 
 /// Per-service activity stamp. Cloneable handle around a shared tokio
 /// `Instant`.
@@ -22,6 +28,10 @@ pub type ActivityStamp = Arc<Mutex<tokio::time::Instant>>;
 #[derive(Clone, Default)]
 pub struct ActivityTable {
     inner: Arc<RwLock<BTreeMap<SmolStr, ActivityStamp>>>,
+    /// Parallel wall-clock timestamps (Unix ms), bumped alongside the
+    /// tokio `Instant` on every `ping`. Seeded from `request_metrics` on
+    /// boot so `last_ms()` survives daemon restarts.
+    wall_ms: Arc<RwLock<BTreeMap<SmolStr, i64>>>,
 }
 
 impl ActivityTable {
@@ -46,16 +56,37 @@ impl ActivityTable {
             .clone()
     }
 
-    /// Bump the activity stamp for `service` to the current tokio instant.
+    /// Bump the activity stamp for `service` to the current tokio instant
+    /// and record the wall-clock time for API exposure.
     pub fn ping(&self, service: &SmolStr) {
         let stamp = self.get_or_init(service);
         *stamp.lock() = tokio::time::Instant::now();
+        self.wall_ms
+            .write()
+            .insert(service.clone(), crate::tracking::now_unix_ms());
     }
 
     /// Read the last activity instant for `service`. Returns `None` if
     /// the service has never been pinged and has no stamp yet.
     pub fn last(&self, service: &SmolStr) -> Option<tokio::time::Instant> {
         self.inner.read().get(service).map(|a| *a.lock())
+    }
+
+    /// Read the last activity as a Unix millisecond timestamp.
+    /// Returns `None` if the service has never received a request.
+    pub fn last_ms(&self, service: &SmolStr) -> Option<i64> {
+        self.wall_ms.read().get(service).copied()
+    }
+
+    /// Seed `wall_ms` from the `request_metrics` table. Called once on
+    /// boot before any `ping()` so `last_ms()` reflects pre-restart
+    /// activity.
+    pub async fn load_from_db(&self, db: &Database) {
+        let rows = db.load_last_request_times().await.unwrap_or_default();
+        let mut guard = self.wall_ms.write();
+        for (name, ms) in rows {
+            guard.entry(SmolStr::new(name)).or_insert(ms);
+        }
     }
 }
 
@@ -85,5 +116,14 @@ mod tests {
         let marker = tokio::time::Instant::now();
         *a.lock() = marker;
         assert_eq!(*b.lock(), marker);
+    }
+
+    #[tokio::test]
+    async fn ping_updates_wall_ms() {
+        let t = ActivityTable::new();
+        let svc = SmolStr::new("demo");
+        assert!(t.last_ms(&svc).is_none());
+        t.ping(&svc);
+        assert!(t.last_ms(&svc).is_some());
     }
 }

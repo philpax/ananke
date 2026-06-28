@@ -86,6 +86,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     );
 
     let activity = ActivityTable::new();
+    activity.load_from_db(&db).await;
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
     let inflight = InflightTable::new();
 
@@ -159,7 +160,19 @@ pub async fn run() -> Result<(), ExpectedError> {
             .map_err(|e: std::net::AddrParseError| {
                 ExpectedError::bind_failed(effective.daemon.openai_listen.clone(), e.to_string())
             })?;
-    let openai_router = crate::api::openai::router(app_state.clone());
+    let openai_router = crate::api::openai::router(app_state.clone()).layer(
+        axum::extract::DefaultBodyLimit::max(effective.daemon.openai_max_body_bytes),
+    );
+    let openai_router = if effective.daemon.openai_allow_cors {
+        openai_router.layer(
+            tower_http::cors::CorsLayer::permissive()
+                .allow_headers(tower_http::cors::Any)
+                .allow_methods(tower_http::cors::Any)
+                .allow_origin(tower_http::cors::Any),
+        )
+    } else {
+        openai_router
+    };
     let openai_listener = TcpListener::bind(openai_listen)
         .await
         .map_err(|e| ExpectedError::bind_failed(openai_listen.to_string(), e.to_string()))?;
@@ -209,6 +222,8 @@ pub async fn run() -> Result<(), ExpectedError> {
     }
 
     let retention_task = tokio::spawn(retention::run_loop(db.clone(), shutdown_rx.clone()));
+    let sampler_task =
+        crate::tracking::sampler::spawn(db.clone(), shared_snapshot.clone(), shutdown_rx.clone());
     let persistent_watcher_task = tokio::spawn(crate::supervise::persistent_watcher::run_loop(
         app_state.clone(),
         shutdown_rx.clone(),
@@ -241,6 +256,8 @@ pub async fn run() -> Result<(), ExpectedError> {
     let _ = snapshotter_join.await;
     retention_task.abort();
     let _ = retention_task.await;
+    sampler_task.abort();
+    let _ = sampler_task.await;
     persistent_watcher_task.abort();
     let _ = persistent_watcher_task.await;
     for t in balloon_tasks {

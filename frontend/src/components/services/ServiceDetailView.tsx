@@ -1,0 +1,853 @@
+// Service detail page (`/services/:name`). Shows model info, VRAM
+// estimate, placement preview, launch command, and a logs viewer.
+
+import { useState } from "react";
+import { useParams, Link } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+
+import {
+  useServiceDetail,
+  useServiceCommand,
+  useLifecycle,
+  useMetrics,
+} from "../../api/hooks.ts";
+import type {
+  DevicePlacement,
+  EstimateSummary,
+  LaunchCommand,
+  ModelInfo,
+  PlacementPreview,
+  ServiceDetail,
+} from "../../api/client.ts";
+import { aggregateBuckets } from "../../api/metrics-aggregate.ts";
+import {
+  formatBytes,
+  formatDuration,
+  formatParameterCount,
+  formatTimestamp,
+  relativeTime,
+  serviceProxyUrl,
+  RANGES,
+} from "../../util.ts";
+import { Card } from "../ui/Card.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
+import { Badge } from "../ui/Badge.tsx";
+import { Stat } from "../ui/Stat.tsx";
+import { Bar, type BarSegment } from "../ui/Bar.tsx";
+import { StatusDot } from "../ui/StatusDot.tsx";
+import { Spinner } from "../ui/Spinner.tsx";
+import { CopyButton } from "../ui/CopyButton.tsx";
+import { Button } from "../ui/Button.tsx";
+import { ButtonLink } from "../ui/ButtonLink.tsx";
+import { buttonClassName } from "../ui/buttonStyles.ts";
+import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
+import { Chart } from "../ui/Chart.tsx";
+import { CHART_PALETTE } from "../ui/chart-palette.ts";
+import {
+  ChatIcon,
+  DisableIcon,
+  ExternalLinkIcon,
+  PlayIcon,
+  PowerIcon,
+  RestartIcon,
+  StopIcon,
+} from "../ui/icons.tsx";
+import { LogsViewer } from "../logs/LogsViewer.tsx";
+
+export function ServiceDetailView() {
+  const { t } = useTranslation();
+  const { name } = useParams<{ name: string }>();
+  const detail = useServiceDetail(name ?? null);
+  const lifecycle = useLifecycle();
+
+  if (detail.isPending) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Spinner />
+      </div>
+    );
+  }
+
+  if (detail.error || !detail.data) {
+    return (
+      <div className="p-4 text-sm text-danger">
+        {detail.error?.message ?? t("serviceDetail.notFound")}
+      </div>
+    );
+  }
+
+  const d = detail.data;
+  const pending = lifecycle.isPending && lifecycle.variables?.name === name;
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Header — fixed height to align with the sidebar wordmark and
+          the other views' headers, forming one continuous rule. */}
+      <ViewHeader>
+        <Link to="/" className="text-tertiary hover:text-secondary">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M19 12H5M12 19l-7-7 7-7" />
+          </svg>
+        </Link>
+        <StatusDot state={d.state} className="h-2.5 w-2.5" />
+        <h1 className="min-w-0 truncate font-mono text-sm font-semibold tracking-[0.02em] text-primary">
+          {d.name}
+        </h1>
+        {d.model_info?.has_mmproj && <Badge variant="vision">vision</Badge>}
+        {d.modality === "embedding" && (
+          <Badge variant="embedding">embedding</Badge>
+        )}
+        <div className="ml-auto flex items-center gap-4">
+          <Stat label={t("serviceDetail.port")} value={`:${d.port}`} />
+          <Stat label={t("serviceDetail.pid")} value={d.pid ?? "—"} />
+          <Stat label={t("serviceDetail.priority")} value={d.priority} />
+          <Stat label={t("serviceDetail.lifecycle")} value={d.lifecycle} />
+        </div>
+      </ViewHeader>
+
+      <div className="flex-1 space-y-4 overflow-auto p-4">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Model info */}
+          {d.model_info && (
+            <Card header={t("serviceDetail.model")}>
+              <ModelInfoGrid model={d.model_info} />
+            </Card>
+          )}
+
+          {/* Configuration */}
+          <Card header={t("serviceDetail.configuration")}>
+            <ConfigGrid detail={d} />
+          </Card>
+
+          {/* Memory estimate */}
+          {d.estimate && (
+            <Card header={t("serviceDetail.memoryEstimate")}>
+              <EstimateGrid
+                estimate={d.estimate}
+                observedPeakBytes={d.observed_peak_bytes}
+              />
+            </Card>
+          )}
+
+          {/* Lifecycle actions */}
+          <Card header={t("serviceDetail.actions")}>
+            <div className="flex items-center gap-2">
+              <a
+                href={serviceProxyUrl(d.port)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonClassName("blue")}
+              >
+                <ExternalLinkIcon />
+                {t("serviceDetail.open")}
+              </a>
+              {d.modality !== "embedding" && (
+                <ButtonLink
+                  variant="iris"
+                  to={`/chat?model=${encodeURIComponent(d.name)}`}
+                >
+                  <ChatIcon className="w-3.5 h-3.5" />
+                  {t("serviceDetail.chat")}
+                </ButtonLink>
+              )}
+              <LifecycleActions
+                state={d.state}
+                pending={pending}
+                onAction={(action) =>
+                  lifecycle.mutate({ action, name: d.name })
+                }
+              />
+            </div>
+          </Card>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Placement */}
+          <Card header={t("serviceDetail.placement")} className="lg:col-span-2">
+            <PlacementSection
+              current={d.current_allocation}
+              placementOverride={d.placement_override}
+              placement={d.placement_preview ?? null}
+            />
+          </Card>
+
+          {/* Launch command */}
+          <Card
+            header={t("serviceDetail.launchCommand")}
+            className="lg:col-span-2"
+          >
+            <LaunchCommandSection name={d.name} />
+          </Card>
+        </div>
+
+        {/* Per-service stats */}
+        {d.modality !== "embedding" && <ServiceMetrics name={d.name} />}
+
+        {/* Logs */}
+        <Card header={t("serviceDetail.logs")} bodyClassName="p-0">
+          <LogsViewer name={d.name} />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ModelInfoGrid({ model }: { model: ModelInfo }) {
+  const { t } = useTranslation();
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      {model.model_name && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.name")}</dt>
+          <dd className="text-primary">{model.model_name}</dd>
+        </>
+      )}
+      <dt className="text-tertiary">{t("serviceDetail.file")}</dt>
+      <dd className="flex items-center gap-1">
+        <span className="font-mono text-xs text-primary">
+          {model.file_name}
+        </span>
+        <CopyButton value={model.file_name} />
+      </dd>
+      <dt className="text-tertiary">{t("serviceDetail.architecture")}</dt>
+      <dd className="font-mono text-primary">{model.architecture}</dd>
+      {model.parameter_count !== undefined &&
+        model.parameter_count !== null && (
+          <>
+            <dt className="text-tertiary">{t("serviceDetail.parameters")}</dt>
+            <dd
+              className="font-mono text-primary"
+              title={`${model.parameter_count.toLocaleString()} parameters`}
+            >
+              {formatParameterCount(model.parameter_count)}
+            </dd>
+          </>
+        )}
+      <dt className="text-tertiary">{t("serviceDetail.onDisk")}</dt>
+      <dd className="font-mono text-primary">
+        {formatBytes(model.total_tensor_bytes)}
+      </dd>
+      {model.block_count !== undefined && model.block_count !== null && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.layers")}</dt>
+          <dd className="font-mono text-primary">{model.block_count}</dd>
+        </>
+      )}
+      {model.trained_context_length !== undefined &&
+        model.trained_context_length !== null && (
+          <>
+            <dt className="text-tertiary">
+              {t("serviceDetail.trainedContext")}
+            </dt>
+            <dd className="font-mono text-primary">
+              {t("serviceDetail.tokensValue", {
+                value: model.trained_context_length.toLocaleString(),
+              })}
+            </dd>
+          </>
+        )}
+      {model.shard_count > 1 && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.shards")}</dt>
+          <dd className="font-mono text-primary">{model.shard_count}</dd>
+        </>
+      )}
+      {model.license && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.license")}</dt>
+          <dd className="font-mono text-xs text-primary">{model.license}</dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
+function ConfigGrid({ detail }: { detail: ServiceDetail }) {
+  const { t } = useTranslation();
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt className="text-tertiary">{t("serviceDetail.template")}</dt>
+      <dd className="font-mono text-primary">{detail.template}</dd>
+      <dt className="text-tertiary">{t("serviceDetail.context")}</dt>
+      <dd className="font-mono text-primary">
+        {detail.estimate
+          ? t("serviceDetail.tokensValue", {
+              value: detail.estimate.configured_context.toLocaleString(),
+            })
+          : "—"}
+      </dd>
+      <dt className="text-tertiary">{t("serviceDetail.idleTimeout")}</dt>
+      <dd className="font-mono text-primary">
+        {detail.lifecycle === "persistent"
+          ? t("serviceDetail.neverPersistent")
+          : formatDuration(detail.idle_timeout_ms)}
+      </dd>
+      <dt className="text-tertiary">{t("serviceDetail.lastUsed")}</dt>
+      <dd className="font-mono text-primary">
+        {detail.last_used_ms != null
+          ? `${relativeTime(detail.last_used_ms)} (${formatTimestamp(detail.last_used_ms)})`
+          : "—"}
+      </dd>
+      <dt className="text-tertiary">{t("serviceDetail.runId")}</dt>
+      <dd className="font-mono text-primary">{detail.run_id ?? "—"}</dd>
+      <dt className="text-tertiary">{t("serviceDetail.privatePort")}</dt>
+      <dd className="font-mono text-primary">:{detail.private_port}</dd>
+      {detail.rolling_mean != null && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.estimatorDrift")}</dt>
+          <dd className="font-mono text-primary">
+            {detail.rolling_mean.toFixed(3)}×{" "}
+            <span className="text-tertiary">
+              {t("serviceDetail.samples", { value: detail.rolling_samples })}
+            </span>
+          </dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
+function EstimateGrid({
+  estimate,
+  observedPeakBytes,
+}: {
+  estimate: EstimateSummary;
+  observedPeakBytes: number;
+}) {
+  const { t } = useTranslation();
+  const total =
+    estimate.weights_bytes +
+    estimate.kv_bytes_for_context +
+    estimate.compute_buffer_bytes_per_device;
+  return (
+    <div className="space-y-2">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-tertiary">{t("serviceDetail.weights")}</dt>
+        <dd className="font-mono text-primary">
+          {formatBytes(estimate.weights_bytes)}
+        </dd>
+        <dt className="text-tertiary">
+          {t("serviceDetail.kvAtContext", {
+            ctx: estimate.configured_context.toLocaleString(),
+          })}
+        </dt>
+        <dd className="font-mono text-primary">
+          {formatBytes(estimate.kv_bytes_for_context)}
+        </dd>
+        <dt className="text-tertiary">{t("serviceDetail.computeDev")}</dt>
+        <dd className="font-mono text-primary">
+          {formatBytes(estimate.compute_buffer_bytes_per_device)}
+        </dd>
+        <dt className="text-tertiary">{t("serviceDetail.total")}</dt>
+        <dd className="font-mono text-primary">
+          {formatBytes(total)}
+          {observedPeakBytes > 0 && (
+            <span className="text-tertiary">
+              {" "}
+              {t("serviceDetail.peak", {
+                bytes: formatBytes(observedPeakBytes),
+              })}
+            </span>
+          )}
+        </dd>
+      </dl>
+    </div>
+  );
+}
+
+function PlacementSection({
+  current,
+  placementOverride,
+  placement,
+}: {
+  current: ServiceDetail["current_allocation"];
+  placementOverride: ServiceDetail["placement_override"];
+  placement: PlacementPreview | null;
+}) {
+  const { t } = useTranslation();
+  const hasCurrent = Object.keys(current).length > 0;
+  const hasOverride = Object.keys(placementOverride).length > 0;
+  const hasPlacement = placement !== null;
+
+  if (!hasCurrent && !hasOverride && !hasPlacement) return null;
+
+  return (
+    <div className="space-y-3">
+      {hasPlacement && (
+        <div>
+          <div className="mb-1 flex items-center gap-2">
+            <span className="text-xs text-tertiary">
+              {t("serviceDetail.preview")}
+            </span>
+            <FitBadge verdict={placement.verdict} />
+          </div>
+          {placement.devices.length > 0 ? (
+            <div className="space-y-1.5">
+              {placement.devices.map((dev) => (
+                <PlacementBar
+                  key={dev.device}
+                  device={dev}
+                  verdict={placement.verdict}
+                />
+              ))}
+            </div>
+          ) : (
+            <span className="text-xs text-tertiary">
+              {t("serviceDetail.noPlacementFits")}
+            </span>
+          )}
+          {placement.expert_offload_bytes > 0 && (
+            <div className="mt-1.5 text-xs text-tertiary">
+              {t("serviceDetail.expertOffload", {
+                layers: placement.expert_offload_layers,
+                bytes: formatBytes(placement.expert_offload_bytes),
+                count: placement.expert_offload_layers,
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(hasCurrent || hasOverride) && (
+        <div className="grid grid-cols-2 gap-x-4 text-sm">
+          {hasCurrent && (
+            <div>
+              <div className="mb-0.5 text-xs text-tertiary">
+                {t("serviceDetail.currentPledge")}
+              </div>
+              <ul className="font-mono text-xs text-primary">
+                {Object.entries(current).map(([slot, mb]) => (
+                  <li key={slot}>
+                    <span className="text-tertiary">{slot}:</span>{" "}
+                    {mb.toLocaleString()} MiB
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {hasOverride && (
+            <div>
+              <div
+                className="mb-0.5 text-xs text-tertiary"
+                title={t("serviceDetail.configuredOverrideTitle")}
+              >
+                {t("serviceDetail.configuredOverride")}
+              </div>
+              <ul className="font-mono text-xs text-primary">
+                {Object.entries(placementOverride).map(([slot, mb]) => (
+                  <li key={slot}>
+                    <span className="text-tertiary">{slot}:</span>{" "}
+                    {mb.toLocaleString()} MiB
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlacementBar({
+  device,
+  verdict,
+}: {
+  device: DevicePlacement;
+  verdict: PlacementPreview["verdict"];
+}) {
+  const { t } = useTranslation();
+  const {
+    device: name,
+    bytes,
+    max_bytes,
+    used_by_others_bytes,
+    total_bytes,
+  } = device;
+  const hasBar = total_bytes > 0;
+  const canGrow = max_bytes > bytes;
+
+  const thisVariant: BarSegment["variant"] =
+    verdict === "needs_eviction" ? "growth" : "used";
+
+  const segments: BarSegment[] = [
+    {
+      variant: "reserved",
+      bytes: used_by_others_bytes,
+      label: t("serviceDetail.usedByOthers"),
+    },
+    {
+      variant: thisVariant,
+      bytes,
+      label: t("serviceDetail.thisService"),
+    },
+    ...(canGrow
+      ? [
+          {
+            variant: thisVariant,
+            bytes: max_bytes - bytes,
+            label: t("serviceDetail.growthHeadroom"),
+          } satisfies BarSegment,
+        ]
+      : []),
+    {
+      variant: "headroom",
+      bytes: Math.max(
+        0,
+        total_bytes - used_by_others_bytes - Math.max(bytes, max_bytes),
+      ),
+    },
+  ];
+
+  return (
+    <div className="text-xs">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="font-mono text-primary">{name}</span>
+        <span className="font-mono text-tertiary">
+          {formatBytes(bytes)}
+          {canGrow && <>&ndash;{formatBytes(max_bytes)}</>}
+          {hasBar && <> / {formatBytes(total_bytes)}</>}
+        </span>
+      </div>
+      {hasBar && (
+        <Bar total={total_bytes} segments={segments} className="mt-0.5" />
+      )}
+    </div>
+  );
+}
+
+function FitBadge({ verdict }: { verdict: PlacementPreview["verdict"] }) {
+  const { t } = useTranslation();
+  const map: Record<
+    PlacementPreview["verdict"],
+    { variant: "success" | "warning" | "danger"; label: string }
+  > = {
+    fits: { variant: "success", label: t("serviceDetail.fitsNow") },
+    needs_eviction: {
+      variant: "warning",
+      label: t("serviceDetail.needsEviction"),
+    },
+    does_not_fit: { variant: "danger", label: t("serviceDetail.doesNotFit") },
+  };
+  const { variant, label } = map[verdict];
+  return <Badge variant={variant}>{label}</Badge>;
+}
+
+function LaunchCommandSection({ name }: { name: string }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const { data, error, isPending } = useServiceCommand(name, open);
+
+  return (
+    <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer select-none text-xs text-tertiary hover:text-secondary">
+        {t("serviceDetail.expandToCompute")}
+      </summary>
+      <div className="mt-2">
+        {open && isPending && <Spinner />}
+        {error && (
+          <span className="text-sm text-danger">
+            {t("serviceDetail.cannotCompute", { error: error.message })}
+          </span>
+        )}
+        {data && (
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <CommandPanel
+              label={t("serviceDetail.standalone")}
+              command={data.on_empty}
+            />
+            <CommandPanel
+              label={t("serviceDetail.currentConditions")}
+              command={data.active ?? null}
+            />
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function CommandPanel({
+  label,
+  command,
+}: {
+  label: string;
+  command: LaunchCommand | null;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-xs text-tertiary">{label}</span>
+        {command && <CopyButton value={renderCommand(command)} />}
+      </div>
+      {command ? (
+        <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-sm bg-base p-2 font-mono text-xs text-primary">
+          {renderCommand(command)}
+        </pre>
+      ) : (
+        <div className="flex items-center justify-center rounded-sm bg-base p-4 text-xs text-danger">
+          {t("serviceDetail.doesNotFitCurrent")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LifecycleActions({
+  state,
+  pending,
+  onAction,
+}: {
+  state: string;
+  pending: boolean;
+  onAction: (
+    action: "start" | "stop" | "restart" | "enable" | "disable",
+  ) => void;
+}) {
+  const { t } = useTranslation();
+  const canStart = ["idle", "stopped", "failed", "evicted"].includes(state);
+  const canStop = ["running", "starting", "draining"].includes(state);
+  const isDisabled = state.startsWith("disabled");
+
+  return (
+    <div className="flex items-center gap-2">
+      {canStart && (
+        <Button
+          variant="green"
+          onClick={() => onAction("start")}
+          disabled={pending}
+        >
+          <PlayIcon />
+          {t("services.actions.start")}
+        </Button>
+      )}
+      {canStop && (
+        <>
+          <Button
+            variant="red"
+            onClick={() => onAction("stop")}
+            disabled={pending}
+          >
+            <StopIcon />
+            {t("services.actions.stop")}
+          </Button>
+          <Button
+            variant="cyan"
+            onClick={() => onAction("restart")}
+            disabled={pending}
+          >
+            <RestartIcon />
+            {t("services.actions.restart")}
+          </Button>
+        </>
+      )}
+      {isDisabled ? (
+        <Button
+          variant="orange"
+          onClick={() => onAction("enable")}
+          disabled={pending}
+        >
+          <PowerIcon />
+          {t("services.actions.enable")}
+        </Button>
+      ) : (
+        <Button
+          variant="magenta"
+          onClick={() => onAction("disable")}
+          disabled={pending}
+        >
+          <DisableIcon />
+          {t("services.actions.disable")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function renderCommand(cmd: LaunchCommand): string {
+  const lines: string[] = [];
+  for (const e of cmd.env) lines.push(`${e.key}=${shellQuote(e.value)}`);
+  const [binary, ...rest] = cmd.argv;
+  if (binary !== undefined) lines.push(shellQuote(binary));
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i]!;
+    const next = rest[i + 1];
+    if (tok.startsWith("-") && next !== undefined && !next.startsWith("-")) {
+      lines.push(`  ${shellQuote(tok)} ${shellQuote(next)}`);
+      i++;
+    } else {
+      lines.push(`  ${shellQuote(tok)}`);
+    }
+  }
+  return lines.join(" \\\n");
+}
+
+function shellQuote(s: string): string {
+  if (s.length === 0) return "''";
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function ServiceMetrics({ name }: { name: string }) {
+  const { t } = useTranslation();
+  const [rangeIdx, setRangeIdx] = useState(0);
+  const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
+  const range = RANGES[rangeIdx];
+  const xMin = since / 1000;
+  const xMax = (since + range.ms) / 1000;
+
+  const metrics = useMetrics({ service: name, since, bucket: range.bucket });
+  const buckets = aggregateBuckets(metrics.data?.buckets ?? []);
+
+  const totalRequests = buckets.reduce((s, b) => s + b.requestCount, 0);
+  const totalErrors = buckets.reduce((s, b) => s + b.errorCount, 0);
+  const totalTokens = buckets.reduce(
+    (s, b) => s + b.promptTokens + b.completionTokens,
+    0,
+  );
+  const avgLatency =
+    buckets.reduce((s, b) => s + b.totalDurationMs, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.timedRequests, 0),
+    );
+  const avgOutputTps =
+    buckets.reduce((s, b) => s + b.totalWeightedOutputTps, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.outputTpsRequests, 0),
+    );
+  const avgInputTps =
+    buckets.reduce((s, b) => s + b.totalWeightedInputTps, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.inputTpsRequests, 0),
+    );
+
+  return (
+    <div className="space-y-4">
+      <Card
+        header={t("serviceDetail.stats")}
+        headerAction={
+          <SegmentedToggle
+            options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
+            selected={rangeIdx}
+            onChange={(i) => {
+              setRangeIdx(i);
+              setSince(Date.now() - RANGES[i].ms);
+            }}
+          />
+        }
+      >
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
+          <Stat
+            label={t("serviceDetail.requestsInPeriod", { range: range.label })}
+            value={totalRequests}
+          />
+          <Stat label={t("serviceDetail.errors")} value={totalErrors} />
+          <Stat
+            label={t("serviceDetail.tokens")}
+            value={totalTokens.toLocaleString()}
+          />
+          <Stat
+            label={t("serviceDetail.avgLatency")}
+            value={totalRequests > 0 ? `${Math.round(avgLatency)}ms` : "—"}
+          />
+          <Stat
+            label={t("serviceDetail.avgInTps")}
+            value={totalRequests > 0 ? avgInputTps.toFixed(1) : "—"}
+          />
+          <Stat
+            label={t("serviceDetail.avgOutTps")}
+            value={totalRequests > 0 ? avgOutputTps.toFixed(1) : "—"}
+          />
+        </div>
+      </Card>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card header={t("stats.requestRate")}>
+          <Chart
+            xMin={xMin}
+            xMax={xMax}
+            data={[
+              buckets.map((b) => b.ts),
+              buckets.map((b) => b.requestCount),
+            ]}
+            series={[
+              {
+                label: t("stats.requests"),
+                stroke: CHART_PALETTE[0],
+                fill: "rgba(139,124,248,0.08)",
+              },
+            ]}
+          />
+        </Card>
+        <Card header={t("stats.tokenThroughput")}>
+          <Chart
+            xMin={xMin}
+            xMax={xMax}
+            data={[
+              buckets.map((b) => b.ts),
+              buckets.map((b) => b.promptTokens),
+              buckets.map((b) => b.completionTokens),
+            ]}
+            series={[
+              {
+                label: t("stats.prompt"),
+                stroke: CHART_PALETTE[0],
+                fill: "rgba(139,124,248,0.08)",
+              },
+              {
+                label: t("stats.completion"),
+                stroke: CHART_PALETTE[1],
+                fill: "rgba(69,201,138,0.08)",
+              },
+            ]}
+          />
+        </Card>
+      </div>
+      <Card header={t("stats.tokensPerSecond")}>
+        <Chart
+          xMin={xMin}
+          xMax={xMax}
+          data={[
+            buckets.map((b) => b.ts),
+            buckets.map((b) =>
+              b.inputTpsRequests > 0
+                ? b.totalWeightedInputTps / b.inputTpsRequests
+                : null,
+            ),
+            buckets.map((b) =>
+              b.outputTpsRequests > 0
+                ? b.totalWeightedOutputTps / b.outputTpsRequests
+                : null,
+            ),
+          ]}
+          series={[
+            {
+              label: t("stats.input"),
+              stroke: CHART_PALETTE[0],
+              fill: "rgba(139,124,248,0.08)",
+              unit: "tok/s",
+            },
+            {
+              label: t("stats.output"),
+              stroke: CHART_PALETTE[1],
+              fill: "rgba(69,201,138,0.08)",
+              unit: "tok/s",
+            },
+          ]}
+        />
+      </Card>
+    </div>
+  );
+}
