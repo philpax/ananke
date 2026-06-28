@@ -2,15 +2,16 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import "@fontsource-variable/ibm-plex-sans/index.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
 import "./index.css";
+import "./i18n.ts";
 import App from "./App.tsx";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Dashboard-shaped traffic: one user, one tab. Don't hammer the
-      // daemon on tab focus; the per-query `refetchInterval` already
-      // keeps things fresh.
       refetchOnWindowFocus: false,
       retry: 1,
     },
