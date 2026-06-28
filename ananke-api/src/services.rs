@@ -305,8 +305,21 @@ pub struct EnvVar {
     pub value: String,
 }
 
-/// Response from `GET /api/services/{name}/command`: the full launch command
-/// ananke uses (or would use) for a service.
+/// Response from `GET /api/services/{name}/command`: the launch command
+/// computed under two scenarios.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct LaunchCommandResponse {
+    /// Command on an empty cluster — what the service would launch with
+    /// if no other services held pledges. Always present when the service
+    /// can fit on the hardware at all.
+    pub on_empty: LaunchCommand,
+    /// Command against the current device state and pledge book. `None`
+    /// when the service can't fit alongside currently running services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<LaunchCommand>,
+}
+
+/// One launch command — argv and environment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct LaunchCommand {
     /// Whether the service is running (`running`) or this is a preview of the

@@ -573,10 +573,7 @@ export interface components {
      * @enum {string}
      */
     FitVerdict: "fits" | "needs_eviction" | "does_not_fit";
-    /**
-     * @description Response from `GET /api/services/{name}/command`: the full launch command
-     *     ananke uses (or would use) for a service.
-     */
+    /** @description One launch command — argv and environment. */
     LaunchCommand: {
       /**
        * @description The full argv. `argv[0]` is the binary; the rest are its arguments.
@@ -595,6 +592,19 @@ export interface components {
        *     next start (`preview`).
        */
       source: components["schemas"]["LaunchCommandSource"];
+    };
+    /**
+     * @description Response from `GET /api/services/{name}/command`: the launch command
+     *     computed under two scenarios.
+     */
+    LaunchCommandResponse: {
+      active?: null | components["schemas"]["LaunchCommand"];
+      /**
+       * @description Command on an empty cluster — what the service would launch with
+       *     if no other services held pledges. Always present when the service
+       *     can fit on the hardware at all.
+       */
+      on_empty: components["schemas"]["LaunchCommand"];
     };
     /**
      * @description Whether a [`LaunchCommand`] describes a live process or a what-if.
@@ -1529,7 +1539,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["LaunchCommand"];
+          "application/json": components["schemas"]["LaunchCommandResponse"];
         };
       };
       404: {
@@ -1538,7 +1548,7 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description The command could not be computed (e.g. placement does not fit) */
+      /** @description The command could not be computed even on an empty cluster (e.g. the model does not fit on any single device) */
       422: {
         headers: {
           [name: string]: unknown;

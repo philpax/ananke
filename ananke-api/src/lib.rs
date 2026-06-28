@@ -28,6 +28,7 @@ pub use metrics::{
 };
 pub use oneshot::{OneshotHealth, OneshotRequest, OneshotResponse, OneshotStatus};
 pub use services::{
-    DevicePlacement, EnvVar, EstimateSummary, FitVerdict, LaunchCommand, LaunchCommandSource,
-    Modality, ModelInfo, PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse,
+    DevicePlacement, EnvVar, EstimateSummary, FitVerdict, LaunchCommand, LaunchCommandResponse,
+    LaunchCommandSource, Modality, ModelInfo, PlacementPreview, ServiceDetail, ServiceSummary,
+    ServicesResponse,
 };

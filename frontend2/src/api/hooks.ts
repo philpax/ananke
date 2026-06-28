@@ -20,7 +20,7 @@ import {
   type DeviceSampleResponse,
   type DisableResponse,
   type EnableResponse,
-  type LaunchCommand,
+  type LaunchCommandResponse,
   type LogLine,
   type LogStreamMessage,
   type MetricsQuery,
@@ -59,7 +59,7 @@ export function useServiceDetail(
 export function useServiceCommand(
   name: string | null,
   enabled: boolean,
-): UseQueryResult<LaunchCommand, Error> {
+): UseQueryResult<LaunchCommandResponse, Error> {
   return useQuery({
     queryKey: ["service-command", name],
     queryFn: () => api.serviceCommand(name ?? ""),

@@ -10,6 +10,7 @@ export type ServiceSummary = Schemas["ServiceSummary"];
 export type ServicesResponse = Schemas["ServicesResponse"];
 export type ServiceDetail = Schemas["ServiceDetail"];
 export type LaunchCommand = Schemas["LaunchCommand"];
+export type LaunchCommandResponse = Schemas["LaunchCommandResponse"];
 export type ModelInfo = Schemas["ModelInfo"];
 export type EstimateSummary = Schemas["EstimateSummary"];
 export type PlacementPreview = Schemas["PlacementPreview"];
@@ -127,7 +128,9 @@ export const api = {
   serviceDetail: (name: string) =>
     getJson<ServiceDetail>(`/api/services/${encodeURIComponent(name)}`),
   serviceCommand: (name: string) =>
-    getJson<LaunchCommand>(`/api/services/${encodeURIComponent(name)}/command`),
+    getJson<LaunchCommandResponse>(
+      `/api/services/${encodeURIComponent(name)}/command`,
+    ),
   listDevices: () =>
     getJson<
       paths["/api/devices"]["get"]["responses"]["200"]["content"]["application/json"]

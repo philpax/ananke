@@ -1,8 +1,9 @@
 //! Read-only management endpoints.
 
 use ananke_api::{
-    DevicePlacement, DeviceReservation, DeviceSummary, EnvVar, LaunchCommand, LaunchCommandSource,
-    LogLine, PlacementPreview, ServiceDetail, ServiceSummary, ServicesResponse,
+    DevicePlacement, DeviceReservation, DeviceSummary, EnvVar, LaunchCommand,
+    LaunchCommandResponse, LaunchCommandSource, LogLine, PlacementPreview, ServiceDetail,
+    ServiceSummary, ServicesResponse,
 };
 use axum::{
     Json,
@@ -219,9 +220,9 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
     path = "/api/services/{name}/command",
     params(("name" = String, Path, description = "Service name")),
     responses(
-        (status = 200, body = LaunchCommand),
+        (status = 200, body = LaunchCommandResponse),
         (status = 404),
-        (status = 422, description = "The command could not be computed (e.g. placement does not fit)")
+        (status = 422, description = "The command could not be computed even on an empty cluster (e.g. the model does not fit on any single device)")
     )
 )]
 pub async fn service_command(State(state): State<AppState>, Path(name): Path<String>) -> Response {
@@ -234,8 +235,6 @@ pub async fn service_command(State(state): State<AppState>, Path(name): Path<Str
             .into_response();
     };
 
-    // A live pid means the service is running; otherwise the rendered command
-    // is what it would launch with on the next start.
     let running = state
         .registry
         .get(&svc_cfg.name)
@@ -251,15 +250,19 @@ pub async fn service_command(State(state): State<AppState>, Path(name): Path<Str
     let snapshot = state.snapshot.read().clone();
     let table = state.allocations.lock().clone();
     let rolling_mean = state.rolling.get(&svc_cfg.name).effective_mean();
+    let fs = state.system.fs.as_ref();
 
-    let spawn_cfg = match crate::supervise::preview_command(
+    // On-empty: what the command would be if no other services held
+    // pledges. This should succeed whenever the model fits on the
+    // hardware at all.
+    let on_empty = match crate::supervise::preview_command(
         svc_cfg,
         &snapshot,
-        &table,
-        state.system.fs.as_ref(),
+        &crate::allocator::AllocationTable::new(),
+        fs,
         rolling_mean,
     ) {
-        Ok(cfg) => cfg,
+        Ok(cfg) => render_launch_command(cfg, source),
         Err(e) => {
             return (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -269,6 +272,21 @@ pub async fn service_command(State(state): State<AppState>, Path(name): Path<Str
         }
     };
 
+    // Active: what the command would be under the current device state
+    // and pledge book. Gracefully `None` when the service can't fit
+    // alongside currently running services.
+    let active = crate::supervise::preview_command(svc_cfg, &snapshot, &table, fs, rolling_mean)
+        .ok()
+        .map(|cfg| render_launch_command(cfg, source));
+
+    let response = LaunchCommandResponse { on_empty, active };
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+fn render_launch_command(
+    spawn_cfg: crate::supervise::SpawnConfig,
+    source: LaunchCommandSource,
+) -> LaunchCommand {
     let mut argv = Vec::with_capacity(spawn_cfg.args.len() + 1);
     argv.push(spawn_cfg.binary);
     argv.extend(spawn_cfg.args);
@@ -277,9 +295,7 @@ pub async fn service_command(State(state): State<AppState>, Path(name): Path<Str
         .into_iter()
         .map(|(key, value)| EnvVar { key, value })
         .collect();
-
-    let command = LaunchCommand { source, argv, env };
-    (StatusCode::OK, Json(command)).into_response()
+    LaunchCommand { source, argv, env }
 }
 
 /// Look up the cached `(ModelInfo, EstimateSummary)` for a service,

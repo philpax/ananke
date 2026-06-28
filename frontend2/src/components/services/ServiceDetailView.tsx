@@ -510,22 +510,42 @@ function LaunchCommandSection({ name }: { name: string }) {
           </span>
         )}
         {data && (
-          <div>
-            <div className="mb-1 flex items-center gap-2">
-              <Badge
-                variant={data.source === "running" ? "success" : "warning"}
-              >
-                {data.source}
-              </Badge>
-              <CopyButton value={renderCommand(data)} />
-            </div>
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-sm bg-base p-2 font-mono text-xs text-primary">
-              {renderCommand(data)}
-            </pre>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <CommandPanel label="Standalone" command={data.on_empty} />
+            <CommandPanel
+              label="Current conditions"
+              command={data.active ?? null}
+            />
           </div>
         )}
       </div>
     </details>
+  );
+}
+
+function CommandPanel({
+  label,
+  command,
+}: {
+  label: string;
+  command: LaunchCommand | null;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="text-xs text-tertiary">{label}</span>
+        {command && <CopyButton value={renderCommand(command)} />}
+      </div>
+      {command ? (
+        <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-sm bg-base p-2 font-mono text-xs text-primary">
+          {renderCommand(command)}
+        </pre>
+      ) : (
+        <div className="flex items-center justify-center rounded-sm bg-base p-4 text-xs text-danger">
+          Does not fit under current conditions
+        </div>
+      )}
+    </div>
   );
 }
 
