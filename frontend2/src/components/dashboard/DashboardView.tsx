@@ -21,6 +21,7 @@ import type {
   MetricBucketResponse,
 } from "../../api/client.ts";
 import { formatBytes, serviceProxyUrl } from "../../util.ts";
+import { toggleFavourite, useFavourites } from "../../api/favourites.ts";
 import { Card } from "../ui/Card.tsx";
 import { Stat } from "../ui/Stat.tsx";
 import { Bar, type BarSegment } from "../ui/Bar.tsx";
@@ -78,6 +79,7 @@ export function DashboardView() {
   const services = useServices();
   const devices = useDevices();
   const lifecycle = useLifecycle();
+  const favourites = useFavourites();
 
   const [rangeIdx, setRangeIdx] = useState(0);
   const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
@@ -110,6 +112,11 @@ export function DashboardView() {
         const aActive = isActive(a.state);
         const bActive = isActive(b.state);
         if (aActive !== bActive) return aActive ? -1 : 1;
+
+        // Favourited services sort above non-favourited.
+        const aFav = favourites.has(a.name);
+        const bFav = favourites.has(b.name);
+        if (aFav !== bFav) return aFav ? -1 : 1;
 
         if (sortOrder === "recent") {
           const aTime = a.last_used_ms ?? 0;
@@ -234,6 +241,8 @@ export function DashboardView() {
                   onAction={(action) =>
                     lifecycle.mutate({ action, name: s.name })
                   }
+                  favourite={favourites.has(s.name)}
+                  onToggleFavourite={() => toggleFavourite(s.name)}
                 />
               ))}
             </div>
@@ -334,6 +343,8 @@ function ServiceRow({
   xMax,
   pending,
   onAction,
+  favourite,
+  onToggleFavourite,
 }: {
   svc: ServiceSummary;
   sparkData?: { ts: number[]; counts: number[] };
@@ -343,6 +354,8 @@ function ServiceRow({
   onAction: (
     action: "start" | "stop" | "restart" | "enable" | "disable",
   ) => void;
+  favourite: boolean;
+  onToggleFavourite: () => void;
 }) {
   const { t } = useTranslation();
 
@@ -358,6 +371,15 @@ function ServiceRow({
 
   return (
     <div className="flex items-center gap-3 px-4 py-2 transition-colors hover:bg-elevated/60">
+      <button
+        onClick={onToggleFavourite}
+        className={`shrink-0 transition-colors ${
+          favourite ? "text-warning" : "text-tertiary hover:text-secondary"
+        }`}
+        title={favourite ? "Unfavourite" : "Favourite"}
+      >
+        <StarIcon filled={favourite} />
+      </button>
       <Link
         to={`/services/${encodeURIComponent(svc.name)}`}
         className="flex flex-1 items-center gap-3 overflow-hidden"
@@ -572,6 +594,23 @@ function DisableIcon() {
     >
       <circle cx="12" cy="12" r="10" />
       <path d="M4.93 4.93l14.14 14.14" />
+    </svg>
+  );
+}
+
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
     </svg>
   );
 }
