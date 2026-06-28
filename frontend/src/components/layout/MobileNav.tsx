@@ -4,10 +4,20 @@
 import { NavLink } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
+import { ChatIcon, DashboardIcon, StatsIcon } from "../ui/icons.tsx";
+
 const MOBILE_NAV_ITEMS = [
-  { to: "/", labelKey: "nav.dashboard", icon: <DashboardIcon /> },
-  { to: "/chat", labelKey: "nav.chat", icon: <ChatIcon /> },
-  { to: "/stats", labelKey: "nav.stats", icon: <StatsIcon /> },
+  {
+    to: "/",
+    labelKey: "nav.dashboard",
+    icon: <DashboardIcon className="w-5 h-5" />,
+  },
+  { to: "/chat", labelKey: "nav.chat", icon: <ChatIcon className="w-5 h-5" /> },
+  {
+    to: "/stats",
+    labelKey: "nav.stats",
+    icon: <StatsIcon className="w-5 h-5" />,
+  },
 ];
 
 export function MobileNav() {
@@ -31,62 +41,5 @@ export function MobileNav() {
         </NavLink>
       ))}
     </nav>
-  );
-}
-
-/* --- Icons (duplicated from Sidebar to keep MobileNav self-contained) --- */
-
-type IconProps = { className?: string };
-const baseClass = "w-5 h-5";
-
-function DashboardIcon({ className = baseClass }: IconProps) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect width="7" height="9" x="3" y="3" rx="1" />
-      <rect width="7" height="5" x="14" y="3" rx="1" />
-      <rect width="7" height="9" x="14" y="12" rx="1" />
-      <rect width="7" height="5" x="3" y="16" rx="1" />
-    </svg>
-  );
-}
-
-function ChatIcon({ className = baseClass }: IconProps) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-
-function StatsIcon({ className = baseClass }: IconProps) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 3v18h18" />
-      <path d="M7 14l4-4 4 4 5-5" />
-    </svg>
   );
 }
