@@ -59,6 +59,7 @@ export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
           width: s.width ?? 1.5,
           fill: s.fill,
           points: { show: true, size: 3 },
+          spanGaps: true,
         })),
       ],
       scales: {
