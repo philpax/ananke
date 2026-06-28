@@ -296,6 +296,10 @@ export function useLifecycle(): UseMutationResult<
           return api.enable(name);
         case "disable":
           return api.disable(name);
+        default: {
+          const _: never = action;
+          return _;
+        }
       }
     },
     onSettled: (_data, _err, vars) => {

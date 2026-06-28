@@ -108,34 +108,38 @@ export function DashboardView() {
   const outputTokens =
     metrics.data?.buckets.reduce((sum, b) => sum + b.completion_tokens, 0) ?? 0;
 
-  const sortedServices = services.data
-    ? [...services.data].sort((a, b) => {
-        // Active services (running/starting/draining) always sort
-        // above inactive ones, regardless of the selected criteria.
-        const aActive = isActive(a.state);
-        const bActive = isActive(b.state);
-        if (aActive !== bActive) return aActive ? -1 : 1;
+  const sortedServices = useMemo(
+    () =>
+      services.data
+        ? [...services.data].sort((a, b) => {
+            // Active services (running/starting/draining) always sort
+            // above inactive ones, regardless of the selected criteria.
+            const aActive = isActive(a.state);
+            const bActive = isActive(b.state);
+            if (aActive !== bActive) return aActive ? -1 : 1;
 
-        // Favourited services sort above non-favourited.
-        const aFav = favourites.has(a.name);
-        const bFav = favourites.has(b.name);
-        if (aFav !== bFav) return aFav ? -1 : 1;
+            // Favourited services sort above non-favourited.
+            const aFav = favourites.has(a.name);
+            const bFav = favourites.has(b.name);
+            if (aFav !== bFav) return aFav ? -1 : 1;
 
-        if (sortOrder === "recent") {
-          const aTime = a.last_used_ms ?? 0;
-          const bTime = b.last_used_ms ?? 0;
-          if (aTime !== bTime) return bTime - aTime;
-          return a.name.localeCompare(b.name);
-        }
-        if (sortOrder === "size") {
-          const aSize = a.vram_bytes ?? 0;
-          const bSize = b.vram_bytes ?? 0;
-          if (aSize !== bSize) return bSize - aSize;
-          return a.name.localeCompare(b.name);
-        }
-        return a.name.localeCompare(b.name);
-      })
-    : [];
+            if (sortOrder === "recent") {
+              const aTime = a.last_used_ms ?? 0;
+              const bTime = b.last_used_ms ?? 0;
+              if (aTime !== bTime) return bTime - aTime;
+              return a.name.localeCompare(b.name);
+            }
+            if (sortOrder === "size") {
+              const aSize = a.vram_bytes ?? 0;
+              const bSize = b.vram_bytes ?? 0;
+              if (aSize !== bSize) return bSize - aSize;
+              return a.name.localeCompare(b.name);
+            }
+            return a.name.localeCompare(b.name);
+          })
+        : [],
+    [services.data, sortOrder, favourites],
+  );
 
   return (
     <div className="flex h-full flex-col">

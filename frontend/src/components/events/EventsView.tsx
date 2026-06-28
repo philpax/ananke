@@ -10,7 +10,9 @@ import {
   useEventFeed,
   type SystemEvent,
 } from "../../api/events.ts";
+import { formatTimestamp } from "../../util.ts";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 const EVENT_TYPES = [
   "state_changed",
@@ -53,7 +55,7 @@ export function EventsView() {
     if (scrollRef.current && autoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [filtered.length]);
+  }, [events.length]);
 
   return (
     <div className="flex h-full flex-col">
@@ -93,9 +95,7 @@ export function EventsView() {
       {/* Event table */}
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">
         {filtered.length === 0 ? (
-          <div className="flex min-h-[200px] items-center justify-center text-sm text-tertiary">
-            No events yet.
-          </div>
+          <EmptyState message="No events yet." />
         ) : (
           <table className="w-full">
             <thead className="sticky top-0 bg-surface">
@@ -116,7 +116,10 @@ export function EventsView() {
             </thead>
             <tbody>
               {filtered.map((event, i) => (
-                <EventRow key={i} event={event} />
+                <EventRow
+                  key={`${event.at_ms ?? i}-${event.type}`}
+                  event={event}
+                />
               ))}
             </tbody>
           </table>
@@ -131,7 +134,7 @@ function EventRow({ event }: { event: SystemEvent }) {
   return (
     <tr className="border-b border-border-default/50 text-xs hover:bg-elevated/60">
       <td className="px-4 py-1.5 font-mono text-tertiary">
-        {formatEventTime(event.at_ms)}
+        {event.at_ms != null ? formatTimestamp(event.at_ms) : "\u2014"}
       </td>
       <td className="px-4 py-1.5">
         <span
@@ -189,16 +192,4 @@ function summarizeEvent(event: SystemEvent): string {
         ),
       );
   }
-}
-
-function formatEventTime(ts: number | undefined): string {
-  if (!ts || !Number.isFinite(ts)) return "\u2014";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return String(ts);
-  return d.toLocaleTimeString(undefined, {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
 }

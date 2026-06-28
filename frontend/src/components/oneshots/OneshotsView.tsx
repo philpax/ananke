@@ -11,6 +11,7 @@ import {
   useDeleteOneshot,
 } from "../../api/hooks.ts";
 import type { OneshotStatus, OneshotRequest } from "../../api/client.ts";
+import { formatDuration, relativeTime } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Badge } from "../ui/Badge.tsx";
@@ -230,7 +231,7 @@ function OneshotDetail({ oneshot }: { oneshot: OneshotStatus }) {
     : null;
   const duration =
     oneshot.started_at_ms && oneshot.ended_at_ms
-      ? formatDurationShort(oneshot.ended_at_ms - oneshot.started_at_ms)
+      ? formatDuration(oneshot.ended_at_ms - oneshot.started_at_ms)
       : null;
 
   return (
@@ -512,22 +513,6 @@ function FormField({
       {hint && <p className="mt-0.5 text-[0.6875rem] text-tertiary">{hint}</p>}
     </div>
   );
-}
-
-function relativeTime(ms: number): string {
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function formatDurationShort(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.round((ms % 60_000) / 1000);
-  return `${m}m${s}s`;
 }
 
 function KillIcon() {

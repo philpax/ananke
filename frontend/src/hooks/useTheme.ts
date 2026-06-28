@@ -17,13 +17,14 @@ function getStoredTheme(): Theme {
   return "dark";
 }
 
-function applyTheme(theme: Theme): void {
+function applyTheme(theme: Theme, prefersLight: boolean): void {
   const root = document.documentElement;
-  const prefersLight = window.matchMedia(
-    "(prefers-color-scheme: light)",
-  ).matches;
   const isLight = theme === "light" || (theme === "system" && prefersLight);
   root.classList.toggle("light", isLight);
+}
+
+function readPrefersLight(): boolean {
+  return window.matchMedia("(prefers-color-scheme: light)").matches;
 }
 
 export function useTheme(): {
@@ -32,30 +33,30 @@ export function useTheme(): {
   isLight: boolean;
 } {
   const [theme, setThemeState] = useState<Theme>(getStoredTheme);
+  const [prefersLight, setPrefersLight] = useState<boolean>(() =>
+    readPrefersLight(),
+  );
 
   useEffect(() => {
-    applyTheme(theme);
+    applyTheme(theme, prefersLight);
     try {
       localStorage.setItem(STORAGE_KEY, theme);
     } catch {
       // Best-effort persistence.
     }
-  }, [theme]);
+  }, [theme, prefersLight]);
 
-  // Listen for system theme changes when in "system" mode.
+  // Listen for system theme changes so `isLight` stays current in
+  // "system" mode. The handler updates state, not the effect body.
   useEffect(() => {
-    if (theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: light)");
-    const handler = () => applyTheme("system");
+    const handler = (e: MediaQueryListEvent) => setPrefersLight(e.matches);
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
-  }, [theme]);
+  }, []);
 
   const setTheme = useCallback((t: Theme) => setThemeState(t), []);
 
-  const prefersLight = window.matchMedia(
-    "(prefers-color-scheme: light)",
-  ).matches;
   const isLight = theme === "light" || (theme === "system" && prefersLight);
 
   return { theme, setTheme, isLight };

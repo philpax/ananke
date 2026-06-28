@@ -32,6 +32,7 @@ import { Spinner } from "../ui/Spinner.tsx";
 import { Button } from "../ui/Button.tsx";
 import { ButtonLink } from "../ui/ButtonLink.tsx";
 import { Badge } from "../ui/Badge.tsx";
+import { EmptyState } from "../ui/EmptyState.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
@@ -91,7 +92,7 @@ export function ChatView() {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  });
+  }, [chat.input]);
 
   async function handleSend() {
     if (!selectedModel) return;
@@ -169,19 +170,19 @@ export function ChatView() {
         className="flex-1 overflow-auto px-4 py-4"
       >
         {chat.messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-tertiary">
-            <span>Send a message to start chatting.</span>
+          <>
+            <EmptyState message="Send a message to start chatting." />
             {chat.chatState.kind === "starting" && (
-              <span className="flex items-center gap-2">
+              <div className="flex items-center justify-center gap-2 py-2 text-sm text-tertiary">
                 <Spinner />
                 Starting {selectedModel}…
-              </span>
+              </div>
             )}
-          </div>
+          </>
         ) : (
           chat.messages.map((msg, i) => (
             <MessageBubble
-              key={i}
+              key={msg.timestamp}
               message={msg}
               modelName={selectedModel}
               liveStats={

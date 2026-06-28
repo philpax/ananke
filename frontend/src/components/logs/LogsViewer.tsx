@@ -10,6 +10,8 @@ import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
 import type { LogLine } from "../../api/client.ts";
 import { formatTimestamp } from "../../util.ts";
 import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
+import { Spinner } from "../ui/Spinner.tsx";
+import { EmptyState } from "../ui/EmptyState.tsx";
 
 type LogsViewerProps = {
   name: string;
@@ -217,13 +219,11 @@ export function LogsViewer({ name }: LogsViewerProps) {
         className="flex-1 overflow-auto px-4 py-2 font-mono text-xs"
       >
         {win.loading ? (
-          <div className="text-tertiary">Loading…</div>
+          <Spinner />
         ) : win.error ? (
           <div className="text-danger">{win.error.message}</div>
         ) : lines.length === 0 ? (
-          <div className="flex min-h-[200px] items-center justify-center text-tertiary">
-            No logs in this window.
-          </div>
+          <EmptyState message="No logs in this window." />
         ) : (
           lines.map((line) => (
             <LogRow

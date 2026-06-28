@@ -144,14 +144,6 @@ export function handleEvent(event: SystemEvent): void {
   }
 }
 
-// --- Optimistic updates (for lifecycle mutations) ---
-
-/// Optimistically patch a service's state. The subsequent event or
-/// refresh will confirm or correct it.
-export function optimisticServiceState(name: string, state: string): void {
-  patchServiceState(name, state);
-}
-
 // --- Internal helpers ---
 
 function scheduleRefresh(debounceMs: number = 500): void {
