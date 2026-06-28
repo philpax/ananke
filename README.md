@@ -690,25 +690,39 @@ A smaller Go proxy with resource pool management. It's a good fit if you:
 
 Like llama-swap, it requires you to declare the VRAM each model will consume ahead of time.
 
+### Goldseam ([avafloww/goldseam](https://github.com/avafloww/goldseam))
+
+A Rust reverse proxy that keeps conversations warm across GPU swaps by moving KV/recurrent state instead of re-prefilling. It's interesting if you:
+
+- Want warm KV-transfer swaps — snapshot a conversation's KV state, kill the process, and resume warm on next load.
+- Prefer scheduling-as-code: placement decisions are a sandboxed TypeScript `decide()` function, hot-reloaded on save.
+- Need demote-to-coexist: a live dual-GPU chat can be demoted onto a single card to make room for another model.
+
+Goldseam is llama.cpp-only (requires a patched build) and uses a per-GPU VRAM budget with declared footprints rather than automatic estimation.
+
 ### How ananke Compares
 
-| Feature             | ananke                      | llama-swap                          | Large Model Proxy                     |
-| ------------------- | --------------------------- | ----------------------------------- | ------------------------------------- |
-| Language            | Rust                        | Go                                  | Go                                    |
-| VRAM estimation     | **Automatic** (GGUF-aware)  | None (user-managed)                 | Manual (declared per model in pools)  |
-| Service templates   | `llama-cpp`, `command`      | Any upstream server                 | Any command                           |
-| Eviction strategy   | Priority-based              | Solver-based (cheapest eviction)    | LRU                                   |
-| Config hot-reload   | Yes, with preflight         | Yes                                 | No                                    |
-| CLI tool            | `anankectl` (comprehensive) | Basic HTTP API                      | Basic HTTP API                        |
-| Management API      | REST + WebSocket events     | REST + Web UI                       | REST + Web Dashboard                  |
-| Service inheritance | `extends` with deep merge   | Macros                              | No                                    |
-| Temporary services  | Oneshot API with TTL        | TTL per model                       | TTL per model                         |
+| Feature             | ananke                      | llama-swap                          | Large Model Proxy                     | Goldseam                                    |
+| ------------------- | --------------------------- | ----------------------------------- | ------------------------------------- | ------------------------------------------- |
+| Language            | Rust                        | Go                                  | Go                                    | Rust                                        |
+| VRAM estimation     | **Automatic** (GGUF-aware)  | None (user-managed)                 | Manual (declared per model in pools)  | Manual (declared per model in catalog)      |
+| Service templates   | `llama-cpp`, `command`      | Any upstream server                 | Any command                           | llama.cpp only (patched build)               |
+| Eviction strategy   | Priority-based              | Solver-based (cheapest eviction)    | LRU                                   | Policy-driven (demote before evict)          |
+| Model switch        | Cold (drain + restart)      | Cold (process swap + re-prefill)    | Cold (process swap)                   | **Warm** (KV snapshot/restore)              |
+| Scheduling          | TOML config (priority, idle) | YAML config (groups, TTL)          | Resource pools                        | TypeScript `decide()` policy (hot-reloaded) |
+| Config hot-reload   | Yes, with preflight         | Yes                                 | No                                    | Yes (policy file mtime-poll)                |
+| CLI tool            | `anankectl` (comprehensive) | Basic HTTP API                      | Basic HTTP API                        | Basic HTTP API                              |
+| Management API      | REST + WebSocket events     | REST + Web UI                       | REST + Web Dashboard                  | REST (`/status` + routines)                 |
+| Service inheritance | `extends` with deep merge   | Macros                              | No                                    | No                                          |
+| Temporary services  | Oneshot API with TTL        | TTL per model                       | TTL per model                         | No                                          |
 
 **Choose ananke if:** You want automatic VRAM estimation (no manual declarations needed) and a CLI/API for programmatic management. ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
 
 **Choose llama-swap if:** You need maximum flexibility with upstream servers, want a battle-tested solution with a large community, and prefer a solver-based matrix for defining which models can run concurrently.
 
 **Choose Large Model Proxy if:** You want a lightweight proxy with resource pools, manual VRAM declarations, and don't need advanced features like service inheritance or real-time event streaming.
+
+**Choose Goldseam if:** You switch models often enough that cold re-prefill hurts, you're on llama.cpp, and you want conversations to stay warm across GPU swaps — with placement decisions expressed as code.
 
 ## API Reference
 
