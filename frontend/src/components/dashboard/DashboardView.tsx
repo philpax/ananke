@@ -30,6 +30,7 @@ import { Badge } from "../ui/Badge.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
 import { Sparkline } from "../ui/Sparkline.tsx";
+import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import {
@@ -145,24 +146,14 @@ export function DashboardView() {
           <span className="font-mono">{window.location.host}</span>
           <CopyButton value={window.location.host} />
         </div>
-        <div className="flex items-center gap-1">
-          {RANGES.map((r, i) => (
-            <button
-              key={r.label}
-              onClick={() => {
-                setRangeIdx(i);
-                setSince(Date.now() - RANGES[i].ms);
-              }}
-              className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                i === rangeIdx
-                  ? "bg-elevated text-primary"
-                  : "text-tertiary hover:text-secondary"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <SegmentedToggle
+          options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
+          selected={rangeIdx}
+          onChange={(i) => {
+            setRangeIdx(i);
+            setSince(Date.now() - RANGES[i].ms);
+          }}
+        />
         <div className="ml-auto flex items-center gap-5">
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />
@@ -205,21 +196,14 @@ export function DashboardView() {
         <Card
           header={t("nav.services")}
           headerAction={
-            <div className="flex items-center gap-1">
-              {SORT_OPTIONS.map((opt) => (
-                <button
-                  key={opt.id}
-                  onClick={() => setSortOrder(opt.id)}
-                  className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                    sortOrder === opt.id
-                      ? "bg-elevated text-primary"
-                      : "text-tertiary hover:text-secondary"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
+            <SegmentedToggle
+              options={SORT_OPTIONS.map((opt) => ({
+                label: opt.label,
+                value: opt.id,
+              }))}
+              selected={sortOrder}
+              onChange={setSortOrder}
+            />
           }
           bodyClassName="p-0"
         >

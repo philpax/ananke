@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
 import type { LogLine } from "../../api/client.ts";
 import { formatTimestamp } from "../../util.ts";
+import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
 
 type LogsViewerProps = {
   name: string;
@@ -113,50 +114,33 @@ export function LogsViewer({ name }: LogsViewerProps) {
     <div className="flex h-72 flex-col">
       {/* Toolbar row 1: time + stream + status */}
       <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
-        <div className="flex items-center gap-0.5">
-          {WINDOW_PRESETS.map((preset, i) => (
-            <button
-              key={preset.label}
-              onClick={() => {
-                setPresetIdx(i);
-                setWindowMode("preset");
-              }}
-              className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                windowMode === "preset" && presetIdx === i
-                  ? "bg-elevated text-primary"
-                  : "text-tertiary hover:text-secondary"
-              }`}
-            >
-              {preset.label}
-            </button>
-          ))}
-          <button
-            onClick={selectCustom}
-            className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-              windowMode === "custom"
-                ? "bg-elevated text-primary"
-                : "text-tertiary hover:text-secondary"
-            }`}
-          >
-            custom
-          </button>
-        </div>
+        <SegmentedToggle<number | "custom">
+          options={[
+            ...WINDOW_PRESETS.map((preset, i) => ({
+              label: preset.label,
+              value: i as number,
+            })),
+            { label: "custom", value: "custom" as const },
+          ]}
+          selected={windowMode === "preset" ? presetIdx : "custom"}
+          onChange={(v) => {
+            if (v === "custom") {
+              selectCustom();
+            } else {
+              setPresetIdx(v);
+              setWindowMode("preset");
+            }
+          }}
+        />
         <div className="mx-1 h-3 w-px bg-border-default" />
-        <div className="flex items-center gap-0.5">
-          {(["both", "stdout", "stderr"] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => setStreamFilter(s)}
-              className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                streamFilter === s
-                  ? "bg-elevated text-primary"
-                  : "text-tertiary hover:text-secondary"
-              }`}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
+        <SegmentedToggle<"both" | "stdout" | "stderr">
+          options={(["both", "stdout", "stderr"] as const).map((s) => ({
+            label: s,
+            value: s,
+          }))}
+          selected={streamFilter}
+          onChange={setStreamFilter}
+        />
         <div className="ml-auto flex items-center gap-2 text-xs text-tertiary">
           {win.isLive && <span className="text-success">live</span>}
           {win.droppedByOverflow > 0 && (

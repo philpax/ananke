@@ -16,6 +16,7 @@ import { RANGES } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
+import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 
 type MemorySeries = {
@@ -147,24 +148,14 @@ export function MetricsView() {
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
         <h1 className="eyebrow !text-primary">Stats</h1>
-        <div className="flex items-center gap-1">
-          {RANGES.map((r, i) => (
-            <button
-              key={r.label}
-              onClick={() => {
-                setRangeIdx(i);
-                setSince(Date.now() - RANGES[i].ms);
-              }}
-              className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                i === rangeIdx
-                  ? "bg-elevated text-primary"
-                  : "text-tertiary hover:text-secondary"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <SegmentedToggle
+          options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
+          selected={rangeIdx}
+          onChange={(i) => {
+            setRangeIdx(i);
+            setSince(Date.now() - RANGES[i].ms);
+          }}
+        />
         <div className="ml-auto flex items-center gap-2">
           <select
             value={serviceFilter}

@@ -37,6 +37,7 @@ import { CopyButton } from "../ui/CopyButton.tsx";
 import { Button } from "../ui/Button.tsx";
 import { ButtonLink } from "../ui/ButtonLink.tsx";
 import { buttonClassName } from "../ui/buttonStyles.ts";
+import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import {
@@ -694,24 +695,14 @@ function ServiceMetrics({ name }: { name: string }) {
       <Card
         header="Stats"
         headerAction={
-          <div className="flex items-center gap-1">
-            {RANGES.map((r, i) => (
-              <button
-                key={r.label}
-                onClick={() => {
-                  setRangeIdx(i);
-                  setSince(Date.now() - RANGES[i].ms);
-                }}
-                className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
-                  i === rangeIdx
-                    ? "bg-elevated text-primary"
-                    : "text-tertiary hover:text-secondary"
-                }`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+          <SegmentedToggle
+            options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
+            selected={rangeIdx}
+            onChange={(i) => {
+              setRangeIdx(i);
+              setSince(Date.now() - RANGES[i].ms);
+            }}
+          />
         }
       >
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
