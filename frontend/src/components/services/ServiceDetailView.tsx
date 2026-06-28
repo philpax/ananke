@@ -15,11 +15,11 @@ import type {
   DevicePlacement,
   EstimateSummary,
   LaunchCommand,
-  MetricBucketResponse,
   ModelInfo,
   PlacementPreview,
   ServiceDetail,
 } from "../../api/client.ts";
+import { aggregateBuckets } from "../../api/metrics-aggregate.ts";
 import {
   formatBytes,
   formatDuration,
@@ -750,64 +750,6 @@ function shellQuote(s: string): string {
   if (s.length === 0) return "''";
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-type AggregatedBucket = {
-  ts: number;
-  requestCount: number;
-  promptTokens: number;
-  completionTokens: number;
-  errorCount: number;
-  totalDurationMs: number;
-  timedRequests: number;
-  totalWeightedOutputTps: number;
-  outputTpsRequests: number;
-  totalWeightedInputTps: number;
-  inputTpsRequests: number;
-};
-
-function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
-  const map = new Map<number, AggregatedBucket>();
-  for (const b of buckets) {
-    const ts = Math.floor(b.bucket_start / 1000);
-    const ex = map.get(ts);
-    if (ex) {
-      ex.requestCount += b.request_count;
-      ex.promptTokens += b.prompt_tokens;
-      ex.completionTokens += b.completion_tokens;
-      ex.errorCount += b.error_count;
-      if (b.avg_duration_ms != null) {
-        ex.totalDurationMs += b.avg_duration_ms * b.request_count;
-        ex.timedRequests += b.request_count;
-      }
-      if (b.output_tps != null) {
-        ex.totalWeightedOutputTps += b.output_tps * b.request_count;
-        ex.outputTpsRequests += b.request_count;
-      }
-      if (b.input_tps != null) {
-        ex.totalWeightedInputTps += b.input_tps * b.request_count;
-        ex.inputTpsRequests += b.request_count;
-      }
-    } else {
-      map.set(ts, {
-        ts,
-        requestCount: b.request_count,
-        promptTokens: b.prompt_tokens,
-        completionTokens: b.completion_tokens,
-        errorCount: b.error_count,
-        totalDurationMs:
-          b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
-        timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
-        totalWeightedOutputTps:
-          b.output_tps != null ? b.output_tps * b.request_count : 0,
-        outputTpsRequests: b.output_tps != null ? b.request_count : 0,
-        totalWeightedInputTps:
-          b.input_tps != null ? b.input_tps * b.request_count : 0,
-        inputTpsRequests: b.input_tps != null ? b.request_count : 0,
-      });
-    }
-  }
-  return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
 }
 
 function ServiceMetrics({ name }: { name: string }) {

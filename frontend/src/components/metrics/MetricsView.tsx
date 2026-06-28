@@ -5,10 +5,13 @@
 import { useMemo, useState } from "react";
 
 import { useMetrics, useDeviceSamples, useServices } from "../../api/hooks.ts";
-import type {
-  MetricBucketResponse,
-  DeviceSampleResponse,
-} from "../../api/client.ts";
+import type { DeviceSampleResponse } from "../../api/client.ts";
+import {
+  aggregateBuckets,
+  groupByService,
+  type AggregatedBucket,
+  type PerServiceSeries,
+} from "../../api/metrics-aggregate.ts";
 import { Card } from "../ui/Card.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
@@ -20,124 +23,6 @@ const RANGES: TimeRange[] = [
   { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
   { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
 ];
-
-type AggregatedBucket = {
-  ts: number;
-  requestCount: number;
-  promptTokens: number;
-  completionTokens: number;
-  errorCount: number;
-  totalDurationMs: number;
-  timedRequests: number;
-  totalWeightedOutputTps: number;
-  outputTpsRequests: number;
-  totalWeightedInputTps: number;
-  inputTpsRequests: number;
-};
-
-function aggregateBuckets(buckets: MetricBucketResponse[]): AggregatedBucket[] {
-  const map = new Map<number, AggregatedBucket>();
-  for (const b of buckets) {
-    const ts = Math.floor(b.bucket_start / 1000);
-    const ex = map.get(ts);
-    if (ex) {
-      ex.requestCount += b.request_count;
-      ex.promptTokens += b.prompt_tokens;
-      ex.completionTokens += b.completion_tokens;
-      ex.errorCount += b.error_count;
-      if (b.avg_duration_ms != null) {
-        ex.totalDurationMs += b.avg_duration_ms * b.request_count;
-        ex.timedRequests += b.request_count;
-      }
-      if (b.output_tps != null) {
-        ex.totalWeightedOutputTps += b.output_tps * b.request_count;
-        ex.outputTpsRequests += b.request_count;
-      }
-      if (b.input_tps != null) {
-        ex.totalWeightedInputTps += b.input_tps * b.request_count;
-        ex.inputTpsRequests += b.request_count;
-      }
-    } else {
-      map.set(ts, {
-        ts,
-        requestCount: b.request_count,
-        promptTokens: b.prompt_tokens,
-        completionTokens: b.completion_tokens,
-        errorCount: b.error_count,
-        totalDurationMs:
-          b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
-        timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
-        totalWeightedOutputTps:
-          b.output_tps != null ? b.output_tps * b.request_count : 0,
-        outputTpsRequests: b.output_tps != null ? b.request_count : 0,
-        totalWeightedInputTps:
-          b.input_tps != null ? b.input_tps * b.request_count : 0,
-        inputTpsRequests: b.input_tps != null ? b.request_count : 0,
-      });
-    }
-  }
-  return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
-}
-
-type PerServiceSeries = {
-  serviceName: string;
-  buckets: AggregatedBucket[];
-};
-
-function groupByService(buckets: MetricBucketResponse[]): PerServiceSeries[] {
-  const byService = new Map<string, AggregatedBucket[]>();
-  for (const b of buckets) {
-    const name = b.service ?? "unknown";
-    const arr = byService.get(name) ?? [];
-    const ts = Math.floor(b.bucket_start / 1000);
-    const ex = arr.find((a) => a.ts === ts);
-    if (ex) {
-      ex.requestCount += b.request_count;
-      ex.promptTokens += b.prompt_tokens;
-      ex.completionTokens += b.completion_tokens;
-      ex.errorCount += b.error_count;
-      if (b.avg_duration_ms != null) {
-        ex.totalDurationMs += b.avg_duration_ms * b.request_count;
-        ex.timedRequests += b.request_count;
-      }
-      if (b.output_tps != null) {
-        ex.totalWeightedOutputTps += b.output_tps * b.request_count;
-        ex.outputTpsRequests += b.request_count;
-      }
-      if (b.input_tps != null) {
-        ex.totalWeightedInputTps += b.input_tps * b.request_count;
-        ex.inputTpsRequests += b.request_count;
-      }
-    } else {
-      arr.push({
-        ts,
-        requestCount: b.request_count,
-        promptTokens: b.prompt_tokens,
-        completionTokens: b.completion_tokens,
-        errorCount: b.error_count,
-        totalDurationMs:
-          b.avg_duration_ms != null ? b.avg_duration_ms * b.request_count : 0,
-        timedRequests: b.avg_duration_ms != null ? b.request_count : 0,
-        totalWeightedOutputTps:
-          b.output_tps != null ? b.output_tps * b.request_count : 0,
-        outputTpsRequests: b.output_tps != null ? b.request_count : 0,
-        totalWeightedInputTps:
-          b.input_tps != null ? b.input_tps * b.request_count : 0,
-        inputTpsRequests: b.input_tps != null ? b.request_count : 0,
-      });
-    }
-  }
-  return Array.from(byService.entries())
-    .map(([serviceName, buckets]) => ({
-      serviceName,
-      buckets: buckets.sort((a, b) => a.ts - b.ts),
-    }))
-    .sort(
-      (a, b) =>
-        b.buckets.reduce((s, x) => s + x.requestCount, 0) -
-        a.buckets.reduce((s, x) => s + x.requestCount, 0),
-    );
-}
 
 type MemorySeries = {
   device: string;
