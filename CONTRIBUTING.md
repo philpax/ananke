@@ -29,6 +29,19 @@ live in a separate NixOS module.
 
 There is no top-level task runner today — `cargo …` for the Rust side and `npm run …` inside `frontend/` are invoked directly. Add one (e.g. a `justfile` or equivalent) only if a cross-cutting recipe emerges that genuinely spans both halves or encodes a multi-step flow; don't reach for one just to alias single-command invocations.
 
+### Releasing
+
+Releases are cut with the `xtask release` subcommand. The script bumps the workspace version across `Cargo.toml`, `Cargo.lock`, `frontend/package.json`, and `frontend/package-lock.json`, commits with `chore(release): v<version>`, and creates an annotated tag. It stops before any remote operation so the operator can inspect before publishing.
+
+```sh
+cargo xtask release 0.2.0          # bump, commit, tag
+git push --follow-tags             # push when ready
+```
+
+Pushing the tag triggers the release workflow in CI, which builds binaries and creates a GitHub release with auto-generated notes. Edit the release notes on GitHub after it publishes.
+
+Use `--dry-run` to preview, `--allow-dirty` to override a dirty working tree, and `--allow-branch-mismatch` to release from a branch other than `main`.
+
 ### Reading child-process logs
 
 ananke captures every supervised child's stdout and stderr into its local SQLite store — they are not surfaced through the daemon's own log output. Use `anankectl logs <service>` to read them back:
