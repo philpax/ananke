@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import DOMPurify from "dompurify";
 
 import { useServices, useInfo } from "../../api/hooks.ts";
@@ -550,11 +551,12 @@ function MessageBubble({
             <div className="flex flex-col gap-3">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
                 components={{
                   code: ({ children, className }) => {
                     const lang = className?.replace("language-", "");
                     return (
-                      <pre className="overflow-x-auto bg-base p-2 font-mono text-xs">
+                      <pre className="my-2 overflow-x-auto bg-base p-2 font-mono text-xs">
                         <code data-lang={lang}>{children}</code>
                       </pre>
                     );
