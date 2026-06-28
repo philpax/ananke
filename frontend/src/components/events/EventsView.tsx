@@ -10,6 +10,7 @@ import {
   useEventFeed,
   type SystemEvent,
 } from "../../api/events.ts";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 
 const EVENT_TYPES = [
   "state_changed",
@@ -57,10 +58,8 @@ export function EventsView() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border-default px-4">
-        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-          Events
-        </h1>
+      <ViewHeader className="gap-2">
+        <h1 className="eyebrow !text-primary">Events</h1>
         <div className="mx-2 h-3 w-px bg-border-default" />
         {EVENT_TYPES.map((type) => (
           <button
@@ -89,7 +88,7 @@ export function EventsView() {
             ↻
           </button>
         </div>
-      </div>
+      </ViewHeader>
 
       {/* Event table */}
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">

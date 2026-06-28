@@ -23,6 +23,7 @@ import type {
 import { formatBytes, serviceProxyUrl, RANGES } from "../../util.ts";
 import { toggleFavourite, useFavourites } from "../../api/favourites.ts";
 import { Card } from "../ui/Card.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Stat } from "../ui/Stat.tsx";
 import { Bar, type BarSegment } from "../ui/Bar.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
@@ -138,10 +139,8 @@ export function DashboardView() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-5 border-b border-border-default px-4">
-        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-          {t("dashboard.title")}
-        </h1>
+      <ViewHeader className="gap-5">
+        <h1 className="eyebrow !text-primary">{t("dashboard.title")}</h1>
         <div className="hidden items-center gap-1.5 text-xs text-tertiary sm:flex">
           <span className="font-mono">{window.location.host}</span>
           <CopyButton value={window.location.host} />
@@ -166,7 +165,7 @@ export function DashboardView() {
             value={outputTokens.toLocaleString()}
           />
         </div>
-      </header>
+      </ViewHeader>
 
       <div className="flex-1 space-y-4 overflow-auto p-4">
         {/* Device cards with memory sparklines */}

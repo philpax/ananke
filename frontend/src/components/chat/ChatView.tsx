@@ -34,6 +34,7 @@ import { ButtonLink } from "../ui/ButtonLink.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { StatusDot } from "../ui/StatusDot.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { ExternalLinkIcon, TrashIcon } from "../ui/icons.tsx";
 
 export function ChatView() {
@@ -157,11 +158,9 @@ export function ChatView() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex h-14 shrink-0 items-center border-b border-border-default px-4">
-        <h1 className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-          Chat
-        </h1>
-      </div>
+      <ViewHeader>
+        <h1 className="eyebrow !text-primary">Chat</h1>
+      </ViewHeader>
 
       {/* Messages */}
       <div

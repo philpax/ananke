@@ -14,6 +14,7 @@ import {
 } from "../../api/metrics-aggregate.ts";
 import { RANGES } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
@@ -146,7 +147,7 @@ export function MetricsView() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
+      <ViewHeader>
         <h1 className="eyebrow !text-primary">Stats</h1>
         <SegmentedToggle
           options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
@@ -172,7 +173,7 @@ export function MetricsView() {
               ))}
           </select>
         </div>
-      </header>
+      </ViewHeader>
 
       <div className="flex-1 overflow-auto p-4">
         {loading && !metrics.data ? (

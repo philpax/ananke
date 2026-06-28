@@ -28,6 +28,7 @@ import {
   RANGES,
 } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { Stat } from "../ui/Stat.tsx";
 import { Bar, type BarSegment } from "../ui/Bar.tsx";
@@ -79,7 +80,7 @@ export function ServiceDetailView() {
     <div className="flex h-full flex-col">
       {/* Header — fixed height to align with the sidebar wordmark and
           the other views' headers, forming one continuous rule. */}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
+      <ViewHeader>
         <Link to="/" className="text-tertiary hover:text-secondary">
           <svg
             width="16"
@@ -108,7 +109,7 @@ export function ServiceDetailView() {
           <Stat label="priority" value={d.priority} />
           <Stat label="lifecycle" value={d.lifecycle} />
         </div>
-      </header>
+      </ViewHeader>
 
       <div className="flex-1 space-y-4 overflow-auto p-4">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

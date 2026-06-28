@@ -30,6 +30,7 @@ import {
 } from "../../api/hooks.ts";
 import type { ValidationError } from "../../api/client.ts";
 import { Card } from "../ui/Card.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { Badge } from "../ui/Badge.tsx";
 
@@ -158,7 +159,7 @@ export function ConfigEditorView() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
+      <ViewHeader>
         <h1 className="eyebrow !text-primary">{t("nav.config")}</h1>
         {readOnly && <Badge variant="neutral">read-only</Badge>}
         {dirty && <Badge variant="warning">unsaved</Badge>}
@@ -196,7 +197,7 @@ export function ConfigEditorView() {
             </button>
           )}
         </div>
-      </header>
+      </ViewHeader>
 
       {saveError && (
         <div className="shrink-0 border-b border-border-default bg-danger/10 px-4 py-2 text-xs text-danger">

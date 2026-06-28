@@ -12,6 +12,7 @@ import {
 } from "../../api/hooks.ts";
 import type { OneshotStatus, OneshotRequest } from "../../api/client.ts";
 import { Card } from "../ui/Card.tsx";
+import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { EmptyState } from "../ui/EmptyState.tsx";
@@ -106,7 +107,7 @@ export function OneshotsView() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border-default px-4">
+      <ViewHeader>
         <h1 className="eyebrow !text-primary">{t("nav.oneshots")}</h1>
         <button
           type="button"
@@ -120,7 +121,7 @@ export function OneshotsView() {
             {oneshots.data.length} total
           </span>
         )}
-      </header>
+      </ViewHeader>
 
       <div className="flex-1 overflow-auto p-4">
         {showForm && (
