@@ -1,7 +1,7 @@
 // Bottom tab bar for mobile navigation. Icon-only, fixed to the
 // bottom of the screen.
 
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { ChatIcon, DashboardIcon, StatsIcon } from "../ui/icons.tsx";
@@ -22,10 +22,20 @@ const MOBILE_NAV_ITEMS = [
 
 export function MobileNav() {
   const { t } = useTranslation();
+  const location = useLocation();
+
+  const serviceMatch = location.pathname.match(/^\/services\/(.+)$/);
+  const chatTo = serviceMatch
+    ? `/chat?model=${encodeURIComponent(serviceMatch[1])}`
+    : "/chat";
+
+  const navItems = MOBILE_NAV_ITEMS.map((item) =>
+    item.to === "/chat" ? { ...item, to: chatTo } : item,
+  );
 
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-10 flex border-t border-border-default bg-surface">
-      {MOBILE_NAV_ITEMS.map((item) => (
+      {navItems.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}

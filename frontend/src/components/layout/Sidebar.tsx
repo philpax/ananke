@@ -2,7 +2,7 @@
 // Shows the daemon endpoint and a health dot at the bottom.
 
 import type { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { useServices } from "../../api/hooks.ts";
@@ -57,6 +57,19 @@ const NAV_ITEMS: NavItem[] = [
 export function Sidebar() {
   const { t } = useTranslation();
   const services = useServices();
+  const location = useLocation();
+
+  // When on a service detail page, carry the service name into the
+  // Chat link so clicking Chat seeds the model from the service the
+  // user was just viewing.
+  const serviceMatch = location.pathname.match(/^\/services\/(.+)$/);
+  const chatTo = serviceMatch
+    ? `/chat?model=${encodeURIComponent(serviceMatch[1])}`
+    : "/chat";
+
+  const navItems = NAV_ITEMS.map((item) =>
+    item.to === "/chat" ? { ...item, to: chatTo } : item,
+  );
 
   const hasFailed = services.data?.some((s) => s.state === "failed");
   const hasRunning = services.data?.some((s) => s.state === "running");
@@ -76,7 +89,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 py-3">
-        {NAV_ITEMS.map((item) => (
+        {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
