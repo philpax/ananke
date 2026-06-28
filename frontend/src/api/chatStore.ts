@@ -34,7 +34,7 @@ export type Message = {
 
 type ChatState =
   | { kind: "idle" }
-  | { kind: "starting" }
+  | { kind: "starting"; controller: AbortController }
   | { kind: "streaming"; controller: AbortController }
   | { kind: "error"; message: string };
 
@@ -159,7 +159,10 @@ export function clearConversation(): void {
 }
 
 export function cancel(): void {
-  if (snapshot.chatState.kind === "streaming") {
+  if (
+    snapshot.chatState.kind === "streaming" ||
+    snapshot.chatState.kind === "starting"
+  ) {
     snapshot.chatState.controller.abort();
     setSnapshot((prev) => ({ ...prev, chatState: { kind: "idle" } }));
   }
@@ -186,17 +189,25 @@ export async function send(
   )
     return;
 
+  // Create the controller early so cancel() works during the start loop.
+  const controller = new AbortController();
+
   // Check if the model is running; start it if not.
   const sysSnap = getSystemSnapshot();
   const svc = sysSnap.services.find((s) => s.name === selectedModel);
   const needsStart = svc != null && svc.state !== "running";
   if (needsStart) {
-    setSnapshot((prev) => ({ ...prev, chatState: { kind: "starting" } }));
+    setSnapshot((prev) => ({
+      ...prev,
+      chatState: { kind: "starting", controller },
+    }));
     try {
       await api.start(selectedModel);
       const deadline = Date.now() + 3 * 60 * 1000;
       while (Date.now() < deadline) {
+        if (controller.signal.aborted) return;
         await new Promise((r) => setTimeout(r, 2000));
+        if (controller.signal.aborted) return;
         const resp = await api.listServices();
         const s = resp.services.find((x) => x.name === selectedModel);
         if (s?.state === "running") break;
@@ -212,6 +223,7 @@ export async function send(
         }
       }
     } catch (e) {
+      if (controller.signal.aborted) return;
       setSnapshot((prev) => ({
         ...prev,
         chatState: {
@@ -258,7 +270,6 @@ export async function send(
     stats: { ...EMPTY_STATS },
   }));
 
-  const controller = new AbortController();
   setSnapshot((prev) => ({
     ...prev,
     chatState: { kind: "streaming", controller },
