@@ -7,6 +7,7 @@
 // away and back within the same tab session.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -39,6 +40,7 @@ import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { ExternalLinkIcon, TrashIcon } from "../ui/icons.tsx";
 
 export function ChatView() {
+  const { t } = useTranslation();
   const services = useServices();
   const info = useInfo();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -160,7 +162,7 @@ export function ChatView() {
     <div className="flex h-full flex-col">
       {/* Header */}
       <ViewHeader>
-        <h1 className="eyebrow !text-primary">Chat</h1>
+        <h1 className="eyebrow !text-primary">{t("chat.title")}</h1>
       </ViewHeader>
 
       {/* Messages */}
@@ -171,11 +173,11 @@ export function ChatView() {
       >
         {chat.messages.length === 0 ? (
           <>
-            <EmptyState message="Send a message to start chatting." />
+            <EmptyState message={t("chat.emptyState")} />
             {chat.chatState.kind === "starting" && (
               <div className="flex items-center justify-center gap-2 py-2 text-sm text-tertiary">
                 <Spinner />
-                Starting {selectedModel}…
+                {t("chat.starting", { model: selectedModel })}
               </div>
             )}
           </>
@@ -198,7 +200,7 @@ export function ChatView() {
         {chat.messages.length > 0 && chat.chatState.kind === "starting" && (
           <div className="flex items-center gap-2 py-2 text-sm text-tertiary">
             <Spinner />
-            Starting {selectedModel}…
+            {t("chat.starting", { model: selectedModel })}
           </div>
         )}
         {chat.chatState.kind === "error" && (
@@ -212,12 +214,12 @@ export function ChatView() {
       {selectedModel && (
         <details className="border-t border-border-default px-4 py-2">
           <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
-            System prompt
+            {t("chat.systemPrompt")}
           </summary>
           <textarea
             value={chat.systemPrompt}
             onChange={(e) => saveSystemPrompt(e.target.value)}
-            placeholder="You are a helpful assistant…"
+            placeholder={t("chat.systemPromptPlaceholder")}
             className="mt-1 h-20 w-full resize-none rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
           />
         </details>
@@ -301,9 +303,9 @@ export function ChatView() {
             placeholder={
               selectedModel
                 ? chat.chatState.kind === "starting"
-                  ? "Starting model…"
-                  : "Type a message… (Enter to send, Shift+Enter for newline)"
-                : "Select a model first"
+                  ? t("chat.startingModelPlaceholder")
+                  : t("chat.typePlaceholder")
+                : t("chat.selectModelFirst")
             }
             disabled={inputDisabled}
             rows={1}
@@ -328,7 +330,7 @@ export function ChatView() {
               disabled={chat.chatState.kind === "starting"}
               className="shrink-0 rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
             >
-              Stop
+              {t("chat.stop")}
             </button>
           ) : (
             <Button
@@ -338,7 +340,7 @@ export function ChatView() {
               disabled={!selectedModel || !chat.input.trim()}
               className="shrink-0"
             >
-              Send
+              {t("chat.send")}
             </Button>
           )}
         </div>
@@ -358,6 +360,7 @@ function ModelDropdown({
   onSelect: (name: string) => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const ref = useRef<HTMLDivElement>(null);
@@ -405,7 +408,7 @@ function ModelDropdown({
               close();
             }
           }}
-          placeholder="Filter models…"
+          placeholder={t("chat.filterModels")}
           className="h-7 w-full rounded-sm border border-border-default bg-surface px-2 text-sm text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
         />
       ) : (
@@ -420,7 +423,9 @@ function ModelDropdown({
               {selectedSvc.has_mmproj && <Badge variant="vision">vision</Badge>}
             </>
           ) : (
-            <span className="text-tertiary">select a model…</span>
+            <span className="text-tertiary">
+              {t("chat.selectModelPlaceholder")}
+            </span>
           )}
           <svg
             width="12"
@@ -441,7 +446,7 @@ function ModelDropdown({
         <div className="absolute bottom-full left-0 z-20 mb-1 max-h-72 w-full overflow-auto rounded-md border border-border-default bg-surface shadow-lg">
           {filtered.length === 0 ? (
             <div className="px-3 py-2 text-sm text-tertiary">
-              No matching models.
+              {t("chat.noMatchingModels")}
             </div>
           ) : (
             filtered.map((s) => (
@@ -476,11 +481,12 @@ function MessageBubble({
   modelName: string | null;
   liveStats: StreamStats | null;
 }) {
+  const { t } = useTranslation();
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isAssistant = message.role === "assistant";
 
-  const label = isAssistant ? (modelName ?? "assistant") : message.role;
+  const label = isAssistant ? (modelName ?? t("chat.assistant")) : message.role;
   const displayStats = liveStats ?? message.stats ?? null;
 
   return (
@@ -492,12 +498,22 @@ function MessageBubble({
         </span>
         {isAssistant && displayStats && displayStats.promptTokens !== null && (
           <span className="flex items-center gap-3 text-xs text-tertiary">
-            <span>prompt {displayStats.promptTokens} tokens</span>
+            <span>
+              {t("chat.promptTokens", { value: displayStats.promptTokens })}
+            </span>
             {displayStats.completionTokens !== null && (
-              <span>output {displayStats.completionTokens} tokens</span>
+              <span>
+                {t("chat.outputTokens", {
+                  value: displayStats.completionTokens,
+                })}
+              </span>
             )}
             {displayStats.predictedPerSecond !== null && (
-              <span>{displayStats.predictedPerSecond.toFixed(1)} tokens/s</span>
+              <span>
+                {t("chat.tokensPerSecond", {
+                  value: displayStats.predictedPerSecond.toFixed(1),
+                })}
+              </span>
             )}
           </span>
         )}
@@ -515,7 +531,7 @@ function MessageBubble({
             className="open:mb-2 open:border-b open:border-border-default open:pb-2 [&_summary]:list-none"
           >
             <summary className="cursor-pointer select-none text-xs text-secondary hover:text-primary">
-              reasoning
+              {t("chat.reasoning")}
             </summary>
             <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-secondary">
               {message.reasoning}

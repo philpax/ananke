@@ -6,6 +6,7 @@
 // text search within the buffer, run filtering, and live tail.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
 import type { LogLine } from "../../api/client.ts";
 import { formatTimestamp } from "../../util.ts";
@@ -51,6 +52,7 @@ function msToDatetime(ms: number): string {
 }
 
 export function LogsViewer({ name }: LogsViewerProps) {
+  const { t } = useTranslation();
   const [windowMode, setWindowMode] = useState<WindowMode>("preset");
   const [presetIdx, setPresetIdx] = useState(0);
 
@@ -122,7 +124,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
               label: preset.label,
               value: i as number,
             })),
-            { label: "custom", value: "custom" as const },
+            { label: t("logs.custom"), value: "custom" as const },
           ]}
           selected={windowMode === "preset" ? presetIdx : "custom"}
           onChange={(v) => {
@@ -137,27 +139,29 @@ export function LogsViewer({ name }: LogsViewerProps) {
         <div className="mx-1 h-3 w-px bg-border-default" />
         <SegmentedToggle<"both" | "stdout" | "stderr">
           options={(["both", "stdout", "stderr"] as const).map((s) => ({
-            label: s,
+            label: t(`logs.${s}`),
             value: s,
           }))}
           selected={streamFilter}
           onChange={setStreamFilter}
         />
         <div className="ml-auto flex items-center gap-2 text-xs text-tertiary">
-          {win.isLive && <span className="text-success">live</span>}
+          {win.isLive && <span className="text-success">{t("logs.live")}</span>}
           {win.droppedByOverflow > 0 && (
             <span className="text-warning">
-              {win.droppedByOverflow} dropped
+              {t("logs.dropped", { value: win.droppedByOverflow })}
             </span>
           )}
-          {win.truncated && <span className="text-warning">truncated</span>}
+          {win.truncated && (
+            <span className="text-warning">{t("logs.truncated")}</span>
+          )}
           <button
             onClick={() => setAutoFollow((v) => !v)}
             className={`rounded-sm px-2 py-0.5 transition-colors ${
               autoFollow ? "text-accent" : "text-tertiary hover:text-secondary"
             }`}
           >
-            follow
+            {t("logs.follow")}
           </button>
         </div>
       </div>
@@ -176,10 +180,12 @@ export function LogsViewer({ name }: LogsViewerProps) {
             type="datetime-local"
             value={untilInput}
             onChange={(e) => setUntilInput(e.target.value)}
-            placeholder="now"
+            placeholder={t("logs.now")}
             className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
           />
-          {!untilInput && <span className="text-xs text-tertiary">(live)</span>}
+          {!untilInput && (
+            <span className="text-xs text-tertiary">{t("logs.liveParen")}</span>
+          )}
         </div>
       )}
 
@@ -189,7 +195,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="search…"
+          placeholder={t("logs.search")}
           className="h-6 w-40 rounded-sm border border-border-default bg-base px-2 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
         />
         {runIds.length > 1 && (
@@ -200,16 +206,16 @@ export function LogsViewer({ name }: LogsViewerProps) {
             }
             className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
           >
-            <option value="">all runs</option>
+            <option value="">{t("logs.allRuns")}</option>
             {runIds.map((r) => (
               <option key={r} value={r}>
-                run {r}
+                {t("logs.run", { value: r })}
               </option>
             ))}
           </select>
         )}
         <span className="ml-auto font-mono text-xs text-tertiary">
-          {lines.length} lines
+          {t("logs.lines", { value: lines.length })}
         </span>
       </div>
 
@@ -223,7 +229,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
         ) : win.error ? (
           <div className="text-danger">{win.error.message}</div>
         ) : lines.length === 0 ? (
-          <EmptyState message="No logs in this window." />
+          <EmptyState message={t("logs.emptyState")} />
         ) : (
           lines.map((line) => (
             <LogRow
@@ -239,6 +245,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
 }
 
 function LogRow({ line, search }: { line: LogLine; search: string }) {
+  const { t } = useTranslation();
   return (
     <div className="flex gap-2 py-0.5 hover:bg-elevated">
       <span className="shrink-0 text-tertiary">
@@ -250,7 +257,7 @@ function LogRow({ line, search }: { line: LogLine; search: string }) {
           line.stream === "stderr" ? "text-danger" : "text-tertiary"
         }`}
       >
-        {line.stream === "stderr" ? "err" : "out"}
+        {line.stream === "stderr" ? t("logs.err") : t("logs.out")}
       </span>
       <span className="whitespace-pre-wrap break-all text-primary">
         {search ? highlightSearch(line.line, search) : line.line}

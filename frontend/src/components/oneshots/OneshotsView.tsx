@@ -117,7 +117,7 @@ export function OneshotsView() {
           size="sm"
           onClick={() => setShowForm((s) => !s)}
         >
-          {showForm ? "Cancel" : "New oneshot"}
+          {showForm ? t("oneshots.cancel") : t("oneshots.newOneshot")}
         </Button>
         {oneshots.data && (
           <span className="ml-auto font-mono text-xs text-tertiary">
@@ -141,7 +141,7 @@ export function OneshotsView() {
           </div>
         ) : sorted.length > 0 ? (
           <div className="space-y-4">
-            <Card header="Jobs" bodyClassName="p-0">
+            <Card header={t("oneshots.jobs")} bodyClassName="p-0">
               <div className="divide-y divide-border-default">
                 {sorted.map((o) => (
                   <OneshotRow
@@ -164,7 +164,7 @@ export function OneshotsView() {
             {selected && <OneshotDetail oneshot={selected} />}
           </div>
         ) : (
-          <EmptyState message="No oneshot jobs. Create one to get started." />
+          <EmptyState message={t("oneshots.emptyState")} />
         )}
       </div>
     </div>
@@ -184,6 +184,7 @@ function OneshotRow({
   onDelete: () => void;
   deletePending: boolean;
 }) {
+  const { t } = useTranslation();
   const isTerminal = oneshot.state === "ended" || oneshot.state === "evicted";
 
   return (
@@ -195,10 +196,14 @@ function OneshotRow({
     >
       <StatusDot state={oneshot.state === "running" ? "running" : "idle"} />
       <span className="font-mono text-sm text-primary">{oneshot.name}</span>
-      {oneshot.state === "running" && <Badge variant="success">running</Badge>}
+      {oneshot.state === "running" && (
+        <Badge variant="success">{t("oneshots.running")}</Badge>
+      )}
       {oneshot.state === "ended" && (
         <Badge variant={oneshot.exit_code === 0 ? "neutral" : "danger"}>
-          {oneshot.exit_code != null ? `exit ${oneshot.exit_code}` : "ended"}
+          {oneshot.exit_code != null
+            ? t("oneshots.exitCode", { code: oneshot.exit_code })
+            : t("oneshots.ended")}
         </Badge>
       )}
       <span className="ml-auto shrink-0 font-mono text-xs text-tertiary">
@@ -214,7 +219,7 @@ function OneshotRow({
           onDelete();
         }}
         disabled={deletePending || isTerminal}
-        title="Kill"
+        title={t("oneshots.kill")}
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-danger transition-colors hover:bg-danger/15 disabled:opacity-30"
       >
         <KillIcon />
@@ -224,6 +229,7 @@ function OneshotRow({
 }
 
 function OneshotDetail({ oneshot }: { oneshot: OneshotStatus }) {
+  const { t } = useTranslation();
   const submitted = new Date(oneshot.submitted_at_ms).toLocaleString();
   const started = oneshot.started_at_ms
     ? new Date(oneshot.started_at_ms).toLocaleString()
@@ -239,18 +245,26 @@ function OneshotDetail({ oneshot }: { oneshot: OneshotStatus }) {
   return (
     <Card header={oneshot.name} bodyClassName="p-0">
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-border-default px-4 py-3 text-sm sm:grid-cols-4">
-        <DetailField label="ID" value={oneshot.id} mono />
-        <DetailField label="Port" value={`:${oneshot.port}`} mono />
-        <DetailField label="State" value={oneshot.state} />
+        <DetailField label={t("oneshots.id")} value={oneshot.id} mono />
         <DetailField
-          label="Exit"
+          label={t("oneshots.port")}
+          value={`:${oneshot.port}`}
+          mono
+        />
+        <DetailField label={t("oneshots.state")} value={oneshot.state} />
+        <DetailField
+          label={t("oneshots.exit")}
           value={oneshot.exit_code != null ? String(oneshot.exit_code) : "—"}
           mono
         />
-        <DetailField label="Submitted" value={submitted} />
-        {started && <DetailField label="Started" value={started} />}
-        {ended && <DetailField label="Ended" value={ended} />}
-        {duration && <DetailField label="Duration" value={duration} mono />}
+        <DetailField label={t("oneshots.submitted")} value={submitted} />
+        {started && (
+          <DetailField label={t("oneshots.started")} value={started} />
+        )}
+        {ended && <DetailField label={t("oneshots.endedAt")} value={ended} />}
+        {duration && (
+          <DetailField label={t("oneshots.duration")} value={duration} mono />
+        )}
       </div>
       <LogsViewer name={oneshot.id} />
     </Card>
@@ -285,6 +299,7 @@ function OneshotForm({
   isPending: boolean;
   error?: string;
 }) {
+  const { t } = useTranslation();
   const [form, setForm] = useState<OneshotFormState>(EMPTY_FORM);
 
   function update<K extends keyof OneshotFormState>(
@@ -297,13 +312,13 @@ function OneshotForm({
   const canSubmit = form.command.trim().length > 0 && !isPending;
 
   return (
-    <Card header="New oneshot" className="mb-4">
+    <Card header={t("oneshots.newOneshot")} className="mb-4">
       <div className="space-y-3">
         {/* Template — only command is available */}
-        <FormField label="Template">
+        <FormField label={t("oneshots.template")}>
           <div className="flex items-center gap-2">
             <span className="rounded-sm bg-elevated px-2.5 py-1 text-xs text-primary ring-1 ring-inset ring-border-strong">
-              command
+              {t("oneshots.command")}
             </span>
             <span
               title="llama-cpp oneshots are not yet supported by the backend"
@@ -314,7 +329,10 @@ function OneshotForm({
           </div>
         </FormField>
 
-        <FormField label="Command" hint="Binary + arguments, space-separated">
+        <FormField
+          label={t("oneshots.commandLabel")}
+          hint={t("oneshots.commandHint")}
+        >
           <input
             type="text"
             value={form.command}
@@ -325,7 +343,7 @@ function OneshotForm({
         </FormField>
 
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Name" hint="Optional; auto-generated if blank">
+          <FormField label={t("oneshots.name")} hint={t("oneshots.nameHint")}>
             <input
               type="text"
               value={form.name}
@@ -334,7 +352,7 @@ function OneshotForm({
               className="w-full rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary focus:border-accent focus:outline-none"
             />
           </FormField>
-          <FormField label="Working directory">
+          <FormField label={t("oneshots.workingDirectory")}>
             <input
               type="text"
               value={form.workdir}
@@ -350,7 +368,7 @@ function OneshotForm({
           <FormField
             label={
               <span className="flex items-center gap-2">
-                Memory
+                {t("oneshots.memory")}
                 <span className="flex items-center gap-0.5">
                   {(["static", "dynamic"] as const).map((m) => (
                     <button
@@ -363,13 +381,13 @@ function OneshotForm({
                           : "text-tertiary hover:text-secondary"
                       }`}
                     >
-                      {m}
+                      {t(`oneshots.${m}`)}
                     </button>
                   ))}
                 </span>
               </span>
             }
-            hint="GB"
+            hint={t("oneshots.gb")}
           >
             {form.allocationMode === "static" ? (
               <input
@@ -388,7 +406,9 @@ function OneshotForm({
                   onChange={(e) => update("minVramGb", e.target.value)}
                   className="w-full rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary focus:border-accent focus:outline-none"
                 />
-                <span className="text-xs text-tertiary">to</span>
+                <span className="text-xs text-tertiary">
+                  {t("oneshots.to")}
+                </span>
                 <input
                   type="number"
                   step="0.5"
@@ -399,7 +419,7 @@ function OneshotForm({
               </div>
             )}
           </FormField>
-          <FormField label="Placement">
+          <FormField label={t("oneshots.placement")}>
             <select
               value={form.placement}
               onChange={(e) =>
@@ -410,12 +430,12 @@ function OneshotForm({
               }
               className="w-full rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary focus:border-accent focus:outline-none"
             >
-              <option value="gpu-only">gpu-only</option>
-              <option value="cpu-only">cpu-only</option>
-              <option value="hybrid">hybrid</option>
+              <option value="gpu-only">{t("oneshots.gpuOnly")}</option>
+              <option value="cpu-only">{t("oneshots.cpuOnly")}</option>
+              <option value="hybrid">{t("oneshots.hybrid")}</option>
             </select>
           </FormField>
-          <FormField label="TTL" hint="e.g. 2h, 30m">
+          <FormField label={t("oneshots.ttl")} hint={t("oneshots.ttlHint")}>
             <input
               type="text"
               value={form.ttl}
@@ -426,7 +446,10 @@ function OneshotForm({
         </div>
 
         {/* Priority slider */}
-        <FormField label="Priority" hint="Higher = harder to evict">
+        <FormField
+          label={t("oneshots.priority")}
+          hint={t("oneshots.priorityHint")}
+        >
           <div className="flex items-center gap-3">
             <input
               type="range"
@@ -444,7 +467,7 @@ function OneshotForm({
 
         {/* Port + health check combined row */}
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Port" hint="Optional; daemon assigns if blank">
+          <FormField label={t("oneshots.port")} hint={t("oneshots.portHint")}>
             <input
               type="number"
               value={form.port}
@@ -454,8 +477,8 @@ function OneshotForm({
             />
           </FormField>
           <FormField
-            label="Health check"
-            hint="Optional path; e.g. /system_stats"
+            label={t("oneshots.healthCheck")}
+            hint={t("oneshots.healthCheckHint")}
           >
             <div className="flex items-center gap-1">
               <input
@@ -492,7 +515,7 @@ function OneshotForm({
             onClick={() => onSubmit(form)}
             disabled={!canSubmit}
           >
-            {isPending ? "Creating…" : "Create oneshot"}
+            {isPending ? t("oneshots.creating") : t("oneshots.createOneshot")}
           </Button>
         </div>
       </div>

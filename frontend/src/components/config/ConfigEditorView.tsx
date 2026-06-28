@@ -5,7 +5,7 @@
 // so the operator can pull the server's current version.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { useTranslation, Trans } from "react-i18next";
 import { EditorState, Compartment } from "@codemirror/state";
 import {
   EditorView,
@@ -162,9 +162,13 @@ export function ConfigEditorView() {
     <div className="flex h-full flex-col">
       <ViewHeader>
         <h1 className="eyebrow !text-primary">{t("nav.config")}</h1>
-        {readOnly && <Badge variant="neutral">read-only</Badge>}
-        {dirty && <Badge variant="warning">unsaved</Badge>}
-        {saveMut.isPending && <Badge variant="accent">saving…</Badge>}
+        {readOnly && (
+          <Badge variant="neutral">{t("config.readOnlyBadge")}</Badge>
+        )}
+        {dirty && <Badge variant="warning">{t("config.unsaved")}</Badge>}
+        {saveMut.isPending && (
+          <Badge variant="accent">{t("config.saving")}</Badge>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {!serverReadOnly && (
             <button
@@ -176,7 +180,7 @@ export function ConfigEditorView() {
                   : "text-tertiary hover:text-secondary"
               }`}
             >
-              {readOnly ? "Read-only" : "Editable"}
+              {readOnly ? t("config.readOnly") : t("config.editable")}
             </button>
           )}
           <button
@@ -185,7 +189,7 @@ export function ConfigEditorView() {
             disabled={config.isFetching}
             className="rounded-md bg-elevated px-2.5 py-1 text-xs text-primary transition-colors hover:bg-border-strong disabled:opacity-40"
           >
-            Reload
+            {t("config.reload")}
           </button>
           {!serverReadOnly && (
             <Button
@@ -195,7 +199,7 @@ export function ConfigEditorView() {
               onClick={handleSave}
               disabled={!dirty || saveMut.isPending || readOnly}
             >
-              Save
+              {t("config.save")}
             </Button>
           )}
         </div>
@@ -347,9 +351,12 @@ function CodeMirrorEditor({
 }
 
 function ValidationPanel({ errors }: { errors: ValidationError[] }) {
+  const { t } = useTranslation();
   return (
     <div className="max-h-40 shrink-0 overflow-auto border-t border-border-default bg-surface px-4 py-2">
-      <div className="eyebrow mb-1 text-danger">Validation errors</div>
+      <div className="eyebrow mb-1 text-danger">
+        {t("config.validationErrors")}
+      </div>
       <ul className="space-y-0.5">
         {errors.map((e, i) => (
           <li key={i} className="font-mono text-xs text-danger">
@@ -373,16 +380,16 @@ function HashMismatchDialog({
   onReload: () => void;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <Card header="Config changed on disk" className="max-w-md">
+      <Card header={t("config.changedOnDisk")} className="max-w-md">
         <p className="text-sm text-secondary">
-          The config file was modified since you last loaded it. The server's
-          current hash is{" "}
-          <code className="font-mono text-xs text-primary">
-            {serverHash.slice(0, 12)}
-          </code>
-          . Reloading will discard your local changes.
+          <Trans
+            i18nKey="config.changedOnDiskBody"
+            components={[<code className="font-mono text-xs text-primary" />]}
+            values={{ hash: serverHash.slice(0, 12) }}
+          />
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button
@@ -390,10 +397,10 @@ function HashMismatchDialog({
             onClick={onDismiss}
             className="rounded-md bg-elevated px-3 py-1.5 text-sm text-primary transition-colors hover:bg-border-strong"
           >
-            Keep local changes
+            {t("config.keepLocalChanges")}
           </button>
           <Button type="button" variant="iris" size="md" onClick={onReload}>
-            Reload from server
+            {t("config.reloadFromServer")}
           </Button>
         </div>
       </Card>

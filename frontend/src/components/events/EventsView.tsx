@@ -5,6 +5,8 @@
 // events arrive unless the user has scrolled up.
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   reconnectEvents,
   useEventFeed,
@@ -24,6 +26,7 @@ const EVENT_TYPES = [
 ] as const;
 
 export function EventsView() {
+  const { t } = useTranslation();
   const { events, connected } = useEventFeed();
   const [typeFilter, setTypeFilter] = useState<Set<string>>(
     new Set(EVENT_TYPES),
@@ -62,7 +65,7 @@ export function EventsView() {
     <div className="flex h-full flex-col">
       {/* Toolbar */}
       <ViewHeader className="gap-2">
-        <h1 className="eyebrow !text-primary">Events</h1>
+        <h1 className="eyebrow !text-primary">{t("events.title")}</h1>
         <div className="mx-2 h-3 w-px bg-border-default" />
         {EVENT_TYPES.map((type) => (
           <button
@@ -79,14 +82,14 @@ export function EventsView() {
         ))}
         <div className="ml-auto flex items-center gap-2 text-xs text-tertiary">
           {connected ? (
-            <span className="text-success">connected</span>
+            <span className="text-success">{t("events.connected")}</span>
           ) : (
-            <span className="text-danger">disconnected</span>
+            <span className="text-danger">{t("events.disconnected")}</span>
           )}
           <button
             onClick={reconnectEvents}
             className="rounded-sm px-2 py-0.5 text-tertiary transition-colors hover:text-secondary"
-            title="Force reconnect"
+            title={t("events.forceReconnect")}
           >
             ↻
           </button>
@@ -96,22 +99,22 @@ export function EventsView() {
       {/* Event table */}
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">
         {filtered.length === 0 ? (
-          <EmptyState message="No events yet." />
+          <EmptyState message={t("events.emptyState")} />
         ) : (
           <table className="w-full">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-border-default text-left">
                 <th className="w-28 px-4 py-1.5 text-xs font-medium text-tertiary">
-                  Time
+                  {t("events.time")}
                 </th>
                 <th className="w-40 px-4 py-1.5 text-xs font-medium text-tertiary">
-                  Type
+                  {t("events.type")}
                 </th>
                 <th className="w-40 px-4 py-1.5 text-xs font-medium text-tertiary">
-                  Service
+                  {t("events.service")}
                 </th>
                 <th className="px-4 py-1.5 text-xs font-medium text-tertiary">
-                  Summary
+                  {t("events.summary")}
                 </th>
               </tr>
             </thead>
@@ -131,6 +134,7 @@ export function EventsView() {
 }
 
 function EventRow({ event }: { event: SystemEvent }) {
+  const { t } = useTranslation();
   const variant = EVENT_VARIANTS[event.type] ?? "neutral";
   return (
     <tr className="border-b border-border-default/50 text-xs hover:bg-elevated/60">
@@ -143,7 +147,7 @@ function EventRow({ event }: { event: SystemEvent }) {
       <td className="px-4 py-1.5 font-mono text-primary">
         {event.service ?? "—"}
       </td>
-      <td className="px-4 py-1.5 text-secondary">{summarizeEvent(event)}</td>
+      <td className="px-4 py-1.5 text-secondary">{summarizeEvent(event, t)}</td>
     </tr>
   );
 }
@@ -156,29 +160,29 @@ const EVENT_VARIANTS: Record<string, BadgeVariant> = {
   overflow: "danger",
 };
 
-function summarizeEvent(event: SystemEvent): string {
+function summarizeEvent(event: SystemEvent, t: TFunction): string {
   switch (event.type) {
     case "state_changed": {
       const from = event.from ?? "?";
       const to = event.to ?? "?";
-      return `${from} \u2192 ${to}`;
+      return t("events.stateChanged", { from, to });
     }
     case "allocation_changed":
-      return "device allocation shifted";
+      return t("events.allocationChanged");
     case "config_reloaded":
-      return "configuration reloaded from disk";
+      return t("events.configReloaded");
     case "estimator_drift": {
       const mean = event.rolling_mean;
       if (typeof mean === "number") {
-        return `correction ${mean.toFixed(3)}`;
+        return t("events.estimatorDriftCorrection", { value: mean.toFixed(3) });
       }
-      return "estimate correction updated";
+      return t("events.estimatorDrift");
     }
     case "overflow": {
       const dropped = event.dropped;
       return typeof dropped === "number"
-        ? `${dropped} events dropped`
-        : "events dropped";
+        ? t("events.eventsDroppedCount", { value: dropped })
+        : t("events.eventsDropped");
     }
     default:
       return JSON.stringify(

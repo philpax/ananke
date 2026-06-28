@@ -53,6 +53,7 @@ import {
 import { LogsViewer } from "../logs/LogsViewer.tsx";
 
 export function ServiceDetailView() {
+  const { t } = useTranslation();
   const { name } = useParams<{ name: string }>();
   const detail = useServiceDetail(name ?? null);
   const lifecycle = useLifecycle();
@@ -68,7 +69,7 @@ export function ServiceDetailView() {
   if (detail.error || !detail.data) {
     return (
       <div className="p-4 text-sm text-danger">
-        {detail.error?.message ?? "service not found"}
+        {detail.error?.message ?? t("serviceDetail.notFound")}
       </div>
     );
   }
@@ -104,10 +105,10 @@ export function ServiceDetailView() {
           <Badge variant="embedding">embedding</Badge>
         )}
         <div className="ml-auto flex items-center gap-4">
-          <Stat label="port" value={`:${d.port}`} />
-          <Stat label="pid" value={d.pid ?? "—"} />
-          <Stat label="priority" value={d.priority} />
-          <Stat label="lifecycle" value={d.lifecycle} />
+          <Stat label={t("serviceDetail.port")} value={`:${d.port}`} />
+          <Stat label={t("serviceDetail.pid")} value={d.pid ?? "—"} />
+          <Stat label={t("serviceDetail.priority")} value={d.priority} />
+          <Stat label={t("serviceDetail.lifecycle")} value={d.lifecycle} />
         </div>
       </ViewHeader>
 
@@ -115,19 +116,19 @@ export function ServiceDetailView() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {/* Model info */}
           {d.model_info && (
-            <Card header="Model">
+            <Card header={t("serviceDetail.model")}>
               <ModelInfoGrid model={d.model_info} />
             </Card>
           )}
 
           {/* Configuration */}
-          <Card header="Configuration">
+          <Card header={t("serviceDetail.configuration")}>
             <ConfigGrid detail={d} />
           </Card>
 
           {/* Memory estimate */}
           {d.estimate && (
-            <Card header="Memory estimate">
+            <Card header={t("serviceDetail.memoryEstimate")}>
               <EstimateGrid
                 estimate={d.estimate}
                 observedPeakBytes={d.observed_peak_bytes}
@@ -136,7 +137,7 @@ export function ServiceDetailView() {
           )}
 
           {/* Lifecycle actions */}
-          <Card header="Actions">
+          <Card header={t("serviceDetail.actions")}>
             <div className="flex items-center gap-2">
               <a
                 href={serviceProxyUrl(d.port)}
@@ -145,7 +146,7 @@ export function ServiceDetailView() {
                 className={buttonClassName("blue")}
               >
                 <ExternalLinkIcon />
-                Open
+                {t("serviceDetail.open")}
               </a>
               {d.modality !== "embedding" && (
                 <ButtonLink
@@ -153,7 +154,7 @@ export function ServiceDetailView() {
                   to={`/chat?model=${encodeURIComponent(d.name)}`}
                 >
                   <ChatIcon className="w-3.5 h-3.5" />
-                  Chat
+                  {t("serviceDetail.chat")}
                 </ButtonLink>
               )}
               <LifecycleActions
@@ -169,7 +170,7 @@ export function ServiceDetailView() {
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {/* Placement */}
-          <Card header="Placement" className="lg:col-span-2">
+          <Card header={t("serviceDetail.placement")} className="lg:col-span-2">
             <PlacementSection
               current={d.current_allocation}
               placementOverride={d.placement_override}
@@ -178,7 +179,10 @@ export function ServiceDetailView() {
           </Card>
 
           {/* Launch command */}
-          <Card header="Launch command" className="lg:col-span-2">
+          <Card
+            header={t("serviceDetail.launchCommand")}
+            className="lg:col-span-2"
+          >
             <LaunchCommandSection name={d.name} />
           </Card>
         </div>
@@ -187,7 +191,7 @@ export function ServiceDetailView() {
         {d.modality !== "embedding" && <ServiceMetrics name={d.name} />}
 
         {/* Logs */}
-        <Card header="Logs" bodyClassName="p-0">
+        <Card header={t("serviceDetail.logs")} bodyClassName="p-0">
           <LogsViewer name={d.name} />
         </Card>
       </div>
@@ -196,27 +200,28 @@ export function ServiceDetailView() {
 }
 
 function ModelInfoGrid({ model }: { model: ModelInfo }) {
+  const { t } = useTranslation();
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
       {model.model_name && (
         <>
-          <dt className="text-tertiary">Name</dt>
+          <dt className="text-tertiary">{t("serviceDetail.name")}</dt>
           <dd className="text-primary">{model.model_name}</dd>
         </>
       )}
-      <dt className="text-tertiary">File</dt>
+      <dt className="text-tertiary">{t("serviceDetail.file")}</dt>
       <dd className="flex items-center gap-1">
         <span className="font-mono text-xs text-primary">
           {model.file_name}
         </span>
         <CopyButton value={model.file_name} />
       </dd>
-      <dt className="text-tertiary">Architecture</dt>
+      <dt className="text-tertiary">{t("serviceDetail.architecture")}</dt>
       <dd className="font-mono text-primary">{model.architecture}</dd>
       {model.parameter_count !== undefined &&
         model.parameter_count !== null && (
           <>
-            <dt className="text-tertiary">Parameters</dt>
+            <dt className="text-tertiary">{t("serviceDetail.parameters")}</dt>
             <dd
               className="font-mono text-primary"
               title={`${model.parameter_count.toLocaleString()} parameters`}
@@ -225,34 +230,38 @@ function ModelInfoGrid({ model }: { model: ModelInfo }) {
             </dd>
           </>
         )}
-      <dt className="text-tertiary">On disk</dt>
+      <dt className="text-tertiary">{t("serviceDetail.onDisk")}</dt>
       <dd className="font-mono text-primary">
         {formatBytes(model.total_tensor_bytes)}
       </dd>
       {model.block_count !== undefined && model.block_count !== null && (
         <>
-          <dt className="text-tertiary">Layers</dt>
+          <dt className="text-tertiary">{t("serviceDetail.layers")}</dt>
           <dd className="font-mono text-primary">{model.block_count}</dd>
         </>
       )}
       {model.trained_context_length !== undefined &&
         model.trained_context_length !== null && (
           <>
-            <dt className="text-tertiary">Trained context</dt>
+            <dt className="text-tertiary">
+              {t("serviceDetail.trainedContext")}
+            </dt>
             <dd className="font-mono text-primary">
-              {model.trained_context_length.toLocaleString()} tokens
+              {t("serviceDetail.tokensValue", {
+                value: model.trained_context_length.toLocaleString(),
+              })}
             </dd>
           </>
         )}
       {model.shard_count > 1 && (
         <>
-          <dt className="text-tertiary">Shards</dt>
+          <dt className="text-tertiary">{t("serviceDetail.shards")}</dt>
           <dd className="font-mono text-primary">{model.shard_count}</dd>
         </>
       )}
       {model.license && (
         <>
-          <dt className="text-tertiary">License</dt>
+          <dt className="text-tertiary">{t("serviceDetail.license")}</dt>
           <dd className="font-mono text-xs text-primary">{model.license}</dd>
         </>
       )}
@@ -261,33 +270,36 @@ function ModelInfoGrid({ model }: { model: ModelInfo }) {
 }
 
 function ConfigGrid({ detail }: { detail: ServiceDetail }) {
+  const { t } = useTranslation();
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-      <dt className="text-tertiary">Template</dt>
+      <dt className="text-tertiary">{t("serviceDetail.template")}</dt>
       <dd className="font-mono text-primary">{detail.template}</dd>
-      <dt className="text-tertiary">Context</dt>
+      <dt className="text-tertiary">{t("serviceDetail.context")}</dt>
       <dd className="font-mono text-primary">
         {detail.estimate
-          ? `${detail.estimate.configured_context.toLocaleString()} tokens`
+          ? t("serviceDetail.tokensValue", {
+              value: detail.estimate.configured_context.toLocaleString(),
+            })
           : "—"}
       </dd>
-      <dt className="text-tertiary">Idle timeout</dt>
+      <dt className="text-tertiary">{t("serviceDetail.idleTimeout")}</dt>
       <dd className="font-mono text-primary">
         {detail.lifecycle === "persistent"
-          ? "never (persistent)"
+          ? t("serviceDetail.neverPersistent")
           : formatDuration(detail.idle_timeout_ms)}
       </dd>
-      <dt className="text-tertiary">Run ID</dt>
+      <dt className="text-tertiary">{t("serviceDetail.runId")}</dt>
       <dd className="font-mono text-primary">{detail.run_id ?? "—"}</dd>
-      <dt className="text-tertiary">Private port</dt>
+      <dt className="text-tertiary">{t("serviceDetail.privatePort")}</dt>
       <dd className="font-mono text-primary">:{detail.private_port}</dd>
       {detail.rolling_mean != null && (
         <>
-          <dt className="text-tertiary">Estimator drift</dt>
+          <dt className="text-tertiary">{t("serviceDetail.estimatorDrift")}</dt>
           <dd className="font-mono text-primary">
             {detail.rolling_mean.toFixed(3)}×{" "}
             <span className="text-tertiary">
-              ({detail.rolling_samples} samples)
+              {t("serviceDetail.samples", { value: detail.rolling_samples })}
             </span>
           </dd>
         </>
@@ -303,6 +315,7 @@ function EstimateGrid({
   estimate: EstimateSummary;
   observedPeakBytes: number;
 }) {
+  const { t } = useTranslation();
   const total =
     estimate.weights_bytes +
     estimate.kv_bytes_for_context +
@@ -310,27 +323,31 @@ function EstimateGrid({
   return (
     <div className="space-y-2">
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-tertiary">Weights</dt>
+        <dt className="text-tertiary">{t("serviceDetail.weights")}</dt>
         <dd className="font-mono text-primary">
           {formatBytes(estimate.weights_bytes)}
         </dd>
         <dt className="text-tertiary">
-          KV @ {estimate.configured_context.toLocaleString()} ctx
+          {t("serviceDetail.kvAtContext", {
+            ctx: estimate.configured_context.toLocaleString(),
+          })}
         </dt>
         <dd className="font-mono text-primary">
           {formatBytes(estimate.kv_bytes_for_context)}
         </dd>
-        <dt className="text-tertiary">Compute/dev</dt>
+        <dt className="text-tertiary">{t("serviceDetail.computeDev")}</dt>
         <dd className="font-mono text-primary">
           {formatBytes(estimate.compute_buffer_bytes_per_device)}
         </dd>
-        <dt className="text-tertiary">Total</dt>
+        <dt className="text-tertiary">{t("serviceDetail.total")}</dt>
         <dd className="font-mono text-primary">
           {formatBytes(total)}
           {observedPeakBytes > 0 && (
             <span className="text-tertiary">
               {" "}
-              (peak {formatBytes(observedPeakBytes)})
+              {t("serviceDetail.peak", {
+                bytes: formatBytes(observedPeakBytes),
+              })}
             </span>
           )}
         </dd>
@@ -348,6 +365,7 @@ function PlacementSection({
   placementOverride: ServiceDetail["placement_override"];
   placement: PlacementPreview | null;
 }) {
+  const { t } = useTranslation();
   const hasCurrent = Object.keys(current).length > 0;
   const hasOverride = Object.keys(placementOverride).length > 0;
   const hasPlacement = placement !== null;
@@ -359,7 +377,9 @@ function PlacementSection({
       {hasPlacement && (
         <div>
           <div className="mb-1 flex items-center gap-2">
-            <span className="text-xs text-tertiary">Preview</span>
+            <span className="text-xs text-tertiary">
+              {t("serviceDetail.preview")}
+            </span>
             <FitBadge verdict={placement.verdict} />
           </div>
           {placement.devices.length > 0 ? (
@@ -374,14 +394,16 @@ function PlacementSection({
             </div>
           ) : (
             <span className="text-xs text-tertiary">
-              No placement fits the allowed GPUs.
+              {t("serviceDetail.noPlacementFits")}
             </span>
           )}
           {placement.expert_offload_bytes > 0 && (
             <div className="mt-1.5 text-xs text-tertiary">
-              Expert offload: {placement.expert_offload_layers}{" "}
-              {placement.expert_offload_layers === 1 ? "layer" : "layers"} ·{" "}
-              {formatBytes(placement.expert_offload_bytes)} to CPU
+              {t("serviceDetail.expertOffload", {
+                layers: placement.expert_offload_layers,
+                bytes: formatBytes(placement.expert_offload_bytes),
+                count: placement.expert_offload_layers,
+              })}
             </div>
           )}
         </div>
@@ -391,7 +413,9 @@ function PlacementSection({
         <div className="grid grid-cols-2 gap-x-4 text-sm">
           {hasCurrent && (
             <div>
-              <div className="mb-0.5 text-xs text-tertiary">Current pledge</div>
+              <div className="mb-0.5 text-xs text-tertiary">
+                {t("serviceDetail.currentPledge")}
+              </div>
               <ul className="font-mono text-xs text-primary">
                 {Object.entries(current).map(([slot, mb]) => (
                   <li key={slot}>
@@ -406,9 +430,9 @@ function PlacementSection({
             <div>
               <div
                 className="mb-0.5 text-xs text-tertiary"
-                title="Manual override declared in config"
+                title={t("serviceDetail.configuredOverrideTitle")}
               >
-                Configured override
+                {t("serviceDetail.configuredOverride")}
               </div>
               <ul className="font-mono text-xs text-primary">
                 {Object.entries(placementOverride).map(([slot, mb]) => (
@@ -433,6 +457,7 @@ function PlacementBar({
   device: DevicePlacement;
   verdict: PlacementPreview["verdict"];
 }) {
+  const { t } = useTranslation();
   const {
     device: name,
     bytes,
@@ -450,19 +475,19 @@ function PlacementBar({
     {
       variant: "reserved",
       bytes: used_by_others_bytes,
-      label: "used by others",
+      label: t("serviceDetail.usedByOthers"),
     },
     {
       variant: thisVariant,
       bytes,
-      label: "this service",
+      label: t("serviceDetail.thisService"),
     },
     ...(canGrow
       ? [
           {
             variant: thisVariant,
             bytes: max_bytes - bytes,
-            label: "growth headroom",
+            label: t("serviceDetail.growthHeadroom"),
           } satisfies BarSegment,
         ]
       : []),
@@ -493,39 +518,47 @@ function PlacementBar({
 }
 
 function FitBadge({ verdict }: { verdict: PlacementPreview["verdict"] }) {
+  const { t } = useTranslation();
   const map: Record<
     PlacementPreview["verdict"],
     { variant: "success" | "warning" | "danger"; label: string }
   > = {
-    fits: { variant: "success", label: "fits now" },
-    needs_eviction: { variant: "warning", label: "needs eviction" },
-    does_not_fit: { variant: "danger", label: "does not fit" },
+    fits: { variant: "success", label: t("serviceDetail.fitsNow") },
+    needs_eviction: {
+      variant: "warning",
+      label: t("serviceDetail.needsEviction"),
+    },
+    does_not_fit: { variant: "danger", label: t("serviceDetail.doesNotFit") },
   };
   const { variant, label } = map[verdict];
   return <Badge variant={variant}>{label}</Badge>;
 }
 
 function LaunchCommandSection({ name }: { name: string }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const { data, error, isPending } = useServiceCommand(name, open);
 
   return (
     <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="cursor-pointer select-none text-xs text-tertiary hover:text-secondary">
-        Expand to compute launch command
+        {t("serviceDetail.expandToCompute")}
       </summary>
       <div className="mt-2">
         {open && isPending && <Spinner />}
         {error && (
           <span className="text-sm text-danger">
-            Cannot compute: {error.message}
+            {t("serviceDetail.cannotCompute", { error: error.message })}
           </span>
         )}
         {data && (
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <CommandPanel label="Standalone" command={data.on_empty} />
             <CommandPanel
-              label="Current conditions"
+              label={t("serviceDetail.standalone")}
+              command={data.on_empty}
+            />
+            <CommandPanel
+              label={t("serviceDetail.currentConditions")}
               command={data.active ?? null}
             />
           </div>
@@ -542,6 +575,7 @@ function CommandPanel({
   label: string;
   command: LaunchCommand | null;
 }) {
+  const { t } = useTranslation();
   return (
     <div>
       <div className="mb-1 flex items-center gap-2">
@@ -554,7 +588,7 @@ function CommandPanel({
         </pre>
       ) : (
         <div className="flex items-center justify-center rounded-sm bg-base p-4 text-xs text-danger">
-          Does not fit under current conditions
+          {t("serviceDetail.doesNotFitCurrent")}
         </div>
       )}
     </div>
@@ -657,6 +691,7 @@ function shellQuote(s: string): string {
 }
 
 function ServiceMetrics({ name }: { name: string }) {
+  const { t } = useTranslation();
   const [rangeIdx, setRangeIdx] = useState(0);
   const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
   const range = RANGES[rangeIdx];
@@ -694,7 +729,7 @@ function ServiceMetrics({ name }: { name: string }) {
   return (
     <div className="space-y-4">
       <Card
-        header="Stats"
+        header={t("serviceDetail.stats")}
         headerAction={
           <SegmentedToggle
             options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
@@ -707,25 +742,31 @@ function ServiceMetrics({ name }: { name: string }) {
         }
       >
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
-          <Stat label={`Requests (${range.label})`} value={totalRequests} />
-          <Stat label="Errors" value={totalErrors} />
-          <Stat label="Tokens" value={totalTokens.toLocaleString()} />
           <Stat
-            label="Avg latency"
+            label={t("serviceDetail.requestsInPeriod", { range: range.label })}
+            value={totalRequests}
+          />
+          <Stat label={t("serviceDetail.errors")} value={totalErrors} />
+          <Stat
+            label={t("serviceDetail.tokens")}
+            value={totalTokens.toLocaleString()}
+          />
+          <Stat
+            label={t("serviceDetail.avgLatency")}
             value={totalRequests > 0 ? `${Math.round(avgLatency)}ms` : "—"}
           />
           <Stat
-            label="Avg in TPS"
+            label={t("serviceDetail.avgInTps")}
             value={totalRequests > 0 ? avgInputTps.toFixed(1) : "—"}
           />
           <Stat
-            label="Avg out TPS"
+            label={t("serviceDetail.avgOutTps")}
             value={totalRequests > 0 ? avgOutputTps.toFixed(1) : "—"}
           />
         </div>
       </Card>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card header="Request rate">
+        <Card header={t("stats.requestRate")}>
           <Chart
             xMin={xMin}
             xMax={xMax}
@@ -735,14 +776,14 @@ function ServiceMetrics({ name }: { name: string }) {
             ]}
             series={[
               {
-                label: "Requests",
+                label: t("stats.requests"),
                 stroke: CHART_PALETTE[0],
                 fill: "rgba(139,124,248,0.08)",
               },
             ]}
           />
         </Card>
-        <Card header="Token throughput">
+        <Card header={t("stats.tokenThroughput")}>
           <Chart
             xMin={xMin}
             xMax={xMax}
@@ -753,12 +794,12 @@ function ServiceMetrics({ name }: { name: string }) {
             ]}
             series={[
               {
-                label: "Prompt",
+                label: t("stats.prompt"),
                 stroke: CHART_PALETTE[0],
                 fill: "rgba(139,124,248,0.08)",
               },
               {
-                label: "Completion",
+                label: t("stats.completion"),
                 stroke: CHART_PALETTE[1],
                 fill: "rgba(69,201,138,0.08)",
               },
@@ -766,7 +807,7 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         </Card>
       </div>
-      <Card header="Tokens per second">
+      <Card header={t("stats.tokensPerSecond")}>
         <Chart
           xMin={xMin}
           xMax={xMax}
@@ -785,13 +826,13 @@ function ServiceMetrics({ name }: { name: string }) {
           ]}
           series={[
             {
-              label: "Input",
+              label: t("stats.input"),
               stroke: CHART_PALETTE[0],
               fill: "rgba(139,124,248,0.08)",
               unit: "tok/s",
             },
             {
-              label: "Output",
+              label: t("stats.output"),
               stroke: CHART_PALETTE[1],
               fill: "rgba(69,201,138,0.08)",
               unit: "tok/s",

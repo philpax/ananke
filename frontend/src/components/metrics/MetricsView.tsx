@@ -3,6 +3,7 @@
 // from the daemon's `/api/metrics` and `/api/devices/samples` endpoints.
 
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { useMetrics, useDeviceSamples, useServices } from "../../api/hooks.ts";
 import type { DeviceSampleResponse } from "../../api/client.ts";
@@ -112,6 +113,7 @@ function toMemoryData(series: MemorySeries[]): (number | null)[][] {
 }
 
 export function MetricsView() {
+  const { t } = useTranslation();
   const [rangeIdx, setRangeIdx] = useState(0);
   const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
   const [serviceFilter, setServiceFilter] = useState<string>("");
@@ -148,7 +150,7 @@ export function MetricsView() {
   return (
     <div className="flex h-full flex-col">
       <ViewHeader>
-        <h1 className="eyebrow !text-primary">Stats</h1>
+        <h1 className="eyebrow !text-primary">{t("stats.title")}</h1>
         <SegmentedToggle
           options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
           selected={rangeIdx}
@@ -163,7 +165,7 @@ export function MetricsView() {
             onChange={(e) => setServiceFilter(e.target.value)}
             className="h-7 rounded-sm border border-border-default bg-base px-2 text-xs text-primary focus:border-accent focus:outline-none"
           >
-            <option value="">All services</option>
+            <option value="">{t("stats.allServices")}</option>
             {(services.data ?? [])
               .filter((s) => s.modality !== "embedding")
               .map((s) => (
@@ -183,14 +185,14 @@ export function MetricsView() {
         ) : (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {/* Request rate */}
-            <Card header="Request rate">
+            <Card header={t("stats.requestRate")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
                 data={toLineData(aggregated, "requestCount")}
                 series={[
                   {
-                    label: "Requests",
+                    label: t("stats.requests"),
                     stroke: CHART_PALETTE[0],
                     fill: "rgba(139,124,248,0.08)",
                   },
@@ -199,7 +201,7 @@ export function MetricsView() {
             </Card>
 
             {/* Token throughput */}
-            <Card header="Token throughput">
+            <Card header={t("stats.tokenThroughput")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
@@ -210,12 +212,12 @@ export function MetricsView() {
                 ]}
                 series={[
                   {
-                    label: "Prompt",
+                    label: t("stats.prompt"),
                     stroke: CHART_PALETTE[0],
                     fill: "rgba(139,124,248,0.08)",
                   },
                   {
-                    label: "Completion",
+                    label: t("stats.completion"),
                     stroke: CHART_PALETTE[1],
                     fill: "rgba(69,201,138,0.08)",
                   },
@@ -224,14 +226,14 @@ export function MetricsView() {
             </Card>
 
             {/* Error rate */}
-            <Card header="Error rate">
+            <Card header={t("stats.errorRate")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
                 data={toLineData(aggregated, "errorCount")}
                 series={[
                   {
-                    label: "Errors",
+                    label: t("stats.errors"),
                     stroke: CHART_PALETTE[5],
                     fill: "rgba(239,90,90,0.08)",
                   },
@@ -240,14 +242,14 @@ export function MetricsView() {
             </Card>
 
             {/* Avg latency */}
-            <Card header="Avg latency">
+            <Card header={t("stats.avgLatency")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
                 data={toLineData(aggregated, "totalDurationMs")}
                 series={[
                   {
-                    label: "Duration (ms)",
+                    label: t("stats.durationMs"),
                     stroke: CHART_PALETTE[2],
                     fill: "rgba(224,168,60,0.08)",
                   },
@@ -256,7 +258,7 @@ export function MetricsView() {
             </Card>
 
             {/* Tokens per second */}
-            <Card header="Tokens per second">
+            <Card header={t("stats.tokensPerSecond")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
@@ -267,13 +269,13 @@ export function MetricsView() {
                 ]}
                 series={[
                   {
-                    label: "Input",
+                    label: t("stats.input"),
                     stroke: CHART_PALETTE[0],
                     fill: "rgba(139,124,248,0.08)",
                     unit: "tok/s",
                   },
                   {
-                    label: "Output",
+                    label: t("stats.output"),
                     stroke: CHART_PALETTE[1],
                     fill: "rgba(69,201,138,0.08)",
                     unit: "tok/s",
@@ -283,7 +285,7 @@ export function MetricsView() {
             </Card>
 
             {/* Memory utilisation */}
-            <Card header="Memory utilisation">
+            <Card header={t("stats.memoryUtilisation")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
@@ -299,7 +301,10 @@ export function MetricsView() {
 
             {/* Per-service output TPS */}
             {perService.length > 1 && !serviceFilter && (
-              <Card header="Per-service output TPS" className="lg:col-span-2">
+              <Card
+                header={t("stats.perServiceOutputTps")}
+                className="lg:col-span-2"
+              >
                 <Chart
                   xMin={xMin}
                   xMax={xMax}
@@ -316,7 +321,10 @@ export function MetricsView() {
 
             {/* Per-service request breakdown */}
             {perService.length > 1 && !serviceFilter && (
-              <Card header="Per-service requests" className="lg:col-span-2">
+              <Card
+                header={t("stats.perServiceRequests")}
+                className="lg:col-span-2"
+              >
                 <Chart
                   xMin={xMin}
                   xMax={xMax}
