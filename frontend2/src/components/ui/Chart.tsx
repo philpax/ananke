@@ -69,8 +69,11 @@ export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
         },
         y: {
           auto: true,
-          range: (_u, min, max) =>
-            min === max ? [min - 1, max + 1] : [min, max],
+          range: (_u, min, max) => {
+            const lo = 0;
+            if (min === max) return [lo, max + 1];
+            return [lo, max];
+          },
         },
       },
       axes: [
