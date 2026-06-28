@@ -20,7 +20,7 @@ import type {
   DeviceSampleResponse,
   MetricBucketResponse,
 } from "../../api/client.ts";
-import { formatBytes, serviceProxyUrl } from "../../util.ts";
+import { formatBytes, serviceProxyUrl, RANGES } from "../../util.ts";
 import { toggleFavourite, useFavourites } from "../../api/favourites.ts";
 import { Card } from "../ui/Card.tsx";
 import { Stat } from "../ui/Stat.tsx";
@@ -40,13 +40,6 @@ import {
   StarIcon,
   StopIcon,
 } from "../ui/icons.tsx";
-
-type TimeRange = { label: string; ms: number; bucket: string };
-const RANGES: TimeRange[] = [
-  { label: "1h", ms: 3_600_000, bucket: "1m" },
-  { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
-  { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
-];
 
 type SortOrder = "alpha" | "recent" | "size";
 const SORT_OPTIONS: { id: SortOrder; label: string }[] = [

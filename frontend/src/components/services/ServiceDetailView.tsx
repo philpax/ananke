@@ -25,6 +25,7 @@ import {
   formatDuration,
   formatParameterCount,
   serviceProxyUrl,
+  RANGES,
 } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { Badge } from "../ui/Badge.tsx";
@@ -655,14 +656,12 @@ function shellQuote(s: string): string {
 
 function ServiceMetrics({ name }: { name: string }) {
   const [rangeIdx, setRangeIdx] = useState(0);
-  const [since, setSince] = useState(() => Date.now() - 3_600_000);
-  const bucket = ["1m", "5m", "1h"][rangeIdx];
-  const rangeLabel = ["1h", "6h", "24h"][rangeIdx];
-  const rangeMs = [3_600_000, 6 * 3_600_000, 24 * 3_600_000][rangeIdx];
+  const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
+  const range = RANGES[rangeIdx];
   const xMin = since / 1000;
-  const xMax = (since + rangeMs) / 1000;
+  const xMax = (since + range.ms) / 1000;
 
-  const metrics = useMetrics({ service: name, since, bucket });
+  const metrics = useMetrics({ service: name, since, bucket: range.bucket });
   const buckets = aggregateBuckets(metrics.data?.buckets ?? []);
 
   const totalRequests = buckets.reduce((s, b) => s + b.requestCount, 0);
@@ -696,14 +695,12 @@ function ServiceMetrics({ name }: { name: string }) {
         header="Stats"
         headerAction={
           <div className="flex items-center gap-1">
-            {["1h", "6h", "24h"].map((label, i) => (
+            {RANGES.map((r, i) => (
               <button
-                key={label}
+                key={r.label}
                 onClick={() => {
                   setRangeIdx(i);
-                  setSince(
-                    Date.now() - [3_600_000, 6 * 3_600_000, 24 * 3_600_000][i],
-                  );
+                  setSince(Date.now() - RANGES[i].ms);
                 }}
                 className={`rounded-sm px-2 py-0.5 text-xs transition-colors ${
                   i === rangeIdx
@@ -711,14 +708,14 @@ function ServiceMetrics({ name }: { name: string }) {
                     : "text-tertiary hover:text-secondary"
                 }`}
               >
-                {label}
+                {r.label}
               </button>
             ))}
           </div>
         }
       >
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
-          <Stat label={`Requests (${rangeLabel})`} value={totalRequests} />
+          <Stat label={`Requests (${range.label})`} value={totalRequests} />
           <Stat label="Errors" value={totalErrors} />
           <Stat label="Tokens" value={totalTokens.toLocaleString()} />
           <Stat

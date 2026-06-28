@@ -12,17 +12,11 @@ import {
   type AggregatedBucket,
   type PerServiceSeries,
 } from "../../api/metrics-aggregate.ts";
+import { RANGES } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import { Spinner } from "../ui/Spinner.tsx";
-
-type TimeRange = { label: string; ms: number; bucket: string };
-const RANGES: TimeRange[] = [
-  { label: "1h", ms: 3_600_000, bucket: "1m" },
-  { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
-  { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
-];
 
 type MemorySeries = {
   device: string;

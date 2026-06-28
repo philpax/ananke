@@ -144,3 +144,11 @@ export function zeroFillGaps(
 
   return [outTs, ...outVals];
 }
+
+export type TimeRange = { label: string; ms: number; bucket: string };
+
+export const RANGES: TimeRange[] = [
+  { label: "1h", ms: 3_600_000, bucket: "1m" },
+  { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
+  { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
+];
