@@ -3,7 +3,7 @@
 
 import type { ReactNode } from "react";
 
-type BadgeVariant =
+export type BadgeVariant =
   | "neutral"
   | "success"
   | "warning"

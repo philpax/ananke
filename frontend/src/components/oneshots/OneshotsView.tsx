@@ -12,6 +12,7 @@ import {
 } from "../../api/hooks.ts";
 import type { OneshotStatus, OneshotRequest } from "../../api/client.ts";
 import { formatDuration, relativeTime } from "../../util.ts";
+import { Button } from "../ui/Button.tsx";
 import { Card } from "../ui/Card.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Badge } from "../ui/Badge.tsx";
@@ -110,13 +111,14 @@ export function OneshotsView() {
     <div className="flex h-full flex-col">
       <ViewHeader>
         <h1 className="eyebrow !text-primary">{t("nav.oneshots")}</h1>
-        <button
+        <Button
           type="button"
+          variant="iris"
+          size="sm"
           onClick={() => setShowForm((s) => !s)}
-          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-[var(--color-base)] transition-colors hover:bg-accent/90"
         >
           {showForm ? "Cancel" : "New oneshot"}
-        </button>
+        </Button>
         {oneshots.data && (
           <span className="ml-auto font-mono text-xs text-tertiary">
             {oneshots.data.length} total
@@ -483,14 +485,15 @@ function OneshotForm({
         )}
 
         <div className="flex justify-end">
-          <button
+          <Button
             type="button"
+            variant="iris"
+            size="md"
             onClick={() => onSubmit(form)}
             disabled={!canSubmit}
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-[var(--color-base)] transition-colors hover:bg-accent/90 disabled:opacity-40"
           >
             {isPending ? "Creating…" : "Create oneshot"}
-          </button>
+          </Button>
         </div>
       </div>
     </Card>

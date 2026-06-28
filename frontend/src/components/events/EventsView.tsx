@@ -12,6 +12,7 @@ import {
 } from "../../api/events.ts";
 import { formatTimestamp } from "../../util.ts";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
+import { Badge, type BadgeVariant } from "../ui/Badge.tsx";
 import { EmptyState } from "../ui/EmptyState.tsx";
 
 const EVENT_TYPES = [
@@ -137,11 +138,7 @@ function EventRow({ event }: { event: SystemEvent }) {
         {event.at_ms != null ? formatTimestamp(event.at_ms) : "\u2014"}
       </td>
       <td className="px-4 py-1.5">
-        <span
-          className={`inline-block rounded-[3px] px-1.5 py-0.5 font-mono text-[0.625rem] font-medium uppercase tracking-[0.08em] ring-1 ring-inset ${variant}`}
-        >
-          {event.type}
-        </span>
+        <Badge variant={variant}>{event.type}</Badge>
       </td>
       <td className="px-4 py-1.5 font-mono text-primary">
         {event.service ?? "—"}
@@ -151,12 +148,12 @@ function EventRow({ event }: { event: SystemEvent }) {
   );
 }
 
-const EVENT_VARIANTS: Record<string, string> = {
-  state_changed: "bg-success/12 text-success ring-success/25",
-  allocation_changed: "bg-accent/12 text-accent ring-accent/25",
-  config_reloaded: "bg-warning/12 text-warning ring-warning/25",
-  estimator_drift: "bg-vision/12 text-vision ring-vision/25",
-  overflow: "bg-danger/12 text-danger ring-danger/25",
+const EVENT_VARIANTS: Record<string, BadgeVariant> = {
+  state_changed: "success",
+  allocation_changed: "accent",
+  config_reloaded: "warning",
+  estimator_drift: "vision",
+  overflow: "danger",
 };
 
 function summarizeEvent(event: SystemEvent): string {

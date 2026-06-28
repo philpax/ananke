@@ -331,13 +331,15 @@ export function ChatView() {
               Stop
             </button>
           ) : (
-            <button
+            <Button
+              variant="iris"
+              size="md"
               onClick={handleSend}
               disabled={!selectedModel || !chat.input.trim()}
-              className="shrink-0 rounded-md bg-accent px-3 text-sm font-medium text-[var(--color-base)] hover:bg-accent/90 disabled:opacity-40"
+              className="shrink-0"
             >
               Send
-            </button>
+            </Button>
           )}
         </div>
       </div>
