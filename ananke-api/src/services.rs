@@ -97,9 +97,9 @@ pub struct ServiceSummary {
     /// can't be computed (e.g. a command service that reserves no VRAM).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vram_bytes: Option<u64>,
-    /// Wall-clock timestamp (ms since epoch) of the last request the
-    /// service received. `None` if the service has never received
-    /// traffic.
+    /// Wall-clock timestamp (ms since epoch) of the last time the
+    /// service was provisioned or received a request. `None` if the
+    /// service has never been started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_ms: Option<i64>,
 }
@@ -166,6 +166,11 @@ pub struct ServiceDetail {
     #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
     #[schema(value_type = Object)]
     pub ananke_metadata: AnankeMetadata,
+    /// Wall-clock timestamp (ms since epoch) of the last time the
+    /// service was provisioned or received a request. `None` if the
+    /// service has never been started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_ms: Option<i64>,
 }
 
 /// GGUF-derived facts about a model file. Read once per service per

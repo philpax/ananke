@@ -981,6 +981,13 @@ export interface components {
        * @description Idle-before-drain timeout.
        */
       idle_timeout_ms: number;
+      /**
+       * Format: int64
+       * @description Wall-clock timestamp (ms since epoch) of the last time the
+       *     service was provisioned or received a request. `None` if the
+       *     service has never been started.
+       */
+      last_used_ms?: number | null;
       /** @description `"persistent"` or `"ondemand"`. */
       lifecycle: string;
       /**
@@ -1070,9 +1077,9 @@ export interface components {
       inflight_count?: number;
       /**
        * Format: int64
-       * @description Wall-clock timestamp (ms since epoch) of the last request the
-       *     service received. `None` if the service has never received
-       *     traffic.
+       * @description Wall-clock timestamp (ms since epoch) of the last time the
+       *     service was provisioned or received a request. `None` if the
+       *     service has never been started.
        */
       last_used_ms?: number | null;
       /** @description `"persistent"` or `"ondemand"`. */

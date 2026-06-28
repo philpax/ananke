@@ -211,6 +211,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         current_allocation,
         modality: svc_cfg.modality,
         ananke_metadata: svc_cfg.metadata.clone(),
+        last_used_ms: state.activity.last_ms(&svc_cfg.name),
     };
     (StatusCode::OK, Json(detail)).into_response()
 }

@@ -165,6 +165,30 @@ impl Database {
             .map_err(|e| self.db_err(e))
     }
 
+    /// Load `(name, last_request_ms)` pairs for every service that has
+    /// at least one row in `request_metrics`. Used on boot to seed
+    /// `ActivityTable::wall_ms` so `last_used_ms` survives restarts
+    /// without a dedicated persistence column.
+    pub async fn load_last_request_times(&self) -> Result<Vec<(String, i64)>, ExpectedError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.name, MAX(rm.timestamp_ms) AS last_used
+                 FROM services s
+                 JOIN request_metrics rm ON s.service_id = rm.service_id
+                 WHERE s.deleted_at IS NULL
+                 GROUP BY s.name",
+            )
+            .map_err(|e| self.db_err(e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| self.db_err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.db_err(e))
+    }
+
     /// Fetch all log rows for a service (used by the paginated logs
     /// endpoint, which then filters in-memory — the retention cap keeps
     /// this bounded at 50k rows per service).

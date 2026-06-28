@@ -173,6 +173,7 @@ fn service_detail_roundtrips() {
         current_allocation: Default::default(),
         modality: ananke_api::Modality::Chat,
         ananke_metadata: ananke_api::AnankeMetadata::new(),
+        last_used_ms: None,
     };
     assert_eq!(v.clone(), roundtrip(v));
 }

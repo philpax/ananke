@@ -86,6 +86,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     );
 
     let activity = ActivityTable::new();
+    activity.load_from_db(&db).await;
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
     let inflight = InflightTable::new();
 

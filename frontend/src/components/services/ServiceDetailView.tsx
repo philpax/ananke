@@ -24,6 +24,8 @@ import {
   formatBytes,
   formatDuration,
   formatParameterCount,
+  formatTimestamp,
+  relativeTime,
   serviceProxyUrl,
   RANGES,
 } from "../../util.ts";
@@ -288,6 +290,12 @@ function ConfigGrid({ detail }: { detail: ServiceDetail }) {
         {detail.lifecycle === "persistent"
           ? t("serviceDetail.neverPersistent")
           : formatDuration(detail.idle_timeout_ms)}
+      </dd>
+      <dt className="text-tertiary">{t("serviceDetail.lastUsed")}</dt>
+      <dd className="font-mono text-primary">
+        {detail.last_used_ms != null
+          ? `${relativeTime(detail.last_used_ms)} (${formatTimestamp(detail.last_used_ms)})`
+          : "—"}
       </dd>
       <dt className="text-tertiary">{t("serviceDetail.runId")}</dt>
       <dd className="font-mono text-primary">{detail.run_id ?? "—"}</dd>

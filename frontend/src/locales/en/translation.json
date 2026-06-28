@@ -215,6 +215,7 @@
     "template": "Template",
     "context": "Context",
     "idleTimeout": "Idle timeout",
+    "lastUsed": "Last used",
     "runId": "Run ID",
     "privatePort": "Private port",
     "estimatorDrift": "Estimator drift",

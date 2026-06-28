@@ -36,13 +36,7 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatTimestamp(ms: number): string {
-  const d = new Date(ms);
-  return d.toLocaleTimeString(undefined, {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return new Date(ms).toLocaleString();
 }
 
 export function relativeTime(ms: number): string {
