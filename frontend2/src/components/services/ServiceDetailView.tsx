@@ -22,6 +22,7 @@ import type {
 } from "../../api/client.ts";
 import {
   formatBytes,
+  formatDuration,
   formatParameterCount,
   serviceProxyUrl,
 } from "../../util.ts";
@@ -107,6 +108,11 @@ export function ServiceDetailView() {
             </Card>
           )}
 
+          {/* Configuration */}
+          <Card header="Configuration">
+            <ConfigGrid detail={d} />
+          </Card>
+
           {/* Memory estimate */}
           {d.estimate && (
             <Card header="Memory estimate">
@@ -116,36 +122,38 @@ export function ServiceDetailView() {
               />
             </Card>
           )}
-        </div>
 
-        {/* Lifecycle actions */}
-        <Card header="Actions">
-          <div className="flex items-center gap-2">
-            <a
-              href={serviceProxyUrl(d.port)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={buttonClassName("blue")}
-            >
-              <ExternalLinkIcon />
-              Open
-            </a>
-            {d.modality !== "embedding" && (
-              <ButtonLink
-                variant="iris"
-                to={`/chat?model=${encodeURIComponent(d.name)}`}
+          {/* Lifecycle actions */}
+          <Card header="Actions">
+            <div className="flex items-center gap-2">
+              <a
+                href={serviceProxyUrl(d.port)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonClassName("blue")}
               >
-                <ChatIcon />
-                Chat
-              </ButtonLink>
-            )}
-            <LifecycleActions
-              state={d.state}
-              pending={pending}
-              onAction={(action) => lifecycle.mutate({ action, name: d.name })}
-            />
-          </div>
-        </Card>
+                <ExternalLinkIcon />
+                Open
+              </a>
+              {d.modality !== "embedding" && (
+                <ButtonLink
+                  variant="iris"
+                  to={`/chat?model=${encodeURIComponent(d.name)}`}
+                >
+                  <ChatIcon />
+                  Chat
+                </ButtonLink>
+              )}
+              <LifecycleActions
+                state={d.state}
+                pending={pending}
+                onAction={(action) =>
+                  lifecycle.mutate({ action, name: d.name })
+                }
+              />
+            </div>
+          </Card>
+        </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {/* Placement */}
@@ -234,6 +242,42 @@ function ModelInfoGrid({ model }: { model: ModelInfo }) {
         <>
           <dt className="text-tertiary">License</dt>
           <dd className="font-mono text-xs text-primary">{model.license}</dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
+function ConfigGrid({ detail }: { detail: ServiceDetail }) {
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt className="text-tertiary">Template</dt>
+      <dd className="font-mono text-primary">{detail.template}</dd>
+      <dt className="text-tertiary">Context</dt>
+      <dd className="font-mono text-primary">
+        {detail.estimate
+          ? `${detail.estimate.configured_context.toLocaleString()} tokens`
+          : "—"}
+      </dd>
+      <dt className="text-tertiary">Idle timeout</dt>
+      <dd className="font-mono text-primary">
+        {detail.lifecycle === "persistent"
+          ? "never (persistent)"
+          : formatDuration(detail.idle_timeout_ms)}
+      </dd>
+      <dt className="text-tertiary">Run ID</dt>
+      <dd className="font-mono text-primary">{detail.run_id ?? "—"}</dd>
+      <dt className="text-tertiary">Private port</dt>
+      <dd className="font-mono text-primary">:{detail.private_port}</dd>
+      {detail.rolling_mean != null && (
+        <>
+          <dt className="text-tertiary">Estimator drift</dt>
+          <dd className="font-mono text-primary">
+            {detail.rolling_mean.toFixed(3)}×{" "}
+            <span className="text-tertiary">
+              ({detail.rolling_samples} samples)
+            </span>
+          </dd>
         </>
       )}
     </dl>
