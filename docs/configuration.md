@@ -1,5 +1,15 @@
 # Configuration Guide
 
+ananke is configured via a single TOML file discovered in this order:
+
+1. `ANANKE_CONFIG` environment variable.
+2. `--config` CLI argument.
+3. `$XDG_CONFIG_HOME/ananke/config.toml`
+4. `~/.config/ananke/config.toml`
+5. `/etc/ananke/config.toml`
+
+The file is hot-reloaded on save: ananke validates the new config, spawns added services and drains removed ones, and ignores failed reloads so the previous valid config stays in effect.
+
 ## Daemon Settings
 
 ```toml
@@ -8,9 +18,22 @@ management_listen = "0.0.0.0:7071"
 allow_external_management = true # Required if management_listen is non-loopback
 allow_external_services = true   # Allow public access to individual model ports
 data_dir = "./data"
-shutdown_timeout = "120s"         # Max time to wait for services to drain
-llama_server = "/opt/llama-build/llama-server"  # Optional: default llama-server binary for every llama-cpp service (overridable per-service)
+shutdown_timeout = "120s"        # Max time to wait for services to drain
+private_port_start = 40000      # Start of loopback port range for private listeners
+private_port_end = 59999        # End of loopback port range
+llama_server = "/opt/llama-build/llama-server" # Default binary for every llama-cpp service
 ```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `management_listen` | string | `127.0.0.1:7071` | Bind address for the management API. Non-loopback requires `allow_external_management = true`. |
+| `allow_external_management` | bool | `false` | Must be `true` when `management_listen` is non-loopback. |
+| `allow_external_services` | bool | `false` | Bind per-service reverse proxies on `0.0.0.0` instead of `127.0.0.1`. Controls only the per-service proxies, not the OpenAI multiplexer (which honours `openai_api.listen`). |
+| `data_dir` | path | `$XDG_DATA_HOME/ananke` (or `~/.local/share/ananke`) | Directory for the SQLite database and runtime state. |
+| `shutdown_timeout` | duration string | `120s` | Max time to wait for services to drain on daemon shutdown. |
+| `private_port_start` | u16 | `40000` | Inclusive lower bound of the loopback port range handed to llama-server children for their private listener. |
+| `private_port_end` | u16 | `59999` | Inclusive upper bound of the private-listener port range. Override when another process occupies the default window. |
+| `llama_server` | path | `llama-server` (from `$PATH`) | Default llama-server executable for every llama-cpp service. Overridable per-service. |
 
 > **Security Note:** Both the Management API (`management_listen`) and per-service reverse proxies (`allow_external_services`) are **unauthenticated**. If you bind them to non-loopback addresses:
 >
@@ -23,11 +46,19 @@ llama_server = "/opt/llama-build/llama-server"  # Optional: default llama-server
 ```toml
 [openai_api]
 listen = "0.0.0.0:7070"
-enabled = true                   # Set to false to disable the OpenAI API
-max_request_duration = "10m"     # Max wall-clock duration per proxied request
-allow_cors = true                # Allow cross-origin requests from browsers (default: true)
-max_body_mb = 64                 # Max request body size in MiB (default: 64; raise for large or many images)
+enabled = true
+max_request_duration = "10m"
+allow_cors = true
+max_body_mb = 64
 ```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `listen` | string | `127.0.0.1:7070` | Bind address for the OpenAI-compatible API. |
+| `enabled` | bool | `true` | Set to `false` to disable the OpenAI API entirely. |
+| `max_request_duration` | duration string | `10m` | Max wall-clock duration per proxied request. |
+| `allow_cors` | bool | `true` | Allow cross-origin requests from browsers. Set to `false` to block browser-based access. |
+| `max_body_mb` | u64 | `64` | Max request body size in MiB. Raise for large or many images (vision payloads are base64-encoded). |
 
 ## Global Defaults
 
@@ -35,9 +66,16 @@ These values apply to all services unless overridden per-service:
 
 ```toml
 [defaults]
-idle_timeout = "10m"             # Default idle timeout for on-demand services
-priority = 50                    # Default eviction priority
+idle_timeout = "10m"
+priority = 50
+start_queue_depth = 10
 ```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `idle_timeout` | duration string | `10m` | Default idle timeout for on-demand services. |
+| `priority` | u8 | `50` | Default eviction priority (higher wins eviction contests). |
+| `start_queue_depth` | u32 | `10` | Default concurrency cap on pending start requests waiting for the same supervisor before they are rejected with `QueueFull`. |
 
 ## Device Configuration
 
@@ -45,22 +83,54 @@ Control which GPUs are used and how much VRAM is reserved for the system:
 
 ```toml
 [devices]
-gpu_ids = [0, 1]                 # Only probe these GPUs
-default_gpu_reserved_mb = 2048   # Reserve 2GB on all GPUs for system processes
+gpu_ids = [0, 1]
+default_gpu_reserved_mb = 2048
 gpu_reserved_mb = { "0" = 4096 } # Per-GPU override (GPU 0: reserve 4GB)
 
 [devices.cpu]
-enabled = true                   # Allow CPU placement for services
-reserved_gb = 8                  # Reserve 8GB of CPU RAM
+enabled = true
+reserved_gb = 8
 ```
 
-`default_gpu_reserved_mb` and `gpu_reserved_mb` are kept free on every GPU when the packer places a service; a per-service `gpu_headroom_mb` adds to them for one model. `[devices.cpu] reserved_gb` is host RAM the daemon keeps free - it bounds how much expert weight a hybrid MoE service may offload to the CPU, and a placement that would exceed it is rejected.
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `gpu_ids` | array of u32 | all visible GPUs | Only probe these GPUs. |
+| `default_gpu_reserved_mb` | u64 | `0` | VRAM (MiB) kept free on every GPU that lacks a `gpu_reserved_mb` entry. |
+| `gpu_reserved_mb` | map string → u64 | empty | Per-GPU VRAM reserve (MiB), keyed by GPU id string. |
+| `cpu.enabled` | bool | `true` | Allow CPU placement for services. |
+| `cpu.reserved_gb` | u64 | `0` | Host RAM (GiB) the daemon keeps free. Bounds how much expert weight a hybrid MoE service may offload to the CPU; a placement that would exceed it is rejected. |
+
+`default_gpu_reserved_mb` and `gpu_reserved_mb` are kept free on every GPU when the packer places a service; a per-service `gpu_headroom_mb` adds to them for one model.
 
 ## Service Configuration
 
-Services are defined as an array of `[[service]]` blocks.
+Services are defined as an array of `[[service]]` blocks. Each service uses one of two templates: `llama-cpp` (for GGUF models via llama.cpp) or `command` (for arbitrary binaries or Docker wrappers).
 
-### Service Lifecycles
+### Common Fields
+
+These fields appear at the top level of every `[[service]]` block, regardless of template:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | string | *required* | Unique service identifier. |
+| `template` | string | *required* | `"llama-cpp"` or `"command"`. |
+| `port` | u16 | *required* | Public-facing port for the service's reverse proxy. |
+| `lifecycle` | string | `"on_demand"` | `"on_demand"` or `"persistent"` (see [Lifecycle](#lifecycle)). |
+| `priority` | u8 | `50` (or `[defaults]` value) | Eviction priority; higher wins eviction contests. |
+| `idle_timeout` | duration string | `10m` (or `[defaults]` value) | Idle timeout for on-demand services. |
+| `description` | string | none | Human-readable description exposed through `/v1/models` and `/api/services`. |
+| `modality` | string | `"chat"` | `"chat"` or `"embedding"` (see [Embedding Services](#embedding-services)). Any other string is a hard config error. |
+| `extra_args` | array of string | none | Extra argv appended to the service's launch command. |
+| `extra_args_append` | array of string | none | Extra argv appended to the inherited list (use with `extends`; concatenated with parent's list). |
+| `env` | map string → string | none | Environment variables set on the spawned process. Accepts `{port}`, `{gpu_ids}`, `{vram_mb}`, `{model}`, `{name}` placeholders. |
+| `drain_timeout` | duration string | `30s` | Drain timeout before the supervisor escalates to SIGKILL. |
+| `extended_stream_drain` | duration string | `30s` | Extra grace granted to in-flight streaming requests during drain. |
+| `max_request_duration` | duration string | `10m` | Cap on wall-clock duration of a single proxied request. |
+| `start_queue_depth` | u32 | `10` (or `[defaults]` value) | Concurrency cap on pending start requests before `QueueFull` rejection. |
+| `extends` | string | none | Name of a parent service to inherit from. See [Service Inheritance](#service-inheritance). |
+| `migrate_from` | string | none | Old service name to preserve database history from. See [Service Migration](#service-migration). |
+
+### Lifecycle
 
 Each service runs in one of two modes:
 
@@ -71,28 +141,38 @@ Each service runs in one of two modes:
 [[service]]
 name = "my-model"
 template = "llama-cpp"
+port = 8200
+model = "/path/to/model.gguf"
 lifecycle = "on_demand"   # or "persistent"
 ```
 
-### Resource Allocation & VRAM
+### Placement
 
-ananke oversubscribes GPU memory by dynamically managing which models are active:
+Placement controls where a service's tensors live and how multi-GPU splitting works.
 
-- **llama.cpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage.
-- **Command Services**: Support two allocation modes:
-  - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
-  - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
+```toml
+[service.devices]
+placement = "gpu-only"   # "gpu-only" (default), "cpu-only", or "hybrid"
+gpu_allow = [0, 1]        # Only use these GPUs
+gpu_headroom_mb = 1024    # Keep this much extra VRAM free on each GPU for this service
+placement_override = { "gpu:0" = 22000, "gpu:1" = 22000 } # Hand-pin per-slot VRAM
+```
 
-  In both modes the daemon picks the GPU with the most available headroom (subject to `gpu_allow`), preferring one whose free capacity satisfies the upper bound (`vram_gb` for `static`, `max_vram_gb` for `dynamic`) so dynamic services have room to grow. The picked GPU id is exported to the spawned child as `CUDA_VISIBLE_DEVICES`, and is also available as the `{gpu_ids}` placeholder in `command` argv. Wrappers that launch containers should forward this env (e.g. `docker run --device "nvidia.com/gpu=$CUDA_VISIBLE_DEVICES"`) so the picked GPU is the only one the container sees.
-- **Eviction**: When VRAM is exhausted, ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `placement` | string | `"gpu-only"` | Placement policy (see below). |
+| `gpu_allow` | array of u32 | all `[devices]` GPUs | Restrict the service to these GPU ids. |
+| `gpu_headroom_mb` | u64 | `0` | Extra per-GPU VRAM (MiB) to keep free when placing *this* service, added on top of the global `[devices]` reserve. Lets a single model be packed more conservatively without bypassing the estimator. |
+| `placement_override` | map string → u64 | none | Hand-pin VRAM (MiB) per device slot. Keys: `"cpu"` or `"gpu:N"`. Overrides the estimator's per-slot distribution. Must be non-empty if present; zero values and `cpu` keys under `gpu-only` are rejected. |
+| `split` | string | `"layer"` | Multi-GPU split mode for llama.cpp services: `"layer"`, `"row"`, or `"tensor"`. Maps to llama.cpp's `--split-mode`. See [Multi-GPU split modes](#multi-gpu-split-modes) for constraints. |
 
-### Placement Policies
+Placement policies:
 
-- `gpu-only`: Service must reside entirely on GPU.
-- `cpu-only`: Service resides entirely on CPU.
-- `hybrid`: Allows a mix of GPU and CPU. The packer fills the GPUs first and spills the remainder to CPU. For MoE models with `expert_offload` enabled it spills *expert tensors* before whole layers, keeping every layer's attention and KV cache on the GPU (see [MoE expert offload](#moe-expert-offload)). Manual `override_tensor` rules also work here for hand-picked CPU offloading.
+- `gpu-only` (default): Service must reside entirely on GPU.
+- `cpu-only`: Service resides entirely on CPU. `n_gpu_layers` must be `0` (or unset), otherwise config validation rejects it.
+- `hybrid`: Allows a mix of GPU and CPU. The packer fills the GPUs first and spills the remainder to CPU. For MoE models with `expert_offload` enabled it spills *expert tensors* before whole layers, keeping every layer's attention and KV cache on the GPU (see [MoE Expert Offload](#moe-expert-offload)). Manual `override_tensor` rules also work here for hand-picked CPU offloading.
 
-### Multi-GPU split modes
+#### Multi-GPU split modes
 
 When a llama.cpp service spans more than one GPU, `devices.split` selects how llama.cpp divides the model across them. It maps directly to llama.cpp's `--split-mode`:
 
@@ -114,17 +194,107 @@ split = "tensor"   # "layer" (default), "row", or "tensor"
 
 With a sharded mode, ananke reserves an equal share of the model weights, KV cache, and compute buffer on each allowed GPU, placing the non-layer remainder (output tensor, MTP overhead, …) on the main GPU. The pledge book reflects this per-GPU split, so a co-tenant (e.g. an embedding service) sees the true free capacity on each card.
 
-### llama.cpp Template
+### Health Checks
 
-Used for GGUF models via llama.cpp.
+```toml
+[service.health]
+http = "/health"        # HTTP path to probe for readiness
+timeout = "3m"          # Per-probe timeout
+probe_interval = "5s"   # Probe cadence
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `http` | string | `/v1/models` | HTTP path to probe for readiness. Set to `""` (empty string) to disable the health check entirely - the service transitions to Running immediately after spawn, with no readiness probe. |
+| `timeout` | duration string | `3m` | Per-probe timeout before a health check fails. |
+| `probe_interval` | duration string | `5s` | Cadence between health probes. |
+
+When `[service.health]` is absent, the default `http` is `/v1/models`. Disabling health checks is useful for services that don't expose an HTTP endpoint, or when the operator knows the service is ready as soon as it starts.
+
+### Resource Allocation
+
+ananke oversubscribes GPU memory by dynamically managing which models are active:
+
+- **llama.cpp Services**: VRAM usage is determined by the model size and `n_gpu_layers`. ananke uses an internal GGUF-aware estimator to track usage. No allocation mode is needed.
+- **Command Services**: Support two allocation modes via `[service.allocation]`:
+  - `static`: Reserves a fixed amount of VRAM (`vram_gb`).
+  - `dynamic`: Operates within a range (`min_vram_gb` to `max_vram_gb`).
+
+In both modes the daemon picks the GPU with the most available headroom (subject to `gpu_allow`), preferring one whose free capacity satisfies the upper bound (`vram_gb` for `static`, `max_vram_gb` for `dynamic`) so dynamic services have room to grow. The picked GPU id is exported to the spawned child as `CUDA_VISIBLE_DEVICES`, and is also available as the `{gpu_ids}` placeholder in `command` argv. Wrappers that launch containers should forward this env (e.g. `docker run --device "nvidia.com/gpu=$CUDA_VISIBLE_DEVICES"`) so the picked GPU is the only one the container sees.
+
+```toml
+[service.allocation]
+mode = "dynamic"         # "static" or "dynamic" (command services only)
+vram_gb = 44             # static: fixed VRAM in GiB
+min_vram_gb = 2.0        # dynamic: minimum VRAM in GiB
+max_vram_gb = 12.0       # dynamic: maximum VRAM in GiB
+min_borrower_runtime = "60s" # dynamic: balloon resolver grace period
+```
+
+| Field | Type | Default | Applies to | Description |
+| --- | --- | --- | --- | --- |
+| `mode` | string | *required* (command only) | command | `"static"` or `"dynamic"`. Rejected for llama-cpp services. |
+| `vram_gb` | f32 | none | `static` | VRAM to reserve, in GiB. Required for `static`. |
+| `min_vram_gb` | f32 | none | `dynamic` | Minimum VRAM in GiB. Required for `dynamic`. |
+| `max_vram_gb` | f32 | none | `dynamic` | Maximum VRAM in GiB. Required for `dynamic`; must be > `min_vram_gb`. |
+| `min_borrower_runtime` | duration string | `60s` | `dynamic` | Balloon resolver grace period: minimum runtime a borrower must accumulate before it may be fast-killed. |
+
+**Eviction**: When VRAM is exhausted, ananke uses a priority-based eviction system. Higher priority services can displace dormant on-demand services.
+
+### Request Filters
+
+Modify requests before they reach the model:
+
+```toml
+[service.filters]
+strip_params = ["temperature"]          # Remove these JSON keys from the request
+set_params = { max_tokens = 4096 }       # Force these JSON key/value pairs
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `strip_params` | array of string | none | JSON keys to remove from the request body before forwarding. |
+| `set_params` | map string → toml value | none | JSON key/value pairs to set on the request body before forwarding. |
+
+> **Note:** `openai_proxy.upstream_model` (for command services) overrides any `filters.set_params.model`, because the model rewrite happens *after* filters are applied. Filters can still strip or set other JSON keys. See [OpenAI Proxy](#openai-proxy).
+
+### Metadata
+
+Arbitrary key-value pairs exposed through `/v1/models` and `/api/services`:
+
+```toml
+[service.metadata]
+discord_visible = true
+```
+
+These are opaque to the daemon - they exist only to be echoed back to clients (Discord rotation, residence flags, …).
+
+### Tracking
+
+Per-service hints that adjust how the snapshotter attributes observed VRAM/RSS to the service:
+
+```toml
+[service.tracking]
+cgroup_parent = "/system.slice/ananke-comfyui.slice"
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `cgroup_parent` | string | none | Cgroup v2 path under which the service's actual workload pids live. Used by services whose workload runs in a container and is therefore reparented out of the daemon's process tree, so descendant-pid attribution can't reach it. Pids whose `/proc/<pid>/cgroup` path equals this value or sits inside its subtree are summed into the service's observed peak. Must be an absolute cgroup path (no trailing slash). |
+
+## Templates
+
+### llama-cpp
+
+Used for GGUF models via llama.cpp. Only `name`, `template`, `port`, and `model` are required.
 
 ```toml
 [[service]]
-name = "gemma-4"
-template = "llama-cpp"
-port = 8200
-model = "/path/to/model.gguf"
-mmproj = "/path/to/mmproj.gguf" # Optional vision projector
+name = "gemma-4"              # required
+template = "llama-cpp"        # required
+port = 8200                   # required
+model = "/path/to/model.gguf" # required
+mmproj = "/path/to/mmproj.gguf"
 context = 32768
 flash_attn = true
 cache_type_k = "q8_0"
@@ -132,49 +302,46 @@ cache_type_v = "q8_0"
 lifecycle = "on_demand"
 priority = 100
 
-# CPU Offloading: Move specific tensors to CPU via regex
-override_tensor = [ ".ffn_(up|down)_exps.=CPU" ]
-
 [service.sampling]
 temperature = 0.7
 top_p = 0.95
-
-# Other common llama.cpp options:
-# n_gpu_layers = -1       # Offload all layers to GPU (default)
-# threads = 8             # Number of CPU threads
-# parallel = 4            # Request parallelism (-np). With a non-unified KV
-#                         # this splits the context budget across slots, so
-#                         # each request caps at context / parallel.
-# kv_unified = true       # -kvu: one shared KV pool across slots, so idle
-#                         # slots lend capacity instead of a static per-slot
-#                         # split. Total KV footprint is unchanged.
-# batch_size = 512        # Context batch size
-# mmap = true             # Memory-map the model file
-# jinja = true            # Use Jinja chat templates
-# cache_idle_slots = false # Pass --no-cache-idle-slots: drop idle slots'
-#                         # prompt-cache state (a stability mitigation).
-# metrics = true          # Expose llama-server's Prometheus /metrics endpoint
-# slots = true            # Expose the /slots endpoint (note: reveals prompt
-#                         # contents - avoid on network-reachable ports)
-
-# Speculative decoding via multi-token prediction (MTP / NextN):
-# spec_type = "draft-mtp" # --spec-type. ananke's estimator adds the MTP draft
-#                         # context's VRAM. Two shapes:
-#                         #  - Embedded head (nextn_predict_layers > 0, e.g.
-#                         #    Qwen 3.6): drafts using the same weights, no
-#                         #    separate file - a small f16 KV over the nextn
-#                         #    layer(s) plus a ~1.7 GiB compute buffer.
-#                         #  - Separate draft model (e.g. Gemma 4): set
-#                         #    draft_model below. Its attention reuses the
-#                         #    target's KV, so the cost is just the draft's
-#                         #    weights plus a small buffer (~0.4 GiB).
-# draft_model = "/path/to/mtp-head.gguf" # -md: separate MTP/draft GGUF.
-#                         # Requires spec_type to be set.
-# spec_draft_n_max = 2    # --spec-draft-n-max: max draft tokens per step.
-# MTP composes with `parallel > 1` and `mmproj` (vision) on current llama.cpp.
 ```
 
-### MoE expert offload
+#### Field Reference
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model` | path | *required* | Path to the GGUF model file. |
+| `mmproj` | path | none | Path to an optional vision projector GGUF. Services with an `mmproj` render a purple `vision` badge. |
+| `context` | u32 | `4096` (estimator default) | Context window size. If unset, a warning is logged and the estimator defaults to 4096 tokens. |
+| `n_gpu_layers` | i32 | `-1` | Number of layers to offload to GPU. `-1` (default) offloads all layers. Must be `0` under `placement = "cpu-only"`. |
+| `expert_offload` | string or u32 | `"off"` | MoE expert-offload policy (see [MoE Expert Offload](#moe-expert-offload)). |
+| `flash_attn` | bool | `false` | Enable flash attention. Required for quantised KV cache types (`cache_type_k`/`cache_type_v` other than `f16`). |
+| `cache_type_k` | string | `f16` | KV cache type for keys. Non-`f16` values require `flash_attn = true`. |
+| `cache_type_v` | string | `f16` | KV cache type for values. Non-`f16` values require `flash_attn = true`. |
+| `mmap` | bool | `true` | Memory-map the model file. |
+| `mlock` | bool | `false` | Lock the model in RAM (prevents swapping). |
+| `parallel` | u32 | `1` | Request parallelism (`-np`). With a non-unified KV this splits the context budget across slots, so each request caps at `context / parallel`. |
+| `spec_type` | string | none | Speculative-decoding type passed to `--spec-type` (e.g. `"draft-mtp"` for multi-token prediction). |
+| `spec_draft_n_max` | u32 | none | Max draft tokens per step (`--spec-draft-n-max`). Only meaningful when `spec_type` is set. |
+| `draft_model` | path | none | Separate draft-model GGUF for speculative decoding (`-md` / `--model-draft`). Requires `spec_type` to be set. |
+| `kv_unified` | bool | `false` | Use a single unified KV cache pool shared across all parallel slots (`-kvu` / `--kv-unified`). With `parallel > 1`, idle slots lend their share to active ones; total KV footprint is unchanged. |
+| `cache_idle_slots` | bool | `true` | When `false`, pass `--no-cache-idle-slots` so idle slots' prompt-cache state is dropped (a stability mitigation). |
+| `metrics` | bool | `false` | Expose llama-server's Prometheus `/metrics` endpoint. |
+| `slots` | bool | `false` | Expose the `/slots` introspection endpoint. Note: reveals prompt contents - avoid on network-reachable ports. |
+| `batch_size` | u32 | none | Context batch size (`-b`). |
+| `ubatch_size` | u32 | none | Physical batch size (`-ub`). |
+| `threads` | u32 | none | Number of CPU threads (`-t`). |
+| `threads_batch` | u32 | none | Number of CPU threads for batch processing (`-tb`). |
+| `jinja` | bool | `false` | Use Jinja chat templates. |
+| `chat_template_file` | path | none | Path to a custom chat template file. |
+| `override_tensor` | array of string | none | Manual tensor placement rules (e.g. `[ ".ffn_(up|down)_exps.=CPU" ]`). Incompatible with sharded split modes (`row`/`tensor`). |
+| `sampling` | table | none | Sampling parameters (see [Sampling](#sampling)). |
+| `estimation` | table | none | Estimator overrides (see [Estimation Overrides](#estimation-overrides)). |
+| `llama_server` | path | daemon's `llama_server` or `$PATH` | Per-service override of the llama-server executable. Has no effect when `launcher` is set. |
+| `launcher` | array of string | none | Full argv template that replaces the default `llama-server -m <model> ...` invocation (see [Custom llama-server Binary or Wrapper](#custom-llama-server-binary-or-wrapper)). |
+
+#### MoE Expert Offload
 
 Large mixture-of-experts models often don't fit a card once their expert tensors are resident, even though the attention and KV cache do. The `expert_offload` knob lets ananke move expert tensors to the CPU - the GPU keeps every layer's attention and KV cache (latency-critical), while the bulky, sparsely-activated experts live in host RAM. ananke sizes the placement and emits the matching `-ot` rules itself, so the VRAM reservation matches what the model actually uses.
 
@@ -217,7 +384,45 @@ expert_offload = "off"
 override_tensor = [ "blk\\.(1[6-9]|2[0-9])\\.ffn_(up|down)_exps\\.=CPU" ]
 ```
 
-### Custom llama-server Binary or Wrapper
+#### Estimation Overrides
+
+Override the internal GGUF-aware VRAM estimator's parameters:
+
+```toml
+[service.estimation]
+compute_buffer_mb = 512
+safety_factor = 1.1
+allow_fallback = false
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `compute_buffer_mb` | u32 | none | Override the estimated compute buffer size (MiB). |
+| `safety_factor` | f32 | none | Multiplier applied to the estimated VRAM footprint. |
+| `allow_fallback` | bool | `false` | Accept the coarse fallback estimate when the GGUF's architecture isn't recognised by any per-family estimator. Unknown architectures hard-reject at config load by default so the operator either adds the arch to the right family list or explicitly opts in here. |
+
+#### Sampling
+
+Sampling parameters mapped to `llama-server` CLI flags:
+
+```toml
+[service.sampling]
+temperature = 0.7
+top_p = 0.95
+top_k = 40
+min_p = 0.05
+repeat_penalty = 1.1
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `temperature` | f32 | none | Sampling temperature. |
+| `top_p` | f32 | none | Nucleus sampling threshold. |
+| `top_k` | u32 | none | Top-k sampling limit. |
+| `min_p` | f32 | none | Minimum-p sampling threshold. |
+| `repeat_penalty` | f32 | none | Repeat penalty applied to generated tokens. |
+
+#### Custom llama-server Binary or Wrapper
 
 By default, ananke spawns `llama-server` from `PATH`. Two knobs change that:
 
@@ -260,24 +465,17 @@ llama_server = "/opt/llama-cuda/llama-server"
 
 `CUDA_VISIBLE_DEVICES` is set on the spawned process from the picked GPU id(s) in both cases. Wrapper scripts that launch a container should forward this so the container only sees the picked GPU - for example, `podman run --device "nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:-all}" ...`.
 
-### Command Template
+### command
 
-Used for arbitrary binaries or Docker wrappers.
+Used for arbitrary binaries or Docker wrappers. Only `name`, `template`, `port`, and `command` are required.
 
 ```toml
 [[service]]
-name = "comfyui"
-template = "command"
-port = 8188
+name = "comfyui"            # required
+template = "command"        # required
+port = 8188                 # required
+command = ["/bin/bash", "start_comfy.sh", "--port", "{port}"] # required
 lifecycle = "on_demand"
-# Placeholders substituted in argv:
-#   {port}     - the private loopback port assigned by ananke
-#   {gpu_ids}  - comma-separated NVML index list ananke picked for this service
-#   {vram_mb}  - reserved VRAM in MiB
-#   {model}    - model path (llama-cpp only; empty here)
-#   {name}     - service name
-command = ["/bin/bash", "start_comfy.sh", "--port", "{port}"]
-shutdown_command = ["/bin/bash", "stop_comfy.sh"]
 
 [service.allocation]
 mode = "dynamic"
@@ -289,13 +487,32 @@ http = "/system_stats"
 timeout = "30s"
 ```
 
-The `http` field defaults to `/v1/models` when `[service.health]` is absent. Set `http = ""` to disable the health check entirely - the service transitions to Running immediately after spawn, with no readiness probe. This is useful for services that don't expose an HTTP endpoint, or when the operator knows the service is ready as soon as it starts.
+#### Field Reference
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `command` | array of string | *required* | argv to execute. Accepts placeholders (see below). |
+| `workdir` | path | none | Working directory for the spawned process. |
+| `allocation` | table | none | VRAM allocation (see [Resource Allocation](#resource-allocation)). Required for command services. |
+| `private_port` | u16 | auto-assigned | Upstream port ananke's reverse proxy should forward to. When absent, ananke picks one from the daemon's private-port pool and substitutes it into `command`/`env` via the `{port}` placeholder. Set explicitly when the external service binds a fixed port (e.g. a docker container exposing 18188 on the host). |
+| `shutdown_command` | array of string | none | Optional argv run at drain time after SIGTERM-then-SIGKILL completes. Useful for external services that don't stop via signal - e.g. a docker-run wrapper where SIGTERM reaches the host shell but the container needs an explicit `docker stop`. Accepts the same placeholder substitutions as `command`. |
+| `openai_proxy` | table | none | Opt the service into the OpenAI-compatible multiplexer (see [OpenAI Proxy](#openai-proxy)). |
+
+#### Placeholders
+
+The following placeholders are substituted in `command` and `shutdown_command` argv entries (and in `env` values):
+
+- `{port}` - the private loopback port assigned by ananke.
+- `{gpu_ids}` - comma-separated NVML index list ananke picked for this service.
+- `{vram_mb}` - reserved VRAM in MiB.
+- `{model}` - model path (llama-cpp only; empty for command services).
+- `{name}` - service name.
 
 The child also inherits `CUDA_VISIBLE_DEVICES` set to the picked GPU id(s). Wrapper scripts that launch a container should forward this so the container only sees the picked GPU - for example, `docker run --device "nvidia.com/gpu=${CUDA_VISIBLE_DEVICES:-all}" ...`.
 
 The `shutdown_command` field is particularly useful for external processes (like Docker containers) that cannot stop via signal alone. ananke runs this command after the drain pipeline completes, ensuring clean exits for services that don't respond to SIGTERM.
 
-### Fronting an OpenAI-Compatible Upstream
+#### OpenAI Proxy
 
 A `command`-template service that already speaks the OpenAI API (vLLM, TGI, SGLang, …) can opt into ananke's `/v1/models` and `/v1/chat/completions` multiplexer by adding an `[service.openai_proxy]` block. Without the block, command services stay invisible to the OpenAI surface and are only reachable via their per-service reverse proxy - the same as before.
 
@@ -329,9 +546,9 @@ When this is set:
 - `POST /v1/chat/completions` (and `/v1/completions`, `/v1/embeddings`) addressed to `qwen3.6-27b-vllm` are routed to this service. ananke ensures the command is started, then forwards the body to the service's private loopback port.
 - Before forwarding, ananke rewrites the JSON `model` field to `upstream_model` (here, `qwen3.6-27b-autoround`) - the name vLLM was started with via `--served-model-name`. Clients address ananke's name; the upstream sees its own name.
 
-The rewrite happens after `[service.filters]` is applied, so `openai_proxy.upstream_model` overrides any `filters.set_params.model`. Filters can still strip or set other JSON keys.
+The rewrite happens *after* `[service.filters]` is applied, so `openai_proxy.upstream_model` overrides any `filters.set_params.model`. Filters can still strip or set other JSON keys (see [Request Filters](#request-filters)).
 
-### Embedding Services
+#### Embedding Services
 
 By default every service is registered as a chat model. Pooling-only embedding models (Jina v5, BGE, E5, …) opt in by setting `modality = "embedding"` on the service. The proxy itself is endpoint-agnostic - it already routes `POST /v1/embeddings` by `model` field - so the `modality` field is purely a typed declaration: clients filter on it through `/v1/models` and `/api/services`, and the frontend renders a teal `embedding` badge next to the service name (mirroring the purple `vision` badge for llama.cpp services with an `mmproj`).
 
@@ -375,27 +592,6 @@ curl -s -X POST http://localhost:7070/v1/embeddings \
 
 ananke ensures the upstream container is started (cold-starting it on first request if needed), rewrites `model` to `upstream_model`, and relays the embedding vectors back unchanged. The static VRAM pledge is held only while the service is running; on-demand services drain back to idle after `idle_timeout` elapses with no traffic.
 
-## Advanced Service Options
-
-- **Filters**: Modify requests before they reach the model.
-  ```toml
-  [service.filters]
-  strip_params = ["temperature"] # Remove these from the request
-  set_params = { max_tokens = 4096 } # Force these values
-  ```
-- **Devices**: Control GPU visibility and multi-GPU splitting.
-  ```toml
-  [service.devices]
-  placement = "hybrid"
-  gpu_allow = [0, 1] # Only use these GPUs
-  split = "tensor"   # Multi-GPU split mode; see "Multi-GPU split modes" above
-  ```
-- **Metadata**: Arbitrary key-value pairs exposed through `/v1/models` and `/api/services`.
-  ```toml
-  [service.metadata]
-  discord_visible = true
-  ```
-
 ## Service Inheritance
 
 Services can inherit configuration from other services using `extends`. This is useful for sharing common settings across related models:
@@ -419,6 +615,8 @@ port = 8200
 model = "/models/gemma-4-31B.gguf"
 ```
 
+Merge rules:
+
 - Scalars: child overrides parent.
 - Sub-tables: deep-merged field-by-field.
 - Arrays: child replaces parent outright.
@@ -438,29 +636,3 @@ migrate_from = "old-gemma-31b"
 port = 8200
 model = "/models/gemma-4-31B.gguf"
 ```
-
-## Service States
-
-ananke tracks each service through a state machine:
-
-| State      | Description                                                                                                                                    |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `idle`     | Service is unloaded, waiting for requests                                                                                                      |
-| `starting` | Service is launching, waiting for health check                                                                                                 |
-| `running`  | Service is healthy and accepting traffic                                                                                                       |
-| `draining` | Service is shutting down, waiting for inflight requests                                                                                        |
-| `stopped`  | Service was explicitly stopped                                                                                                                 |
-| `evicted`  | Service was displaced by a higher-priority model                                                                                               |
-| `failed`   | Service failed to start (with retry backoff, up to 3 attempts)                                                                                 |
-| `disabled` | Service is permanently disabled (reason: `launch_failed`, `health_timeout`, `oom`, `crash_loop`, `no_fit`, `config_error`, or `user_disabled`) |
-
-## Config Hot-Reload
-
-ananke watches its config file for changes and automatically reloads when modifications are detected. The reload process:
-
-1. Parses and validates the new config.
-2. Preflights GGUF models (catching dtype/shard issues before traffic hits them).
-3. Spawns added services and drains removed ones.
-4. Publishes a `config_reloaded` event via the WebSocket endpoint.
-
-Failed reloads are silently ignored - the previous valid config remains in effect.
