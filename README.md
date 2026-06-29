@@ -1,9 +1,6 @@
 # ananke
 
-> [!WARNING]  
-> This codebase is somewhere between "copilot" and "auto" on the [ai-declaration.md](https://ai-declaration.md/en/0.1.2/) scale. It was extruded from a spec that was authored by Claude on my guidance. Since then, I have been steadily adjusting it and fixing bugs that I encounter.
->
-> I would not recommend that you use this unless you are able to diagnose and fix issues yourself. It won't destroy your system, but it may also not behave as expected. This was built to solve a problem I have; it'll take some time before I can be confident in saying that it can solve your problem, too.
+[![ananke screenshots](docs/ananke.png)](docs/media/)
 
 ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple LLMs and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
 
