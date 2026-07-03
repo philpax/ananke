@@ -106,7 +106,7 @@ export function ServiceDetailView() {
         {d.modality === "embedding" && (
           <Badge variant="embedding">embedding</Badge>
         )}
-        <div className="ml-auto flex items-center gap-4">
+        <div className="ml-auto flex flex-wrap items-center gap-4">
           <Stat label={t("serviceDetail.port")} value={`:${d.port}`} />
           <Stat label={t("serviceDetail.pid")} value={d.pid ?? "—"} />
           <Stat label={t("serviceDetail.priority")} value={d.priority} />
@@ -140,7 +140,7 @@ export function ServiceDetailView() {
 
           {/* Lifecycle actions */}
           <Card header={t("serviceDetail.actions")}>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <a
                 href={serviceProxyUrl(d.port)}
                 target="_blank"
@@ -640,7 +640,7 @@ function LifecycleActions({
   const isDisabled = state.startsWith("disabled");
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       {canStart && (
         <Button
           variant="green"

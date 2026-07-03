@@ -162,7 +162,7 @@ export function DashboardView() {
             setSince(Date.now() - RANGES[i].ms);
           }}
         />
-        <div className="ml-auto flex items-center gap-5">
+        <div className="ml-auto flex flex-wrap items-center gap-5">
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />
           <Stat
@@ -375,11 +375,11 @@ function ServiceRow({
       </button>
       <Link
         to={`/services/${encodeURIComponent(svc.name)}`}
-        className="flex flex-1 items-center gap-3 overflow-hidden"
+        className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden"
       >
         <StatusDot state={svc.state} />
         <span
-          className={`font-mono text-sm ${fitVerdictColor(svc.fit_verdict)}`}
+          className={`min-w-0 truncate font-mono text-sm ${fitVerdictColor(svc.fit_verdict)}`}
           title={fitVerdictTitle(svc.fit_verdict)}
         >
           {svc.name}
@@ -403,7 +403,7 @@ function ServiceRow({
           </span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-3">
-          <div className="h-6 w-20 shrink-0">
+          <div className="hidden h-6 w-20 shrink-0 sm:block">
             <Sparkline
               data={sparkLineData}
               color={CHART_PALETTE[0]}

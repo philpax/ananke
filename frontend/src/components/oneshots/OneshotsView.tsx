@@ -195,17 +195,21 @@ function OneshotRow({
       onClick={onSelect}
     >
       <StatusDot state={oneshot.state === "running" ? "running" : "idle"} />
-      <span className="font-mono text-sm text-primary">{oneshot.name}</span>
-      {oneshot.state === "running" && (
-        <Badge variant="success">{t("oneshots.running")}</Badge>
-      )}
-      {oneshot.state === "ended" && (
-        <Badge variant={oneshot.exit_code === 0 ? "neutral" : "danger"}>
-          {oneshot.exit_code != null
-            ? t("oneshots.exitCode", { code: oneshot.exit_code })
-            : t("oneshots.ended")}
-        </Badge>
-      )}
+      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+        <span className="truncate font-mono text-sm text-primary">
+          {oneshot.name}
+        </span>
+        {oneshot.state === "running" && (
+          <Badge variant="success">{t("oneshots.running")}</Badge>
+        )}
+        {oneshot.state === "ended" && (
+          <Badge variant={oneshot.exit_code === 0 ? "neutral" : "danger"}>
+            {oneshot.exit_code != null
+              ? t("oneshots.exitCode", { code: oneshot.exit_code })
+              : t("oneshots.ended")}
+          </Badge>
+        )}
+      </div>
       <span className="ml-auto shrink-0 font-mono text-xs text-tertiary">
         :{oneshot.port}
       </span>
@@ -342,7 +346,7 @@ function OneshotForm({
           />
         </FormField>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <FormField label={t("oneshots.name")} hint={t("oneshots.nameHint")}>
             <input
               type="text"
@@ -364,7 +368,7 @@ function OneshotForm({
         </div>
 
         {/* Memory, placement, and TTL in one row */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <FormField
             label={
               <span className="flex items-center gap-2">
@@ -466,7 +470,7 @@ function OneshotForm({
         </FormField>
 
         {/* Port + health check combined row */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <FormField label={t("oneshots.port")} hint={t("oneshots.portHint")}>
             <input
               type="number"

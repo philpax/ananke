@@ -185,19 +185,21 @@ function Legend({
     <div
       className="mt-1 grid gap-x-2 gap-y-0.5 text-xs"
       style={{
-        gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
         fontVariantNumeric: "tabular-nums",
       }}
     >
       {/* Row 1: headings */}
       <div className="font-mono text-tertiary">Time</div>
       {series.map((s, i) => (
-        <div key={i} className="flex items-center gap-1.5">
+        <div key={i} className="flex min-w-0 items-center gap-1.5">
           <span
             className="inline-block h-2 w-2 shrink-0 rounded-sm"
             style={{ backgroundColor: s.stroke }}
           />
-          <span className="truncate font-mono text-tertiary">{s.label}</span>
+          <span className="min-w-0 truncate font-mono text-tertiary">
+            {s.label}
+          </span>
         </div>
       ))}
       {/* Row 2: values */}
