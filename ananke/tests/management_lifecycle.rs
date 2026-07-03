@@ -3,6 +3,7 @@
 
 mod common;
 
+use ananke::api::management::router;
 use ananke_api::services::{DisableResponse, EnableResponse, StartResponse};
 use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness, minimal_llama_service};
@@ -11,7 +12,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "current_thread")]
 async fn start_on_idle_service_returns_accepted() {
     let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("POST")
         .uri("/api/services/demo/start")
@@ -35,7 +36,7 @@ async fn start_on_idle_service_returns_accepted() {
 #[tokio::test(flavor = "current_thread")]
 async fn disable_then_enable_roundtrip() {
     let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
 
     // Disable the service.
     let req = axum::http::Request::builder()
@@ -67,7 +68,7 @@ async fn disable_then_enable_roundtrip() {
 #[tokio::test(flavor = "current_thread")]
 async fn start_on_missing_service_returns_404() {
     let h = build_harness(vec![]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("POST")
         .uri("/api/services/ghost/start")
@@ -81,7 +82,7 @@ async fn start_on_missing_service_returns_404() {
 #[tokio::test(flavor = "current_thread")]
 async fn stop_on_missing_service_returns_404() {
     let h = build_harness(vec![]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("POST")
         .uri("/api/services/ghost/stop")
@@ -95,7 +96,7 @@ async fn stop_on_missing_service_returns_404() {
 #[tokio::test(flavor = "current_thread")]
 async fn disable_already_disabled_returns_already_disabled() {
     let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
 
     // Disable once.
     let req = axum::http::Request::builder()
@@ -127,7 +128,7 @@ async fn disable_already_disabled_returns_already_disabled() {
 #[tokio::test(flavor = "current_thread")]
 async fn start_on_idle_service_returns_started_not_already_running() {
     let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("POST")
         .uri("/api/services/demo/start")
@@ -149,7 +150,7 @@ async fn start_on_idle_service_returns_started_not_already_running() {
 #[tokio::test(flavor = "current_thread")]
 async fn enable_already_enabled_returns_already_enabled() {
     let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
 
     // Enable on an idle (non-disabled) service.
     let req = axum::http::Request::builder()

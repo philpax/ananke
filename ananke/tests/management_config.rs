@@ -3,6 +3,7 @@
 
 mod common;
 
+use ananke::api::management::router;
 use ananke_api::config::ConfigResponse;
 use axum::{
     body::to_bytes,
@@ -13,7 +14,7 @@ use tower::util::ServiceExt;
 #[tokio::test(flavor = "current_thread")]
 async fn get_config_returns_content_and_hash() {
     let h = common::build_harness(vec![common::minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("GET")
         .uri("/api/config")
@@ -32,7 +33,7 @@ async fn get_config_returns_content_and_hash() {
 #[tokio::test(flavor = "current_thread")]
 async fn put_without_if_match_is_428() {
     let h = common::build_harness(vec![common::minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("PUT")
         .uri("/api/config")
@@ -46,7 +47,7 @@ async fn put_without_if_match_is_428() {
 #[tokio::test(flavor = "current_thread")]
 async fn put_with_wrong_hash_is_412() {
     let h = common::build_harness(vec![common::minimal_llama_service("demo", 0)]).await;
-    let app = ananke::api::management::router(h.state.clone());
+    let app = router(h.state.clone());
     let req = axum::http::Request::builder()
         .method("PUT")
         .uri("/api/config")

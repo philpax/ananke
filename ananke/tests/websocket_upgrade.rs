@@ -21,6 +21,7 @@ use std::{
     time::Duration,
 };
 
+use ananke::api::proxy;
 use futures::future;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -68,11 +69,7 @@ async fn websocket_handshake_preserves_connection_header() {
     let proxy_port = common::free_port();
     let proxy_addr: SocketAddr = format!("127.0.0.1:{proxy_port}").parse().unwrap();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    tokio::spawn(ananke::api::proxy::serve(
-        proxy_addr,
-        backend_port,
-        shutdown_rx,
-    ));
+    tokio::spawn(proxy::serve(proxy_addr, backend_port, shutdown_rx));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -216,9 +213,7 @@ async fn websocket_session_holds_inflight_and_pings_activity() {
     let activity_pings = Arc::new(AtomicUsize::new(0));
 
     let before_request: Arc<
-        dyn Fn() -> futures::future::BoxFuture<'static, Option<ananke::api::proxy::ProxyError>>
-            + Send
-            + Sync,
+        dyn Fn() -> futures::future::BoxFuture<'static, Option<proxy::ProxyError>> + Send + Sync,
     > = {
         let calls = before_request_calls.clone();
         Arc::new(move || {
@@ -233,7 +228,7 @@ async fn websocket_session_holds_inflight_and_pings_activity() {
         })
     };
 
-    tokio::spawn(ananke::api::proxy::serve_with_activity(
+    tokio::spawn(proxy::serve_with_activity(
         proxy_addr,
         backend_port,
         shutdown_rx,

@@ -32,6 +32,7 @@ use ananke::{
     db::{Database, logs::spawn as spawn_batcher},
     devices::{Allocation, CpuSnapshot, DeviceSnapshot, snapshotter},
     supervise::{SupervisorHandle, registry::ServiceRegistry, spawn_supervisor},
+    system::InMemoryFs,
     tracking::{activity::ActivityTable, inflight::InflightTable},
 };
 use parking_lot::Mutex;
@@ -47,7 +48,7 @@ pub struct TestHarness {
     /// Concrete handle to the in-memory filesystem shared by the supervisors
     /// and AppState. Tests that need the estimator to find a GGUF at a
     /// particular path can insert bytes here before issuing a request.
-    pub fs: ananke::system::InMemoryFs,
+    pub fs: InMemoryFs,
     /// Concrete handle to the in-memory process spawner. Tests that want to
     /// assert "service X's child was terminated by the reconciler" inspect
     /// this directly rather than polling OS pids.
@@ -362,6 +363,8 @@ pub fn management_url(addr: std::net::SocketAddr, path: &str) -> String {
 pub mod synth_gguf {
     use std::path::Path;
 
+    use ananke::system::InMemoryFs;
+
     pub struct Builder {
         /// Accumulated KV + tensor-info bytes (written after the fixed header).
         buf: Vec<u8>,
@@ -437,8 +440,8 @@ pub mod synth_gguf {
         /// GGUF bytes at `path`. Convenience for tests that want to pass a
         /// concrete path to `estimate_from_path` or `gguf::read` without
         /// touching disk.
-        pub fn into_in_memory_fs(self, path: &Path) -> ananke::system::InMemoryFs {
-            ananke::system::InMemoryFs::new().with(path.to_path_buf(), self.build())
+        pub fn into_in_memory_fs(self, path: &Path) -> InMemoryFs {
+            InMemoryFs::new().with(path.to_path_buf(), self.build())
         }
     }
 
