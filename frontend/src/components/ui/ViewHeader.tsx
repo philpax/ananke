@@ -15,7 +15,7 @@ type ViewHeaderProps = {
 export function ViewHeader({ children, className = "gap-3" }: ViewHeaderProps) {
   return (
     <header
-      className={`flex min-h-14 shrink-0 flex-wrap items-center border-b border-border-default px-4 pt-[env(safe-area-inset-top)] ${className}`}
+      className={`flex min-h-14 shrink-0 flex-wrap items-center border-b border-border-default px-4 py-3 pt-[calc(env(safe-area-inset-top)+0.75rem)] ${className}`}
     >
       {children}
     </header>

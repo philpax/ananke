@@ -148,7 +148,7 @@ export function DashboardView() {
 
   return (
     <div className="flex h-full flex-col">
-      <ViewHeader className="gap-5">
+      <ViewHeader className="gap-3 sm:gap-5">
         <h1 className="eyebrow !text-primary">{t("dashboard.title")}</h1>
         <div className="hidden items-center gap-1.5 text-xs text-tertiary sm:flex">
           <span className="font-mono">{window.location.host}</span>
@@ -162,7 +162,7 @@ export function DashboardView() {
             setSince(Date.now() - RANGES[i].ms);
           }}
         />
-        <div className="ml-auto flex flex-wrap items-center gap-5">
+        <div className="flex w-full flex-wrap items-center gap-x-5 gap-y-3 sm:w-auto sm:ml-auto">
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />
           <Stat
