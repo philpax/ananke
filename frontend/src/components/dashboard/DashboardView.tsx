@@ -385,7 +385,7 @@ function ServiceRow({
           {svc.name}
         </span>
         {svc.vram_bytes != null && (
-          <span className="shrink-0 font-mono text-xs text-tertiary">
+          <span className="hidden shrink-0 font-mono text-xs text-tertiary sm:inline">
             {formatBytes(svc.vram_bytes)}
           </span>
         )}
@@ -418,7 +418,7 @@ function ServiceRow({
         href={serviceProxyUrl(svc.port)}
         target="_blank"
         rel="noopener noreferrer"
-        className="rounded-[3px] bg-elevated px-1.5 py-0.5 font-mono text-xs text-accent ring-1 ring-inset ring-border-strong transition-colors hover:bg-border-strong"
+        className="hidden shrink-0 rounded-[3px] bg-elevated px-1.5 py-0.5 font-mono text-xs text-accent ring-1 ring-inset ring-border-strong transition-colors hover:bg-border-strong sm:inline"
       >
         :{svc.port}
       </a>
