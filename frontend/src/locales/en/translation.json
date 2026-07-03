@@ -119,15 +119,15 @@
     "avgLatency": "Avg latency",
     "tokensPerSecond": "Tokens per second",
     "memoryUtilisation": "Memory utilisation",
-    "perServiceOutputTps": "Per-service output TPS",
+    "perServiceTpsOut": "Per-service TPS (out)",
     "perServiceRequests": "Per-service requests",
     "requests": "Requests",
-    "prompt": "Prompt",
-    "completion": "Completion",
+    "tokensIn": "Tokens (in)",
+    "tokensOut": "Tokens (out)",
     "errors": "Errors",
     "durationMs": "Duration (ms)",
-    "input": "Input",
-    "output": "Output"
+    "tpsIn": "TPS (in)",
+    "tpsOut": "TPS (out)"
   },
   "oneshots": {
     "newOneshot": "New oneshot",
@@ -246,10 +246,11 @@
     "doesNotFitCurrent": "Does not fit under current conditions",
     "requestsInPeriod": "Requests ({{range}})",
     "errors": "Errors",
-    "tokens": "Tokens",
+    "inputTokens": "Tokens (in)",
+    "outputTokens": "Tokens (out)",
     "avgLatency": "Avg latency",
-    "avgInTps": "Avg in TPS",
-    "avgOutTps": "Avg out TPS"
+    "avgTpsIn": "Avg TPS (in)",
+    "avgTpsOut": "Avg TPS (out)"
   },
   "logs": {
     "search": "search…",

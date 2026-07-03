@@ -212,12 +212,12 @@ export function MetricsView() {
                 ]}
                 series={[
                   {
-                    label: t("stats.prompt"),
+                    label: t("stats.tokensIn"),
                     stroke: CHART_PALETTE[0],
                     fill: "rgba(139,124,248,0.08)",
                   },
                   {
-                    label: t("stats.completion"),
+                    label: t("stats.tokensOut"),
                     stroke: CHART_PALETTE[1],
                     fill: "rgba(69,201,138,0.08)",
                   },
@@ -269,13 +269,13 @@ export function MetricsView() {
                 ]}
                 series={[
                   {
-                    label: t("stats.input"),
+                    label: t("stats.tpsIn"),
                     stroke: CHART_PALETTE[0],
                     fill: "rgba(139,124,248,0.08)",
                     unit: "tok/s",
                   },
                   {
-                    label: t("stats.output"),
+                    label: t("stats.tpsOut"),
                     stroke: CHART_PALETTE[1],
                     fill: "rgba(69,201,138,0.08)",
                     unit: "tok/s",
@@ -302,7 +302,7 @@ export function MetricsView() {
             {/* Per-service output TPS */}
             {perService.length > 1 && !serviceFilter && (
               <Card
-                header={t("stats.perServiceOutputTps")}
+                header={t("stats.perServiceTpsOut")}
                 className="lg:col-span-2"
               >
                 <Chart

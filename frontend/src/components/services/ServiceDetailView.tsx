@@ -711,10 +711,8 @@ function ServiceMetrics({ name }: { name: string }) {
 
   const totalRequests = buckets.reduce((s, b) => s + b.requestCount, 0);
   const totalErrors = buckets.reduce((s, b) => s + b.errorCount, 0);
-  const totalTokens = buckets.reduce(
-    (s, b) => s + b.promptTokens + b.completionTokens,
-    0,
-  );
+  const totalInputTokens = buckets.reduce((s, b) => s + b.promptTokens, 0);
+  const totalOutputTokens = buckets.reduce((s, b) => s + b.completionTokens, 0);
   const avgLatency =
     buckets.reduce((s, b) => s + b.totalDurationMs, 0) /
     Math.max(
@@ -749,26 +747,30 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         }
       >
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-6">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-7">
           <Stat
             label={t("serviceDetail.requestsInPeriod", { range: range.label })}
             value={totalRequests}
           />
           <Stat label={t("serviceDetail.errors")} value={totalErrors} />
           <Stat
-            label={t("serviceDetail.tokens")}
-            value={totalTokens.toLocaleString()}
+            label={t("serviceDetail.inputTokens")}
+            value={totalInputTokens.toLocaleString()}
+          />
+          <Stat
+            label={t("serviceDetail.outputTokens")}
+            value={totalOutputTokens.toLocaleString()}
           />
           <Stat
             label={t("serviceDetail.avgLatency")}
             value={totalRequests > 0 ? `${Math.round(avgLatency)}ms` : "—"}
           />
           <Stat
-            label={t("serviceDetail.avgInTps")}
+            label={t("serviceDetail.avgTpsIn")}
             value={totalRequests > 0 ? avgInputTps.toFixed(1) : "—"}
           />
           <Stat
-            label={t("serviceDetail.avgOutTps")}
+            label={t("serviceDetail.avgTpsOut")}
             value={totalRequests > 0 ? avgOutputTps.toFixed(1) : "—"}
           />
         </div>
@@ -802,12 +804,12 @@ function ServiceMetrics({ name }: { name: string }) {
             ]}
             series={[
               {
-                label: t("stats.prompt"),
+                label: t("stats.tokensIn"),
                 stroke: CHART_PALETTE[0],
                 fill: "rgba(139,124,248,0.08)",
               },
               {
-                label: t("stats.completion"),
+                label: t("stats.tokensOut"),
                 stroke: CHART_PALETTE[1],
                 fill: "rgba(69,201,138,0.08)",
               },
@@ -834,13 +836,13 @@ function ServiceMetrics({ name }: { name: string }) {
           ]}
           series={[
             {
-              label: t("stats.input"),
+              label: t("stats.tpsIn"),
               stroke: CHART_PALETTE[0],
               fill: "rgba(139,124,248,0.08)",
               unit: "tok/s",
             },
             {
-              label: t("stats.output"),
+              label: t("stats.tpsOut"),
               stroke: CHART_PALETTE[1],
               fill: "rgba(69,201,138,0.08)",
               unit: "tok/s",
