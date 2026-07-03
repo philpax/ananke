@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use ananke_api::{AnankeMetadata, Modality};
+use ananke_api::shared::{metadata::AnankeMetadata, modality::Modality};
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -511,7 +511,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .map_err(|e| fail(format!("daemon.shutdown_timeout: {e}")))?;
 
     let management_addr = if cfg.daemon.management_listen.is_empty() {
-        ananke_api::defaults::MANAGEMENT_LISTEN.into()
+        ananke_api::shared::defaults::MANAGEMENT_LISTEN.into()
     } else {
         cfg.daemon.management_listen.clone()
     };
@@ -532,7 +532,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .openai_api
         .listen
         .clone()
-        .unwrap_or_else(|| ananke_api::defaults::OPENAI_LISTEN.into());
+        .unwrap_or_else(|| ananke_api::shared::defaults::OPENAI_LISTEN.into());
 
     let openai_max_body_bytes = cfg
         .openai_api
@@ -1481,7 +1481,7 @@ pub mod test_fixtures {
             extra_args: Vec::new(),
             env: BTreeMap::new(),
             tracking: TrackingSettings::default(),
-            metadata: ananke_api::AnankeMetadata::new(),
+            metadata: ananke_api::shared::metadata::AnankeMetadata::new(),
             template_config: TemplateConfig::LlamaCpp(Box::new(llama_cpp_fixture())),
         }
     }

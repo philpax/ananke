@@ -1,108 +1,14 @@
-//! Service summary and detail views.
+//! `GET /api/services/{name}` — service detail.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{logs::LogLine, metadata::AnankeMetadata};
-
-/// What kind of model the service exposes through the OpenAI-compatible
-/// API. Drives badge rendering in the frontend and lets clients (Discord
-/// rotation, RAG indexers) filter the model list by purpose without
-/// parsing `metadata.*` strings.
-///
-/// Defaults to `Chat` so existing configs and JSON payloads stay
-/// byte-identical — the field is elided from the wire when it's `Chat`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Modality {
-    /// Text generation: `/v1/chat/completions` and `/v1/completions`.
-    /// The default for backward compatibility.
-    #[default]
-    Chat,
-    /// Vector embeddings: `/v1/embeddings`. Pooling-only models such as
-    /// jina-embeddings-v5, BGE, E5, etc.
-    Embedding,
-}
-
-impl Modality {
-    /// Predicate for `#[serde(skip_serializing_if)]` so the default
-    /// (`Chat`) is elided from JSON. Existing chat services then ship
-    /// the exact same wire bytes they shipped before this field landed.
-    pub fn is_chat(&self) -> bool {
-        matches!(self, Modality::Chat)
-    }
-}
-
-/// Response from `GET /api/services`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-pub struct ServicesResponse {
-    /// Registered services.
-    pub services: Vec<ServiceSummary>,
-    /// Port the OpenAI-compatible API is listening on.
-    pub openai_api_port: u16,
-}
-
-/// One entry in `GET /api/services`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-pub struct ServiceSummary {
-    /// Service name (matches `[[service]]` table in config).
-    pub name: String,
-    /// State like `"idle"`, `"running"`, `"disabled_user_disabled"`.
-    pub state: String,
-    /// `"persistent"` or `"ondemand"`.
-    pub lifecycle: String,
-    /// Eviction priority.
-    pub priority: u8,
-    /// Public port the proxy listens on.
-    pub port: u16,
-    /// Active run id if currently running.
-    pub run_id: Option<i64>,
-    /// Child PID if currently running.
-    pub pid: Option<i32>,
-    /// Number of requests currently in flight through the proxy for this
-    /// service. Zero when the service is not running.
-    #[serde(default)]
-    pub inflight_count: u64,
-    /// Placeholder for elastic-borrower tracking (future work).
-    pub elastic_borrower: Option<String>,
-    /// `true` when the service's `[[service.llama_cpp]]` config has a
-    /// `mmproj` entry — the standard signal that it supports vision /
-    /// multimodal input. `None` for non-llama-cpp services. Cheap
-    /// enough (config-only check) to ship on every list entry.
-    pub has_mmproj: Option<bool>,
-    /// What kind of OpenAI endpoint the service serves. Elided from
-    /// JSON when [`Modality::Chat`] (the default) so existing chat
-    /// services emit unchanged wire bytes; embedding services explicitly
-    /// declare `modality = "embedding"` in their `[[service]]` block.
-    #[serde(default, skip_serializing_if = "Modality::is_chat")]
-    pub modality: Modality,
-    /// Passthrough entries from `[[service]] metadata.*`. Empty when
-    /// none were set; the field is elided from JSON when the map is
-    /// empty so existing consumers see no change unless a service opts
-    /// in to metadata.
-    #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
-    #[schema(value_type = Object)]
-    pub ananke_metadata: AnankeMetadata,
-    /// Whether the service's estimated placement fits under current
-    /// device conditions. `None` when the verdict can't be computed
-    /// (e.g. a llama-cpp service whose GGUF hasn't been read yet).
-    /// Running services are always `Fits`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fit_verdict: Option<FitVerdict>,
-    /// Total VRAM bytes the service would reserve across all devices
-    /// under current conditions (from the placement preview). Includes
-    /// weights, KV cache, and compute buffer. `None` when the placement
-    /// can't be computed (e.g. a command service that reserves no VRAM).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vram_bytes: Option<u64>,
-    /// Wall-clock timestamp (ms since epoch) of the last time the
-    /// service was provisioned or received a request. `None` if the
-    /// service has never been started.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_ms: Option<i64>,
-}
+use crate::{
+    internal::{fit_verdict::FitVerdict, log_line::LogLine},
+    shared::{metadata::AnankeMetadata, modality::Modality},
+};
 
 /// `GET /api/services/{name}` response body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
@@ -158,11 +64,11 @@ pub struct ServiceDetail {
     /// values are MiB.
     pub current_allocation: BTreeMap<String, u64>,
     /// What kind of OpenAI endpoint the service serves. See
-    /// [`ServiceSummary::modality`] for the rendering rule.
+    /// [`crate::services::list::ServiceSummary::modality`] for the rendering rule.
     #[serde(default, skip_serializing_if = "Modality::is_chat")]
     pub modality: Modality,
     /// Passthrough entries from `[[service]] metadata.*`. See
-    /// [`ServiceSummary::ananke_metadata`].
+    /// [`crate::services::list::ServiceSummary::ananke_metadata`].
     #[serde(default, skip_serializing_if = "AnankeMetadata::is_empty")]
     #[schema(value_type = Object)]
     pub ananke_metadata: AnankeMetadata,
@@ -273,69 +179,4 @@ pub struct DevicePlacement {
     pub used_by_others_bytes: u64,
     /// Total memory capacity of the device, in bytes. Zero if unknown.
     pub total_bytes: u64,
-}
-
-/// Whether a service's estimated placement fits under current conditions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FitVerdict {
-    /// Starts now in currently-free memory — no eviction needed.
-    Fits,
-    /// Fits within the hardware, but currently-free memory is insufficient, so
-    /// the daemon would reclaim or evict lower-priority peers to make room.
-    NeedsEviction,
-    /// Too large for the allowed GPUs even with everything else gone.
-    DoesNotFit,
-}
-
-/// Whether a [`LaunchCommand`] describes a live process or a what-if.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum LaunchCommandSource {
-    /// The service is running; this configuration is what it was launched
-    /// with (recomputed from the current config and placement, so it matches
-    /// the live process unless the config was edited since it started).
-    Running,
-    /// The service is not running; this is the command it would launch with
-    /// on the next start, given the current config and device state.
-    Preview,
-}
-
-/// One environment variable ananke sets on the child process.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct EnvVar {
-    /// Variable name (e.g. `CUDA_VISIBLE_DEVICES`).
-    pub key: String,
-    /// Variable value.
-    pub value: String,
-}
-
-/// Response from `GET /api/services/{name}/command`: the launch command
-/// computed under two scenarios.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct LaunchCommandResponse {
-    /// Command on an empty cluster — what the service would launch with
-    /// if no other services held pledges. Always present when the service
-    /// can fit on the hardware at all.
-    pub on_empty: LaunchCommand,
-    /// Command against the current device state and pledge book. `None`
-    /// when the service can't fit alongside currently running services.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active: Option<LaunchCommand>,
-}
-
-/// One launch command — argv and environment.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct LaunchCommand {
-    /// Whether the service is running (`running`) or this is a preview of the
-    /// next start (`preview`).
-    pub source: LaunchCommandSource,
-    /// The full argv. `argv[0]` is the binary; the rest are its arguments.
-    /// Already split into tokens — no shell quoting is applied, so a client
-    /// rendering a copy-pasteable line should quote as needed.
-    pub argv: Vec<String>,
-    /// Environment variables ananke sets or overrides for the child (notably
-    /// `CUDA_VISIBLE_DEVICES`), sorted by key. Not the full inherited
-    /// environment.
-    pub env: Vec<EnvVar>,
 }

@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, io};
 
-use ananke_api::{ServiceSummary, ServicesResponse};
+use ananke_api::services::list::{ServiceSummary, ServicesResponse};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,

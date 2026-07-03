@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use ananke_api::{
-    OneshotRequest, OneshotResponse, OneshotStatus,
-    oneshot::{OneshotAllocation, OneshotDevices},
+use ananke_api::oneshot::{
+    create::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse},
+    get::OneshotStatus,
 };
 
 use crate::{

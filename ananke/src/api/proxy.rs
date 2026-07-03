@@ -204,7 +204,7 @@ pub async fn serve_with_activity(
 /// emitted the failure.
 pub fn error_response(code: ApiErrorCode) -> ProxyError {
     let status = code.status();
-    let body: ananke_api::ApiError = code.into();
+    let body: ananke_api::shared::errors::ApiError = code.into();
     let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
     let full: ProxyBody = Full::new(Bytes::from(body_bytes))
         .map_err(|never| -> Box<dyn Error + Send + Sync> { match never {} })

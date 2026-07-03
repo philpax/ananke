@@ -20,7 +20,7 @@ use ananke::{
     supervise::SupervisorHandle,
     system::FakeProcessState,
 };
-use ananke_api::Event;
+use ananke_api::events::Event;
 use common::{build_harness, minimal_llama_service};
 use smol_str::SmolStr;
 

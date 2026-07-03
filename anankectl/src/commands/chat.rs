@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use ananke_api::ServicesResponse;
+use ananke_api::services::list::ServicesResponse;
 use futures::StreamExt;
 use reqwest::Url;
 use serde::Serialize;

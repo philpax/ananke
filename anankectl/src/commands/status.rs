@@ -1,6 +1,6 @@
 //! `anankectl status`: combined daemon health, devices, and services snapshot.
 
-use ananke_api::{DeviceSummary, ServicesResponse};
+use ananke_api::{devices::list::DeviceSummary, services::list::ServicesResponse};
 
 use crate::{
     client::{ApiClient, ApiClientError},

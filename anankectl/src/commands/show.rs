@@ -1,4 +1,4 @@
-use ananke_api::ServiceDetail;
+use ananke_api::services::detail::ServiceDetail;
 
 use crate::{
     client::{ApiClient, ApiClientError},

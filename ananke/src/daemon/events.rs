@@ -1,7 +1,7 @@
 //! Broadcast-based event bus. Publishers are infallible from the caller's
 //! perspective; subscribers handle lag explicitly via `RecvError::Lagged`.
 
-use ananke_api::Event;
+use ananke_api::events::Event;
 use tokio::sync::broadcast;
 
 /// Capacity of the per-daemon event broadcast channel.
@@ -44,7 +44,7 @@ impl Default for EventBus {
 
 #[cfg(test)]
 mod tests {
-    use ananke_api::Event;
+    use ananke_api::events::Event;
     use smol_str::SmolStr;
 
     use super::*;

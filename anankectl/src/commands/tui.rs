@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ananke_api::ServicesResponse;
+use ananke_api::services::list::ServicesResponse;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,

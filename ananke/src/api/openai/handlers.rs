@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ananke_api::shared::errors::ApiError;
 use axum::{
     Json,
     body::Body,
@@ -78,7 +79,8 @@ pub fn register(router: Router, state: AppState) -> Router {
     router.merge(implemented).merge(stubs)
 }
 
-#[utoipa::path(get, path = "/v1/models", responses((status = 200, body = ModelsResponse)))]
+#[utoipa::path(
+    summary = "List available models (OpenAI-compatible)",get, path = "/v1/models", responses((status = 200, body = ModelsResponse)))]
 pub async fn list_models(State(state): State<AppState>) -> Response {
     let mut data = Vec::new();
     let effective = state.config.effective();
@@ -114,10 +116,17 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
 }
 
 #[utoipa::path(
+    summary = "Chat completion (OpenAI-compatible proxy)",
     post,
     path = "/v1/chat/completions",
     request_body = ChatCompletionEnvelope,
-    responses((status = 200, description = "Proxied from upstream"))
+    responses(
+        (status = 200, description = "Proxied from upstream"),
+        (status = 400, body = ApiError, description = "invalid_request_error"),
+        (status = 404, body = ApiError, description = "model_not_found"),
+        (status = 503, body = ApiError, description = "service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked"),
+        (status = 502, body = ApiError, description = "upstream_unavailable")
+    )
 )]
 pub async fn chat_completions(
     State(state): State<AppState>,
@@ -128,10 +137,17 @@ pub async fn chat_completions(
 }
 
 #[utoipa::path(
+    summary = "Text completion (OpenAI-compatible proxy)",
     post,
     path = "/v1/completions",
     request_body = CompletionEnvelope,
-    responses((status = 200, description = "Proxied from upstream"))
+    responses(
+        (status = 200, description = "Proxied from upstream"),
+        (status = 400, body = ApiError, description = "invalid_request_error"),
+        (status = 404, body = ApiError, description = "model_not_found"),
+        (status = 503, body = ApiError, description = "service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked"),
+        (status = 502, body = ApiError, description = "upstream_unavailable")
+    )
 )]
 pub async fn completions(
     State(state): State<AppState>,
@@ -142,10 +158,17 @@ pub async fn completions(
 }
 
 #[utoipa::path(
+    summary = "Embeddings (OpenAI-compatible proxy)",
     post,
     path = "/v1/embeddings",
     request_body = EmbeddingEnvelope,
-    responses((status = 200, description = "Proxied from upstream"))
+    responses(
+        (status = 200, description = "Proxied from upstream"),
+        (status = 400, body = ApiError, description = "invalid_request_error"),
+        (status = 404, body = ApiError, description = "model_not_found"),
+        (status = 503, body = ApiError, description = "service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked"),
+        (status = 502, body = ApiError, description = "upstream_unavailable")
+    )
 )]
 pub async fn embeddings(
     State(state): State<AppState>,

@@ -1,9 +1,9 @@
-//! Service lifecycle POST response bodies.
+//! `POST /api/services/{name}/start` response body.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::errors::ApiErrorBody;
+use crate::shared::errors::ApiErrorBody;
 
 /// `POST /api/services/{name}/start` response body.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -25,32 +25,4 @@ pub enum StartResponse {
     Unavailable {
         error: ApiErrorBody,
     },
-}
-
-/// `POST /api/services/{name}/stop` response body.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(tag = "status", rename_all = "snake_case")]
-#[allow(missing_docs)]
-pub enum StopResponse {
-    NotRunning,
-    Drained,
-}
-
-/// `POST /api/services/{name}/enable` response body.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(tag = "status", rename_all = "snake_case")]
-#[allow(missing_docs)]
-pub enum EnableResponse {
-    Enabled,
-    NotDisabled,
-    AlreadyEnabled,
-}
-
-/// `POST /api/services/{name}/disable` response body.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(tag = "status", rename_all = "snake_case")]
-#[allow(missing_docs)]
-pub enum DisableResponse {
-    Disabled,
-    AlreadyDisabled,
 }

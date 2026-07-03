@@ -1,6 +1,8 @@
 //! Service lifecycle command handlers.
 
-use ananke_api::{DisableResponse, EnableResponse, StartResponse, StopResponse};
+use ananke_api::services::{
+    disable::DisableResponse, enable::EnableResponse, start::StartResponse, stop::StopResponse,
+};
 
 use crate::{
     client::{ApiClient, ApiClientError},

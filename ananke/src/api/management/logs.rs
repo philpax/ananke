@@ -1,6 +1,8 @@
 //! `GET /api/services/{name}/logs?since&until&run&limit&stream&before`
 
-use ananke_api::{ApiError, LogLine, LogsResponse};
+use ananke_api::{
+    internal::log_line::LogLine, services::logs::LogsResponse, shared::errors::ApiError,
+};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -33,6 +35,7 @@ struct Cursor {
 }
 
 #[utoipa::path(
+    summary = "Get service logs (paginated)",
     get,
     path = "/api/services/{name}/logs",
     params(
@@ -46,8 +49,8 @@ struct Cursor {
     ),
     responses(
         (status = 200, body = LogsResponse),
-        (status = 400, body = ApiError),
-        (status = 404, body = ApiError)
+        (status = 400, body = ApiError, description = "invalid_cursor"),
+        (status = 404, body = ApiError, description = "service_not_found")
     )
 )]
 pub async fn get_logs(

@@ -1,6 +1,12 @@
 //! GET/PUT /api/config + POST /api/config/validate
 
-use ananke_api::{ApiError, ConfigResponse, ConfigValidateRequest, ConfigValidateResponse};
+use ananke_api::{
+    config::{
+        get::ConfigResponse,
+        validate::{ConfigValidateRequest, ConfigValidateResponse},
+    },
+    shared::errors::ApiError,
+};
 use axum::{
     Json,
     extract::State,
@@ -11,6 +17,7 @@ use axum::{
 use crate::{api::errors::ApiErrorCode, config::manager::ApplyError, daemon::app_state::AppState};
 
 #[utoipa::path(
+    summary = "Get or update the daemon config",
     get,
     path = "/api/config",
     responses((status = 200, body = ConfigResponse))
@@ -30,15 +37,16 @@ pub async fn get_config(State(state): State<AppState>) -> Response {
 }
 
 #[utoipa::path(
+    summary = "Get or update the daemon config",
     put,
     path = "/api/config",
     request_body(content = String, description = "Raw TOML config"),
     responses(
         (status = 202),
-        (status = 412, body = ApiError),
+        (status = 412, body = ApiError, description = "hash_mismatch"),
         (status = 422, body = ConfigValidateResponse),
-        (status = 428, body = ApiError),
-        (status = 500, body = ApiError)
+        (status = 428, body = ApiError, description = "if_match_required"),
+        (status = 500, body = ApiError, description = "persist_failed")
     )
 )]
 pub async fn put_config(
@@ -78,6 +86,7 @@ pub async fn put_config(
 }
 
 #[utoipa::path(
+    summary = "Validate TOML config without persisting",
     post,
     path = "/api/config/validate",
     request_body = ConfigValidateRequest,
@@ -104,5 +113,5 @@ pub async fn post_validate(
 #[cfg(test)]
 #[allow(dead_code)]
 fn _force_link() {
-    let _: Vec<ananke_api::ValidationError> = vec![];
+    let _: Vec<ananke_api::config::validate::ValidationError> = vec![];
 }

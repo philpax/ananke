@@ -3,7 +3,7 @@
 
 mod common;
 
-use ananke_api::LogsResponse;
+use ananke_api::services::LogsResponse;
 use axum::{body::to_bytes, http::StatusCode};
 use tower::util::ServiceExt;
 

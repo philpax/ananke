@@ -5,7 +5,10 @@
 //! stdout isn't a tty (e.g. `anankectl status | grep running`) the
 //! library suppresses styling automatically, so piping stays clean.
 
-use ananke_api::{DeviceSummary, ServiceDetail, ServiceSummary};
+use ananke_api::{
+    devices::list::DeviceSummary,
+    services::{detail::ServiceDetail, list::ServiceSummary},
+};
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
 use serde::Serialize;
 

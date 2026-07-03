@@ -1,9 +1,14 @@
 //! Read-only management endpoints.
 
 use ananke_api::{
-    DevicePlacement, DeviceReservation, DeviceSummary, EnvVar, LaunchCommand,
-    LaunchCommandResponse, LaunchCommandSource, LogLine, PlacementPreview, ServiceDetail,
-    ServiceSummary, ServicesResponse,
+    devices::list::{DeviceReservation, DeviceSummary},
+    internal::log_line::LogLine,
+    services::{
+        command::{EnvVar, LaunchCommand, LaunchCommandResponse, LaunchCommandSource},
+        detail::{DevicePlacement, PlacementPreview, ServiceDetail},
+        list::{ServiceSummary, ServicesResponse},
+    },
+    shared::errors::ApiError,
 };
 use axum::{
     Json,
@@ -33,7 +38,8 @@ pub fn register(router: Router, state: AppState) -> Router {
     router.merge(mgmt)
 }
 
-#[utoipa::path(get, path = "/api/services", responses((status = 200, body = ServicesResponse)))]
+#[utoipa::path(
+    summary = "List all services",get, path = "/api/services", responses((status = 200, body = ServicesResponse)))]
 pub async fn list_services(State(state): State<AppState>) -> Response {
     let mut services = Vec::new();
     let eff = state.config.effective();
@@ -105,9 +111,13 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
 }
 
 #[utoipa::path(
+    summary = "Get service detail",
     get,
     path = "/api/services/{name}",
-    responses((status = 200, body = ServiceDetail), (status = 404))
+    responses(
+        (status = 200, body = ServiceDetail),
+        (status = 404, body = ApiError, description = "service_not_found")
+    )
 )]
 pub async fn service_detail(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     let eff = state.config.effective();
@@ -217,13 +227,14 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
 }
 
 #[utoipa::path(
+    summary = "Get launch command preview",
     get,
     path = "/api/services/{name}/command",
     params(("name" = String, Path, description = "Service name")),
     responses(
         (status = 200, body = LaunchCommandResponse),
-        (status = 404),
-        (status = 422, description = "The command could not be computed even on an empty cluster (e.g. the model does not fit on any single device)")
+        (status = 404, body = ApiError, description = "service_not_found"),
+        (status = 422, body = ApiError, description = "insufficient_vram")
     )
 )]
 pub async fn service_command(State(state): State<AppState>, Path(name): Path<String>) -> Response {
@@ -363,7 +374,7 @@ fn placement_preview(
             .collect();
         crate::supervise::PlacementOutcome {
             devices,
-            verdict: ananke_api::FitVerdict::Fits,
+            verdict: ananke_api::internal::fit_verdict::FitVerdict::Fits,
             expert_offload_bytes: 0,
             expert_offload_layers: 0,
         }
@@ -476,6 +487,7 @@ fn read_current_allocation(
 }
 
 #[utoipa::path(
+    summary = "List devices and reservations",
     get,
     path = "/api/devices",
     responses((status = 200, body = Vec<DeviceSummary>))

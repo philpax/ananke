@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ananke_api::Event;
+use ananke_api::events::Event;
 pub use orphans::{OrphanDisposition, reconcile};
 use parking_lot::Mutex as SyncMutex;
 pub use preview::{

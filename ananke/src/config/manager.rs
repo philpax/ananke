@@ -4,7 +4,7 @@
 
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 
-use ananke_api::{Event, ValidationError};
+use ananke_api::{config::validate::ValidationError, events::Event};
 use arc_swap::ArcSwap;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use parking_lot::{Mutex, RwLock};

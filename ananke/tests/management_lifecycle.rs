@@ -3,7 +3,7 @@
 
 mod common;
 
-use ananke_api::{DisableResponse, EnableResponse, StartResponse};
+use ananke_api::services::{DisableResponse, EnableResponse, StartResponse};
 use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness, minimal_llama_service};
 use tower::util::ServiceExt;

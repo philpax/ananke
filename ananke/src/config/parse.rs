@@ -82,7 +82,7 @@ pub struct DaemonConfig {
 }
 
 fn default_management_listen() -> String {
-    ananke_api::defaults::MANAGEMENT_LISTEN.into()
+    ananke_api::shared::defaults::MANAGEMENT_LISTEN.into()
 }
 
 fn default_shutdown_timeout() -> String {
@@ -333,7 +333,7 @@ pub struct RawServiceCommon {
     /// themselves through `/v1/models` + `/api/services` with a typed
     /// `modality` field clients can filter on, and the frontend renders
     /// an `embedding` badge alongside the service name. Validated into
-    /// the [`ananke_api::Modality`] enum during config validation; an
+    /// the [`ananke_api::shared::modality::Modality`] enum during config validation; an
     /// unknown string is a hard config error rather than a silent fall
     /// back to chat.
     pub modality: Option<SmolStr>,

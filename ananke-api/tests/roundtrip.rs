@@ -1,8 +1,13 @@
 use ananke_api::{
-    ConfigResponse, DeviceReservation, DeviceSummary, DisableResponse, EnableResponse, Event,
-    LogLine, LogsResponse, OneshotRequest, OneshotResponse, ServiceDetail, ServiceSummary,
-    StartResponse, StopResponse,
-    oneshot::{OneshotAllocation, OneshotDevices},
+    config::ConfigResponse,
+    devices::list::{DeviceReservation, DeviceSummary},
+    internal::{event::Event, log_line::LogLine},
+    oneshot::create::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse},
+    services::{
+        detail::ServiceDetail, disable::DisableResponse, enable::EnableResponse,
+        list::ServiceSummary, logs::LogsResponse, start::StartResponse, stop::StopResponse,
+    },
+    shared::errors::{ApiErrorBody, ApiErrorCodeSlug, ApiErrorKind},
 };
 use pretty_assertions::assert_eq;
 use smol_str::SmolStr;
@@ -17,7 +22,7 @@ where
 
 #[test]
 fn service_summary_roundtrips() {
-    let mut ananke_metadata = ananke_api::AnankeMetadata::new();
+    let mut ananke_metadata = ananke_api::shared::metadata::AnankeMetadata::new();
     ananke_metadata.insert("tags".into(), serde_json::json!(["general", "chat"]));
     ananke_metadata.insert("discord_visible".into(), serde_json::json!(true));
     let v = ServiceSummary {
@@ -31,7 +36,7 @@ fn service_summary_roundtrips() {
         inflight_count: 0,
         elastic_borrower: None,
         has_mmproj: Some(true),
-        modality: ananke_api::Modality::Chat,
+        modality: ananke_api::shared::modality::Modality::Chat,
         ananke_metadata,
         fit_verdict: None,
         vram_bytes: None,
@@ -43,10 +48,10 @@ fn service_summary_roundtrips() {
 #[test]
 fn start_response_tagged_union() {
     let v = StartResponse::Unavailable {
-        error: ananke_api::ApiErrorBody {
-            code: "insufficient_vram".into(),
+        error: ApiErrorBody {
+            code: ApiErrorCodeSlug::InsufficientVram,
             message: "no fit".into(),
-            kind: "server_error".into(),
+            kind: ApiErrorKind::ServerError,
         },
     };
     let json = serde_json::to_value(&v).unwrap();
@@ -171,8 +176,8 @@ fn service_detail_roundtrips() {
         estimate: None,
         placement_preview: None,
         current_allocation: Default::default(),
-        modality: ananke_api::Modality::Chat,
-        ananke_metadata: ananke_api::AnankeMetadata::new(),
+        modality: ananke_api::shared::modality::Modality::Chat,
+        ananke_metadata: ananke_api::shared::metadata::AnankeMetadata::new(),
         last_used_ms: None,
     };
     assert_eq!(v.clone(), roundtrip(v));
@@ -208,4 +213,87 @@ fn disable_response_tagged_union() {
     let v = DisableResponse::Disabled;
     let json = serde_json::to_value(&v).unwrap();
     assert_eq!(json, serde_json::json!({"status": "disabled"}));
+}
+
+#[test]
+fn error_slug_serde_roundtrips() {
+    // The 15 named variants serialise to their snake_case slugs.
+    let cases = [
+        (ApiErrorCodeSlug::ModelNotFound, "model_not_found"),
+        (ApiErrorCodeSlug::ServiceNotFound, "service_not_found"),
+        (ApiErrorCodeSlug::ServiceDisabled, "service_disabled"),
+        (ApiErrorCodeSlug::StartQueueFull, "start_queue_full"),
+        (ApiErrorCodeSlug::StartFailed, "start_failed"),
+        (ApiErrorCodeSlug::InsufficientVram, "insufficient_vram"),
+        (ApiErrorCodeSlug::ServiceBlocked, "service_blocked"),
+        (
+            ApiErrorCodeSlug::UpstreamUnavailable,
+            "upstream_unavailable",
+        ),
+        (ApiErrorCodeSlug::ProxyInternal, "proxy_internal"),
+        (ApiErrorCodeSlug::NotImplemented, "not_implemented"),
+        (ApiErrorCodeSlug::InvalidCursor, "invalid_cursor"),
+        (ApiErrorCodeSlug::IfMatchRequired, "if_match_required"),
+        (ApiErrorCodeSlug::HashMismatch, "hash_mismatch"),
+        (ApiErrorCodeSlug::PersistFailed, "persist_failed"),
+    ];
+    for (variant, expected) in cases {
+        let json = serde_json::to_string(&variant).unwrap();
+        assert_eq!(json, format!("\"{expected}\""));
+        let back: ApiErrorCodeSlug = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, variant);
+    }
+}
+
+#[test]
+fn error_slug_invalid_request_renamed() {
+    // InvalidRequest serialises as "invalid_request_error" (not
+    // "invalid_request") to match OpenAI's error-type taxonomy and
+    // preserve wire compatibility with the daemon's existing slug.
+    let json = serde_json::to_string(&ApiErrorCodeSlug::InvalidRequest).unwrap();
+    assert_eq!(json, "\"invalid_request_error\"");
+    let back: ApiErrorCodeSlug = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, ApiErrorCodeSlug::InvalidRequest);
+}
+
+#[test]
+fn error_slug_other_fallback() {
+    // An unknown slug deserialises to `Other` so clients don't break
+    // when the daemon adds a new code before they're updated.
+    let back: ApiErrorCodeSlug = serde_json::from_str("\"totally_new_error\"").unwrap();
+    assert_eq!(back, ApiErrorCodeSlug::Other);
+}
+
+#[test]
+fn error_kind_serde() {
+    assert_eq!(
+        serde_json::to_string(&ApiErrorKind::InvalidRequestError).unwrap(),
+        "\"invalid_request_error\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ApiErrorKind::ServerError).unwrap(),
+        "\"server_error\""
+    );
+    let back: ApiErrorKind = serde_json::from_str("\"invalid_request_error\"").unwrap();
+    assert_eq!(back, ApiErrorKind::InvalidRequestError);
+    let back: ApiErrorKind = serde_json::from_str("\"server_error\"").unwrap();
+    assert_eq!(back, ApiErrorKind::ServerError);
+    // Forward-compat fallback.
+    let back: ApiErrorKind = serde_json::from_str("\"unknown_kind\"").unwrap();
+    assert_eq!(back, ApiErrorKind::Other);
+}
+
+#[test]
+fn error_slug_display_matches_serialisation() {
+    // Display must yield the bare slug string (no quotes) so
+    // anankectl's `println!("{}", error.code)` keeps working.
+    assert_eq!(
+        ApiErrorCodeSlug::InsufficientVram.to_string(),
+        "insufficient_vram"
+    );
+    assert_eq!(
+        ApiErrorCodeSlug::InvalidRequest.to_string(),
+        "invalid_request_error"
+    );
+    assert_eq!(ApiErrorKind::ServerError.to_string(), "server_error");
 }

@@ -3,7 +3,7 @@
 
 mod common;
 
-use ananke_api::ConfigResponse;
+use ananke_api::config::ConfigResponse;
 use axum::{
     body::to_bytes,
     http::{StatusCode, header::IF_MATCH},

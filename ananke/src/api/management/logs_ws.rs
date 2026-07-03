@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ananke_api::{LogLine, LogStreamMessage};
+use ananke_api::{internal::log_line::LogLine, services::logs_stream::LogStreamMessage};
 use axum::{
     extract::{Path, State, WebSocketUpgrade, ws::Message},
     response::{IntoResponse, Response},

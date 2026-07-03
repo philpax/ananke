@@ -554,7 +554,7 @@ fn reconcile_pledge(
         .map(|(s, mb)| (slot_to_key(s), mb * 1024 * 1024))
         .collect();
     drop(guard);
-    events.publish(ananke_api::Event::AllocationChanged {
+    events.publish(ananke_api::events::Event::AllocationChanged {
         service: service_name.clone(),
         reservations,
         at_ms: crate::tracking::now_unix_ms(),

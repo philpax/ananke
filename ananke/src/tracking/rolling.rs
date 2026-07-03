@@ -62,7 +62,7 @@ impl RollingTable {
         Self::default()
     }
 
-    /// Construct a `RollingTable` that publishes [`ananke_api::Event::EstimatorDrift`]
+    /// Construct a `RollingTable` that publishes [`ananke_api::events::Event::EstimatorDrift`]
     /// whenever an update moves the rolling mean by more than 5%.
     pub fn with_events(events: EventBus) -> Self {
         Self {
@@ -146,7 +146,7 @@ impl RollingTable {
         drop(guard);
 
         if significant_shift && let Some(events) = &self.events {
-            events.publish(ananke_api::Event::EstimatorDrift {
+            events.publish(ananke_api::events::Event::EstimatorDrift {
                 service: name.clone(),
                 rolling_mean: final_mean as f32,
                 at_ms: crate::tracking::now_unix_ms(),

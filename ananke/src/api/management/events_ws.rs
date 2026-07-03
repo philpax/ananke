@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ananke_api::Event;
+use ananke_api::events::Event;
 use axum::{
     extract::{
         Query, State, WebSocketUpgrade,

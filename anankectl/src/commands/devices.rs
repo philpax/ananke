@@ -1,4 +1,4 @@
-use ananke_api::DeviceSummary;
+use ananke_api::devices::list::DeviceSummary;
 
 use crate::{
     client::{ApiClient, ApiClientError},

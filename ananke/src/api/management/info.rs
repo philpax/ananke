@@ -1,6 +1,6 @@
 //! `GET /api/info` handler.
 
-use ananke_api::DaemonInfoResponse;
+use ananke_api::info::get::DaemonInfoResponse;
 use axum::{
     Json,
     extract::State,
@@ -10,6 +10,7 @@ use axum::{
 use crate::daemon::app_state::AppState;
 
 #[utoipa::path(
+    summary = "Get daemon listen addresses",
     get,
     path = "/api/info",
     responses((status = 200, body = DaemonInfoResponse))

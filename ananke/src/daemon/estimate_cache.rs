@@ -19,7 +19,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use ananke_api::{EstimateSummary, ModelInfo};
+use ananke_api::services::detail::{EstimateSummary, ModelInfo};
 use parking_lot::RwLock;
 use smol_str::SmolStr;
 

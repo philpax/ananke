@@ -53,13 +53,13 @@ pub struct LogLine {
 #[derive(Clone)]
 pub struct BatcherHandle {
     tx: mpsc::UnboundedSender<Msg>,
-    broadcast: broadcast::Sender<(i64, ananke_api::LogLine)>,
+    broadcast: broadcast::Sender<(i64, ananke_api::internal::log_line::LogLine)>,
 }
 
 impl BatcherHandle {
     /// Subscribe to the live-log broadcast. Each message is `(service_id, LogLine)`;
     /// subscribers filter by `service_id` to receive only the lines they care about.
-    pub fn subscribe(&self) -> broadcast::Receiver<(i64, ananke_api::LogLine)> {
+    pub fn subscribe(&self) -> broadcast::Receiver<(i64, ananke_api::internal::log_line::LogLine)> {
         self.broadcast.subscribe()
     }
 }
@@ -96,7 +96,7 @@ pub fn spawn(db: Database) -> BatcherHandle {
 async fn run(
     db: Database,
     mut rx: mpsc::UnboundedReceiver<Msg>,
-    broadcast: broadcast::Sender<(i64, ananke_api::LogLine)>,
+    broadcast: broadcast::Sender<(i64, ananke_api::internal::log_line::LogLine)>,
 ) {
     let mut buffer: Vec<LogLine> = Vec::with_capacity(BATCH_LINES);
     let mut seq_counters: HashMap<(i64, i64), i64> = HashMap::new();
@@ -147,7 +147,7 @@ async fn flush(
     db: &Database,
     buffer: &mut Vec<LogLine>,
     seq: &mut HashMap<(i64, i64), i64>,
-    broadcast: &broadcast::Sender<(i64, ananke_api::LogLine)>,
+    broadcast: &broadcast::Sender<(i64, ananke_api::internal::log_line::LogLine)>,
 ) {
     if buffer.is_empty() {
         return;
@@ -158,12 +158,13 @@ async fn flush(
     // messages to broadcast in one pass. Broadcast only fires after the
     // commit succeeds.
     let mut rows: Vec<ServiceLog> = Vec::with_capacity(lines.len());
-    let mut to_broadcast: Vec<(i64, ananke_api::LogLine)> = Vec::with_capacity(lines.len());
+    let mut to_broadcast: Vec<(i64, ananke_api::internal::log_line::LogLine)> =
+        Vec::with_capacity(lines.len());
 
     for line in lines {
         let counter = seq.entry((line.service_id, line.run_id)).or_insert(0);
         *counter += 1;
-        let api_line = ananke_api::LogLine {
+        let api_line = ananke_api::internal::log_line::LogLine {
             timestamp_ms: line.timestamp_ms,
             stream: line.stream.as_str().to_string(),
             line: line.line.clone(),

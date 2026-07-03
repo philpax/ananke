@@ -1,4 +1,8 @@
 //! WebSocket event envelope published on `/api/events`.
+//!
+//! `Event` is also used as a broadcast bus message in `supervise/`,
+//! `allocator/`, and `config/`, so it lives in the internal module rather
+//! than under a single endpoint.
 
 use std::collections::BTreeMap;
 

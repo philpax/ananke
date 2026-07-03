@@ -21,7 +21,7 @@ use ananke::{
     supervise::registry::ServiceRegistry,
     tracking::observation::ObservationTable,
 };
-use ananke_api::Event;
+use ananke_api::events::Event;
 use parking_lot::Mutex;
 use smol_str::SmolStr;
 use tokio::sync::watch;

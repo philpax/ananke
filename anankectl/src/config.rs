@@ -127,5 +127,5 @@ pub fn resolve_endpoint(cli_value: Option<String>) -> Result<String, ApiClientEr
     if let Some(e) = cfg.endpoint {
         return Ok(e);
     }
-    Ok(ananke_api::defaults::MANAGEMENT_ENDPOINT.to_string())
+    Ok(ananke_api::shared::defaults::MANAGEMENT_ENDPOINT.to_string())
 }

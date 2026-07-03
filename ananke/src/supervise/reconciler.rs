@@ -20,7 +20,7 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use ananke_api::Event;
+use ananke_api::events::Event;
 use smol_str::SmolStr;
 use tokio::sync::{broadcast::error::RecvError, watch};
 use tracing::{error, info, warn};

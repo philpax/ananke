@@ -1,4 +1,4 @@
-//! Device + reservation views.
+//! `GET /api/devices` — device + reservation views.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

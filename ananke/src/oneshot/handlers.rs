@@ -1,7 +1,10 @@
 //! HTTP handlers for the oneshot API: `POST /api/oneshot`, `GET /api/oneshot`,
 //! `GET /api/oneshot/:id`, `DELETE /api/oneshot/:id`.
 
-use ananke_api::oneshot::{OneshotRequest, OneshotResponse, OneshotStatus};
+use ananke_api::{
+    oneshot::{OneshotRequest, OneshotResponse, OneshotStatus},
+    shared::errors::ApiError,
+};
 use axum::{
     Json,
     extract::{Path, State},
@@ -29,10 +32,11 @@ pub fn register(router: Router, state: AppState) -> Router {
 }
 
 #[utoipa::path(
+    summary = "Create or list oneshot processes",
     post,
     path = "/api/oneshot",
     request_body = OneshotRequest,
-    responses((status = 200, body = OneshotResponse), (status = 400), (status = 503))
+    responses((status = 200, body = OneshotResponse), (status = 400, body = ApiError, description = "invalid_request_error"), (status = 503, body = ApiError, description = "start_failed, start_queue_full"))
 )]
 pub async fn post_oneshot(
     State(state): State<AppState>,
@@ -103,6 +107,7 @@ pub async fn post_oneshot(
 }
 
 #[utoipa::path(
+    summary = "Create or list oneshot processes",
     get,
     path = "/api/oneshot",
     responses((status = 200, body = Vec<OneshotStatus>))
@@ -114,9 +119,10 @@ pub async fn list_oneshots(State(state): State<AppState>) -> Response {
 }
 
 #[utoipa::path(
+    summary = "Get or delete a oneshot process",
     get,
     path = "/api/oneshot/{id}",
-    responses((status = 200, body = OneshotStatus), (status = 404))
+    responses((status = 200, body = OneshotStatus), (status = 404, body = ApiError, description = "service_not_found"))
 )]
 pub async fn get_oneshot(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     match state.oneshots.get(&id) {
@@ -130,9 +136,10 @@ pub async fn get_oneshot(State(state): State<AppState>, Path(id): Path<String>) 
 }
 
 #[utoipa::path(
+    summary = "Get or delete a oneshot process",
     delete,
     path = "/api/oneshot/{id}",
-    responses((status = 204), (status = 404))
+    responses((status = 204), (status = 404, body = ApiError, description = "service_not_found"))
 )]
 pub async fn delete_oneshot(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(record) = state.oneshots.remove(&id) else {

@@ -1,7 +1,9 @@
 //! `GET /api/metrics` and `GET /api/devices/samples` handlers.
 
 use ananke_api::{
-    DeviceSampleResponse, DeviceSamplesResponse, MetricBucketResponse, MetricsResponse,
+    devices::samples::{DeviceSampleResponse, DeviceSamplesResponse},
+    metrics::get::{MetricBucketResponse, MetricsResponse},
+    shared::errors::ApiError,
 };
 use axum::{
     Json, Router,
@@ -23,6 +25,7 @@ pub struct MetricsQuery {
 }
 
 #[utoipa::path(
+    summary = "Get request metrics (time-bucketed)",
     get,
     path = "/api/metrics",
     params(
@@ -31,7 +34,7 @@ pub struct MetricsQuery {
         ("until" = Option<i64>, Query, description = "Latest timestamp_ms, inclusive (default: now)"),
         ("bucket" = Option<String>, Query, description = "Bucket size: \"1m\", \"5m\", \"1h\" (default: \"5m\")"),
     ),
-    responses((status = 200, body = MetricsResponse))
+    responses((status = 200, body = MetricsResponse), (status = 400, body = ApiError, description = "invalid_request_error"))
 )]
 pub async fn get_metrics(State(state): State<AppState>, Query(q): Query<MetricsQuery>) -> Response {
     let now = crate::tracking::now_unix_ms();
@@ -98,6 +101,7 @@ pub struct DeviceSamplesQuery {
 }
 
 #[utoipa::path(
+    summary = "Get device memory samples",
     get,
     path = "/api/devices/samples",
     params(

@@ -1,4 +1,4 @@
-//! Oneshot request + response bodies.
+//! `POST /api/oneshot` — oneshot request + response bodies.
 
 use std::collections::BTreeMap;
 
@@ -91,28 +91,5 @@ pub struct OneshotResponse {
     /// Bound port.
     pub port: u16,
     /// Path component suitable for appending to `ANANKE_ENDPOINT` to open the log stream.
-    pub logs_url: String,
-}
-
-/// `GET /api/oneshot/{id}` response body.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-pub struct OneshotStatus {
-    /// ULID id.
-    pub id: String,
-    /// Name.
-    pub name: String,
-    /// Current state (`"pending"`, `"running"`, `"ended"`, `"evicted"`, etc.).
-    pub state: String,
-    /// Port.
-    pub port: u16,
-    /// Submission timestamp.
-    pub submitted_at_ms: i64,
-    /// Start timestamp, if reached Running.
-    pub started_at_ms: Option<i64>,
-    /// End timestamp, if terminal.
-    pub ended_at_ms: Option<i64>,
-    /// Exit code when the child terminated with one.
-    pub exit_code: Option<i32>,
-    /// Path component for the WS log-stream endpoint.
     pub logs_url: String,
 }

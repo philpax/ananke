@@ -11,7 +11,9 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get or update the daemon config */
     get: operations["get_config"];
+    /** Get or update the daemon config */
     put: operations["put_config"];
     post?: never;
     delete?: never;
@@ -29,6 +31,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Validate TOML config without persisting */
     post: operations["post_validate"];
     delete?: never;
     options?: never;
@@ -43,6 +46,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** List devices and reservations */
     get: operations["list_devices"];
     put?: never;
     post?: never;
@@ -59,6 +63,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get device memory samples */
     get: operations["get_device_samples"];
     put?: never;
     post?: never;
@@ -75,6 +80,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get daemon listen addresses */
     get: operations["get_info"];
     put?: never;
     post?: never;
@@ -91,6 +97,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get request metrics (time-bucketed) */
     get: operations["get_metrics"];
     put?: never;
     post?: never;
@@ -107,8 +114,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Create or list oneshot processes */
     get: operations["list_oneshots"];
     put?: never;
+    /** Create or list oneshot processes */
     post: operations["post_oneshot"];
     delete?: never;
     options?: never;
@@ -123,9 +132,11 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get or delete a oneshot process */
     get: operations["get_oneshot"];
     put?: never;
     post?: never;
+    /** Get or delete a oneshot process */
     delete: operations["delete_oneshot"];
     options?: never;
     head?: never;
@@ -139,6 +150,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** List all services */
     get: operations["list_services"];
     put?: never;
     post?: never;
@@ -155,6 +167,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get service detail */
     get: operations["service_detail"];
     put?: never;
     post?: never;
@@ -171,6 +184,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get launch command preview */
     get: operations["service_command"];
     put?: never;
     post?: never;
@@ -189,6 +203,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Disable a service */
     post: operations["post_disable"];
     delete?: never;
     options?: never;
@@ -205,6 +220,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Enable a disabled service */
     post: operations["post_enable"];
     delete?: never;
     options?: never;
@@ -219,6 +235,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** Get service logs (paginated) */
     get: operations["get_logs"];
     put?: never;
     post?: never;
@@ -237,6 +254,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Restart a service */
     post: operations["post_restart"];
     delete?: never;
     options?: never;
@@ -253,6 +271,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Start a service */
     post: operations["post_start"];
     delete?: never;
     options?: never;
@@ -269,6 +288,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Stop a service */
     post: operations["post_stop"];
     delete?: never;
     options?: never;
@@ -285,6 +305,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Chat completion (OpenAI-compatible proxy) */
     post: operations["chat_completions"];
     delete?: never;
     options?: never;
@@ -301,6 +322,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Text completion (OpenAI-compatible proxy) */
     post: operations["completions"];
     delete?: never;
     options?: never;
@@ -317,6 +339,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Embeddings (OpenAI-compatible proxy) */
     post: operations["embeddings"];
     delete?: never;
     options?: never;
@@ -331,6 +354,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
+    /** List available models (OpenAI-compatible) */
     get: operations["list_models"];
     put?: never;
     post?: never;
@@ -355,22 +379,81 @@ export interface components {
     };
     /** @description Inner body of [`ApiError`]. */
     ApiErrorBody: {
-      /** @description Short slug identifying the error class. */
-      code: string;
+      /**
+       * @description Short slug identifying the error class. Clients may switch on
+       *     these strings; the [`ApiErrorCodeSlug`] enum enumerates every
+       *     value the daemon emits.
+       */
+      code: components["schemas"]["ApiErrorCodeSlug"];
       /** @description Human-readable error message. */
       message: string;
       /**
-       * @description OpenAI's taxonomy — `"invalid_request_error"` for things the
-       *     client could have avoided, `"server_error"` for daemon-side
-       *     problems. Previously hardcoded to `"server_error"` everywhere;
-       *     now derived from the daemon's `ApiErrorCode` variant.
+       * @description OpenAI's taxonomy — [`ApiErrorKind::InvalidRequestError`] for
+       *     things the client could have avoided, [`ApiErrorKind::ServerError`]
+       *     for daemon-side problems. Derived from the daemon's `ApiErrorCode`
+       *     variant.
        */
-      type: string;
+      type: components["schemas"]["ApiErrorKind"];
     };
-    ChatCompletionEnvelope: unknown & {
+    /**
+     * @description Stable wire slug identifying an error class. Clients may switch on
+     *     these strings. The `Other` variant is a deserialization fallback so
+     *     clients don't break when the daemon adds a new code before they're
+     *     updated.
+     *
+     *     Variant names are serialised as `snake_case` strings (e.g.
+     *     `ModelNotFound` → `"model_not_found"`) via `#[serde(rename_all)]`.
+     *     The one exception is [`ApiErrorCodeSlug::InvalidRequest`], which
+     *     serialises as `"invalid_request_error"` to match OpenAI's
+     *     error-type taxonomy.
+     * @enum {string}
+     */
+    ApiErrorCodeSlug:
+      | "model_not_found"
+      | "service_not_found"
+      | "service_disabled"
+      | "start_queue_full"
+      | "start_failed"
+      | "insufficient_vram"
+      | "service_blocked"
+      | "upstream_unavailable"
+      | "proxy_internal"
+      | "not_implemented"
+      | "invalid_request_error"
+      | "invalid_cursor"
+      | "if_match_required"
+      | "hash_mismatch"
+      | "persist_failed"
+      | "other";
+    /**
+     * @description OpenAI's error-type taxonomy. `InvalidRequestError` for anything the
+     *     client could have avoided, `ServerError` for daemon-side problems.
+     *     `Other` is a deserialization fallback.
+     * @enum {string}
+     */
+    ApiErrorKind: "invalid_request_error" | "server_error" | "other";
+    /**
+     * @description `POST /v1/chat/completions` request envelope.
+     *
+     *     The daemon only interprets the `model` field; all other keys are
+     *     forwarded verbatim to the upstream service.
+     */
+    ChatCompletionEnvelope: {
+      [key: string]: unknown;
+    } & {
+      /** @description Model name (maps to an ananke service name). */
       model: string;
     };
-    CompletionEnvelope: unknown & {
+    /**
+     * @description `POST /v1/completions` request envelope.
+     *
+     *     The daemon only interprets the `model` field; all other keys are
+     *     forwarded verbatim to the upstream service.
+     */
+    CompletionEnvelope: {
+      [key: string]: unknown;
+    } & {
+      /** @description Model name (maps to an ananke service name). */
       model: string;
     };
     /** @description `GET /api/config` response body. */
@@ -510,7 +593,16 @@ export interface components {
           /** @enum {string} */
           status: "already_disabled";
         };
-    EmbeddingEnvelope: unknown & {
+    /**
+     * @description `POST /v1/embeddings` request envelope.
+     *
+     *     The daemon only interprets the `model` field; all other keys are
+     *     forwarded verbatim to the upstream service.
+     */
+    EmbeddingEnvelope: {
+      [key: string]: unknown;
+    } & {
+      /** @description Model name (maps to an ananke service name). */
       model: string;
     };
     /** @description `POST /api/services/{name}/enable` response body. */
@@ -568,6 +660,52 @@ export interface components {
        */
       weights_bytes: number;
     };
+    /**
+     * @description One event delivered over `/api/events`. The `type` tag discriminates the
+     *     variant; `at_ms` is present on every variant except `overflow`.
+     */
+    Event:
+      | {
+          /** Format: int64 */
+          at_ms: number;
+          from: string;
+          service: string;
+          to: string;
+          /** @enum {string} */
+          type: "state_changed";
+        }
+      | {
+          /** Format: int64 */
+          at_ms: number;
+          reservations: {
+            [key: string]: number;
+          };
+          service: string;
+          /** @enum {string} */
+          type: "allocation_changed";
+        }
+      | {
+          /** Format: int64 */
+          at_ms: number;
+          changed_services: string[];
+          /** @enum {string} */
+          type: "config_reloaded";
+        }
+      | {
+          /** Format: int64 */
+          at_ms: number;
+          /** Format: float */
+          rolling_mean: number;
+          service: string;
+          /** @enum {string} */
+          type: "estimator_drift";
+        }
+      | {
+          /** Format: int64 */
+          dropped: number;
+          /** @enum {string} */
+          type: "overflow";
+        };
     /**
      * @description Whether a service's estimated placement fits under current conditions.
      * @enum {string}
@@ -794,14 +932,19 @@ export interface components {
        */
       trained_context_length?: number | null;
     };
+    /** @description One entry in the `GET /v1/models` response. */
     ModelListing: {
       /**
        * @description Passthrough entries from `[[service]] metadata.*`. Non-standard
        *     OpenAI field, elided when empty; strict OpenAI clients ignore it.
        */
       ananke_metadata?: Record<string, never>;
-      /** Format: int64 */
+      /**
+       * Format: int64
+       * @description Creation timestamp (always 0 for ananke-managed models).
+       */
       created: number;
+      /** @description Model id (the service name). */
       id: string;
       /**
        * @description What kind of OpenAI endpoint this model serves. Non-standard
@@ -810,11 +953,16 @@ export interface components {
        *     field landed; embedding clients can filter on it.
        */
       modality?: components["schemas"]["Modality"];
+      /** @description Always `"model"`. */
       object: string;
+      /** @description Always `"ananke"`. */
       owned_by: string;
     };
+    /** @description `GET /v1/models` response body. */
     ModelsResponse: {
+      /** @description Available models. */
       data: components["schemas"]["ModelListing"][];
+      /** @description Always `"list"`. */
       object: string;
     };
     /** @description Allocation-mode knobs for [`OneshotRequest`]. */
@@ -896,7 +1044,10 @@ export interface components {
        */
       port: number;
     };
-    /** @description `GET /api/oneshot/{id}` response body. */
+    /**
+     * @description `GET /api/oneshot/{id}` response body. Also used by `GET /api/oneshot`
+     *     (which returns `Vec<OneshotStatus>`).
+     */
     OneshotStatus: {
       /**
        * Format: int64
@@ -962,7 +1113,7 @@ export interface components {
     ServiceDetail: {
       /**
        * @description Passthrough entries from `[[service]] metadata.*`. See
-       *     [`ServiceSummary::ananke_metadata`].
+       *     [`crate::services::list::ServiceSummary::ananke_metadata`].
        */
       ananke_metadata?: Record<string, never>;
       /**
@@ -992,7 +1143,7 @@ export interface components {
       lifecycle: string;
       /**
        * @description What kind of OpenAI endpoint the service serves. See
-       *     [`ServiceSummary::modality`] for the rendering rule.
+       *     [`crate::services::list::ServiceSummary::modality`] for the rendering rule.
        */
       modality?: components["schemas"]["Modality"];
       model_info?: null | components["schemas"]["ModelInfo"];
@@ -1228,6 +1379,7 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description hash_mismatch */
       412: {
         headers: {
           [name: string]: unknown;
@@ -1244,6 +1396,7 @@ export interface operations {
           "application/json": components["schemas"]["ConfigValidateResponse"];
         };
       };
+      /** @description if_match_required */
       428: {
         headers: {
           [name: string]: unknown;
@@ -1252,6 +1405,7 @@ export interface operations {
           "application/json": components["schemas"]["ApiError"];
         };
       };
+      /** @description persist_failed */
       500: {
         headers: {
           [name: string]: unknown;
@@ -1375,6 +1529,15 @@ export interface operations {
           "application/json": components["schemas"]["MetricsResponse"];
         };
       };
+      /** @description invalid_request_error */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
     };
   };
   list_oneshots: {
@@ -1417,17 +1580,23 @@ export interface operations {
           "application/json": components["schemas"]["OneshotResponse"];
         };
       };
+      /** @description invalid_request_error */
       400: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
+      /** @description start_failed, start_queue_full */
       503: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
     };
   };
@@ -1450,11 +1619,14 @@ export interface operations {
           "application/json": components["schemas"]["OneshotStatus"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
     };
   };
@@ -1475,11 +1647,14 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
     };
   };
@@ -1521,11 +1696,14 @@ export interface operations {
           "application/json": components["schemas"]["ServiceDetail"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
     };
   };
@@ -1549,18 +1727,23 @@ export interface operations {
           "application/json": components["schemas"]["LaunchCommandResponse"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
-      /** @description The command could not be computed even on an empty cluster (e.g. the model does not fit on any single device) */
+      /** @description insufficient_vram */
       422: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
     };
   };
@@ -1584,6 +1767,7 @@ export interface operations {
           "application/json": components["schemas"]["DisableResponse"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1614,6 +1798,7 @@ export interface operations {
           "application/json": components["schemas"]["EnableResponse"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1657,6 +1842,7 @@ export interface operations {
           "application/json": components["schemas"]["LogsResponse"];
         };
       };
+      /** @description invalid_cursor */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1665,6 +1851,7 @@ export interface operations {
           "application/json": components["schemas"]["ApiError"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1695,6 +1882,7 @@ export interface operations {
           "application/json": components["schemas"]["StartResponse"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1703,6 +1891,7 @@ export interface operations {
           "application/json": components["schemas"]["ApiError"];
         };
       };
+      /** @description service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked */
       503: {
         headers: {
           [name: string]: unknown;
@@ -1733,6 +1922,7 @@ export interface operations {
           "application/json": components["schemas"]["StartResponse"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1741,6 +1931,7 @@ export interface operations {
           "application/json": components["schemas"]["ApiError"];
         };
       };
+      /** @description service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked */
       503: {
         headers: {
           [name: string]: unknown;
@@ -1771,6 +1962,7 @@ export interface operations {
           "application/json": components["schemas"]["StopResponse"];
         };
       };
+      /** @description service_not_found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1801,6 +1993,42 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description invalid_request_error */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description model_not_found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description upstream_unavailable */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
     };
   };
   completions: {
@@ -1823,6 +2051,42 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description invalid_request_error */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description model_not_found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description upstream_unavailable */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
     };
   };
   embeddings: {
@@ -1844,6 +2108,42 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description invalid_request_error */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description model_not_found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description upstream_unavailable */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description service_disabled, start_queue_full, start_failed, insufficient_vram, service_blocked */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
       };
     };
   };

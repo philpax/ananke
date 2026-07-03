@@ -1,6 +1,9 @@
 //! `anankectl logs` command — paginated historical fetch with optional live tail.
 
-use ananke_api::{LogLine, LogStreamMessage, LogsResponse};
+use ananke_api::{
+    internal::log_line::LogLine,
+    services::{logs::LogsResponse, logs_stream::LogStreamMessage},
+};
 use futures::StreamExt;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 

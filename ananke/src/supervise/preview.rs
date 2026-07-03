@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use ananke_api::FitVerdict;
+use ananke_api::internal::fit_verdict::FitVerdict;
 
 use crate::{
     allocator::{

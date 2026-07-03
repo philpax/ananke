@@ -3,7 +3,7 @@
 
 mod common;
 
-use ananke_api::Event;
+use ananke_api::events::Event;
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 

@@ -2,7 +2,10 @@
 
 use std::{io::Read, path::Path};
 
-use ananke_api::{ConfigResponse, ConfigValidateRequest, ConfigValidateResponse};
+use ananke_api::config::{
+    get::ConfigResponse,
+    validate::{ConfigValidateRequest, ConfigValidateResponse},
+};
 
 use crate::{
     client::{ApiClient, ApiClientError},

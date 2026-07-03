@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod gen_api_docs;
 mod release;
 
 #[derive(Parser)]
@@ -21,12 +22,15 @@ struct Cli {
 enum Command {
     /// Bump the workspace version, commit the change, and create a v-tag locally.
     Release(release::Args),
+    /// Generate `docs/api.md` from the OpenAPI spec.
+    GenApiDocs(gen_api_docs::GenApiDocsArgs),
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Release(args) => release::run(args),
+    let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
+        Command::Release(args) => release::run(args).map_err(Into::into),
+        Command::GenApiDocs(args) => gen_api_docs::run(args).map_err(Into::into),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

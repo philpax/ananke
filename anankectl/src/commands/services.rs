@@ -1,4 +1,4 @@
-use ananke_api::ServicesResponse;
+use ananke_api::services::list::ServicesResponse;
 
 use crate::{
     client::{ApiClient, ApiClientError},
