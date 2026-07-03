@@ -105,6 +105,30 @@
     /* Plex Sans benefits from a touch of optical weight on dark ink. */
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* Mobile: disable double-tap-to-zoom and the 300ms click delay while
+     * still allowing pinch-zoom for accessibility. */
+    touch-action: manipulation;
+    /* Prevent scroll chaining from body to browser chrome (iOS bounce). */
+    overscroll-behavior: none;
+    /* Remove the gray tap highlight on iOS. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* iOS Safari auto-zooms inputs with font size below 16px. Force 16px on
+   * small screens only so every input (logs search, oneshots form, chat
+   * textarea, datetime pickers, etc.) is covered without per-input
+   * overrides. Desktop retains the Tailwind text-xs/text-sm sizes. */
+  @media (max-width: 767px) {
+    input[type="text"],
+    input[type="number"],
+    input[type="search"],
+    input[type="datetime-local"],
+    input[type="url"],
+    input[type="email"],
+    textarea,
+    select {
+      font-size: 16px;
+    }
   }
 
   /* Tabular figures everywhere mono is used: numbers in stat columns

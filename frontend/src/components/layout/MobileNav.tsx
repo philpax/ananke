@@ -34,7 +34,7 @@ export function MobileNav() {
   );
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-10 flex border-t border-border-default bg-surface">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-10 flex border-t border-border-default bg-surface pb-[env(safe-area-inset-bottom)]">
       {navItems.map((item) => (
         <NavLink
           key={item.to}
