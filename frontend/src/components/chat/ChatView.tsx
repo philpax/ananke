@@ -6,7 +6,7 @@
 // state) lives in the module-level chatStore so it survives navigation
 // away and back within the same tab session.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -81,7 +81,6 @@ export function ChatView() {
   const selectedModel = chat.currentModel;
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const autoScrollRef = useRef(true);
 
   function onScroll() {
@@ -96,13 +95,6 @@ export function ChatView() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [chat.messages]);
-
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [chat.input]);
 
   async function handleSend() {
     if (!selectedModel) return;
@@ -220,7 +212,7 @@ export function ChatView() {
 
       {/* System prompt */}
       {selectedModel && (
-        <details className="border-t border-border-default px-4 py-2">
+        <details className="shrink-0 border-t border-border-default px-4 py-2">
           <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
             {t("chat.systemPrompt")}
           </summary>
@@ -235,7 +227,7 @@ export function ChatView() {
 
       {/* Attachments preview */}
       {chat.attachments.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
+        <div className="shrink-0 flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
           {chat.attachments.map((att, i) => (
             <div
               key={i}
@@ -262,7 +254,7 @@ export function ChatView() {
 
       {/* Composer: model picker + stats sit next to the input, so the
           controls you use most are all within reach of the textbox. */}
-      <div className="border-t border-border-default px-4 py-3">
+      <div className="shrink-0 border-t border-border-default px-4 py-3">
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <ModelDropdown
             models={chatModels}
@@ -299,11 +291,13 @@ export function ChatView() {
         </div>
         <div className="flex items-stretch gap-2">
           <textarea
-            ref={inputRef}
             value={chat.input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
+                // On touch devices, Enter inserts a newline instead of
+                // sending. Coarse-pointer devices are phones/tablets.
+                if (window.matchMedia("(pointer: coarse)").matches) return;
                 e.preventDefault();
                 void handleSend();
               }
@@ -316,10 +310,10 @@ export function ChatView() {
                 : t("chat.selectModelFirst")
             }
             disabled={inputDisabled}
-            rows={1}
-            className="min-h-[40px] flex-1 resize-none rounded-sm border border-border-default bg-base px-2 py-2.5 text-sm text-primary placeholder:text-tertiary focus:border-accent focus:outline-none disabled:opacity-50"
+            rows={3}
+            className="flex-1 resize-none overflow-y-auto rounded-sm border border-border-default bg-base px-2 py-2.5 text-base text-primary placeholder:text-tertiary focus:border-accent focus:outline-none disabled:opacity-50 md:text-sm"
           />
-          <label className="flex w-10 shrink-0 cursor-pointer items-center justify-center rounded-md bg-elevated text-lg text-secondary hover:bg-border-strong">
+          <label className="flex w-10 shrink-0 self-stretch cursor-pointer items-center justify-center rounded-md bg-elevated text-lg text-secondary hover:bg-border-strong">
             <input
               type="file"
               multiple
@@ -336,20 +330,18 @@ export function ChatView() {
             <button
               onClick={cancelSend}
               disabled={chat.chatState.kind === "starting"}
-              className="shrink-0 rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
+              className="shrink-0 self-stretch rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
             >
               {t("chat.stop")}
             </button>
           ) : (
-            <Button
-              variant="iris"
-              size="md"
+            <button
               onClick={handleSend}
               disabled={!selectedModel || !chat.input.trim()}
-              className="shrink-0"
+              className="inline-flex shrink-0 self-stretch items-center justify-center gap-1.5 rounded-md bg-action-iris px-3 text-sm font-medium text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t("chat.send")}
-            </Button>
+            </button>
           )}
         </div>
       </div>
@@ -548,7 +540,7 @@ function MessageBubble({
         )}
         {isAssistant ? (
           message.content ? (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 overflow-hidden break-words">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeHighlight]}
@@ -561,6 +553,13 @@ function MessageBubble({
                       </pre>
                     );
                   },
+                  table: ({ children }) => (
+                    <div className="my-2 overflow-x-auto">
+                      <table className="min-w-full border-collapse text-xs">
+                        {children}
+                      </table>
+                    </div>
+                  ),
                 }}
               >
                 {DOMPurify.sanitize(message.content, {
