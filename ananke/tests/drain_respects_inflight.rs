@@ -24,6 +24,7 @@ fn spawn_cfg() -> SpawnConfig {
         binary: "fake".into(),
         args: Vec::new(),
         env: Default::default(),
+        env_inherit: true,
     }
 }
 

@@ -50,7 +50,7 @@ impl SystemDeps {
         Self {
             fs: Arc::new(LocalFs),
             proc: Arc::new(LocalProcFs),
-            process_spawner: Arc::new(LocalSpawner),
+            process_spawner: Arc::new(LocalSpawner::new()),
         }
     }
 }

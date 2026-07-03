@@ -123,6 +123,7 @@ These fields appear at the top level of every `[[service]]` block, regardless of
 | `extra_args` | array of string | none | Extra argv appended to the service's launch command. |
 | `extra_args_append` | array of string | none | Extra argv appended to the inherited list (use with `extends`; concatenated with parent's list). |
 | `env` | map string → string | none | Environment variables set on the spawned process. Accepts `{port}`, `{gpu_ids}`, `{vram_mb}`, `{model}`, `{name}` placeholders. |
+| `env_inherit` | bool | `true` | Whether the child process inherits the daemon's environment (`$PATH`, `$HOME`, locale, …). Per-service `env` entries override individual inherited keys. Set `false` to start with a clean environment containing only the variables in `env` plus `CUDA_VISIBLE_DEVICES`. |
 | `drain_timeout` | duration string | `30s` | Drain timeout before the supervisor escalates to SIGKILL. |
 | `extended_stream_drain` | duration string | `30s` | Extra grace granted to in-flight streaming requests during drain. |
 | `max_request_duration` | duration string | `10m` | Cap on wall-clock duration of a single proxied request. |

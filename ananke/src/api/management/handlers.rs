@@ -302,12 +302,18 @@ fn render_launch_command(
     let mut argv = Vec::with_capacity(spawn_cfg.args.len() + 1);
     argv.push(spawn_cfg.binary);
     argv.extend(spawn_cfg.args);
+    let env_inherit = spawn_cfg.env_inherit;
     let env = spawn_cfg
         .env
         .into_iter()
         .map(|(key, value)| EnvVar { key, value })
         .collect();
-    LaunchCommand { source, argv, env }
+    LaunchCommand {
+        source,
+        argv,
+        env,
+        env_inherit,
+    }
 }
 
 /// Look up the cached `(ModelInfo, EstimateSummary)` for a service,

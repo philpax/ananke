@@ -53,4 +53,8 @@ pub struct LaunchCommand {
     /// `CUDA_VISIBLE_DEVICES`), sorted by key. Not the full inherited
     /// environment.
     pub env: Vec<EnvVar>,
+    /// Whether the child process also inherits the daemon's full
+    /// environment (`$PATH`, `$HOME`, locale, …) on top of `env`. When
+    /// `false`, the child sees only the variables in `env`.
+    pub env_inherit: bool,
 }

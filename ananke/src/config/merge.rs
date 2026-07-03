@@ -257,6 +257,7 @@ fn merge_common(
     take!(extended_stream_drain);
     take!(max_request_duration);
     take!(start_queue_depth);
+    take!(env_inherit);
 
     merged.metadata = deep_merge_map(parent.metadata.clone(), child.metadata.clone());
     merged.env = deep_merge_strs(parent.env.clone(), child.env.clone());
@@ -644,5 +645,68 @@ migrate_from = "does-not-exist"
         let migrations = resolve_migrations(&mut cfg).unwrap();
         assert_eq!(migrations.len(), 1);
         assert_eq!(migrations[0].old_name, "does-not-exist");
+    }
+
+    #[test]
+    fn env_inherit_inherited_from_parent() {
+        let mut cfg = parse(
+            r#"
+[[service]]
+name = "base"
+template = "command"
+command = ["/bin/true"]
+port = 11000
+env_inherit = false
+
+[[service]]
+name = "child"
+template = "command"
+extends = "base"
+port = 11001
+"#,
+        );
+        resolve_inheritance(&mut cfg).unwrap();
+        let child = cfg
+            .services
+            .iter()
+            .find(|s| s.common().name.as_deref() == Some("child"))
+            .unwrap();
+        assert_eq!(
+            child.common().env_inherit,
+            Some(false),
+            "child should inherit env_inherit=false from parent"
+        );
+    }
+
+    #[test]
+    fn env_inherit_child_overrides_parent() {
+        let mut cfg = parse(
+            r#"
+[[service]]
+name = "base"
+template = "command"
+command = ["/bin/true"]
+port = 11000
+env_inherit = false
+
+[[service]]
+name = "child"
+template = "command"
+extends = "base"
+port = 11001
+env_inherit = true
+"#,
+        );
+        resolve_inheritance(&mut cfg).unwrap();
+        let child = cfg
+            .services
+            .iter()
+            .find(|s| s.common().name.as_deref() == Some("child"))
+            .unwrap();
+        assert_eq!(
+            child.common().env_inherit,
+            Some(true),
+            "child env_inherit should override parent"
+        );
     }
 }

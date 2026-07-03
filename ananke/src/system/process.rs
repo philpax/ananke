@@ -17,7 +17,7 @@
 //! observe the effects of a config reload on process state without waiting
 //! on wall-clock or racing with OS cleanup.
 
-use std::{io, pin::Pin, process::ExitStatus};
+use std::{collections::BTreeMap, ffi::OsString, io, pin::Pin, process::ExitStatus};
 
 use async_trait::async_trait;
 use tokio::io::AsyncRead;
@@ -71,8 +71,6 @@ pub trait ManagedChild: Send + 'static {
 // Production impl: tokio::process + nix signals.
 // ---------------------------------------------------------------------------
 
-use std::ffi::OsString;
-
 use nix::{
     sys::{prctl, signal::Signal as NixSignal},
     unistd::Pid,
@@ -81,15 +79,35 @@ use tokio::process::{ChildStderr, ChildStdout, Command};
 
 /// Spawn real children via `tokio::process`. Sets `PR_SET_PDEATHSIG =
 /// SIGTERM` in the child so a daemon crash takes its kids with it.
-pub struct LocalSpawner;
+///
+/// Captures the daemon's environment at construction so child processes
+/// can inherit it (when `SpawnConfig::env_inherit` is `true`).
+pub struct LocalSpawner {
+    inherited: BTreeMap<String, String>,
+}
+
+impl LocalSpawner {
+    pub fn new() -> Self {
+        Self {
+            inherited: std::env::vars().collect(),
+        }
+    }
+}
+
+impl Default for LocalSpawner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl ProcessSpawner for LocalSpawner {
     async fn spawn(&self, cfg: &SpawnConfig) -> Result<Box<dyn ManagedChild>, ExpectedError> {
+        let resolved = cfg.resolve_env(&self.inherited);
         let mut cmd = Command::new(&cfg.binary);
         cmd.args(cfg.args.iter().map(OsString::from));
         cmd.env_clear();
-        for (k, v) in &cfg.env {
+        for (k, v) in &resolved {
             cmd.env(k, v);
         }
         cmd.stdin(std::process::Stdio::null());
@@ -183,7 +201,7 @@ pub use fake::{FakeChildSnapshot, FakeProcessState, FakeSpawner};
 mod fake {
     use std::sync::Arc;
 
-    use parking_lot::Mutex;
+    use parking_lot::{Mutex, RwLock};
     use tokio::sync::watch;
 
     use super::*;
@@ -233,8 +251,16 @@ mod fake {
     /// In-memory spawner. Every call to [`spawn`](ProcessSpawner::spawn)
     /// records a new child with a fresh virtual pid; tests inspect state
     /// via [`children`](Self::children).
+    ///
+    /// The spawner carries a settable *inherited* environment that
+    /// [`SpawnConfig::resolve_env`] layers per-service `env` overrides on
+    /// top of. Defaults to empty so existing tests (which assert on
+    /// `CUDA_VISIBLE_DEVICES` only) are unaffected. Integration tests
+    /// inject a controlled inherited env via [`set_inherited_env`] to
+    /// verify end-to-end env propagation.
     pub struct FakeSpawner {
         inner: Arc<Mutex<Inner>>,
+        inherited: Arc<RwLock<BTreeMap<String, String>>>,
     }
 
     impl FakeSpawner {
@@ -245,7 +271,22 @@ mod fake {
                     slots: Vec::new(),
                     ignore_sigterm: false,
                 })),
+                inherited: Arc::new(RwLock::new(BTreeMap::new())),
             }
+        }
+
+        /// Construct with a pre-populated inherited environment.
+        pub fn with_inherited_env(env: BTreeMap<String, String>) -> Self {
+            let me = Self::new();
+            *me.inherited.write() = env;
+            me
+        }
+
+        /// Set the inherited environment after construction. Safe to call
+        /// before any service is `ensure()`d — the env is read at spawn
+        /// time, not at construction.
+        pub fn set_inherited_env(&self, env: BTreeMap<String, String>) {
+            *self.inherited.write() = env;
         }
 
         /// Variant whose children silently drop SIGTERM — used to exercise
@@ -309,6 +350,7 @@ mod fake {
     #[async_trait]
     impl ProcessSpawner for FakeSpawner {
         async fn spawn(&self, cfg: &SpawnConfig) -> Result<Box<dyn ManagedChild>, ExpectedError> {
+            let resolved = cfg.resolve_env(&self.inherited.read());
             let (tx, rx) = watch::channel(false);
             let (slot, ignore_sigterm) = {
                 let mut inner = self.inner.lock();
@@ -318,7 +360,7 @@ mod fake {
                     pid,
                     binary: cfg.binary.clone(),
                     args: cfg.args.clone(),
-                    env: cfg.env.clone(),
+                    env: resolved,
                     state: FakeProcessState::Running,
                     exit_tx: tx,
                 }));

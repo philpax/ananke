@@ -588,7 +588,27 @@ function CommandPanel({
     <div>
       <div className="mb-1 flex items-center gap-2">
         <span className="text-xs text-tertiary">{label}</span>
-        {command && <CopyButton value={renderCommand(command)} />}
+        {command && (
+          <>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                command.env_inherit
+                  ? "bg-emerald-500/15 text-emerald-400"
+                  : "bg-amber-500/15 text-amber-400"
+              }`}
+              title={
+                command.env_inherit
+                  ? t("serviceDetail.envInheritOnHint")
+                  : t("serviceDetail.envInheritOffHint")
+              }
+            >
+              {command.env_inherit
+                ? t("serviceDetail.envInheritOn")
+                : t("serviceDetail.envInheritOff")}
+            </span>
+            <CopyButton value={renderCommand(command)} />
+          </>
+        )}
       </div>
       {command ? (
         <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-sm bg-base p-2 font-mono text-xs text-primary">
@@ -676,6 +696,13 @@ function LifecycleActions({
 
 function renderCommand(cmd: LaunchCommand): string {
   const lines: string[] = [];
+  if (cmd.env.length > 0) {
+    if (cmd.env_inherit) {
+      lines.push("# inherits daemon env + overrides below");
+    } else {
+      lines.push("# clean env — only vars below");
+    }
+  }
   for (const e of cmd.env) lines.push(`${e.key}=${shellQuote(e.value)}`);
   const [binary, ...rest] = cmd.argv;
   if (binary !== undefined) lines.push(shellQuote(binary));

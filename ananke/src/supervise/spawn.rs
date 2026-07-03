@@ -17,6 +17,28 @@ pub struct SpawnConfig {
     pub binary: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    pub env_inherit: bool,
+}
+
+impl SpawnConfig {
+    /// Resolve the final environment map for the child process.
+    ///
+    /// When `env_inherit` is `true`, the child inherits the daemon's
+    /// environment with per-service `env` entries overriding individual
+    /// keys. When `false`, the child starts from a clean slate containing
+    /// only the `env` entries (plus `CUDA_VISIBLE_DEVICES`, which is
+    /// already folded into `self.env` by the render functions).
+    pub fn resolve_env(&self, inherited: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let mut env = if self.env_inherit {
+            inherited.clone()
+        } else {
+            BTreeMap::new()
+        };
+        for (k, v) in &self.env {
+            env.insert(k.clone(), v.clone());
+        }
+        env
+    }
 }
 
 /// Render the child command line plus env from a validated `ServiceConfig`,
@@ -69,7 +91,12 @@ fn render_llama_cpp_argv(
         let mut iter = argv.into_iter();
         let binary = iter.next().unwrap_or_default();
         let args: Vec<String> = iter.collect();
-        return Ok(SpawnConfig { binary, args, env });
+        return Ok(SpawnConfig {
+            binary,
+            args,
+            env,
+            env_inherit: svc.env_inherit,
+        });
     }
 
     let mut args: Vec<String> = Vec::new();
@@ -81,6 +108,7 @@ fn render_llama_cpp_argv(
         binary: lc.binary.to_string_lossy().into_owned(),
         args,
         env,
+        env_inherit: svc.env_inherit,
     })
 }
 
@@ -314,7 +342,12 @@ fn render_command_like(
     }
     env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
-    Ok(SpawnConfig { binary, args, env })
+    Ok(SpawnConfig {
+        binary,
+        args,
+        env,
+        env_inherit: svc.env_inherit,
+    })
 }
 
 /// Render argv for the optional `shutdown_command` sibling of a
@@ -644,5 +677,80 @@ mod tests {
             format!("{err}").contains("{args}"),
             "expected splat-misuse error, got {err}"
         );
+    }
+
+    // ----- env_inherit / resolve_env tests -----
+
+    #[test]
+    fn default_service_has_env_inherit_true() {
+        let svc = base_service();
+        assert!(svc.env_inherit);
+    }
+
+    #[test]
+    fn render_argv_default_produces_env_inherit_true() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(cmd.env_inherit);
+    }
+
+    #[test]
+    fn render_argv_env_inherit_false_propagates() {
+        let mut svc = base_service();
+        svc.env_inherit = false;
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(!cmd.env_inherit);
+    }
+
+    #[test]
+    fn resolve_env_inherits_when_true() {
+        let cfg = SpawnConfig {
+            binary: "x".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            env_inherit: true,
+        };
+        let mut inherited = BTreeMap::new();
+        inherited.insert("PATH".into(), "/usr/bin".into());
+        inherited.insert("HOME".into(), "/home/test".into());
+        let resolved = cfg.resolve_env(&inherited);
+        assert_eq!(resolved.get("PATH").unwrap(), "/usr/bin");
+        assert_eq!(resolved.get("HOME").unwrap(), "/home/test");
+    }
+
+    #[test]
+    fn resolve_env_excludes_inherited_when_false() {
+        let cfg = SpawnConfig {
+            binary: "x".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            env_inherit: false,
+        };
+        let mut inherited = BTreeMap::new();
+        inherited.insert("PATH".into(), "/usr/bin".into());
+        let resolved = cfg.resolve_env(&inherited);
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn resolve_env_self_env_overrides_inherited() {
+        let mut env = BTreeMap::new();
+        env.insert("PATH".into(), "/custom/bin".into());
+        let cfg = SpawnConfig {
+            binary: "x".into(),
+            args: Vec::new(),
+            env,
+            env_inherit: true,
+        };
+        let mut inherited = BTreeMap::new();
+        inherited.insert("PATH".into(), "/usr/bin".into());
+        inherited.insert("HOME".into(), "/home/test".into());
+        let resolved = cfg.resolve_env(&inherited);
+        // Per-service override wins.
+        assert_eq!(resolved.get("PATH").unwrap(), "/custom/bin");
+        // Inherited key not overridden is preserved.
+        assert_eq!(resolved.get("HOME").unwrap(), "/home/test");
     }
 }

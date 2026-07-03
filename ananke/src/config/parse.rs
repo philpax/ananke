@@ -343,6 +343,10 @@ pub struct RawServiceCommon {
     pub extra_args: Option<Vec<String>>,
     pub extra_args_append: Option<Vec<String>>,
     pub env: Option<BTreeMap<String, String>>,
+    /// Whether the child process inherits the daemon's environment
+    /// (default `true`). When `false`, the child sees only the
+    /// variables in `env` plus `CUDA_VISIBLE_DEVICES`.
+    pub env_inherit: Option<bool>,
     pub health: Option<RawHealth>,
     pub drain_timeout: Option<String>,
     pub extended_stream_drain: Option<String>,

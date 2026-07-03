@@ -259,6 +259,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         start_queue_depth: DEFAULT_START_QUEUE_DEPTH,
         extra_args: Vec::new(),
         env: BTreeMap::new(),
+        env_inherit: true,
         tracking: ananke::config::TrackingSettings::default(),
         metadata: ananke_api::shared::AnankeMetadata::new(),
         template_config: TemplateConfig::LlamaCpp(Box::new(LlamaCppConfig {

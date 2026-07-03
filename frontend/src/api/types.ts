@@ -726,6 +726,12 @@ export interface components {
        */
       env: components["schemas"]["EnvVar"][];
       /**
+       * @description Whether the child process also inherits the daemon's full
+       *     environment (`$PATH`, `$HOME`, locale, …) on top of `env`. When
+       *     `false`, the child sees only the variables in `env`.
+       */
+      env_inherit: boolean;
+      /**
        * @description Whether the service is running (`running`) or this is a preview of the
        *     next start (`preview`).
        */

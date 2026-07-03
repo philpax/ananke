@@ -138,6 +138,10 @@ pub struct ServiceConfig {
     pub start_queue_depth: usize,
     pub extra_args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// Whether the child process inherits the daemon's environment
+    /// (default `true`). When `false`, the child sees only the
+    /// variables in `env` plus `CUDA_VISIBLE_DEVICES`.
+    pub env_inherit: bool,
     /// Per-service hints that adjust how the snapshotter attributes
     /// observed VRAM/RSS to this service. See [`TrackingSettings`].
     pub tracking: TrackingSettings,
@@ -946,6 +950,7 @@ fn validate_service(
         all_extra.extend(append.iter().cloned());
     }
     let env = common.env.clone().unwrap_or_default();
+    let env_inherit = common.env_inherit.unwrap_or(true);
 
     // Allocate a private loopback port. Default is auto-assignment from
     // the daemon's pool; a command service may override with a fixed
@@ -1009,6 +1014,7 @@ fn validate_service(
         start_queue_depth,
         extra_args: all_extra,
         env,
+        env_inherit,
         tracking,
         metadata,
         template_config,
@@ -1480,6 +1486,7 @@ pub mod test_fixtures {
             start_queue_depth: 10,
             extra_args: Vec::new(),
             env: BTreeMap::new(),
+            env_inherit: true,
             tracking: TrackingSettings::default(),
             metadata: ananke_api::shared::metadata::AnankeMetadata::new(),
             template_config: TemplateConfig::LlamaCpp(Box::new(llama_cpp_fixture())),
@@ -2716,5 +2723,42 @@ allocation.vram_gb = 1
 "#,
         );
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn env_inherit_defaults_to_true() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "svc"
+template = "command"
+command = ["/bin/true"]
+port = 11500
+allocation.mode = "static"
+allocation.vram_gb = 1
+"#,
+        );
+        let validated = validate(&cfg).unwrap();
+        let svc = validated.services.iter().find(|s| s.name == "svc").unwrap();
+        assert!(svc.env_inherit, "env_inherit should default to true");
+    }
+
+    #[test]
+    fn env_inherit_false_parsed() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "svc"
+template = "command"
+command = ["/bin/true"]
+port = 11500
+allocation.mode = "static"
+allocation.vram_gb = 1
+env_inherit = false
+"#,
+        );
+        let validated = validate(&cfg).unwrap();
+        let svc = validated.services.iter().find(|s| s.name == "svc").unwrap();
+        assert!(!svc.env_inherit, "env_inherit should be false");
     }
 }
