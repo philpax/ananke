@@ -80,6 +80,7 @@ pub async fn get_metrics(State(state): State<AppState>, Query(q): Query<MetricsQ
                         avg_ttft_ms: b.avg_ttft_ms,
                         output_tps: b.output_tps,
                         input_tps: b.input_tps,
+                        aggregate_tps: b.aggregate_tps,
                     })
                     .collect(),
             };

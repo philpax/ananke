@@ -15,6 +15,8 @@ export type AggregatedBucket = {
   outputTpsRequests: number;
   totalWeightedInputTps: number;
   inputTpsRequests: number;
+  totalWeightedAggregateTps: number;
+  aggregateTpsRequests: number;
 };
 
 function accumulate(ex: AggregatedBucket, b: MetricBucketResponse): void {
@@ -33,6 +35,10 @@ function accumulate(ex: AggregatedBucket, b: MetricBucketResponse): void {
   if (b.input_tps != null) {
     ex.totalWeightedInputTps += b.input_tps * b.request_count;
     ex.inputTpsRequests += b.request_count;
+  }
+  if (b.aggregate_tps != null) {
+    ex.totalWeightedAggregateTps += b.aggregate_tps * b.request_count;
+    ex.aggregateTpsRequests += b.request_count;
   }
 }
 
@@ -53,6 +59,9 @@ function newBucket(b: MetricBucketResponse): AggregatedBucket {
     totalWeightedInputTps:
       b.input_tps != null ? b.input_tps * b.request_count : 0,
     inputTpsRequests: b.input_tps != null ? b.request_count : 0,
+    totalWeightedAggregateTps:
+      b.aggregate_tps != null ? b.aggregate_tps * b.request_count : 0,
+    aggregateTpsRequests: b.aggregate_tps != null ? b.request_count : 0,
   };
 }
 

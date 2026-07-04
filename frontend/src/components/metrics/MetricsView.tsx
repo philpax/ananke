@@ -49,7 +49,8 @@ type ChartField =
   | "errorCount"
   | "totalDurationMs"
   | "outputTps"
-  | "inputTps";
+  | "inputTps"
+  | "aggregateTps";
 
 function resolveField(b: AggregatedBucket, field: ChartField): number | null {
   switch (field) {
@@ -63,9 +64,20 @@ function resolveField(b: AggregatedBucket, field: ChartField): number | null {
       return b.inputTpsRequests > 0
         ? b.totalWeightedInputTps / b.inputTpsRequests
         : null;
+    case "aggregateTps":
+      return b.aggregateTpsRequests > 0
+        ? b.totalWeightedAggregateTps / b.aggregateTpsRequests
+        : null;
     default:
       return b[field] as number;
   }
+}
+
+// Whether any bucket in the window carries an input/output split. When
+// none do (all non-streaming with no engine timings), the token-rate
+// panel falls back to the aggregate line instead of showing two zeros.
+function hasSplitTps(buckets: AggregatedBucket[]): boolean {
+  return buckets.some((b) => b.outputTpsRequests > 0 || b.inputTpsRequests > 0);
 }
 
 function toLineData(
@@ -257,27 +269,44 @@ export function MetricsView() {
               />
             </Card>
 
-            {/* Tokens per second */}
+            {/* Tokens per second. The end-to-end aggregate line is always
+                shown; when the window has split-capable rows the input and
+                output decode rates are overlaid on top of it. */}
             <Card header={t("stats.tokensPerSecond")}>
               <Chart
                 xMin={xMin}
                 xMax={xMax}
                 data={[
                   aggregated.map((b) => b.ts),
-                  aggregated.map((b) => resolveField(b, "inputTps")),
-                  aggregated.map((b) => resolveField(b, "outputTps")),
+                  ...(hasSplitTps(aggregated)
+                    ? [
+                        aggregated.map((b) => resolveField(b, "inputTps")),
+                        aggregated.map((b) => resolveField(b, "outputTps")),
+                      ]
+                    : []),
+                  aggregated.map((b) => resolveField(b, "aggregateTps")),
                 ]}
                 series={[
+                  ...(hasSplitTps(aggregated)
+                    ? [
+                        {
+                          label: t("stats.tpsIn"),
+                          stroke: CHART_PALETTE[0],
+                          fill: "rgba(139,124,248,0.08)",
+                          unit: "tok/s",
+                        },
+                        {
+                          label: t("stats.tpsOut"),
+                          stroke: CHART_PALETTE[1],
+                          fill: "rgba(69,201,138,0.08)",
+                          unit: "tok/s",
+                        },
+                      ]
+                    : []),
                   {
-                    label: t("stats.tpsIn"),
-                    stroke: CHART_PALETTE[0],
-                    fill: "rgba(139,124,248,0.08)",
-                    unit: "tok/s",
-                  },
-                  {
-                    label: t("stats.tpsOut"),
-                    stroke: CHART_PALETTE[1],
-                    fill: "rgba(69,201,138,0.08)",
+                    label: t("stats.tpsAggregate"),
+                    stroke: CHART_PALETTE[2],
+                    fill: "rgba(224,168,60,0.08)",
                     unit: "tok/s",
                   },
                 ]}

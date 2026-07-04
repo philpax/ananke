@@ -39,6 +39,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "metrics",
         sql: include_str!("migrations/0002_metrics.sql"),
     },
+    Migration {
+        version: 3,
+        name: "engine_timings",
+        sql: include_str!("migrations/0003_engine_timings.sql"),
+    },
 ];
 
 /// SQL applied before the first migration ever runs. Creates the version

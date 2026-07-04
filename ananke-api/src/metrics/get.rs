@@ -36,4 +36,11 @@ pub struct MetricBucketResponse {
     /// Input tokens per second during prompt processing: prompt tokens
     /// divided by total TTFT. `None` if no timed requests in the bucket.
     pub input_tps: Option<f64>,
+    /// End-to-end aggregate throughput: total tokens (prompt + completion)
+    /// divided by total wall-clock duration. Available whenever the bucket
+    /// has any request with a recorded duration, including non-streaming
+    /// requests with no engine timings where no input/output split exists.
+    /// This is end-to-end throughput, *not* a decode rate; the UI surfaces
+    /// it as a fallback when the split figures are unavailable.
+    pub aggregate_tps: Option<f64>,
 }
