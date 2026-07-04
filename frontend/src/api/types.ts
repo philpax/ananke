@@ -803,6 +803,16 @@ export interface components {
     MetricBucketResponse: {
       /**
        * Format: double
+       * @description End-to-end aggregate throughput: total tokens (prompt + completion)
+       *     divided by total wall-clock duration. Available whenever the bucket
+       *     has any request with a recorded duration, including non-streaming
+       *     requests with no engine timings where no input/output split exists.
+       *     This is end-to-end throughput, *not* a decode rate; the UI surfaces
+       *     it as a fallback when the split figures are unavailable.
+       */
+      aggregate_tps?: number | null;
+      /**
+       * Format: double
        * @description Average request duration in milliseconds, if any requests had timing data.
        */
       avg_duration_ms?: number | null;

@@ -148,6 +148,8 @@ mod tests {
             completion_tokens: Some(5),
             duration_ms: Some(100),
             ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
             status_code: 200,
         })
         .await
@@ -165,6 +167,8 @@ mod tests {
             completion_tokens: Some(10),
             duration_ms: Some(200),
             ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
             status_code: 200,
         })
         .await

@@ -352,6 +352,7 @@ Get request metrics (time-bucketed)
 ```typescript
 {
   buckets: {
+    aggregate_tps?: number | null
     avg_duration_ms?: number | null
     avg_ttft_ms?: number | null
     bucket_start: number
@@ -620,6 +621,7 @@ Get launch command preview
       key: string
       value: string
     }[]
+    env_inherit: boolean
     source: "running" | "preview"
   } | null
   on_empty: {
@@ -628,6 +630,7 @@ Get launch command preview
       key: string
       value: string
     }[]
+    env_inherit: boolean
     source: "running" | "preview"
   }
 }
@@ -1067,6 +1070,7 @@ The `/metrics` endpoint exposes Prometheus text-format metrics for external scra
 | `ananke_memory_used_bytes` | gauge | Used memory in bytes (labelled by `device`). |
 | `ananke_output_tokens_per_second` | gauge | Average output tokens/sec during decode over the last 5 minutes. |
 | `ananke_input_tokens_per_second` | gauge | Average input tokens/sec during prompt processing over the last 5 minutes. |
+| `ananke_aggregate_tokens_per_second` | gauge | Average end-to-end throughput (total tokens over wall-clock duration) over the last 5 minutes. Not a decode rate; the fallback when no input/output split is available (non-streaming with no engine timings). |
 | `ananke_service_state` | gauge | Numeric service state code (labelled by `service`). |
 
 ### State codes

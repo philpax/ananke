@@ -758,6 +758,18 @@ function ServiceMetrics({ name }: { name: string }) {
       1,
       buckets.reduce((s, b) => s + b.inputTpsRequests, 0),
     );
+  const avgAggregateTps =
+    buckets.reduce((s, b) => s + b.totalWeightedAggregateTps, 0) /
+    Math.max(
+      1,
+      buckets.reduce((s, b) => s + b.aggregateTpsRequests, 0),
+    );
+  // When no request in the window carries an input/output split (all
+  // non-streaming with no engine timings), show the end-to-end aggregate
+  // instead of two zeros.
+  const hasSplitTps = buckets.some(
+    (b) => b.outputTpsRequests > 0 || b.inputTpsRequests > 0,
+  );
 
   return (
     <div className="space-y-4">
@@ -774,7 +786,14 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         }
       >
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-7">
+        {/* The aggregate throughput stat is always shown; the input/output
+            decode rates are added alongside it when the window has
+            split-capable rows. The column count tracks the tile count. */}
+        <div
+          className={`grid grid-cols-2 gap-4 ${
+            hasSplitTps ? "sm:grid-cols-8" : "sm:grid-cols-6"
+          }`}
+        >
           <Stat
             label={t("serviceDetail.requestsInPeriod", { range: range.label })}
             value={totalRequests}
@@ -792,13 +811,21 @@ function ServiceMetrics({ name }: { name: string }) {
             label={t("serviceDetail.avgLatency")}
             value={totalRequests > 0 ? `${Math.round(avgLatency)}ms` : "—"}
           />
+          {hasSplitTps && (
+            <>
+              <Stat
+                label={t("serviceDetail.avgTpsIn")}
+                value={totalRequests > 0 ? avgInputTps.toFixed(1) : "—"}
+              />
+              <Stat
+                label={t("serviceDetail.avgTpsOut")}
+                value={totalRequests > 0 ? avgOutputTps.toFixed(1) : "—"}
+              />
+            </>
+          )}
           <Stat
-            label={t("serviceDetail.avgTpsIn")}
-            value={totalRequests > 0 ? avgInputTps.toFixed(1) : "—"}
-          />
-          <Stat
-            label={t("serviceDetail.avgTpsOut")}
-            value={totalRequests > 0 ? avgOutputTps.toFixed(1) : "—"}
+            label={t("serviceDetail.avgTpsAggregate")}
+            value={totalRequests > 0 ? avgAggregateTps.toFixed(1) : "—"}
           />
         </div>
       </Card>
@@ -844,34 +871,55 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         </Card>
       </div>
+      {/* The end-to-end aggregate line is always shown; the input/output
+          decode rates are overlaid on top of it when available. */}
       <Card header={t("stats.tokensPerSecond")}>
         <Chart
           xMin={xMin}
           xMax={xMax}
           data={[
             buckets.map((b) => b.ts),
+            ...(hasSplitTps
+              ? [
+                  buckets.map((b) =>
+                    b.inputTpsRequests > 0
+                      ? b.totalWeightedInputTps / b.inputTpsRequests
+                      : null,
+                  ),
+                  buckets.map((b) =>
+                    b.outputTpsRequests > 0
+                      ? b.totalWeightedOutputTps / b.outputTpsRequests
+                      : null,
+                  ),
+                ]
+              : []),
             buckets.map((b) =>
-              b.inputTpsRequests > 0
-                ? b.totalWeightedInputTps / b.inputTpsRequests
-                : null,
-            ),
-            buckets.map((b) =>
-              b.outputTpsRequests > 0
-                ? b.totalWeightedOutputTps / b.outputTpsRequests
+              b.aggregateTpsRequests > 0
+                ? b.totalWeightedAggregateTps / b.aggregateTpsRequests
                 : null,
             ),
           ]}
           series={[
+            ...(hasSplitTps
+              ? [
+                  {
+                    label: t("stats.tpsIn"),
+                    stroke: CHART_PALETTE[0],
+                    fill: "rgba(139,124,248,0.08)",
+                    unit: "tok/s",
+                  },
+                  {
+                    label: t("stats.tpsOut"),
+                    stroke: CHART_PALETTE[1],
+                    fill: "rgba(69,201,138,0.08)",
+                    unit: "tok/s",
+                  },
+                ]
+              : []),
             {
-              label: t("stats.tpsIn"),
-              stroke: CHART_PALETTE[0],
-              fill: "rgba(139,124,248,0.08)",
-              unit: "tok/s",
-            },
-            {
-              label: t("stats.tpsOut"),
-              stroke: CHART_PALETTE[1],
-              fill: "rgba(69,201,138,0.08)",
+              label: t("stats.tpsAggregate"),
+              stroke: CHART_PALETTE[2],
+              fill: "rgba(224,168,60,0.08)",
               unit: "tok/s",
             },
           ]}

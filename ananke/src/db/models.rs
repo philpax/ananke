@@ -93,6 +93,10 @@ pub struct RequestMetric {
     pub completion_tokens: Option<i64>,
     pub duration_ms: Option<i64>,
     pub ttft_ms: Option<i64>,
+    /// Engine-reported prefill time (`timings.prompt_ms`), llama.cpp only.
+    pub prompt_ms: Option<i64>,
+    /// Engine-reported decode time (`timings.predicted_ms`), llama.cpp only.
+    pub predicted_ms: Option<i64>,
     pub status_code: i64,
 }
 

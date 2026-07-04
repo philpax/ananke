@@ -127,7 +127,8 @@
     "errors": "Errors",
     "durationMs": "Duration (ms)",
     "tpsIn": "TPS (in)",
-    "tpsOut": "TPS (out)"
+    "tpsOut": "TPS (out)",
+    "tpsAggregate": "TPS (aggregate)"
   },
   "oneshots": {
     "newOneshot": "New oneshot",
@@ -254,7 +255,8 @@
     "outputTokens": "Tokens (out)",
     "avgLatency": "Avg latency",
     "avgTpsIn": "Avg TPS (in)",
-    "avgTpsOut": "Avg TPS (out)"
+    "avgTpsOut": "Avg TPS (out)",
+    "avgTpsAggregate": "Avg TPS (aggregate)"
   },
   "logs": {
     "search": "search…",

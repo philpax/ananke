@@ -381,8 +381,9 @@ impl Database {
         conn.execute(
             "INSERT INTO request_metrics
                  (service_id, run_id, timestamp_ms, endpoint, model,
-                  prompt_tokens, completion_tokens, duration_ms, ttft_ms, status_code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                  prompt_tokens, completion_tokens, duration_ms, ttft_ms,
+                  prompt_ms, predicted_ms, status_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 row.service_id,
                 row.run_id,
@@ -393,6 +394,8 @@ impl Database {
                 row.completion_tokens,
                 row.duration_ms,
                 row.ttft_ms,
+                row.prompt_ms,
+                row.predicted_ms,
                 row.status_code,
             ],
         )
@@ -416,7 +419,19 @@ impl Database {
         // rows remain) still appear with service = NULL. Grouping by
         // service_id in addition to the bucket ensures per-service breakdown
         // when no filter is given.
-        let sql = "SELECT
+        // The input/output TPS split is sourced tier-by-tier per row:
+        //   - output interval = engine `predicted_ms` if present, else the
+        //     proxy-observed decode window (`duration_ms - ttft_ms`) when the
+        //     response streamed, else null (no boundary → no split);
+        //   - input interval = engine `prompt_ms` if present, else `ttft_ms`.
+        // Aggregate TPS is always computable from wall-clock `duration_ms`
+        // and total tokens, and is what tier-3 (non-streaming, no engine
+        // timings) rows fall back to instead of collapsing to zero.
+        let out_interval = "COALESCE(rm.predicted_ms, CASE WHEN rm.ttft_ms IS NOT NULL \
+             AND rm.duration_ms IS NOT NULL THEN rm.duration_ms - rm.ttft_ms END)";
+        let in_interval = "COALESCE(rm.prompt_ms, rm.ttft_ms)";
+        let sql = format!(
+            "SELECT
                 (rm.timestamp_ms / ?1) * ?1 AS bucket,
                 s.name AS service_name,
                 COUNT(*) AS request_count,
@@ -425,37 +440,37 @@ impl Database {
                 AVG(rm.duration_ms) AS avg_duration_ms,
                 SUM(CASE WHEN rm.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
                 AVG(rm.ttft_ms) AS avg_ttft_ms,
-                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
-                                  THEN rm.completion_tokens ELSE 0 END), 0) AS timed_completion_tokens,
-                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL AND rm.duration_ms IS NOT NULL
-                                  THEN rm.duration_ms - rm.ttft_ms ELSE 0 END), 0) AS completion_ms,
-                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
-                                  THEN rm.prompt_tokens ELSE 0 END), 0) AS timed_prompt_tokens,
-                COALESCE(SUM(CASE WHEN rm.ttft_ms IS NOT NULL
-                                  THEN rm.ttft_ms ELSE 0 END), 0) AS total_ttft_ms
+                COALESCE(SUM(CASE WHEN {out} IS NOT NULL
+                                  THEN rm.completion_tokens ELSE 0 END), 0) AS output_tokens,
+                COALESCE(SUM({out}), 0) AS output_ms,
+                COALESCE(SUM(CASE WHEN {inp} IS NOT NULL
+                                  THEN rm.prompt_tokens ELSE 0 END), 0) AS input_tokens,
+                COALESCE(SUM({inp}), 0) AS input_ms,
+                COALESCE(SUM(CASE WHEN rm.duration_ms IS NOT NULL
+                                  THEN COALESCE(rm.prompt_tokens, 0) + COALESCE(rm.completion_tokens, 0)
+                                  ELSE 0 END), 0) AS aggregate_tokens,
+                COALESCE(SUM(CASE WHEN rm.duration_ms IS NOT NULL
+                                  THEN rm.duration_ms ELSE 0 END), 0) AS aggregate_ms
              FROM request_metrics rm
              LEFT JOIN services s ON s.service_id = rm.service_id
              WHERE rm.timestamp_ms >= ?2 AND rm.timestamp_ms <= ?3
                AND (?4 IS NULL OR rm.service_id = ?4)
              GROUP BY bucket, rm.service_id
-             ORDER BY bucket, service_name";
-        let mut stmt = conn.prepare(sql).map_err(|e| self.db_err(e))?;
+             ORDER BY bucket, service_name",
+            out = out_interval,
+            inp = in_interval,
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| self.db_err(e))?;
         let rows = stmt
             .query_map(params![bucket_ms, since_ms, until_ms, service_id], |row| {
-                let timed_completion_tokens: i64 = row.get(8)?;
-                let completion_ms: i64 = row.get(9)?;
-                let output_tps = if completion_ms > 0 {
-                    Some(timed_completion_tokens as f64 / (completion_ms as f64 / 1000.0))
-                } else {
-                    None
-                };
-                let timed_prompt_tokens: i64 = row.get(10)?;
-                let total_ttft_ms: i64 = row.get(11)?;
-                let input_tps = if total_ttft_ms > 0 {
-                    Some(timed_prompt_tokens as f64 / (total_ttft_ms as f64 / 1000.0))
-                } else {
-                    None
-                };
+                let tps =
+                    |tokens: i64, ms: i64| (ms > 0).then(|| tokens as f64 / (ms as f64 / 1000.0));
+                let output_tokens: i64 = row.get(8)?;
+                let output_ms: i64 = row.get(9)?;
+                let input_tokens: i64 = row.get(10)?;
+                let input_ms: i64 = row.get(11)?;
+                let aggregate_tokens: i64 = row.get(12)?;
+                let aggregate_ms: i64 = row.get(13)?;
                 Ok(MetricBucket {
                     service: row.get::<_, Option<String>>(1)?,
                     bucket_start: row.get(0)?,
@@ -465,8 +480,9 @@ impl Database {
                     avg_duration_ms: row.get::<_, Option<f64>>(5)?,
                     error_count: row.get(6)?,
                     avg_ttft_ms: row.get::<_, Option<f64>>(7)?,
-                    output_tps,
-                    input_tps,
+                    output_tps: tps(output_tokens, output_ms),
+                    input_tps: tps(input_tokens, input_ms),
+                    aggregate_tps: tps(aggregate_tokens, aggregate_ms),
                 })
             })
             .map_err(|e| self.db_err(e))?;
@@ -571,6 +587,13 @@ pub struct MetricBucket {
     /// Input tokens per second during prompt processing: prompt tokens
     /// divided by total TTFT. `None` if no timed requests in the bucket.
     pub input_tps: Option<f64>,
+    /// End-to-end aggregate throughput: total tokens (prompt + completion)
+    /// divided by total wall-clock duration. Always available whenever the
+    /// bucket has any request with a recorded duration, including
+    /// non-streaming requests with no engine timings where no input/output
+    /// split can be derived. This is *not* a decode rate — it is the tier-3
+    /// fallback surfaced when the split figures are unavailable.
+    pub aggregate_tps: Option<f64>,
 }
 
 #[cfg(test)]
@@ -627,6 +650,8 @@ mod tests {
             completion_tokens: Some(50),
             duration_ms: Some(1200),
             ttft_ms: Some(200),
+            prompt_ms: None,
+            predicted_ms: None,
             status_code: 200,
         })
         .await
@@ -642,6 +667,8 @@ mod tests {
             completion_tokens: Some(80),
             duration_ms: Some(800),
             ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
             status_code: 500,
         })
         .await
@@ -662,6 +689,85 @@ mod tests {
         assert_eq!(b.error_count, 1);
     }
 
+    /// The input/output split is sourced tier-by-tier: engine timings
+    /// (tier 1), proxy TTFT for streaming (tier 2), or neither (tier 3,
+    /// which yields only an aggregate). Each tier lives in its own bucket.
+    #[tokio::test]
+    async fn request_metrics_tps_tiers() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
+        let base = |timestamp_ms| RequestMetric {
+            metric_id: 0,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
+            status_code: 200,
+        };
+
+        // Tier 1 (engine timings) at t=0: input 100 tok / 1000 ms = 100 tps,
+        // output 50 tok / 500 ms = 100 tps, aggregate 150 tok / 2000 ms = 75.
+        db.insert_request_metric(&RequestMetric {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            duration_ms: Some(2000),
+            prompt_ms: Some(1000),
+            predicted_ms: Some(500),
+            ..base(0)
+        })
+        .await
+        .unwrap();
+
+        // Tier 2 (streaming TTFT) at t=60s: input 100 tok / 200 ms = 500 tps,
+        // output 80 tok / (1000 - 200) ms = 100 tps, aggregate 180 / 1000 = 180.
+        db.insert_request_metric(&RequestMetric {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(80),
+            duration_ms: Some(1000),
+            ttft_ms: Some(200),
+            ..base(60_000)
+        })
+        .await
+        .unwrap();
+
+        // Tier 3 (non-streaming, no timings) at t=120s: no split, aggregate
+        // 300 tok / 1000 ms = 300 tps.
+        db.insert_request_metric(&RequestMetric {
+            prompt_tokens: Some(200),
+            completion_tokens: Some(100),
+            duration_ms: Some(1000),
+            ..base(120_000)
+        })
+        .await
+        .unwrap();
+
+        let buckets = db
+            .query_request_metrics(Some(svc), 0, 200_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(buckets.len(), 3);
+        let close = |a: Option<f64>, b: f64| (a.unwrap() - b).abs() < 0.01;
+
+        assert!(close(buckets[0].input_tps, 100.0));
+        assert!(close(buckets[0].output_tps, 100.0));
+        assert!(close(buckets[0].aggregate_tps, 75.0));
+
+        assert!(close(buckets[1].input_tps, 500.0));
+        assert!(close(buckets[1].output_tps, 100.0));
+        assert!(close(buckets[1].aggregate_tps, 180.0));
+
+        assert_eq!(buckets[2].input_tps, None);
+        assert_eq!(buckets[2].output_tps, None);
+        assert!(close(buckets[2].aggregate_tps, 300.0));
+    }
+
     #[tokio::test]
     async fn request_metrics_filter_by_service() {
         let db = Database::open_in_memory().await.unwrap();
@@ -680,6 +786,8 @@ mod tests {
                 completion_tokens: Some(5),
                 duration_ms: None,
                 ttft_ms: None,
+                prompt_ms: None,
+                predicted_ms: None,
                 status_code: 200,
             })
             .await
@@ -723,6 +831,8 @@ mod tests {
             completion_tokens: None,
             duration_ms: None,
             ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
             status_code: 200,
         })
         .await
@@ -738,6 +848,8 @@ mod tests {
             completion_tokens: None,
             duration_ms: None,
             ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
             status_code: 200,
         })
         .await

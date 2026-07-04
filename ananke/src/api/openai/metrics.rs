@@ -27,6 +27,12 @@ pub struct MetricsRecorder {
     first_token_at: Option<Instant>,
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    /// Engine-reported prefill time from the response `timings` object
+    /// (llama.cpp). Preferred over proxy-observed TTFT for the input/output
+    /// TPS split when present.
+    prompt_ms: Option<i64>,
+    /// Engine-reported decode time from the response `timings` object.
+    predicted_ms: Option<i64>,
     /// For SSE parsing: accumulates a partial line that spans a chunk
     /// boundary. For non-streaming: accumulates the full body (capped).
     buf: String,
@@ -56,6 +62,8 @@ impl MetricsRecorder {
             first_token_at: None,
             prompt_tokens: None,
             completion_tokens: None,
+            prompt_ms: None,
+            predicted_ms: None,
             buf: String::new(),
             buf_cap: 256 * 1024,
         }
@@ -104,6 +112,7 @@ impl MetricsRecorder {
             self.prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_i64());
             self.completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_i64());
         }
+        self.extract_timings(&v);
         // Record TTFT on the first content or reasoning chunk.
         if self.first_token_at.is_none() {
             let has_content = v
@@ -124,6 +133,23 @@ impl MetricsRecorder {
         }
     }
 
+    /// Extract llama.cpp's engine-reported phase timings from a response
+    /// object, if present. The `timings` object sits next to `usage` and
+    /// carries `prompt_ms` (prefill) and `predicted_ms` (decode) as
+    /// floating-point milliseconds; both are rounded to whole ms. Absent
+    /// for engines that do not emit it, in which case the fields stay null.
+    fn extract_timings(&mut self, v: &Value) {
+        let Some(timings) = v.get("timings") else {
+            return;
+        };
+        if let Some(ms) = timings.get("prompt_ms").and_then(|t| t.as_f64()) {
+            self.prompt_ms = Some(ms.round() as i64);
+        }
+        if let Some(ms) = timings.get("predicted_ms").and_then(|t| t.as_f64()) {
+            self.predicted_ms = Some(ms.round() as i64);
+        }
+    }
+
     /// Called when the response stream ends. Extracts any remaining
     /// data (e.g. usage from a non-streaming JSON body) and spawns a
     /// task to write the metric to the database.
@@ -133,10 +159,12 @@ impl MetricsRecorder {
         if !rec.is_streaming
             && !rec.buf.is_empty()
             && let Ok(v) = serde_json::from_str::<Value>(&rec.buf)
-            && let Some(usage) = v.get("usage")
         {
-            rec.prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_i64());
-            rec.completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_i64());
+            if let Some(usage) = v.get("usage") {
+                rec.prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_i64());
+                rec.completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_i64());
+            }
+            rec.extract_timings(&v);
         }
 
         let duration_ms = rec.start.elapsed().as_millis() as i64;
@@ -156,6 +184,8 @@ impl MetricsRecorder {
             completion_tokens: rec.completion_tokens,
             duration_ms: Some(duration_ms),
             ttft_ms,
+            prompt_ms: rec.prompt_ms,
+            predicted_ms: rec.predicted_ms,
             status_code: status_code as i64,
         };
 
@@ -350,6 +380,51 @@ mod tests {
             usage.get("completion_tokens").and_then(|t| t.as_i64()),
             Some(3)
         );
+    }
+
+    /// Streaming: llama.cpp's `timings` object in the final chunk yields
+    /// engine-reported prefill and decode times, rounded to whole ms.
+    #[test]
+    fn streaming_extracts_timings_from_final_chunk() {
+        let mut rec = make_recorder(true);
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+        ));
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7},\
+             \"timings\":{\"prompt_ms\":123.4,\"predicted_ms\":456.6}}\n\n",
+        ));
+        assert_eq!(rec.prompt_ms, Some(123));
+        assert_eq!(rec.predicted_ms, Some(457));
+    }
+
+    /// Non-streaming: a buffered JSON body carrying `timings` populates the
+    /// engine timing fields — the tier-1 source that works without a stream.
+    #[test]
+    fn non_streaming_extracts_timings_from_json() {
+        let mut rec = make_recorder(false);
+        let body = r#"{"choices":[{"message":{"content":"hi"}}],
+            "usage":{"prompt_tokens":10,"completion_tokens":3},
+            "timings":{"prompt_ms":50.0,"predicted_ms":200.0}}"#;
+        rec.ingest(&Bytes::from(body));
+
+        // Replicate finish()'s non-streaming parse path (finish spawns a task).
+        let v: Value = serde_json::from_str(&rec.buf).unwrap();
+        rec.extract_timings(&v);
+        assert_eq!(rec.prompt_ms, Some(50));
+        assert_eq!(rec.predicted_ms, Some(200));
+    }
+
+    /// A response without a `timings` object leaves the engine timing
+    /// fields null, so the query layer falls back to TTFT or aggregate.
+    #[test]
+    fn missing_timings_leaves_fields_null() {
+        let mut rec = make_recorder(true);
+        rec.ingest(&Bytes::from(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
+        ));
+        assert_eq!(rec.prompt_ms, None);
+        assert_eq!(rec.predicted_ms, None);
     }
 
     /// Buffer cap: once the cap is reached for a non-streaming response,
