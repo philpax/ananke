@@ -34,14 +34,14 @@ export function MobileNav() {
   );
 
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-10 flex border-t border-border-default bg-surface">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-10 flex h-16 border-t border-border-default bg-surface pb-[env(safe-area-inset-bottom)]">
       {navItems.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
           end={item.to === "/"}
           className={({ isActive }) =>
-            `flex flex-1 flex-col items-center gap-0.5 py-2 text-xs transition-colors ${
+            `flex flex-1 flex-col items-center justify-center gap-0.5 text-xs transition-colors ${
               isActive ? "text-accent" : "text-tertiary hover:text-secondary"
             }`
           }

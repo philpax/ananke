@@ -117,7 +117,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
   return (
     <div className="flex h-72 flex-col">
       {/* Toolbar row 1: time + stream + status */}
-      <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-4 py-2">
         <SegmentedToggle<number | "custom">
           options={[
             ...WINDOW_PRESETS.map((preset, i) => ({
@@ -168,7 +168,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
 
       {/* Toolbar row 2: custom time range (shown only in custom mode) */}
       {windowMode === "custom" && (
-        <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-4 py-2">
           <input
             type="datetime-local"
             value={sinceInput}
@@ -190,13 +190,13 @@ export function LogsViewer({ name }: LogsViewerProps) {
       )}
 
       {/* Toolbar row 3: search + run filter */}
-      <div className="flex items-center gap-2 border-b border-border-default px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-4 py-2">
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("logs.search")}
-          className="h-6 w-40 rounded-sm border border-border-default bg-base px-2 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
+          className="h-6 w-full rounded-sm border border-border-default bg-base px-2 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none sm:w-40"
         />
         {runIds.length > 1 && (
           <select

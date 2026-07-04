@@ -101,7 +101,7 @@ export function EventsView() {
         {filtered.length === 0 ? (
           <EmptyState message={t("events.emptyState")} />
         ) : (
-          <table className="w-full">
+          <table className="min-w-full">
             <thead className="sticky top-0 bg-surface">
               <tr className="border-b border-border-default text-left">
                 <th className="w-28 px-4 py-1.5 text-xs font-medium text-tertiary">

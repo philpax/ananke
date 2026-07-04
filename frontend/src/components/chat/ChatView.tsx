@@ -6,7 +6,7 @@
 // state) lives in the module-level chatStore so it survives navigation
 // away and back within the same tab session.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -81,7 +81,6 @@ export function ChatView() {
   const selectedModel = chat.currentModel;
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const autoScrollRef = useRef(true);
 
   function onScroll() {
@@ -96,13 +95,6 @@ export function ChatView() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [chat.messages]);
-
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [chat.input]);
 
   async function handleSend() {
     if (!selectedModel) return;
@@ -177,7 +169,7 @@ export function ChatView() {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 overflow-auto px-4 py-4"
+        className="min-h-0 flex-1 overflow-auto px-4 py-4"
       >
         {chat.messages.length === 0 ? (
           <>
@@ -218,139 +210,144 @@ export function ChatView() {
         )}
       </div>
 
-      {/* System prompt */}
-      {selectedModel && (
-        <details className="border-t border-border-default px-4 py-2">
-          <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
-            {t("chat.systemPrompt")}
-          </summary>
-          <textarea
-            value={chat.systemPrompt}
-            onChange={(e) => saveSystemPrompt(e.target.value)}
-            placeholder={t("chat.systemPromptPlaceholder")}
-            className="mt-1 h-20 w-full resize-none rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
-          />
-        </details>
-      )}
+      {/* Composer block: sits at the bottom of the flex column, below
+          the flex-1 message list, so it never scrolls with the
+          conversation on mobile or desktop. */}
+      <div className="shrink-0 bg-surface">
+        {/* System prompt */}
+        {selectedModel && (
+          <details className="shrink-0 border-t border-border-default px-4 py-2">
+            <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
+              {t("chat.systemPrompt")}
+            </summary>
+            <textarea
+              value={chat.systemPrompt}
+              onChange={(e) => saveSystemPrompt(e.target.value)}
+              placeholder={t("chat.systemPromptPlaceholder")}
+              className="mt-1 h-20 w-full resize-none rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
+            />
+          </details>
+        )}
 
-      {/* Attachments preview */}
-      {chat.attachments.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
-          {chat.attachments.map((att, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-1 rounded-sm bg-elevated px-2 py-0.5 text-xs text-secondary"
-            >
-              {att.type === "image" && (
-                <img
-                  src={att.content}
-                  alt={att.name}
-                  className="h-6 w-6 rounded object-cover"
-                />
-              )}
-              <span>{att.name}</span>
-              <button
-                onClick={() => removeAttachment(i)}
-                className="text-tertiary hover:text-danger"
+        {/* Attachments preview */}
+        {chat.attachments.length > 0 && (
+          <div className="shrink-0 flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
+            {chat.attachments.map((att, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1 rounded-sm bg-elevated px-2 py-0.5 text-xs text-secondary"
               >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                {att.type === "image" && (
+                  <img
+                    src={att.content}
+                    alt={att.name}
+                    className="h-6 w-6 rounded object-cover"
+                  />
+                )}
+                <span>{att.name}</span>
+                <button
+                  onClick={() => removeAttachment(i)}
+                  className="text-tertiary hover:text-danger"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
-      {/* Composer: model picker + stats sit next to the input, so the
+        {/* Composer: model picker + stats sit next to the input, so the
           controls you use most are all within reach of the textbox. */}
-      <div className="border-t border-border-default px-4 py-3">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <ModelDropdown
-            models={chatModels}
-            selected={selectedModel}
-            onSelect={handleSelectModel}
-            className="min-w-0 flex-1"
-          />
-          {selectedModel && (
-            <CopyButton
-              value={selectedModel}
-              className="h-7 rounded-md bg-elevated px-2 text-xs font-medium text-primary hover:bg-border-strong"
+        <div className="shrink-0 border-t border-border-default px-4 py-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <ModelDropdown
+              models={chatModels}
+              selected={selectedModel}
+              onSelect={handleSelectModel}
+              className="min-w-0 flex-1"
             />
-          )}
-          {selectedModel && (
-            <ButtonLink
-              to={`/services/${encodeURIComponent(selectedModel)}`}
-              variant="secondary"
-              size="sm"
-              className="w-7 justify-center px-0"
-            >
-              <ExternalLinkIcon />
-            </ButtonLink>
-          )}
-          {selectedModel && (
-            <Button
-              variant="secondary"
-              size="sm"
-              className="w-7 justify-center px-0"
-              onClick={clearConversation}
-            >
-              <TrashIcon />
-            </Button>
-          )}
-        </div>
-        <div className="flex items-stretch gap-2">
-          <textarea
-            ref={inputRef}
-            value={chat.input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void handleSend();
-              }
-            }}
-            placeholder={
-              selectedModel
-                ? chat.chatState.kind === "starting"
-                  ? t("chat.startingModelPlaceholder")
-                  : t("chat.typePlaceholder")
-                : t("chat.selectModelFirst")
-            }
-            disabled={inputDisabled}
-            rows={1}
-            className="min-h-[40px] flex-1 resize-none rounded-sm border border-border-default bg-base px-2 py-2.5 text-sm text-primary placeholder:text-tertiary focus:border-accent focus:outline-none disabled:opacity-50"
-          />
-          <label className="flex w-10 shrink-0 cursor-pointer items-center justify-center rounded-md bg-elevated text-lg text-secondary hover:bg-border-strong">
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) handleFiles(e.target.files);
-                e.target.value = "";
+            {selectedModel && (
+              <CopyButton
+                value={selectedModel}
+                className="h-7 rounded-md bg-elevated px-2 text-xs font-medium text-primary hover:bg-border-strong"
+              />
+            )}
+            {selectedModel && (
+              <ButtonLink
+                to={`/services/${encodeURIComponent(selectedModel)}`}
+                variant="secondary"
+                size="sm"
+                className="w-7 justify-center px-0"
+              >
+                <ExternalLinkIcon />
+              </ButtonLink>
+            )}
+            {selectedModel && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-7 justify-center px-0"
+                onClick={clearConversation}
+              >
+                <TrashIcon />
+              </Button>
+            )}
+          </div>
+          <div className="flex items-stretch gap-2">
+            <textarea
+              value={chat.input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  // On touch devices, Enter inserts a newline instead of
+                  // sending. Coarse-pointer devices are phones/tablets.
+                  if (window.matchMedia("(pointer: coarse)").matches) return;
+                  e.preventDefault();
+                  void handleSend();
+                }
               }}
+              placeholder={
+                selectedModel
+                  ? chat.chatState.kind === "starting"
+                    ? t("chat.startingModelPlaceholder")
+                    : t("chat.typePlaceholder")
+                  : t("chat.selectModelFirst")
+              }
+              disabled={inputDisabled}
+              rows={3}
+              className="flex-1 resize-none overflow-y-auto rounded-sm border border-border-default bg-base px-2 py-2.5 text-base text-primary placeholder:text-tertiary focus:border-accent focus:outline-none disabled:opacity-50 md:text-sm"
             />
-            +
-          </label>
-          {chat.chatState.kind === "streaming" ||
-          chat.chatState.kind === "starting" ? (
-            <button
-              onClick={cancelSend}
-              disabled={chat.chatState.kind === "starting"}
-              className="shrink-0 rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
-            >
-              {t("chat.stop")}
-            </button>
-          ) : (
-            <Button
-              variant="iris"
-              size="md"
-              onClick={handleSend}
-              disabled={!selectedModel || !chat.input.trim()}
-              className="shrink-0"
-            >
-              {t("chat.send")}
-            </Button>
-          )}
+            <label className="flex w-10 shrink-0 self-stretch cursor-pointer items-center justify-center rounded-md bg-elevated text-lg text-secondary hover:bg-border-strong">
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              +
+            </label>
+            {chat.chatState.kind === "streaming" ||
+            chat.chatState.kind === "starting" ? (
+              <button
+                onClick={cancelSend}
+                disabled={chat.chatState.kind === "starting"}
+                className="shrink-0 self-stretch rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
+              >
+                {t("chat.stop")}
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!selectedModel || !chat.input.trim()}
+                className="inline-flex shrink-0 self-stretch items-center justify-center gap-1.5 rounded-md bg-action-iris px-3 text-sm font-medium text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t("chat.send")}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -422,13 +419,19 @@ function ModelDropdown({
       ) : (
         <button
           onClick={() => setOpen(true)}
-          className="flex h-7 w-full items-center gap-2 rounded-sm border border-border-default bg-surface px-2 text-sm text-primary hover:bg-elevated"
+          className="flex h-7 w-full min-w-0 items-center gap-2 rounded-sm border border-border-default bg-surface px-2 text-sm text-primary hover:bg-elevated"
         >
           {selectedSvc ? (
             <>
               <StatusDot state={selectedSvc.state} />
-              <span className="font-mono">{selectedSvc.name}</span>
-              {selectedSvc.has_mmproj && <Badge variant="vision">vision</Badge>}
+              <span className="min-w-0 truncate font-mono">
+                {selectedSvc.name}
+              </span>
+              {selectedSvc.has_mmproj && (
+                <Badge variant="vision" className="shrink-0">
+                  vision
+                </Badge>
+              )}
             </>
           ) : (
             <span className="text-tertiary">
@@ -499,11 +502,16 @@ function MessageBubble({
 
   return (
     <div className={`mb-4 ${isSystem ? "opacity-60" : ""}`}>
-      <div className="mb-1 flex items-center gap-3">
-        <span className="eyebrow">{label}</span>
-        <span className="font-mono text-xs text-tertiary">
+      <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-0">
+        <span className="eyebrow min-w-0 shrink truncate">{label}</span>
+        <span className="shrink-0 font-mono text-xs text-tertiary">
           {message.timestamp}
         </span>
+        {/* Forces the stats onto their own row on mobile, where the
+            label/timestamp/stats combination is too wide to fit on
+            one line; hidden on larger screens so it never forces a
+            break there. */}
+        <span className="basis-full sm:hidden" />
         {isAssistant && displayStats && displayStats.promptTokens !== null && (
           <span className="flex items-center gap-3 text-xs text-tertiary">
             <span>
@@ -548,7 +556,7 @@ function MessageBubble({
         )}
         {isAssistant ? (
           message.content ? (
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 overflow-hidden break-words">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeHighlight]}
@@ -561,6 +569,13 @@ function MessageBubble({
                       </pre>
                     );
                   },
+                  table: ({ children }) => (
+                    <div className="my-2 overflow-x-auto">
+                      <table className="min-w-full border-collapse text-xs">
+                        {children}
+                      </table>
+                    </div>
+                  ),
                 }}
               >
                 {DOMPurify.sanitize(message.content, {
