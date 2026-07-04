@@ -56,6 +56,7 @@ async fn inject_server_errors(
             model: "alpha".into(),
             prompt_tokens: None,
             completion_tokens: None,
+            prompt_eval_tokens: None,
             duration_ms: Some(1000),
             ttft_ms: None,
             prompt_ms: None,

@@ -27,6 +27,10 @@ pub struct MetricsRecorder {
     first_token_at: Option<Instant>,
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    /// Engine-reported count of prompt tokens actually evaluated during
+    /// prefill (`timings.prompt_n`). Excludes cache-served tokens, so it is
+    /// the correct numerator for prefill throughput.
+    prompt_eval_tokens: Option<i64>,
     /// Engine-reported prefill time from the response `timings` object
     /// (llama.cpp). Preferred over proxy-observed TTFT for the input/output
     /// TPS split when present.
@@ -62,6 +66,7 @@ impl MetricsRecorder {
             first_token_at: None,
             prompt_tokens: None,
             completion_tokens: None,
+            prompt_eval_tokens: None,
             prompt_ms: None,
             predicted_ms: None,
             buf: String::new(),
@@ -136,8 +141,11 @@ impl MetricsRecorder {
     /// Extract llama.cpp's engine-reported phase timings from a response
     /// object, if present. The `timings` object sits next to `usage` and
     /// carries `prompt_ms` (prefill) and `predicted_ms` (decode) as
-    /// floating-point milliseconds; both are rounded to whole ms. Absent
-    /// for engines that do not emit it, in which case the fields stay null.
+    /// floating-point milliseconds; both are rounded to whole ms. It also
+    /// carries `prompt_n`, the number of prompt tokens actually evaluated
+    /// (cache misses) — the correct prefill-throughput numerator, since
+    /// `usage.prompt_tokens` counts the cached prefix too. Absent for engines
+    /// that do not emit it, in which case the fields stay null.
     fn extract_timings(&mut self, v: &Value) {
         let Some(timings) = v.get("timings") else {
             return;
@@ -147,6 +155,9 @@ impl MetricsRecorder {
         }
         if let Some(ms) = timings.get("predicted_ms").and_then(|t| t.as_f64()) {
             self.predicted_ms = Some(ms.round() as i64);
+        }
+        if let Some(n) = timings.get("prompt_n").and_then(|t| t.as_i64()) {
+            self.prompt_eval_tokens = Some(n);
         }
     }
 
@@ -182,6 +193,7 @@ impl MetricsRecorder {
             model: rec.model.clone(),
             prompt_tokens: rec.prompt_tokens,
             completion_tokens: rec.completion_tokens,
+            prompt_eval_tokens: rec.prompt_eval_tokens,
             duration_ms: Some(duration_ms),
             ttft_ms,
             prompt_ms: rec.prompt_ms,
@@ -392,10 +404,13 @@ mod tests {
         ));
         rec.ingest(&Bytes::from(
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7},\
-             \"timings\":{\"prompt_ms\":123.4,\"predicted_ms\":456.6}}\n\n",
+             \"timings\":{\"prompt_ms\":123.4,\"predicted_ms\":456.6,\"prompt_n\":8}}\n\n",
         ));
         assert_eq!(rec.prompt_ms, Some(123));
         assert_eq!(rec.predicted_ms, Some(457));
+        // prompt_n (8 evaluated) differs from billed prompt_tokens (42) — the
+        // prompt was mostly cache-served.
+        assert_eq!(rec.prompt_eval_tokens, Some(8));
     }
 
     /// Non-streaming: a buffered JSON body carrying `timings` populates the
@@ -405,7 +420,7 @@ mod tests {
         let mut rec = make_recorder(false);
         let body = r#"{"choices":[{"message":{"content":"hi"}}],
             "usage":{"prompt_tokens":10,"completion_tokens":3},
-            "timings":{"prompt_ms":50.0,"predicted_ms":200.0}}"#;
+            "timings":{"prompt_ms":50.0,"predicted_ms":200.0,"prompt_n":10}}"#;
         rec.ingest(&Bytes::from(body));
 
         // Replicate finish()'s non-streaming parse path (finish spawns a task).
@@ -413,6 +428,7 @@ mod tests {
         rec.extract_timings(&v);
         assert_eq!(rec.prompt_ms, Some(50));
         assert_eq!(rec.predicted_ms, Some(200));
+        assert_eq!(rec.prompt_eval_tokens, Some(10));
     }
 
     /// A response without a `timings` object leaves the engine timing

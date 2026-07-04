@@ -413,9 +413,9 @@ impl Database {
         conn.execute(
             "INSERT INTO request_metrics
                  (service_id, run_id, timestamp_ms, endpoint, model,
-                  prompt_tokens, completion_tokens, duration_ms, ttft_ms,
-                  prompt_ms, predicted_ms, status_code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  prompt_tokens, completion_tokens, prompt_eval_tokens,
+                  duration_ms, ttft_ms, prompt_ms, predicted_ms, status_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 row.service_id,
                 row.run_id,
@@ -424,6 +424,7 @@ impl Database {
                 row.model,
                 row.prompt_tokens,
                 row.completion_tokens,
+                row.prompt_eval_tokens,
                 row.duration_ms,
                 row.ttft_ms,
                 row.prompt_ms,
@@ -456,6 +457,11 @@ impl Database {
         //     proxy-observed decode window (`duration_ms - ttft_ms`) when the
         //     response streamed, else null (no boundary → no split);
         //   - input interval = engine `prompt_ms` if present, else `ttft_ms`.
+        // The input (and aggregate) numerator uses the engine's evaluated
+        // prompt-token count `prompt_eval_tokens` when present, falling back
+        // to the billed `prompt_tokens`. The billed count includes tokens
+        // served from the KV cache, so dividing it by the cache-aware
+        // `prompt_ms` would wildly overstate prefill throughput.
         // Aggregate TPS is always computable from wall-clock `duration_ms`
         // and total tokens, and is what tier-3 (non-streaming, no engine
         // timings) rows fall back to instead of collapsing to zero.
@@ -476,10 +482,10 @@ impl Database {
                                   THEN rm.completion_tokens ELSE 0 END), 0) AS output_tokens,
                 COALESCE(SUM({out}), 0) AS output_ms,
                 COALESCE(SUM(CASE WHEN {inp} IS NOT NULL
-                                  THEN rm.prompt_tokens ELSE 0 END), 0) AS input_tokens,
+                                  THEN COALESCE(rm.prompt_eval_tokens, rm.prompt_tokens) ELSE 0 END), 0) AS input_tokens,
                 COALESCE(SUM({inp}), 0) AS input_ms,
                 COALESCE(SUM(CASE WHEN rm.duration_ms IS NOT NULL
-                                  THEN COALESCE(rm.prompt_tokens, 0) + COALESCE(rm.completion_tokens, 0)
+                                  THEN COALESCE(rm.prompt_eval_tokens, rm.prompt_tokens, 0) + COALESCE(rm.completion_tokens, 0)
                                   ELSE 0 END), 0) AS aggregate_tokens,
                 COALESCE(SUM(CASE WHEN rm.duration_ms IS NOT NULL
                                   THEN rm.duration_ms ELSE 0 END), 0) AS aggregate_ms
@@ -673,6 +679,7 @@ mod tests {
         // Insert two requests 5 minutes apart, one success + one error.
         db.insert_request_metric(&RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms: 10_000,
@@ -690,6 +697,7 @@ mod tests {
         .unwrap();
         db.insert_request_metric(&RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms: 10_000 + 5 * 60_000,
@@ -730,6 +738,7 @@ mod tests {
             async move {
                 db.insert_request_metric(&RequestMetric {
                     metric_id: 0,
+                    prompt_eval_tokens: None,
                     service_id: svc,
                     run_id: Some(run_id),
                     timestamp_ms,
@@ -782,6 +791,7 @@ mod tests {
         let svc = db.upsert_service("demo", 0).await.unwrap();
         let base = |timestamp_ms| RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms,
@@ -852,6 +862,56 @@ mod tests {
         assert!(close(buckets[2].aggregate_tps, 300.0));
     }
 
+    /// Prompt caching: `prompt_tokens` is the full billed prompt (8000) but
+    /// only `prompt_eval_tokens` (100) were actually evaluated. Input and
+    /// aggregate TPS must use the evaluated count, not the billed one — else
+    /// 8000 / 200 ms = 40 000 tok/s instead of the true 100 / 200 ms = 500.
+    #[tokio::test]
+    async fn tps_uses_evaluated_prompt_tokens_not_billed() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
+        db.insert_request_metric(&RequestMetric {
+            metric_id: 0,
+            prompt_eval_tokens: Some(100),
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms: 0,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: Some(8000),
+            completion_tokens: Some(50),
+            duration_ms: Some(1000),
+            ttft_ms: None,
+            prompt_ms: Some(200),
+            predicted_ms: Some(500),
+            status_code: 200,
+        })
+        .await
+        .unwrap();
+
+        let b = &db
+            .query_request_metrics(Some(svc), 0, 60_000, 60_000)
+            .await
+            .unwrap()[0];
+        let close = |a: Option<f64>, b: f64| (a.unwrap() - b).abs() < 0.01;
+        // input = 100 evaluated / 0.2 s = 500 (not 8000 / 0.2 = 40 000).
+        assert!(close(b.input_tps, 500.0), "input_tps = {:?}", b.input_tps);
+        // aggregate = (100 evaluated + 50) / 1 s = 150 (not (8000 + 50) / 1).
+        assert!(
+            close(b.aggregate_tps, 150.0),
+            "aggregate_tps = {:?}",
+            b.aggregate_tps
+        );
+        // output is unaffected by prompt caching: 50 / 0.5 s = 100.
+        assert!(
+            close(b.output_tps, 100.0),
+            "output_tps = {:?}",
+            b.output_tps
+        );
+        // The displayed prompt-token total stays the billed count.
+        assert_eq!(b.prompt_tokens, 8000);
+    }
+
     #[tokio::test]
     async fn request_metrics_filter_by_service() {
         let db = Database::open_in_memory().await.unwrap();
@@ -861,6 +921,7 @@ mod tests {
         for svc_id in [svc_a, svc_b] {
             db.insert_request_metric(&RequestMetric {
                 metric_id: 0,
+                prompt_eval_tokens: None,
                 service_id: svc_id,
                 run_id: Some(1),
                 timestamp_ms: 1000,
@@ -906,6 +967,7 @@ mod tests {
         let svc = db.upsert_service("demo", 1000).await.unwrap();
         db.insert_request_metric(&RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms: 100,
@@ -923,6 +985,7 @@ mod tests {
         .unwrap();
         db.insert_request_metric(&RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms: 2000,
