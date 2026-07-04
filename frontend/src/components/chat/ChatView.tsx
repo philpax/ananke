@@ -169,7 +169,7 @@ export function ChatView() {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 overflow-auto px-4 py-4"
+        className="min-h-0 flex-1 overflow-auto px-4 py-4"
       >
         {chat.messages.length === 0 ? (
           <>
@@ -210,139 +210,144 @@ export function ChatView() {
         )}
       </div>
 
-      {/* System prompt */}
-      {selectedModel && (
-        <details className="shrink-0 border-t border-border-default px-4 py-2">
-          <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
-            {t("chat.systemPrompt")}
-          </summary>
-          <textarea
-            value={chat.systemPrompt}
-            onChange={(e) => saveSystemPrompt(e.target.value)}
-            placeholder={t("chat.systemPromptPlaceholder")}
-            className="mt-1 h-20 w-full resize-none rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
-          />
-        </details>
-      )}
+      {/* Composer block: sits at the bottom of the flex column, below
+          the flex-1 message list, so it never scrolls with the
+          conversation on mobile or desktop. */}
+      <div className="shrink-0 bg-surface">
+        {/* System prompt */}
+        {selectedModel && (
+          <details className="shrink-0 border-t border-border-default px-4 py-2">
+            <summary className="eyebrow cursor-pointer select-none hover:text-secondary">
+              {t("chat.systemPrompt")}
+            </summary>
+            <textarea
+              value={chat.systemPrompt}
+              onChange={(e) => saveSystemPrompt(e.target.value)}
+              placeholder={t("chat.systemPromptPlaceholder")}
+              className="mt-1 h-20 w-full resize-none rounded-sm border border-border-default bg-base px-2 py-1 text-xs text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
+            />
+          </details>
+        )}
 
-      {/* Attachments preview */}
-      {chat.attachments.length > 0 && (
-        <div className="shrink-0 flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
-          {chat.attachments.map((att, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-1 rounded-sm bg-elevated px-2 py-0.5 text-xs text-secondary"
-            >
-              {att.type === "image" && (
-                <img
-                  src={att.content}
-                  alt={att.name}
-                  className="h-6 w-6 rounded object-cover"
-                />
-              )}
-              <span>{att.name}</span>
-              <button
-                onClick={() => removeAttachment(i)}
-                className="text-tertiary hover:text-danger"
+        {/* Attachments preview */}
+        {chat.attachments.length > 0 && (
+          <div className="shrink-0 flex flex-wrap items-center gap-2 border-t border-border-default px-4 py-2">
+            {chat.attachments.map((att, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1 rounded-sm bg-elevated px-2 py-0.5 text-xs text-secondary"
               >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                {att.type === "image" && (
+                  <img
+                    src={att.content}
+                    alt={att.name}
+                    className="h-6 w-6 rounded object-cover"
+                  />
+                )}
+                <span>{att.name}</span>
+                <button
+                  onClick={() => removeAttachment(i)}
+                  className="text-tertiary hover:text-danger"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
-      {/* Composer: model picker + stats sit next to the input, so the
+        {/* Composer: model picker + stats sit next to the input, so the
           controls you use most are all within reach of the textbox. */}
-      <div className="shrink-0 border-t border-border-default px-4 py-3">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <ModelDropdown
-            models={chatModels}
-            selected={selectedModel}
-            onSelect={handleSelectModel}
-            className="min-w-0 flex-1"
-          />
-          {selectedModel && (
-            <CopyButton
-              value={selectedModel}
-              className="h-7 rounded-md bg-elevated px-2 text-xs font-medium text-primary hover:bg-border-strong"
+        <div className="shrink-0 border-t border-border-default px-4 py-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <ModelDropdown
+              models={chatModels}
+              selected={selectedModel}
+              onSelect={handleSelectModel}
+              className="min-w-0 flex-1"
             />
-          )}
-          {selectedModel && (
-            <ButtonLink
-              to={`/services/${encodeURIComponent(selectedModel)}`}
-              variant="secondary"
-              size="sm"
-              className="w-7 justify-center px-0"
-            >
-              <ExternalLinkIcon />
-            </ButtonLink>
-          )}
-          {selectedModel && (
-            <Button
-              variant="secondary"
-              size="sm"
-              className="w-7 justify-center px-0"
-              onClick={clearConversation}
-            >
-              <TrashIcon />
-            </Button>
-          )}
-        </div>
-        <div className="flex items-stretch gap-2">
-          <textarea
-            value={chat.input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                // On touch devices, Enter inserts a newline instead of
-                // sending. Coarse-pointer devices are phones/tablets.
-                if (window.matchMedia("(pointer: coarse)").matches) return;
-                e.preventDefault();
-                void handleSend();
-              }
-            }}
-            placeholder={
-              selectedModel
-                ? chat.chatState.kind === "starting"
-                  ? t("chat.startingModelPlaceholder")
-                  : t("chat.typePlaceholder")
-                : t("chat.selectModelFirst")
-            }
-            disabled={inputDisabled}
-            rows={3}
-            className="flex-1 resize-none overflow-y-auto rounded-sm border border-border-default bg-base px-2 py-2.5 text-base text-primary placeholder:text-tertiary focus:border-accent focus:outline-none disabled:opacity-50 md:text-sm"
-          />
-          <label className="flex w-10 shrink-0 self-stretch cursor-pointer items-center justify-center rounded-md bg-elevated text-lg text-secondary hover:bg-border-strong">
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) handleFiles(e.target.files);
-                e.target.value = "";
+            {selectedModel && (
+              <CopyButton
+                value={selectedModel}
+                className="h-7 rounded-md bg-elevated px-2 text-xs font-medium text-primary hover:bg-border-strong"
+              />
+            )}
+            {selectedModel && (
+              <ButtonLink
+                to={`/services/${encodeURIComponent(selectedModel)}`}
+                variant="secondary"
+                size="sm"
+                className="w-7 justify-center px-0"
+              >
+                <ExternalLinkIcon />
+              </ButtonLink>
+            )}
+            {selectedModel && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="w-7 justify-center px-0"
+                onClick={clearConversation}
+              >
+                <TrashIcon />
+              </Button>
+            )}
+          </div>
+          <div className="flex items-stretch gap-2">
+            <textarea
+              value={chat.input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  // On touch devices, Enter inserts a newline instead of
+                  // sending. Coarse-pointer devices are phones/tablets.
+                  if (window.matchMedia("(pointer: coarse)").matches) return;
+                  e.preventDefault();
+                  void handleSend();
+                }
               }}
+              placeholder={
+                selectedModel
+                  ? chat.chatState.kind === "starting"
+                    ? t("chat.startingModelPlaceholder")
+                    : t("chat.typePlaceholder")
+                  : t("chat.selectModelFirst")
+              }
+              disabled={inputDisabled}
+              rows={3}
+              className="flex-1 resize-none overflow-y-auto rounded-sm border border-border-default bg-base px-2 py-2.5 text-base text-primary placeholder:text-tertiary focus:border-accent focus:outline-none disabled:opacity-50 md:text-sm"
             />
-            +
-          </label>
-          {chat.chatState.kind === "streaming" ||
-          chat.chatState.kind === "starting" ? (
-            <button
-              onClick={cancelSend}
-              disabled={chat.chatState.kind === "starting"}
-              className="shrink-0 self-stretch rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
-            >
-              {t("chat.stop")}
-            </button>
-          ) : (
-            <button
-              onClick={handleSend}
-              disabled={!selectedModel || !chat.input.trim()}
-              className="inline-flex shrink-0 self-stretch items-center justify-center gap-1.5 rounded-md bg-action-iris px-3 text-sm font-medium text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {t("chat.send")}
-            </button>
-          )}
+            <label className="flex w-10 shrink-0 self-stretch cursor-pointer items-center justify-center rounded-md bg-elevated text-lg text-secondary hover:bg-border-strong">
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleFiles(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              +
+            </label>
+            {chat.chatState.kind === "streaming" ||
+            chat.chatState.kind === "starting" ? (
+              <button
+                onClick={cancelSend}
+                disabled={chat.chatState.kind === "starting"}
+                className="shrink-0 self-stretch rounded-md bg-danger px-3 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-40"
+              >
+                {t("chat.stop")}
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!selectedModel || !chat.input.trim()}
+                className="inline-flex shrink-0 self-stretch items-center justify-center gap-1.5 rounded-md bg-action-iris px-3 text-sm font-medium text-white transition-[filter] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t("chat.send")}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -11,7 +11,7 @@ type AppShellProps = {
 
 export function AppShell({ children }: AppShellProps) {
   return (
-    <div className="flex h-screen h-dvh flex-col bg-base text-primary">
+    <div className="flex h-dvh flex-col bg-base text-primary">
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
         <main className="flex-1 overflow-auto overscroll-contain pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">
