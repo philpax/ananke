@@ -149,6 +149,38 @@ impl Database {
         .map_err(|e| self.db_err(e))
     }
 
+    /// Count requests and errors for one run within a recent window, for the
+    /// auto-restart error-rate watchdog. Scoped to a single `run_id` so a
+    /// prior (already-restarted) run's errors never count against the current
+    /// process; scoped to `timestamp_ms >= since_ms` so a service that was
+    /// healthy for hours before wedging is caught on the recent window rather
+    /// than diluted by historical success. `min_error_status` selects the
+    /// error class: 500 for server-only, 400 for client-and-server. Returns
+    /// `(total, errors)`.
+    pub async fn error_rate_since(
+        &self,
+        service_id: i64,
+        run_id: i64,
+        since_ms: i64,
+        min_error_status: u16,
+    ) -> Result<(u64, u64), ExpectedError> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT COUNT(*),
+                    SUM(CASE WHEN status_code >= ?4 THEN 1 ELSE 0 END)
+             FROM request_metrics
+             WHERE service_id = ?1 AND run_id = ?2 AND timestamp_ms >= ?3",
+            params![service_id, run_id, since_ms, min_error_status as i64],
+            |row| {
+                let total: i64 = row.get(0)?;
+                // SUM over zero rows is NULL, hence the Option.
+                let errors: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+                Ok((total.max(0) as u64, errors.max(0) as u64))
+            },
+        )
+        .map_err(|e| self.db_err(e))
+    }
+
     /// All services without a `deleted_at`. Used by retention to iterate
     /// live services and enforce the per-service log cap.
     pub async fn list_live_services(&self) -> Result<Vec<Service>, ExpectedError> {
@@ -687,6 +719,58 @@ mod tests {
         assert_eq!(b.completion_tokens, 130);
         assert!((b.avg_duration_ms.unwrap() - 1000.0).abs() < 0.1);
         assert_eq!(b.error_count, 1);
+    }
+
+    #[tokio::test]
+    async fn error_rate_since_scopes_to_run_and_window() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
+        let insert = |run_id: i64, timestamp_ms: i64, status_code: i64| {
+            let db = &db;
+            async move {
+                db.insert_request_metric(&RequestMetric {
+                    metric_id: 0,
+                    service_id: svc,
+                    run_id: Some(run_id),
+                    timestamp_ms,
+                    endpoint: "/v1/chat/completions".into(),
+                    model: "demo".into(),
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    duration_ms: None,
+                    ttft_ms: None,
+                    prompt_ms: None,
+                    predicted_ms: None,
+                    status_code,
+                })
+                .await
+                .unwrap();
+            }
+        };
+
+        // Current run 2: 3 x 500 + 1 x 404 + 1 x 200 inside the window.
+        insert(2, 100_000, 500).await;
+        insert(2, 101_000, 500).await;
+        insert(2, 102_000, 500).await;
+        insert(2, 103_000, 404).await;
+        insert(2, 104_000, 200).await;
+        // A previous run's errors must not count.
+        insert(1, 100_500, 500).await;
+        insert(1, 100_600, 500).await;
+        // An in-window 500 from run 2 but before the `since` cutoff.
+        insert(2, 50_000, 500).await;
+
+        // Server-only (>=500) from 90s: 3 errors of 5 total in-window rows.
+        let (total, errors) = db.error_rate_since(svc, 2, 90_000, 500).await.unwrap();
+        assert_eq!((total, errors), (5, 3));
+
+        // Client-and-server (>=400): the 404 now counts too → 4 errors.
+        let (total, errors) = db.error_rate_since(svc, 2, 90_000, 400).await.unwrap();
+        assert_eq!((total, errors), (5, 4));
+
+        // No rows in window → zero total, zero errors (SUM over empty is NULL).
+        let (total, errors) = db.error_rate_since(svc, 2, 200_000, 500).await.unwrap();
+        assert_eq!((total, errors), (0, 0));
     }
 
     /// The input/output split is sourced tier-by-tier: engine timings
