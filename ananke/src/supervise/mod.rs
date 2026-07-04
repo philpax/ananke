@@ -37,7 +37,9 @@ use tracing::{error, info, warn};
 
 use crate::{
     allocator::placement::Packed,
-    config::validate::{DEFAULT_SERVICE_PRIORITY, Lifecycle, ServiceConfig},
+    config::validate::{
+        DEFAULT_SERVICE_PRIORITY, ErrorRateTrigger, Lifecycle, PeriodicMode, ServiceConfig,
+    },
     daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
     devices::Allocation,
@@ -702,6 +704,22 @@ struct RunLoop {
     /// dropped the service (mid-reload). Never mutated — the live
     /// [`ConfigManager`] is always preferred.
     boot_svc: ServiceConfig,
+    /// Monotonic timestamps of recent error-rate auto-restarts, pruned to the
+    /// flap window. Lives on the supervisor (not the run) so it survives the
+    /// drain → respawn cycle and can trip the flap cap. Only the error-rate
+    /// trigger touches this — periodic restarts are intentional maintenance
+    /// and must not count toward the cap.
+    auto_restart_history: Vec<tokio::time::Instant>,
+    /// Set by the periodic `on-request` trigger when the interval elapses: the
+    /// current run is stale and the next incoming request drives a drain →
+    /// respawn (carried through [`Self::deferred_ensure`]) instead of hitting
+    /// the wedged child.
+    restart_pending: bool,
+    /// An `Ensure` whose reply is deferred across an on-request restart drain.
+    /// Held from the Running `Ensure` handler through the drain, then replayed
+    /// at the top of [`Self::handle_idle`] so the triggering request blocks on
+    /// the fresh process via the normal idle-ensure spawn path.
+    deferred_ensure: Option<(tokio::sync::oneshot::Sender<EnsureResponse>, EnsureSource)>,
 }
 
 impl RunLoop {
@@ -732,6 +750,9 @@ impl RunLoop {
             oom_attempts: 0,
             base_total_bytes_for_rolling: 0,
             boot_svc,
+            auto_restart_history: Vec::new(),
+            restart_pending: false,
+            deferred_ensure: None,
         }
     }
 
@@ -919,6 +940,16 @@ impl RunLoop {
     /// is parked on `pending_ensure_bus` (busy peer waiting to idle); when no
     /// queue is pending, the loop is a pure command-recv.
     async fn handle_idle(&mut self) -> Step {
+        // An on-request periodic restart drained to Idle while holding the
+        // triggering request's Ensure. Replay it through the normal
+        // idle-ensure path now so the caller blocks on the fresh spawn (a
+        // Waiting response on a real start bus) rather than getting
+        // AlreadyRunning against a child that no longer exists.
+        if let Some((ack, source)) = self.deferred_ensure.take()
+            && self.handle_idle_ensure(ack, source).await
+        {
+            return Step::Continue;
+        }
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(QUEUE_POLL_INTERVAL), if self.pending_ensure_bus.is_some() => {
@@ -2234,6 +2265,31 @@ impl RunLoop {
         child: &mut dyn ManagedChild,
         run_id: i64,
     ) -> StartingOutcome {
+        // Timers are seeded once from the config at Running entry; threshold
+        // values (rate, min_requests, cooldown, flap cap) are re-read live in
+        // the handlers so a `PUT /api/config` edit takes effect without a
+        // respawn. The `running_since` stamp anchors both the periodic
+        // deadline and the error-rate cooldown.
+        let running_since = tokio::time::Instant::now();
+        self.restart_pending = false;
+        let auto_restart = self.current_svc().auto_restart;
+
+        // Error-rate poll: a plain interval, first tick one period out so the
+        // fresh run (which has zero metrics) isn't queried the instant it
+        // starts.
+        let mut error_poll = auto_restart.error_rate.as_ref().map(|er| {
+            let period = Duration::from_millis(er.poll_interval_ms);
+            tokio::time::interval_at(tokio::time::Instant::now() + period, period)
+        });
+
+        // Periodic timer: the next instant at which the periodic trigger is
+        // evaluated. Starts at `running_since + interval`; the on-idle mode
+        // reuses it as a short re-poll while it waits for a quiet window.
+        let mut periodic_deadline = auto_restart
+            .periodic
+            .as_ref()
+            .map(|p| running_since + Duration::from_millis(p.interval_ms));
+
         loop {
             tokio::select! {
                 exit = child.wait() => {
@@ -2241,6 +2297,39 @@ impl RunLoop {
                     self.record_drain_complete();
                     self.set_state(ServiceState::Failed { retry_count: 0 });
                     return StartingOutcome::Break;
+                }
+                // Error-rate watchdog poll. The branch future borrows only the
+                // local `error_poll`; the decision + restart run in the handler.
+                _ = async {
+                    match error_poll.as_mut() {
+                        Some(p) => { p.tick().await; }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    if let Some(detail) = self.evaluate_error_rate(run_id, running_since).await
+                        && matches!(
+                            self.perform_error_rate_restart(child, run_id, detail).await,
+                            AutoRestartOutcome::Restarted | AutoRestartOutcome::Disabled,
+                        )
+                    {
+                        return StartingOutcome::Break;
+                    }
+                }
+                // Periodic-restart timer. `periodic_deadline` is a plain
+                // `Instant` computed eagerly, so the branch future holds no
+                // borrow of `self`.
+                _ = async {
+                    match periodic_deadline {
+                        Some(d) => tokio::time::sleep_until(d).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    if matches!(
+                        self.on_periodic_tick(&mut periodic_deadline, child, run_id).await,
+                        PeriodicOutcome::Restarted,
+                    ) {
+                        return StartingOutcome::Break;
+                    }
                 }
                 // Persistent services ignore the idle timeout entirely — by
                 // definition they stay loaded until evicted or shut down.
@@ -2302,6 +2391,171 @@ impl RunLoop {
         self.record_drain_complete();
     }
 
+    /// Query the current run's recent error rate and decide whether the
+    /// error-rate watchdog should fire. Returns a human-readable detail
+    /// string when it should, else `None`.
+    ///
+    /// Gated on the `min_uptime` cooldown: a freshly (re)started run must
+    /// live that long before the watchdog can fire. That, together with the
+    /// run-scoped, windowed query — which starts from zero metrics on every
+    /// respawn — is what stops restart flapping.
+    async fn evaluate_error_rate(
+        &self,
+        run_id: i64,
+        running_since: tokio::time::Instant,
+    ) -> Option<String> {
+        let ar = self.current_svc().auto_restart;
+        let er = ar.error_rate.as_ref()?;
+        if tokio::time::Instant::now().duration_since(running_since)
+            < Duration::from_millis(ar.min_uptime_ms)
+        {
+            return None;
+        }
+        let since_ms = crate::tracking::now_unix_ms() - er.window_ms as i64;
+        let (total, errors) = match self
+            .deps
+            .db
+            .error_rate_since(
+                self.init.service_id,
+                run_id,
+                since_ms,
+                er.statuses.min_status_code(),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(service = %self.init.identity.name, error = %e, "auto-restart: error-rate query failed");
+                return None;
+            }
+        };
+        let rate = error_rate_trips(total, errors, er)?;
+        Some(format!(
+            "error rate {:.0}% ({errors}/{total} requests over {}s) ≥ threshold {:.0}%",
+            rate * 100.0,
+            er.window_ms / 1000,
+            er.max_error_rate * 100.0,
+        ))
+    }
+
+    /// Perform an error-rate-triggered restart, or disable the service if the
+    /// flap cap has been reached. Either way the child is drained; the caller
+    /// breaks out of the Running loop afterward.
+    async fn perform_error_rate_restart(
+        &mut self,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+        detail: String,
+    ) -> AutoRestartOutcome {
+        let ar = self.current_svc().auto_restart;
+        let now = tokio::time::Instant::now();
+        let window = Duration::from_millis(ar.flap_window_ms);
+        self.auto_restart_history
+            .retain(|t| now.duration_since(*t) < window);
+        if self.auto_restart_history.len() as u32 >= ar.max_restarts {
+            warn!(
+                service = %self.init.identity.name,
+                restarts = self.auto_restart_history.len(),
+                detail = %detail,
+                "auto-restart flap cap reached; disabling instead of restarting"
+            );
+            self.drain_now(child, run_id, drain::DrainReason::AutoRestart)
+                .await;
+            self.set_state(ServiceState::Disabled {
+                reason: DisableReason::AutoRestartLoop,
+            });
+            return AutoRestartOutcome::Disabled;
+        }
+        self.auto_restart_history.push(now);
+        warn!(service = %self.init.identity.name, detail = %detail, "auto-restart: error-rate watchdog firing");
+        self.emit_auto_restarted("error_rate", detail);
+        self.drain_now(child, run_id, drain::DrainReason::AutoRestart)
+            .await;
+        self.set_state(ServiceState::Idle);
+        AutoRestartOutcome::Restarted
+    }
+
+    /// Evaluate the periodic timer when its deadline elapses. `deadline` is
+    /// rewritten in place: cleared once the trigger has fired or handed off to
+    /// the request path, or set to a short re-poll while `on-idle` waits for a
+    /// quiet window.
+    async fn on_periodic_tick(
+        &mut self,
+        deadline: &mut Option<tokio::time::Instant>,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+    ) -> PeriodicOutcome {
+        let ar = self.current_svc().auto_restart;
+        let Some(periodic) = ar.periodic.as_ref() else {
+            *deadline = None;
+            return PeriodicOutcome::Continue;
+        };
+        match periodic.mode {
+            PeriodicMode::Immediate => {
+                self.perform_periodic_restart(child, run_id, "interval elapsed (immediate)".into())
+                    .await;
+                PeriodicOutcome::Restarted
+            }
+            PeriodicMode::OnRequest => {
+                // Arm the flag and disarm the timer; the next Ensure drives the
+                // drain → respawn (see `on_running_command`).
+                self.restart_pending = true;
+                *deadline = None;
+                info!(
+                    service = %self.init.identity.name,
+                    "periodic interval elapsed; will restart on next request"
+                );
+                PeriodicOutcome::Continue
+            }
+            PeriodicMode::OnIdle => {
+                if self
+                    .init
+                    .inflight
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    == 0
+                {
+                    self.perform_periodic_restart(
+                        child,
+                        run_id,
+                        "interval elapsed (idle window)".into(),
+                    )
+                    .await;
+                    PeriodicOutcome::Restarted
+                } else {
+                    // Still serving; re-check after a short poll.
+                    *deadline = Some(tokio::time::Instant::now() + PERIODIC_IDLE_POLL);
+                    PeriodicOutcome::Continue
+                }
+            }
+        }
+    }
+
+    /// Drain the child and return to Idle for a periodic restart. Unlike the
+    /// error-rate path, periodic restarts are intentional maintenance and do
+    /// not count toward the flap cap.
+    async fn perform_periodic_restart(
+        &mut self,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+        detail: String,
+    ) {
+        info!(service = %self.init.identity.name, detail = %detail, "auto-restart: periodic timer firing");
+        self.emit_auto_restarted("periodic", detail);
+        self.drain_now(child, run_id, drain::DrainReason::AutoRestart)
+            .await;
+        self.set_state(ServiceState::Idle);
+    }
+
+    /// Publish an [`Event::AutoRestarted`] to the daemon event stream.
+    fn emit_auto_restarted(&self, trigger: &str, detail: String) {
+        self.deps.events.publish(Event::AutoRestarted {
+            service: self.init.identity.name.clone(),
+            trigger: trigger.to_string(),
+            detail,
+            at_ms: crate::tracking::now_unix_ms(),
+        });
+    }
+
     /// Dispatch a command received while the service is Running.
     async fn on_running_command(
         &mut self,
@@ -2322,7 +2576,25 @@ impl RunLoop {
                 let _ = ack.send(());
                 RunningOutcome::Exit
             }
-            Some(SupervisorCommand::Ensure { ack, .. }) => {
+            Some(SupervisorCommand::Ensure { ack, source }) => {
+                if self.restart_pending {
+                    // Periodic on-request restart is armed: this request is the
+                    // trigger. Drain now and carry its Ensure through to the
+                    // idle-ensure spawn path so the caller blocks on the fresh
+                    // process. Falls back to a plain restart if the child is
+                    // already gone.
+                    self.restart_pending = false;
+                    info!(
+                        service = %self.init.identity.name,
+                        "periodic on-request restart: draining for incoming request"
+                    );
+                    self.deferred_ensure = Some((ack, source));
+                    self.emit_auto_restarted("periodic", "on-request interval elapsed".into());
+                    self.drain_now(child, run_id, drain::DrainReason::AutoRestart)
+                        .await;
+                    self.set_state(ServiceState::Idle);
+                    return RunningOutcome::Break;
+                }
                 let _ = ack.send(EnsureResponse::AlreadyRunning);
                 RunningOutcome::Continue
             }
@@ -2622,6 +2894,37 @@ enum RunningOutcome {
     Exit,
 }
 
+/// Outcome of an error-rate watchdog firing: the service was either drained
+/// and returned to Idle for respawn, or disabled after tripping the flap cap.
+/// Both leave the Running loop.
+enum AutoRestartOutcome {
+    Restarted,
+    Disabled,
+}
+
+/// Outcome of a periodic-timer tick: either the loop keeps running (the
+/// trigger armed the request path, or `on-idle` is still waiting for a quiet
+/// window) or the service was drained and must leave the Running loop.
+enum PeriodicOutcome {
+    Continue,
+    Restarted,
+}
+
+/// Re-poll cadence for the `on-idle` periodic mode while it waits for the
+/// service to fall quiet after its interval has elapsed.
+const PERIODIC_IDLE_POLL: Duration = Duration::from_secs(1);
+
+/// Pure verdict for the error-rate watchdog: `Some(rate)` when the window's
+/// error ratio meets or exceeds the threshold with enough requests to trust
+/// it, else `None`. Kept free of I/O so it can be unit-tested directly.
+fn error_rate_trips(total: u64, errors: u64, cfg: &ErrorRateTrigger) -> Option<f64> {
+    if total < cfg.min_requests as u64 {
+        return None;
+    }
+    let rate = errors as f64 / total as f64;
+    (rate >= cfg.max_error_rate).then_some(rate)
+}
+
 /// Convert a `DeviceSlot` to the canonical string key used in
 /// `AllocationChanged` reservations (`"cpu"` or `"gpu:N"`).
 pub(crate) fn slot_to_key(slot: &crate::config::DeviceSlot) -> String {
@@ -2671,5 +2974,57 @@ async fn insert_running_row(
 async fn delete_running_row(db: &Database, service_id: i64, run_id: i64) {
     if let Err(e) = db.delete_running(service_id, run_id).await {
         warn!(error = %e, "running_services delete failed");
+    }
+}
+
+#[cfg(test)]
+mod auto_restart_tests {
+    use super::*;
+    use crate::config::validate::ErrorStatusClass;
+
+    fn cfg(max_error_rate: f64, min_requests: u32) -> ErrorRateTrigger {
+        ErrorRateTrigger {
+            window_ms: 120_000,
+            max_error_rate,
+            min_requests,
+            poll_interval_ms: 30_000,
+            statuses: ErrorStatusClass::ServerOnly,
+        }
+    }
+
+    #[test]
+    fn trips_when_rate_meets_threshold_with_enough_requests() {
+        // 24/42 ≈ 57% ≥ 50% with 42 ≥ 20 requests — the production wedge shape.
+        let rate = error_rate_trips(42, 24, &cfg(0.5, 20)).expect("should trip");
+        assert!((rate - 24.0 / 42.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn does_not_trip_below_min_requests() {
+        // 2/2 = 100% but only 2 requests — the floor must suppress it.
+        assert!(error_rate_trips(2, 2, &cfg(0.5, 20)).is_none());
+    }
+
+    #[test]
+    fn does_not_trip_below_threshold() {
+        // 5/40 = 12.5% < 50%.
+        assert!(error_rate_trips(40, 5, &cfg(0.5, 20)).is_none());
+    }
+
+    #[test]
+    fn trips_exactly_at_threshold() {
+        // Boundary: exactly 50% counts as tripping (>=).
+        assert!(error_rate_trips(20, 10, &cfg(0.5, 20)).is_some());
+    }
+
+    #[test]
+    fn status_class_error_boundaries() {
+        assert!(!ErrorStatusClass::ServerOnly.is_error(499));
+        assert!(ErrorStatusClass::ServerOnly.is_error(500));
+        assert!(!ErrorStatusClass::ServerOnly.is_error(400));
+        assert!(ErrorStatusClass::ClientAndServer.is_error(400));
+        assert!(ErrorStatusClass::ClientAndServer.is_error(503));
+        assert_eq!(ErrorStatusClass::ServerOnly.min_status_code(), 500);
+        assert_eq!(ErrorStatusClass::ClientAndServer.min_status_code(), 400);
     }
 }
