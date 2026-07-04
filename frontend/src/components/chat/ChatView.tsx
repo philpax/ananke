@@ -419,13 +419,19 @@ function ModelDropdown({
       ) : (
         <button
           onClick={() => setOpen(true)}
-          className="flex h-7 w-full items-center gap-2 rounded-sm border border-border-default bg-surface px-2 text-sm text-primary hover:bg-elevated"
+          className="flex h-7 w-full min-w-0 items-center gap-2 rounded-sm border border-border-default bg-surface px-2 text-sm text-primary hover:bg-elevated"
         >
           {selectedSvc ? (
             <>
               <StatusDot state={selectedSvc.state} />
-              <span className="font-mono">{selectedSvc.name}</span>
-              {selectedSvc.has_mmproj && <Badge variant="vision">vision</Badge>}
+              <span className="min-w-0 truncate font-mono">
+                {selectedSvc.name}
+              </span>
+              {selectedSvc.has_mmproj && (
+                <Badge variant="vision" className="shrink-0">
+                  vision
+                </Badge>
+              )}
             </>
           ) : (
             <span className="text-tertiary">
