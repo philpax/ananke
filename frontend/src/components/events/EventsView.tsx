@@ -22,6 +22,7 @@ const EVENT_TYPES = [
   "allocation_changed",
   "config_reloaded",
   "estimator_drift",
+  "auto_restarted",
   "overflow",
 ] as const;
 
@@ -157,6 +158,7 @@ const EVENT_VARIANTS: Record<string, BadgeVariant> = {
   allocation_changed: "accent",
   config_reloaded: "warning",
   estimator_drift: "vision",
+  auto_restarted: "warning",
   overflow: "danger",
 };
 
@@ -177,6 +179,12 @@ function summarizeEvent(event: SystemEvent, t: TFunction): string {
         return t("events.estimatorDriftCorrection", { value: mean.toFixed(3) });
       }
       return t("events.estimatorDrift");
+    }
+    case "auto_restarted": {
+      const trigger = event.trigger ?? "?";
+      return event.detail
+        ? t("events.autoRestarted", { trigger, detail: event.detail })
+        : t("events.autoRestartedShort", { trigger });
     }
     case "overflow": {
       const dropped = event.dropped;

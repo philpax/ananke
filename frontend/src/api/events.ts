@@ -120,6 +120,7 @@ export function useEventsConnection(): void {
             void qc.invalidateQueries({ queryKey: ["config"] });
             break;
           case "estimator_drift":
+          case "auto_restarted":
             if (event.service) {
               void qc.invalidateQueries({
                 queryKey: ["service-detail", event.service],
