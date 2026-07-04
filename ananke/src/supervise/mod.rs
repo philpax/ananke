@@ -2862,6 +2862,13 @@ impl RunLoop {
                 }
                 Some(SupervisorCommand::Enable { ack }) => {
                     // Transition back to Idle so the next Ensure can start it.
+                    // Clear the auto-restart flap history: a manual re-enable is
+                    // an operator override that grants a fresh restart budget.
+                    // Without this, a service disabled with `AutoRestartLoop`
+                    // (whose history is full by construction, all within the
+                    // flap window) would be re-disabled on its very first
+                    // error-rate trip after re-enable.
+                    self.auto_restart_history.clear();
                     let next = transition(&self.read_state(), StateEvent::UserEnable);
                     self.set_state(next);
                     let _ = ack.send(EnableResult::Enabled);
