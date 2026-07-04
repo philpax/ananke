@@ -502,11 +502,16 @@ function MessageBubble({
 
   return (
     <div className={`mb-4 ${isSystem ? "opacity-60" : ""}`}>
-      <div className="mb-1 flex items-center gap-3">
-        <span className="eyebrow">{label}</span>
-        <span className="font-mono text-xs text-tertiary">
+      <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-0">
+        <span className="eyebrow min-w-0 shrink truncate">{label}</span>
+        <span className="shrink-0 font-mono text-xs text-tertiary">
           {message.timestamp}
         </span>
+        {/* Forces the stats onto their own row on mobile, where the
+            label/timestamp/stats combination is too wide to fit on
+            one line; hidden on larger screens so it never forces a
+            break there. */}
+        <span className="basis-full sm:hidden" />
         {isAssistant && displayStats && displayStats.promptTokens !== null && (
           <span className="flex items-center gap-3 text-xs text-tertiary">
             <span>
