@@ -28,6 +28,12 @@ pub enum DisableReason {
     CrashLoop,
     NoFit,
     UserDisabled,
+    /// Auto-restart fired more times than its flap cap allowed within the
+    /// flap window — the service is presumed unrecoverable and is disabled
+    /// rather than restarted again. Distinct from [`Self::CrashLoop`], which
+    /// is a child that never launched; here the child launched fine but kept
+    /// degrading in service.
+    AutoRestartLoop,
 }
 
 impl ServiceState {
@@ -55,6 +61,7 @@ impl DisableReason {
             DisableReason::CrashLoop => "crash_loop",
             DisableReason::NoFit => "no_fit",
             DisableReason::UserDisabled => "user_disabled",
+            DisableReason::AutoRestartLoop => "auto_restart_loop",
         }
     }
 }
@@ -72,6 +79,9 @@ pub enum Event {
     UserEnable,
     UserDisable,
     RetryAfterBackoff,
+    /// Auto-restart tripped its flap cap; the running service is disabled
+    /// instead of restarted again.
+    AutoRestartLoop,
 }
 
 /// Returns the next state for this `(from, event)` pair.
@@ -120,6 +130,9 @@ pub fn try_transition(from: &ServiceState, event: Event) -> Option<ServiceState>
         }),
         (Running, Event::CrashLoop) => Some(Disabled {
             reason: DisableReason::CrashLoop,
+        }),
+        (Running, Event::AutoRestartLoop) => Some(Disabled {
+            reason: DisableReason::AutoRestartLoop,
         }),
         (Disabled { .. }, Event::UserEnable) => Some(Idle),
         (_, Event::UserDisable) => Some(Disabled {
@@ -184,6 +197,16 @@ mod tests {
     #[should_panic(expected = "illegal state transition")]
     fn invalid_transition_panics_in_total_api() {
         let _ = transition(&ServiceState::Idle, Event::DrainComplete);
+    }
+
+    #[test]
+    fn running_auto_restart_loop_disables_with_reason() {
+        assert_eq!(
+            transition(&ServiceState::Running, Event::AutoRestartLoop),
+            ServiceState::Disabled {
+                reason: DisableReason::AutoRestartLoop,
+            },
+        );
     }
 
     #[test]

@@ -76,7 +76,8 @@ fn passes_filter(event: &Event, service_filter: Option<&str>) -> bool {
     match event {
         Event::StateChanged { service, .. }
         | Event::AllocationChanged { service, .. }
-        | Event::EstimatorDrift { service, .. } => service.as_str() == filter,
+        | Event::EstimatorDrift { service, .. }
+        | Event::AutoRestarted { service, .. } => service.as_str() == filter,
         Event::ConfigReloaded { .. } | Event::Overflow { .. } => true,
     }
 }

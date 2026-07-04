@@ -27,6 +27,7 @@ A `disabled` state carries a reason that explains why:
 | `crash_loop` | The process crashed repeatedly after becoming healthy. |
 | `no_fit` | The model doesn't fit on any available device. |
 | `user_disabled` | An operator disabled the service via the management API. |
+| `auto_restart_loop` | Auto-restart fired more times than its flap cap allowed within the flap window; the service kept degrading in service (as opposed to `crash_loop`, where the process never launched), so it is disabled rather than restarted again. |
 
 ### Transitions
 
@@ -36,7 +37,7 @@ A `disabled` state carries a reason that explains why:
 - `starting → disabled`: health check timed out.
 - `running → draining`: drain requested (stop, evict, or shutdown).
 - `running → stopped`: process exited.
-- `running → disabled`: crash loop detected.
+- `running → disabled`: crash loop detected, or the auto-restart flap cap was tripped → `auto_restart_loop`.
 - `draining → idle`: drain complete.
 - `draining → stopped`: process exited during drain.
 - `stopped → starting`: re-spawn requested.
