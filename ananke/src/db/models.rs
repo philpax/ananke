@@ -91,6 +91,12 @@ pub struct RequestMetric {
     pub model: String,
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
+    /// Engine-reported count of prompt tokens actually evaluated during
+    /// prefill (`timings.prompt_n`), llama.cpp only. Excludes tokens served
+    /// from the KV cache, unlike the billed [`Self::prompt_tokens`]. Used as
+    /// the input/aggregate TPS numerator so prompt caching doesn't inflate
+    /// prefill throughput.
+    pub prompt_eval_tokens: Option<i64>,
     pub duration_ms: Option<i64>,
     pub ttft_ms: Option<i64>,
     /// Engine-reported prefill time (`timings.prompt_ms`), llama.cpp only.

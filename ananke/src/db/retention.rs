@@ -139,6 +139,7 @@ mod tests {
         // One old metric (older than 7-day retention).
         db.insert_request_metric(&RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms: eight_days_ago,
@@ -158,6 +159,7 @@ mod tests {
         // One recent metric.
         db.insert_request_metric(&RequestMetric {
             metric_id: 0,
+            prompt_eval_tokens: None,
             service_id: svc,
             run_id: Some(1),
             timestamp_ms: now,
