@@ -283,6 +283,51 @@ cgroup_parent = "/system.slice/ananke-comfyui.slice"
 | --- | --- | --- | --- |
 | `cgroup_parent` | string | none | Cgroup v2 path under which the service's actual workload pids live. Used by services whose workload runs in a container and is therefore reparented out of the daemon's process tree, so descendant-pid attribution can't reach it. Pids whose `/proc/<pid>/cgroup` path equals this value or sits inside its subtree are summed into the service's observed peak. Must be an absolute cgroup path (no trailing slash). |
 
+### Auto-restart
+
+Self-healing for a `Running` service that is alive but degraded — the process has not exited, so the crash-detection path never fires, yet every request is failing or the process has accumulated dirty internal state. Two independent triggers both feed the existing drain → respawn cycle.
+
+```toml
+[service.auto_restart]
+# Error-rate watchdog (on by default; write `error_rate = false` to opt out):
+error_rate = { window = "2m", max_error_rate = 0.5, min_requests = 20, poll_interval = "30s", error_statuses = "5xx" }
+# Periodic restart (off by default; a table with an interval enables it):
+periodic = { interval = "6h", mode = "on-request" }
+# Anti-flap guardrails, shared by both triggers:
+min_uptime = "5m"
+max_restarts = 3
+flap_window = "30m"
+```
+
+The block is resolved as a **whole unit**: a service that sets any `auto_restart` field replaces `[defaults.auto_restart]` entirely rather than merging field-by-field. The same `[defaults.auto_restart]` block is accepted for fleet-wide defaults.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `error_rate` | table \| `false` | on, with the defaults below | Error-rate watchdog. `false` disables it; a table enables it and overrides individual thresholds. |
+| `periodic` | table \| `false` | off | Periodic restart. Absent or `false` disables it; a table (with an `interval`) enables it. |
+| `min_uptime` | duration string | `5m` | Minimum uptime a fresh run must reach before an error-rate restart may fire — the anti-flap cooldown. |
+| `max_restarts` | u32 | `3` | Error-rate restarts tolerated within `flap_window` before the service is disabled with reason `auto_restart_loop` instead of restarted again. Periodic restarts are intentional and do not count toward this cap. |
+| `flap_window` | duration string | `30m` | Sliding window over which `max_restarts` is counted. |
+
+`[service.auto_restart.error_rate]` fields:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `window` | duration string | `2m` | Rolling window over which the error rate is measured. Scoped to the current run, so a fresh process starts from zero. |
+| `max_error_rate` | float (0.0–1.0] | `0.5` | Fraction of requests in the window that must be errors to trigger. |
+| `min_requests` | u32 | `20` | Minimum request count in the window before the ratio is trusted — stops a 2-of-2-failed service from restarting. |
+| `poll_interval` | duration string | `30s` | How often the watchdog queries the metrics store. |
+| `error_statuses` | `"5xx"` \| `"4xx+5xx"` | `5xx` | Which HTTP statuses count as errors. `5xx` (server errors only) is the default because a 4xx is usually the client's fault, not the service's. `4xx+5xx` counts any status ≥ 400. |
+
+`[service.auto_restart.periodic]` fields:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `interval` | duration string | required | How long a run may live before a periodic restart is due, measured from when it entered `Running`. |
+| `mode` | `"immediate"` \| `"on-idle"` \| `"on-request"` | `on-request` | How the restart is timed once the interval elapses. `immediate` drains and respawns at once (interrupting in-flight traffic gracefully). `on-idle` waits for a quiet window with no in-flight requests, then restarts — zero disruption, but may never fire under continuous load. `on-request` marks the run stale and lets the next request drive the restart, blocking that request on the fresh process; it guarantees the restart happens even under continuous load. |
+
+When a trigger fires, the service drains (SIGTERM with grace, then SIGKILL) and returns to `Idle`; the normal ensure path respawns it — on the next request for an on-demand service, or within a few seconds for a persistent one. An auto-restart emits an `auto_restarted` event on the daemon event stream (see [the API guide](api.md)). Oneshot services never auto-restart.
+
 ## Templates
 
 ### llama-cpp

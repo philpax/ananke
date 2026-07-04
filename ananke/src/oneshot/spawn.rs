@@ -133,6 +133,9 @@ pub async fn spawn_oneshot(
         drain_timeout_ms: DEFAULT_DRAIN_TIMEOUT_MS,
         extended_stream_drain_ms: DEFAULT_EXTENDED_STREAM_DRAIN_MS,
         max_request_duration_ms: DEFAULT_MAX_REQUEST_DURATION_MS,
+        // Oneshot services run once and expire on TTL; self-healing restarts
+        // would fight that lifecycle, so they are always off here.
+        auto_restart: crate::config::validate::AutoRestartSettings::disabled(),
         allocation_mode,
         openai_compat: false,
         description: None,

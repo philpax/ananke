@@ -258,6 +258,10 @@ fn merge_common(
     take!(max_request_duration);
     take!(start_queue_depth);
     take!(env_inherit);
+    // auto_restart is a cohesive policy block: a child that sets any
+    // auto_restart field replaces the parent's whole block rather than
+    // merging field-by-field, mirroring how it overrides `[defaults]`.
+    take!(auto_restart);
 
     merged.metadata = deep_merge_map(parent.metadata.clone(), child.metadata.clone());
     merged.env = deep_merge_strs(parent.env.clone(), child.env.clone());

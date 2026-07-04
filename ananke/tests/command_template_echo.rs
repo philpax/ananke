@@ -6,8 +6,8 @@ use ananke::{
         AllocationMode, CommandConfig, TemplateConfig,
         parse::DEFAULT_START_QUEUE_DEPTH,
         validate::{
-            DeviceReserves, DeviceSlot, Filters, HealthSettings, Lifecycle, PlacementPolicy,
-            ServiceConfig, SplitMode,
+            AutoRestartSettings, DeviceReserves, DeviceSlot, Filters, HealthSettings, Lifecycle,
+            PlacementPolicy, ServiceConfig, SplitMode,
         },
     },
     devices::Allocation,
@@ -48,6 +48,7 @@ fn command_argv_substitutes_port() {
         drain_timeout_ms: 5_000,
         extended_stream_drain_ms: 5_000,
         max_request_duration_ms: 60_000,
+        auto_restart: AutoRestartSettings::disabled(),
         filters: Filters::default(),
         allocation_mode: AllocationMode::Static { vram_mb: 6144 },
         openai_compat: false,
