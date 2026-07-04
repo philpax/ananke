@@ -62,6 +62,20 @@ Emitted when the rolling estimator updates its correction factor for a service.
 }
 ```
 
+#### `auto_restarted`
+
+Emitted when a `Running` service is drained and respawned by its auto-restart policy (see [auto-restart](configuration.md#auto-restart)). `trigger` is `"error_rate"` or `"periodic"`; `detail` is a human-readable reason such as the observed error rate and window.
+
+```json
+{
+  "type": "auto_restarted",
+  "service": "demo",
+  "trigger": "error_rate",
+  "detail": "error rate 100% (24/24 requests over 120s) ≥ threshold 50%",
+  "at_ms": 1700000000000
+}
+```
+
 #### `overflow`
 
 Emitted when the event bus drops events because a subscriber fell behind.

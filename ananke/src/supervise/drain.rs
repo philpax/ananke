@@ -31,6 +31,9 @@ pub enum DrainReason {
     TtlExpired,
     UserKilled,
     ConfigChanged,
+    /// Self-healing restart: the error-rate watchdog or periodic timer
+    /// decided a `Running` service should be drained and respawned.
+    AutoRestart,
 }
 
 #[derive(Debug, Clone)]

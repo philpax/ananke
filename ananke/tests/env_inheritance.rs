@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 
 use ananke::{
     config::{
-        AllocationMode, CommandConfig, DeviceReserves, DeviceSlot, Filters, HealthSettings,
-        Lifecycle, PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
+        AllocationMode, AutoRestartSettings, CommandConfig, DeviceReserves, DeviceSlot, Filters,
+        HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
         parse::DEFAULT_START_QUEUE_DEPTH,
     },
     supervise::EnsureSource,
@@ -55,6 +55,7 @@ fn env_test_service(name: &str, port: u16, env_inherit: bool) -> ServiceConfig {
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
+        auto_restart: AutoRestartSettings::disabled(),
         filters: Filters::default(),
         allocation_mode: AllocationMode::None,
         openai_compat: false,

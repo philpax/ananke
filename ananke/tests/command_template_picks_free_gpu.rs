@@ -16,8 +16,8 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use ananke::{
     config::{
-        AllocationMode, CommandConfig, DeviceReserves, DeviceSlot, Filters, HealthSettings,
-        Lifecycle, PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
+        AllocationMode, AutoRestartSettings, CommandConfig, DeviceReserves, DeviceSlot, Filters,
+        HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
         parse::DEFAULT_START_QUEUE_DEPTH,
     },
     devices::{CpuSnapshot, DeviceSnapshot, GpuSnapshot},
@@ -49,6 +49,7 @@ fn comfy_like_service(name: &str, port: u16) -> ServiceConfig {
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
+        auto_restart: AutoRestartSettings::disabled(),
         filters: Filters::default(),
         allocation_mode: AllocationMode::Dynamic {
             min_mb: 2 * 1024,

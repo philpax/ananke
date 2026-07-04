@@ -22,9 +22,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use ananke::{
     allocator::AllocationTable,
     config::{
-        AllocationMode, DaemonSettings, DeviceReserves, DeviceSlot, EffectiveConfig, Filters,
-        HealthSettings, Lifecycle, LlamaCppConfig, OffloadMode, PlacementPolicy, ServiceConfig,
-        SplitMode, TemplateConfig,
+        AllocationMode, AutoRestartSettings, DaemonSettings, DeviceReserves, DeviceSlot,
+        EffectiveConfig, Filters, HealthSettings, Lifecycle, LlamaCppConfig, OffloadMode,
+        PlacementPolicy, ServiceConfig, SplitMode, TemplateConfig,
         manager::ConfigManager,
         parse::{DEFAULT_START_QUEUE_DEPTH, EstimationConfig, SamplingConfig},
     },
@@ -251,6 +251,9 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         drain_timeout_ms: 1_000,
         extended_stream_drain_ms: 1_000,
         max_request_duration_ms: 5_000,
+        // Off by default in tests; the auto-restart integration test opts in
+        // explicitly so unrelated tests get no watchdog.
+        auto_restart: AutoRestartSettings::disabled(),
         filters: Filters::default(),
         allocation_mode: AllocationMode::None,
         openai_compat: true,

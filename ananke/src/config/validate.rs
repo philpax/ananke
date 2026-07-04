@@ -13,8 +13,9 @@ use tracing::warn;
 
 use crate::{
     config::parse::{
-        EstimationConfig, RawCommandService, RawConfig, RawExpertOffload, RawLlamaCppService,
-        RawService, SamplingConfig,
+        EstimationConfig, RawAutoRestart, RawCommandService, RawConfig, RawErrorRateSettings,
+        RawExpertOffload, RawLlamaCppService, RawPeriodicSettings, RawService, SamplingConfig,
+        Toggle,
     },
     errors::ExpectedError,
 };
@@ -54,6 +55,40 @@ pub const DEFAULT_SERVICE_PRIORITY: u8 = 50;
 /// Default minimum runtime a borrower must accumulate before the balloon
 /// resolver may fast-kill it (1 minute).
 pub const DEFAULT_MIN_BORROWER_RUNTIME_MS: u64 = 60_000;
+
+/// Default rolling window for the auto-restart error-rate watchdog (2
+/// minutes). Validated against production data: a service that wedges into
+/// 100 % 5xx is caught ~60 s after the first error at typical traffic.
+pub const DEFAULT_AUTO_RESTART_WINDOW_MS: u64 = 120_000;
+
+/// Default error-rate threshold (fraction of the window) that trips the
+/// watchdog.
+pub const DEFAULT_AUTO_RESTART_MAX_ERROR_RATE: f64 = 0.5;
+
+/// Default minimum request count in the window before the ratio is trusted.
+/// Never fired across 8.5 hours of healthy production traffic; fired within
+/// a minute of a real wedge.
+pub const DEFAULT_AUTO_RESTART_MIN_REQUESTS: u32 = 20;
+
+/// Default cadence at which the watchdog polls the metrics store (30 s).
+pub const DEFAULT_AUTO_RESTART_POLL_INTERVAL_MS: u64 = 30_000;
+
+/// Default anti-flap cooldown: a fresh run must live this long before
+/// another auto-restart may fire (5 minutes).
+pub const DEFAULT_AUTO_RESTART_MIN_UPTIME_MS: u64 = 300_000;
+
+/// Default number of auto-restarts tolerated within
+/// [`DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS`] before the service is disabled.
+pub const DEFAULT_AUTO_RESTART_MAX_RESTARTS: u32 = 3;
+
+/// Default sliding window over which [`DEFAULT_AUTO_RESTART_MAX_RESTARTS`]
+/// is counted (30 minutes).
+pub const DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS: u64 = 1_800_000;
+
+/// Default periodic-restart interval — only consulted when a service enables
+/// periodic restarts without spelling out an interval, which is rejected;
+/// present for completeness alongside the other knobs.
+pub const DEFAULT_AUTO_RESTART_PERIODIC_MODE: PeriodicMode = PeriodicMode::OnRequest;
 
 /// Convert GiB (as declared by users in config) to MiB using the same
 /// truncating cast the validator has always used. Centralised so the oneshot
@@ -127,6 +162,9 @@ pub struct ServiceConfig {
     pub drain_timeout_ms: u64,
     pub extended_stream_drain_ms: u64,
     pub max_request_duration_ms: u64,
+    /// Self-healing restart policy. Error-rate watchdog on by default;
+    /// periodic restart off by default. See [`AutoRestartSettings`].
+    pub auto_restart: AutoRestartSettings,
     pub allocation_mode: AllocationMode,
     pub openai_compat: bool,
     pub description: Option<String>,
@@ -486,6 +524,132 @@ pub struct HealthSettings {
     pub http_path: Option<String>,
     pub timeout_ms: u64,
     pub probe_interval_ms: u64,
+}
+
+/// Resolved self-healing restart policy for a service. Both triggers are
+/// independent `Option`s: the error-rate watchdog is `Some` by default, the
+/// periodic timer `None` by default. The guardrail fields apply to whichever
+/// trigger fires.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoRestartSettings {
+    /// Error-rate watchdog, or `None` if disabled (`error_rate = false`).
+    pub error_rate: Option<ErrorRateTrigger>,
+    /// Periodic restart, or `None` if disabled (the default).
+    pub periodic: Option<PeriodicTrigger>,
+    /// Anti-flap cooldown: minimum uptime of a fresh run before another
+    /// auto-restart may fire.
+    pub min_uptime_ms: u64,
+    /// Auto-restarts tolerated within [`Self::flap_window_ms`] before the
+    /// service is disabled with `AutoRestartLoop`.
+    pub max_restarts: u32,
+    /// Sliding window over which [`Self::max_restarts`] is counted.
+    pub flap_window_ms: u64,
+}
+
+impl AutoRestartSettings {
+    /// Whether any trigger is active — a cheap gate the supervisor uses to
+    /// skip watchdog setup entirely for services that opted fully out.
+    pub fn any_enabled(&self) -> bool {
+        self.error_rate.is_some() || self.periodic.is_some()
+    }
+
+    /// Both triggers off, guardrails at their defaults. Used by test
+    /// fixtures so a supervisor under test gets no watchdog unless the test
+    /// opts in explicitly.
+    pub fn disabled() -> Self {
+        Self {
+            error_rate: None,
+            periodic: None,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for AutoRestartSettings {
+    fn default() -> Self {
+        Self {
+            error_rate: Some(ErrorRateTrigger::default()),
+            periodic: None,
+            min_uptime_ms: DEFAULT_AUTO_RESTART_MIN_UPTIME_MS,
+            max_restarts: DEFAULT_AUTO_RESTART_MAX_RESTARTS,
+            flap_window_ms: DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS,
+        }
+    }
+}
+
+/// Resolved error-rate watchdog thresholds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorRateTrigger {
+    pub window_ms: u64,
+    pub max_error_rate: f64,
+    pub min_requests: u32,
+    pub poll_interval_ms: u64,
+    pub statuses: ErrorStatusClass,
+}
+
+impl Default for ErrorRateTrigger {
+    fn default() -> Self {
+        Self {
+            window_ms: DEFAULT_AUTO_RESTART_WINDOW_MS,
+            max_error_rate: DEFAULT_AUTO_RESTART_MAX_ERROR_RATE,
+            min_requests: DEFAULT_AUTO_RESTART_MIN_REQUESTS,
+            poll_interval_ms: DEFAULT_AUTO_RESTART_POLL_INTERVAL_MS,
+            statuses: ErrorStatusClass::ServerOnly,
+        }
+    }
+}
+
+/// Which HTTP statuses the error-rate watchdog counts as errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorStatusClass {
+    /// Server errors only (500–599). The default — a wedged upstream 5xxs,
+    /// whereas 4xx is usually the client's fault and should not self-restart.
+    ServerOnly,
+    /// Any status ≥ 400 (client and server errors alike).
+    ClientAndServer,
+}
+
+impl ErrorStatusClass {
+    /// Whether a recorded status code counts as an error under this class.
+    pub fn is_error(self, status: u16) -> bool {
+        match self {
+            ErrorStatusClass::ServerOnly => (500..600).contains(&status),
+            ErrorStatusClass::ClientAndServer => status >= 400,
+        }
+    }
+
+    /// The inclusive lower bound on status codes that count as errors, for the
+    /// SQL `status_code >= ?` predicate. There are no ≥ 600 statuses in
+    /// practice, so `ServerOnly`'s upper bound needs no separate clause.
+    pub fn min_status_code(self) -> u16 {
+        match self {
+            ErrorStatusClass::ServerOnly => 500,
+            ErrorStatusClass::ClientAndServer => 400,
+        }
+    }
+}
+
+/// Resolved periodic-restart settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeriodicTrigger {
+    pub interval_ms: u64,
+    pub mode: PeriodicMode,
+}
+
+/// How a periodic restart is timed once the interval elapses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodicMode {
+    /// Drain and respawn the moment the interval elapses, interrupting any
+    /// in-flight traffic (gracefully, via the normal drain pipeline).
+    Immediate,
+    /// Wait for a quiet window (no in-flight requests) after the interval
+    /// elapses, then restart. Zero disruption, but may never fire under
+    /// continuous load.
+    OnIdle,
+    /// Mark the run stale when the interval elapses; the next request
+    /// triggers the restart and blocks on the fresh process. Guarantees the
+    /// restart happens even under continuous load.
+    OnRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -989,6 +1153,16 @@ fn validate_service(
 
     let tracking = validate_tracking(&name, common.tracking.as_ref())?;
 
+    // auto_restart resolves as a whole block: a service's own block replaces
+    // `[defaults.auto_restart]` entirely rather than merging field-by-field.
+    let auto_restart = validate_auto_restart(
+        &name,
+        common
+            .auto_restart
+            .as_ref()
+            .or(daemon.defaults.auto_restart.as_ref()),
+    )?;
+
     Ok(ServiceConfig {
         name,
         port,
@@ -1007,6 +1181,7 @@ fn validate_service(
         drain_timeout_ms,
         extended_stream_drain_ms,
         max_request_duration_ms,
+        auto_restart,
         allocation_mode,
         openai_compat,
         description: common.description.clone(),
@@ -1057,6 +1232,149 @@ fn validate_tracking(
         None => None,
     };
     Ok(TrackingSettings { cgroup_parent })
+}
+
+fn validate_auto_restart(
+    name: &SmolStr,
+    raw: Option<&RawAutoRestart>,
+) -> Result<AutoRestartSettings, ExpectedError> {
+    let Some(raw) = raw else {
+        return Ok(AutoRestartSettings::default());
+    };
+
+    let dur = |field: &str, s: &str| {
+        parse_duration_ms(s).map_err(|e| fail(format!("service {name} auto_restart.{field}: {e}")))
+    };
+
+    // Error-rate watchdog is on by default; only an explicit `false` disables it.
+    let error_rate = match &raw.error_rate {
+        None | Some(Toggle::Enabled(true)) => Some(ErrorRateTrigger::default()),
+        Some(Toggle::Enabled(false)) => None,
+        Some(Toggle::Settings(s)) => Some(validate_error_rate(name, s)?),
+    };
+
+    // Periodic is off by default; a table (with an interval) enables it. A bare
+    // `true` is rejected because there is no interval to restart on.
+    let periodic = match &raw.periodic {
+        None | Some(Toggle::Enabled(false)) => None,
+        Some(Toggle::Enabled(true)) => {
+            return Err(fail(format!(
+                "service {name}: auto_restart.periodic = true needs an interval; write `periodic = {{ interval = \"6h\" }}`"
+            )));
+        }
+        Some(Toggle::Settings(s)) => Some(validate_periodic(name, s)?),
+    };
+
+    let min_uptime_ms = raw
+        .min_uptime
+        .as_deref()
+        .map(|s| dur("min_uptime", s))
+        .transpose()?
+        .unwrap_or(DEFAULT_AUTO_RESTART_MIN_UPTIME_MS);
+    let max_restarts = raw
+        .max_restarts
+        .unwrap_or(DEFAULT_AUTO_RESTART_MAX_RESTARTS);
+    let flap_window_ms = raw
+        .flap_window
+        .as_deref()
+        .map(|s| dur("flap_window", s))
+        .transpose()?
+        .unwrap_or(DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS);
+
+    Ok(AutoRestartSettings {
+        error_rate,
+        periodic,
+        min_uptime_ms,
+        max_restarts,
+        flap_window_ms,
+    })
+}
+
+fn validate_error_rate(
+    name: &SmolStr,
+    s: &RawErrorRateSettings,
+) -> Result<ErrorRateTrigger, ExpectedError> {
+    let d = ErrorRateTrigger::default();
+    let window_ms = s
+        .window
+        .as_deref()
+        .map(|x| {
+            parse_duration_ms(x).map_err(|e| {
+                fail(format!(
+                    "service {name} auto_restart.error_rate.window: {e}"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(d.window_ms);
+    let max_error_rate = match s.max_error_rate {
+        None => d.max_error_rate,
+        Some(r) if r > 0.0 && r <= 1.0 => r,
+        Some(r) => {
+            return Err(fail(format!(
+                "service {name}: auto_restart.error_rate.max_error_rate must be in (0.0, 1.0], got {r}"
+            )));
+        }
+    };
+    let poll_interval_ms = s
+        .poll_interval
+        .as_deref()
+        .map(|x| {
+            parse_duration_ms(x).map_err(|e| {
+                fail(format!(
+                    "service {name} auto_restart.error_rate.poll_interval: {e}"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(d.poll_interval_ms);
+    let statuses = match s.error_statuses.as_deref() {
+        None => d.statuses,
+        Some("5xx") => ErrorStatusClass::ServerOnly,
+        Some("4xx+5xx") => ErrorStatusClass::ClientAndServer,
+        Some(other) => {
+            return Err(fail(format!(
+                "service {name}: auto_restart.error_rate.error_statuses must be `5xx` or `4xx+5xx`, got `{other}`"
+            )));
+        }
+    };
+    Ok(ErrorRateTrigger {
+        window_ms,
+        max_error_rate,
+        min_requests: s.min_requests.unwrap_or(d.min_requests),
+        poll_interval_ms,
+        statuses,
+    })
+}
+
+fn validate_periodic(
+    name: &SmolStr,
+    s: &RawPeriodicSettings,
+) -> Result<PeriodicTrigger, ExpectedError> {
+    let interval_ms = match s.interval.as_deref() {
+        Some(x) => parse_duration_ms(x).map_err(|e| {
+            fail(format!(
+                "service {name} auto_restart.periodic.interval: {e}"
+            ))
+        })?,
+        None => {
+            return Err(fail(format!(
+                "service {name}: auto_restart.periodic requires an `interval`"
+            )));
+        }
+    };
+    let mode = match s.mode.as_deref() {
+        None => DEFAULT_AUTO_RESTART_PERIODIC_MODE,
+        Some("immediate") => PeriodicMode::Immediate,
+        Some("on-idle") => PeriodicMode::OnIdle,
+        Some("on-request") => PeriodicMode::OnRequest,
+        Some(other) => {
+            return Err(fail(format!(
+                "service {name}: auto_restart.periodic.mode must be `immediate`, `on-idle`, or `on-request`, got `{other}`"
+            )));
+        }
+    };
+    Ok(PeriodicTrigger { interval_ms, mode })
 }
 
 fn validate_llama_cpp(
@@ -1440,9 +1758,10 @@ pub mod test_fixtures {
     use smol_str::SmolStr;
 
     use super::{
-        AllocationMode, CommandConfig, DEFAULT_SERVICE_PRIORITY, DeviceReserves, DeviceSlot,
-        Filters, HealthSettings, Lifecycle, LlamaCppConfig, Modality, OffloadMode, PlacementPolicy,
-        ServiceConfig, SplitMode, Template, TemplateConfig, TrackingSettings,
+        AllocationMode, AutoRestartSettings, CommandConfig, DEFAULT_SERVICE_PRIORITY,
+        DeviceReserves, DeviceSlot, Filters, HealthSettings, Lifecycle, LlamaCppConfig, Modality,
+        OffloadMode, PlacementPolicy, ServiceConfig, SplitMode, Template, TemplateConfig,
+        TrackingSettings,
     };
     use crate::config::parse::{EstimationConfig, SamplingConfig};
 
@@ -1478,6 +1797,7 @@ pub mod test_fixtures {
             drain_timeout_ms: 1_000,
             extended_stream_drain_ms: 1_000,
             max_request_duration_ms: 5_000,
+            auto_restart: AutoRestartSettings::disabled(),
             filters: Filters::default(),
             allocation_mode: AllocationMode::None,
             openai_compat: true,
@@ -1608,6 +1928,115 @@ lifecycle = "persistent"
             ec.services[0].template_config,
             TemplateConfig::LlamaCpp(_)
         ));
+    }
+
+    fn svc_with_auto_restart(block: &str) -> Result<ServiceConfig, ExpectedError> {
+        let src = format!(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "cpu-only"
+{block}
+"#
+        );
+        let cfg = parse_and_merge(&src);
+        validate(&cfg).map(|ec| ec.services.into_iter().next().unwrap())
+    }
+
+    #[test]
+    fn auto_restart_defaults_error_rate_on_periodic_off() {
+        // No block at all → error-rate watchdog on with defaults, periodic off.
+        let svc = svc_with_auto_restart("").unwrap();
+        let ar = &svc.auto_restart;
+        let er = ar.error_rate.as_ref().expect("error-rate on by default");
+        assert_eq!(er.window_ms, DEFAULT_AUTO_RESTART_WINDOW_MS);
+        assert_eq!(er.min_requests, DEFAULT_AUTO_RESTART_MIN_REQUESTS);
+        assert_eq!(er.statuses, ErrorStatusClass::ServerOnly);
+        assert!(ar.periodic.is_none(), "periodic off by default");
+        assert_eq!(ar.min_uptime_ms, DEFAULT_AUTO_RESTART_MIN_UPTIME_MS);
+        assert_eq!(ar.max_restarts, DEFAULT_AUTO_RESTART_MAX_RESTARTS);
+    }
+
+    #[test]
+    fn auto_restart_error_rate_false_disables_it() {
+        let svc = svc_with_auto_restart("auto_restart = { error_rate = false }").unwrap();
+        assert!(svc.auto_restart.error_rate.is_none());
+        assert!(!svc.auto_restart.any_enabled());
+    }
+
+    #[test]
+    fn auto_restart_periodic_table_enables_with_defaults() {
+        let svc = svc_with_auto_restart("auto_restart.periodic = { interval = \"6h\" }").unwrap();
+        let p = svc
+            .auto_restart
+            .periodic
+            .as_ref()
+            .expect("periodic enabled");
+        assert_eq!(p.interval_ms, 6 * 60 * 60 * 1000);
+        assert_eq!(p.mode, PeriodicMode::OnRequest);
+        // Error-rate stays on — the block only touched periodic.
+        assert!(svc.auto_restart.error_rate.is_some());
+    }
+
+    #[test]
+    fn auto_restart_error_rate_thresholds_override() {
+        let svc = svc_with_auto_restart(
+            "auto_restart.error_rate = { window = \"5m\", max_error_rate = 0.8, min_requests = 50, error_statuses = \"4xx+5xx\" }",
+        )
+        .unwrap();
+        let er = svc.auto_restart.error_rate.as_ref().unwrap();
+        assert_eq!(er.window_ms, 5 * 60 * 1000);
+        assert_eq!(er.max_error_rate, 0.8);
+        assert_eq!(er.min_requests, 50);
+        assert_eq!(er.statuses, ErrorStatusClass::ClientAndServer);
+    }
+
+    #[test]
+    fn auto_restart_rejects_bad_values() {
+        assert!(
+            svc_with_auto_restart("auto_restart.error_rate = { max_error_rate = 1.5 }").is_err()
+        );
+        assert!(
+            svc_with_auto_restart("auto_restart.error_rate = { error_statuses = \"3xx\" }")
+                .is_err()
+        );
+        assert!(
+            svc_with_auto_restart(
+                "auto_restart.periodic = { interval = \"6h\", mode = \"eager\" }"
+            )
+            .is_err()
+        );
+        // periodic without an interval is meaningless.
+        assert!(svc_with_auto_restart("auto_restart.periodic = { mode = \"immediate\" }").is_err());
+        assert!(svc_with_auto_restart("auto_restart.periodic = true").is_err());
+    }
+
+    #[test]
+    fn auto_restart_resolves_from_defaults_whole_block() {
+        // A service with no auto_restart block inherits `[defaults.auto_restart]`.
+        let src = r#"
+[defaults.auto_restart]
+error_rate = false
+periodic = { interval = "4h", mode = "immediate" }
+
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "cpu-only"
+"#;
+        let cfg = parse_and_merge(src);
+        let svc = &validate(&cfg).unwrap().services[0];
+        assert!(svc.auto_restart.error_rate.is_none());
+        let p = svc.auto_restart.periodic.as_ref().unwrap();
+        assert_eq!(p.mode, PeriodicMode::Immediate);
+        assert_eq!(p.interval_ms, 4 * 60 * 60 * 1000);
     }
 
     #[test]

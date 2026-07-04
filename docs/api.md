@@ -855,6 +855,7 @@ A `disabled` state carries a reason that explains why:
 | `crash_loop` | The process crashed repeatedly after becoming healthy. |
 | `no_fit` | The model doesn't fit on any available device. |
 | `user_disabled` | An operator disabled the service via the management API. |
+| `auto_restart_loop` | Auto-restart fired more times than its flap cap allowed within the flap window; the service kept degrading in service (as opposed to `crash_loop`, where the process never launched), so it is disabled rather than restarted again. |
 
 ### Transitions
 
@@ -864,7 +865,7 @@ A `disabled` state carries a reason that explains why:
 - `starting → disabled`: health check timed out.
 - `running → draining`: drain requested (stop, evict, or shutdown).
 - `running → stopped`: process exited.
-- `running → disabled`: crash loop detected.
+- `running → disabled`: crash loop detected, or the auto-restart flap cap was tripped → `auto_restart_loop`.
 - `draining → idle`: drain complete.
 - `draining → stopped`: process exited during drain.
 - `stopped → starting`: re-spawn requested.
@@ -935,6 +936,20 @@ Emitted when the rolling estimator updates its correction factor for a service.
   "type": "estimator_drift",
   "service": "demo",
   "rolling_mean": 1.05,
+  "at_ms": 1700000000000
+}
+```
+
+#### `auto_restarted`
+
+Emitted when a `Running` service is drained and respawned by its auto-restart policy (see [auto-restart](configuration.md#auto-restart)). `trigger` is `"error_rate"` or `"periodic"`; `detail` is a human-readable reason such as the observed error rate and window.
+
+```json
+{
+  "type": "auto_restarted",
+  "service": "demo",
+  "trigger": "error_rate",
+  "detail": "error rate 100% (24/24 requests over 120s) ≥ threshold 50%",
   "at_ms": 1700000000000
 }
 ```

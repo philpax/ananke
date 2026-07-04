@@ -702,6 +702,15 @@ export interface components {
         }
       | {
           /** Format: int64 */
+          at_ms: number;
+          detail: string;
+          service: string;
+          trigger: string;
+          /** @enum {string} */
+          type: "auto_restarted";
+        }
+      | {
+          /** Format: int64 */
           dropped: number;
           /** @enum {string} */
           type: "overflow";
