@@ -5,7 +5,10 @@
 //! and the error code slug table. Prose fragments are injected by the
 //! parent `mod.rs` orchestration.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write,
+};
 
 use serde_json::Value;
 
@@ -16,79 +19,78 @@ pub fn render_markdown(spec: &Value, prose: &ProseFragments) -> String {
     let mut out = String::with_capacity(96 * 1024);
 
     // Title + overview prose.
-    out.push_str("# Ananke API\n\n");
-    out.push_str("## Overview\n\n");
-    out.push_str(prose.overview.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "# Ananke API\n").unwrap();
+    writeln!(&mut out, "## Overview\n").unwrap();
+    write_prose(&mut out, prose.overview);
 
     // Endpoint summary table.
-    out.push_str("## Endpoints\n\n");
+    writeln!(&mut out, "## Endpoints\n").unwrap();
     render_endpoint_table(&mut out, spec);
-    out.push('\n');
+    writeln!(&mut out).unwrap();
 
     // OpenAI API section.
-    out.push_str("## OpenAI-compatible API\n\n");
-    out.push_str(prose.openai_api.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## OpenAI-compatible API\n").unwrap();
+    write_prose(&mut out, prose.openai_api);
     render_endpoint_group(&mut out, spec, "/v1/", 3);
-    out.push('\n');
+    writeln!(&mut out).unwrap();
 
     // Management API section.
-    out.push_str("## Management API\n\n");
-    out.push_str(prose.management_api.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## Management API\n").unwrap();
+    write_prose(&mut out, prose.management_api);
 
     // Group management endpoints by resource.
     render_management_groups(&mut out, spec);
-    out.push('\n');
+    writeln!(&mut out).unwrap();
 
     // Per-service reverse proxy.
-    out.push_str("## Per-service reverse proxy\n\n");
-    out.push_str(prose.per_service_proxy.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## Per-service reverse proxy\n").unwrap();
+    write_prose(&mut out, prose.per_service_proxy);
 
     // Service states.
-    out.push_str("## Service states\n\n");
-    out.push_str(prose.service_states.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## Service states\n").unwrap();
+    write_prose(&mut out, prose.service_states);
 
     // Events WebSocket.
-    out.push_str("## WebSocket: /api/events\n\n");
-    out.push_str(prose.events_ws.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## WebSocket: /api/events\n").unwrap();
+    write_prose(&mut out, prose.events_ws);
 
     // Logs WebSocket.
-    out.push_str("## WebSocket: /api/services/{name}/logs/stream\n\n");
-    out.push_str(prose.logs_ws.trim_end());
-    out.push_str("\n\n");
+    writeln!(
+        &mut out,
+        "## WebSocket: /api/services/{{name}}/logs/stream\n"
+    )
+    .unwrap();
+    write_prose(&mut out, prose.logs_ws);
 
     // Errors.
-    out.push_str("## Error codes\n\n");
-    out.push_str(prose.errors.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## Error codes\n").unwrap();
+    write_prose(&mut out, prose.errors);
     render_error_code_table(&mut out, spec);
-    out.push('\n');
+    writeln!(&mut out).unwrap();
 
     // Prometheus.
-    out.push_str("## Prometheus metrics\n\n");
-    out.push_str(prose.prometheus.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## Prometheus metrics\n").unwrap();
+    write_prose(&mut out, prose.prometheus);
 
     // OpenAPI spec endpoint.
-    out.push_str("## OpenAPI specification\n\n");
-    out.push_str(prose.openapi_spec.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## OpenAPI specification\n").unwrap();
+    write_prose(&mut out, prose.openapi_spec);
 
     // Frontend.
-    out.push_str("## Embedded frontend\n\n");
-    out.push_str(prose.frontend.trim_end());
-    out.push_str("\n\n");
+    writeln!(&mut out, "## Embedded frontend\n").unwrap();
+    write_prose(&mut out, prose.frontend);
 
     // Collapse any triple+ newlines to double.
     while out.contains("\n\n\n") {
         out = out.replace("\n\n\n", "\n\n");
     }
     out
+}
+
+/// Write a prose fragment (from `include_str!`), trimmed of trailing
+/// whitespace, followed by a blank line separator.
+fn write_prose(out: &mut String, s: &str) {
+    writeln!(out, "{}\n", s.trim_end()).unwrap();
 }
 
 /// Prose fragments transcluded at compile time by `mod.rs`.
@@ -108,8 +110,8 @@ pub struct ProseFragments {
 
 /// Render a summary table of all endpoints (one row per path+method).
 fn render_endpoint_table(out: &mut String, spec: &Value) {
-    out.push_str("| Method | Path | Description |\n");
-    out.push_str("| --- | --- | --- |\n");
+    writeln!(out, "| Method | Path | Description |").unwrap();
+    writeln!(out, "| --- | --- | --- |").unwrap();
     let Some(paths) = spec.get("paths").and_then(|p| p.as_object()) else {
         return;
     };
@@ -119,12 +121,14 @@ fn render_endpoint_table(out: &mut String, spec: &Value) {
         for method in ["get", "post", "put", "delete", "patch"] {
             if let Some(op) = item.get(method) {
                 let desc = endpoint_description(op);
-                out.push_str(&format!(
-                    "| `{}` | `{}` | {} |\n",
+                writeln!(
+                    out,
+                    "| `{}` | `{}` | {} |",
                     method.to_uppercase(),
                     path,
                     desc.replace('\n', " ")
-                ));
+                )
+                .unwrap();
             }
         }
     }
@@ -178,7 +182,7 @@ fn render_management_groups(out: &mut String, spec: &Value) {
     }
 
     for (group, items) in &groups {
-        out.push_str(&format!("### {}\n\n", group));
+        writeln!(out, "### {}\n", group).unwrap();
         let mut sorted = items.clone();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         for (path, item) in &sorted {
@@ -222,24 +226,18 @@ fn render_endpoint_detail(
     heading_level: usize,
 ) {
     let prefix = "#".repeat(heading_level);
-    out.push_str(&format!(
-        "{} {} {}\n\n",
-        prefix,
-        method.to_uppercase(),
-        path
-    ));
+    writeln!(out, "{} {} {}\n", prefix, method.to_uppercase(), path).unwrap();
 
     let desc = endpoint_description(op);
     if !desc.is_empty() {
-        out.push_str(&desc);
-        out.push_str("\n\n");
+        write_prose(out, &desc);
     }
 
     // Parameters.
     if let Some(params) = op.get("parameters").and_then(|p| p.as_array()) {
         if !params.is_empty() {
-            out.push_str("| Parameter | In | Required | Description |\n");
-            out.push_str("| --- | --- | --- | --- |\n");
+            writeln!(out, "| Parameter | In | Required | Description |").unwrap();
+            writeln!(out, "| --- | --- | --- | --- |").unwrap();
             for param in params {
                 let name = param.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let location = param.get("in").and_then(|i| i.as_str()).unwrap_or("");
@@ -251,15 +249,17 @@ fn render_endpoint_detail(
                     .get("description")
                     .and_then(|d| d.as_str())
                     .unwrap_or("");
-                out.push_str(&format!(
-                    "| `{}` | {} | {} | {} |\n",
+                writeln!(
+                    out,
+                    "| `{}` | {} | {} | {} |",
                     name,
                     location,
                     if required { "yes" } else { "no" },
                     desc
-                ));
+                )
+                .unwrap();
             }
-            out.push('\n');
+            writeln!(out).unwrap();
         }
     }
 
@@ -270,19 +270,19 @@ fn render_endpoint_detail(
             .and_then(|c| c.get("application/json"))
             .and_then(|j| j.get("schema"))
         {
-            out.push_str("**Request body**:\n\n");
+            write_prose(out, "**Request body**:");
             let mut visited = BTreeSet::new();
             let ts = ts_type(schema, spec, &mut visited, 0);
-            out.push_str("```typescript\n");
-            out.push_str(&ts);
-            out.push_str("\n```\n\n");
+            writeln!(out, "```typescript").unwrap();
+            write!(out, "{}", ts.trim_end()).unwrap();
+            writeln!(out, "\n```\n").unwrap();
         }
     }
 
     // Responses — status table.
     if let Some(responses) = op.get("responses").and_then(|r| r.as_object()) {
-        out.push_str("| Status | Description | Body |\n");
-        out.push_str("| --- | --- | --- |\n");
+        writeln!(out, "| Status | Description | Body |").unwrap();
+        writeln!(out, "| --- | --- | --- |").unwrap();
         let mut codes: Vec<_> = responses.iter().collect();
         codes.sort_by(|a, b| a.0.cmp(b.0));
 
@@ -300,7 +300,7 @@ fn render_endpoint_detail(
                 .and_then(|j| j.get("schema"))
                 .map(|s| format!("`{}`", schema_ref_name(s)))
                 .unwrap_or("—".to_string());
-            out.push_str(&format!("| {} | {} | {} |\n", code, desc, body));
+            writeln!(out, "| {} | {} | {} |", code, desc, body).unwrap();
 
             if example_schema.is_none() && code.starts_with('2') && code.as_str() != "204" {
                 if let Some(s) = resp
@@ -313,17 +313,17 @@ fn render_endpoint_detail(
                 }
             }
         }
-        out.push('\n');
+        writeln!(out).unwrap();
 
         // TypeScript type for the success response.
         if let Some(schema) = example_schema {
-            out.push_str(&format!("**Response ({})**:\n\n", example_code));
+            write_prose(out, &format!("**Response ({})**:", example_code));
             let mut visited = BTreeSet::new();
             let ts = ts_type(schema, spec, &mut visited, 0);
             if ts.contains('\n') || ts.contains(' ') || ts.contains('{') {
-                out.push_str("```typescript\n");
-                out.push_str(&ts);
-                out.push_str("\n```\n\n");
+                writeln!(out, "```typescript").unwrap();
+                write!(out, "{}", ts.trim_end()).unwrap();
+                writeln!(out, "\n```\n").unwrap();
             }
         }
     }
@@ -340,8 +340,8 @@ fn render_error_code_table(out: &mut String, spec: &Value) {
     else {
         return;
     };
-    out.push_str("| Slug | Description |\n");
-    out.push_str("| --- | --- |\n");
+    writeln!(out, "| Slug | Description |").unwrap();
+    writeln!(out, "| --- | --- |").unwrap();
     for v in enums {
         let slug = v.as_str().unwrap_or("");
         let desc = match slug {
@@ -367,7 +367,7 @@ fn render_error_code_table(out: &mut String, spec: &Value) {
             "other" => "Forward-compatibility fallback for unknown codes.",
             _ => "",
         };
-        out.push_str(&format!("| `{}` | {} |\n", slug, desc));
+        writeln!(out, "| `{}` | {} |", slug, desc).unwrap();
     }
-    out.push('\n');
+    writeln!(out).unwrap();
 }

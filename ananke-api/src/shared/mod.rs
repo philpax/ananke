@@ -1,7 +1,6 @@
 //! Types shared across multiple endpoints — error envelopes, metadata
-//! passthrough, model modality, and default listen addresses.
+//! passthrough, and model modality.
 
-pub mod defaults;
 pub mod errors;
 pub mod metadata;
 pub mod modality;

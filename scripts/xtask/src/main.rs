@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 mod gen_api_docs;
+mod gen_config_docs;
 mod release;
 
 #[derive(Parser)]
@@ -24,6 +25,8 @@ enum Command {
     Release(release::Args),
     /// Generate `docs/api.md` from the OpenAPI spec.
     GenApiDocs(gen_api_docs::GenApiDocsArgs),
+    /// Generate `docs/configuration.md` from the descriptor table.
+    GenConfigDocs(gen_config_docs::GenConfigDocsArgs),
 }
 
 fn main() -> ExitCode {
@@ -31,6 +34,7 @@ fn main() -> ExitCode {
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Command::Release(args) => release::run(args).map_err(Into::into),
         Command::GenApiDocs(args) => gen_api_docs::run(args).map_err(Into::into),
+        Command::GenConfigDocs(args) => gen_config_docs::run(args).map_err(Into::into),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

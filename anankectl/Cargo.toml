@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 ananke-api.workspace = true
+ananke-config.workspace = true
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
 reqwest.workspace = true

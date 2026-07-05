@@ -103,7 +103,7 @@ Today the shared DTOs live in the `ananke-api` crate (hand-written, consumed by 
 - **Never** use title case in headings and titles. Always use sentence case.
 - Always use the Oxford comma.
 - Don't omit articles ("a", "an", "the"). Write "the file has a newer version" not "file has newer version".
-- Keep the user-facing docs in sync with code changes. The source of truth for configuration fields is the Rust structs in `ananke/src/config/parse.rs` and `ananke/src/config/validate.rs`; when you add, remove, rename, or change the default of a config field, update `docs/configuration.md` to match (field reference tables, defaults, and enum values). Likewise, changes to service states or the management/OpenAI API surface should be reflected in `docs/api.md`. Treat a code change that touches these areas as incomplete until the docs are updated.
+- Keep the user-facing docs in sync with code changes. The source of truth for config defaults is the `DEFAULT_*` constants in `ananke-config/src/docs.rs` and `ananke-config/src/defaults.rs`; the source of truth for config struct fields is `ananke/src/config/parse.rs` and `ananke/src/config/validate.rs`. When you add, remove, rename, or change the default of a config field, update the descriptor table in `ananke_config::docs::all_sections()` and run `cargo xtask gen-config-docs` to regenerate `docs/configuration.md`. CI enforces this with `--check`. Likewise, changes to service states or the management/OpenAI API surface should be reflected in `docs/api.md` (run `cargo xtask gen-api-docs` to regenerate). Treat a code change that touches these areas as incomplete until the docs are updated.
 
 ## Rust code style
 

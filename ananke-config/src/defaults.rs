@@ -1,5 +1,5 @@
 //! Default ports and endpoints shared between the `ananke` daemon and the
-//! `anankectl` CLI. Keeping them in the shared crate ensures a change to the
+//! `anankectl` CLI. Keeping them in a leaf crate ensures a change to the
 //! daemon's default listen addresses shows up in the CLI's default endpoint
 //! at the same time, and gives packaging (systemd units, Docker images,
 //! etc.) one place to read from when generating default manifests.

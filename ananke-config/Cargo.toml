@@ -1,0 +1,12 @@
+[package]
+name = "ananke-config"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+name = "ananke_config"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true

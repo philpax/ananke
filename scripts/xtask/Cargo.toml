@@ -9,7 +9,11 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+ananke-config = { path = "../../ananke-config" }
 clap.workspace = true
 toml_edit.workspace = true
 serde_json.workspace = true
 cargo_metadata = "0.18"
+
+[dev-dependencies]
+insta = "1"

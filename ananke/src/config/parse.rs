@@ -9,14 +9,13 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
+/// Default concurrency cap on pending start requests waiting for the same
+/// supervisor to finish starting before they are rejected with `QueueFull`.
+pub use ananke_config::docs::DEFAULT_START_QUEUE_DEPTH;
 use serde::Deserialize;
 use smol_str::SmolStr;
 
 use crate::errors::ExpectedError;
-
-/// Default concurrency cap on pending start requests waiting for the same
-/// supervisor to finish starting before they are rejected with `QueueFull`.
-pub const DEFAULT_START_QUEUE_DEPTH: usize = 10;
 
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields, default)]
@@ -82,7 +81,7 @@ pub struct DaemonConfig {
 }
 
 fn default_management_listen() -> String {
-    ananke_api::shared::defaults::MANAGEMENT_LISTEN.into()
+    ananke_config::defaults::MANAGEMENT_LISTEN.into()
 }
 
 fn default_shutdown_timeout() -> String {

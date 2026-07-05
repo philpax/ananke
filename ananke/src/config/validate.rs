@@ -8,6 +8,20 @@ use std::{
 };
 
 use ananke_api::shared::{metadata::AnankeMetadata, modality::Modality};
+// Config-default constants live in the `ananke-config` leaf crate so the
+// xtask and CLI can reference them without pulling in the daemon's heavy
+// deps. Re-exported here so existing `use crate::config::validate::DEFAULT_*`
+// paths keep working.
+pub use ananke_config::docs::{
+    DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS, DEFAULT_AUTO_RESTART_MAX_ERROR_RATE,
+    DEFAULT_AUTO_RESTART_MAX_RESTARTS, DEFAULT_AUTO_RESTART_MIN_REQUESTS,
+    DEFAULT_AUTO_RESTART_MIN_UPTIME_MS, DEFAULT_AUTO_RESTART_POLL_INTERVAL_MS,
+    DEFAULT_AUTO_RESTART_WINDOW_MS, DEFAULT_DRAIN_TIMEOUT_MS, DEFAULT_EXTENDED_STREAM_DRAIN_MS,
+    DEFAULT_HEALTH_PROBE_INTERVAL_MS, DEFAULT_HEALTH_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS,
+    DEFAULT_MAX_REQUEST_DURATION_MS, DEFAULT_MIN_BORROWER_RUNTIME_MS,
+    DEFAULT_OPENAI_MAX_BODY_BYTES, DEFAULT_OPENAI_MAX_BODY_MB, DEFAULT_PRIVATE_PORT_END,
+    DEFAULT_PRIVATE_PORT_START, DEFAULT_SERVICE_PRIORITY,
+};
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -19,71 +33,6 @@ use crate::{
     },
     errors::ExpectedError,
 };
-
-/// Default idle-before-drain timeout for on-demand services (10 minutes).
-pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
-
-/// Default OpenAI request body limit (64 MiB). Generous so multi-megabyte
-/// base64 vision payloads pass; axum's own default is only 2 MiB, which
-/// rejects most real images with `413 Payload Too Large`.
-pub const DEFAULT_OPENAI_MAX_BODY_MB: u64 = 64;
-
-/// [`DEFAULT_OPENAI_MAX_BODY_MB`] expressed in bytes, for the contexts that
-/// want a byte count directly (e.g. the [`DaemonSettings`] default).
-pub const DEFAULT_OPENAI_MAX_BODY_BYTES: usize = DEFAULT_OPENAI_MAX_BODY_MB as usize * 1024 * 1024;
-
-/// Default cadence for the health-probe loop (5 seconds).
-pub const DEFAULT_HEALTH_PROBE_INTERVAL_MS: u64 = 5_000;
-
-/// Default per-probe timeout for health checks (3 minutes).
-pub const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 180_000;
-
-/// Default drain timeout before the supervisor escalates to SIGKILL (30 seconds).
-pub const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 30_000;
-
-/// Default extra grace granted to in-flight streaming requests during drain
-/// (30 seconds).
-pub const DEFAULT_EXTENDED_STREAM_DRAIN_MS: u64 = 30_000;
-
-/// Default cap on the wall-clock duration of a single proxied request
-/// (10 minutes).
-pub const DEFAULT_MAX_REQUEST_DURATION_MS: u64 = 600_000;
-
-/// Default service scheduling priority (higher wins eviction contests).
-pub const DEFAULT_SERVICE_PRIORITY: u8 = 50;
-
-/// Default minimum runtime a borrower must accumulate before the balloon
-/// resolver may fast-kill it (1 minute).
-pub const DEFAULT_MIN_BORROWER_RUNTIME_MS: u64 = 60_000;
-
-/// Default rolling window for the auto-restart error-rate watchdog (2
-/// minutes). Validated against production data: a service that wedges into
-/// 100 % 5xx is caught ~60 s after the first error at typical traffic.
-pub const DEFAULT_AUTO_RESTART_WINDOW_MS: u64 = 120_000;
-
-/// Default error-rate threshold (fraction of the window) that trips the
-/// watchdog.
-pub const DEFAULT_AUTO_RESTART_MAX_ERROR_RATE: f64 = 0.5;
-
-/// Default minimum request count in the window before the ratio is trusted.
-/// Never fired across 8.5 hours of healthy production traffic; fired within
-/// a minute of a real wedge.
-pub const DEFAULT_AUTO_RESTART_MIN_REQUESTS: u32 = 20;
-
-/// Default cadence at which the watchdog polls the metrics store (30 s).
-pub const DEFAULT_AUTO_RESTART_POLL_INTERVAL_MS: u64 = 30_000;
-
-/// Default anti-flap cooldown: a fresh run must live this long before
-/// another auto-restart may fire (5 minutes).
-pub const DEFAULT_AUTO_RESTART_MIN_UPTIME_MS: u64 = 300_000;
-
-/// Default number of auto-restarts tolerated within
-/// [`DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS`] before the service is disabled.
-pub const DEFAULT_AUTO_RESTART_MAX_RESTARTS: u32 = 3;
-
-/// Default sliding window over which [`DEFAULT_AUTO_RESTART_MAX_RESTARTS`]
-/// is counted (30 minutes).
-pub const DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS: u64 = 1_800_000;
 
 /// Default periodic-restart interval — only consulted when a service enables
 /// periodic restarts without spelling out an interval, which is rejected;
@@ -679,7 +628,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .map_err(|e| fail(format!("daemon.shutdown_timeout: {e}")))?;
 
     let management_addr = if cfg.daemon.management_listen.is_empty() {
-        ananke_api::shared::defaults::MANAGEMENT_LISTEN.into()
+        ananke_config::defaults::MANAGEMENT_LISTEN.into()
     } else {
         cfg.daemon.management_listen.clone()
     };
@@ -700,7 +649,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         .openai_api
         .listen
         .clone()
-        .unwrap_or_else(|| ananke_api::shared::defaults::OPENAI_LISTEN.into());
+        .unwrap_or_else(|| ananke_config::defaults::OPENAI_LISTEN.into());
 
     let openai_max_body_bytes = cfg
         .openai_api
@@ -1627,11 +1576,8 @@ fn toml_value_to_json(v: toml::Value) -> Result<serde_json::Value, String> {
     })
 }
 
-/// Default private-port window. Hand out loopback ports llama-server will
-/// bind for its private HTTP listener. Configurable via
-/// `daemon.private_port_start` / `daemon.private_port_end`.
-const DEFAULT_PRIVATE_PORT_START: u16 = 40_000;
-const DEFAULT_PRIVATE_PORT_END: u16 = 59_999;
+// `DEFAULT_PRIVATE_PORT_START` / `DEFAULT_PRIVATE_PORT_END` are re-exported
+// from `ananke_config` (see the `pub use` at the top of this module).
 
 /// Inclusive `start..=end` range of loopback ports assigned to supervised
 /// children. Derived from `daemon.private_port_start` / `_end` or the

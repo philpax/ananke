@@ -1,6 +1,6 @@
 [workspace]
-members = ["ananke", "anankectl", "ananke-api", "scripts/xtask"]
-default-members = ["ananke", "anankectl", "ananke-api"]
+members = ["ananke", "anankectl", "ananke-api", "ananke-config", "scripts/xtask"]
+default-members = ["ananke", "anankectl", "ananke-api", "ananke-config"]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +10,7 @@ version = "0.2.0"
 [workspace.dependencies]
 # Internal crates
 ananke-api = { path = "ananke-api" }
+ananke-config = { path = "ananke-config" }
 
 # Async + HTTP
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "process", "time", "fs", "sync"] }

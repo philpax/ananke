@@ -51,6 +51,16 @@ jobs:
       - name: Test (no default features, lib only)
         run: cargo test --workspace --no-default-features --lib
 
+      - name: Docs check (configuration)
+        env:
+          ANANKE_SKIP_FRONTEND_BUILD: "1"
+        run: cargo xtask gen-config-docs --check
+
+      - name: Docs check (api)
+        env:
+          ANANKE_SKIP_FRONTEND_BUILD: "1"
+        run: cargo xtask gen-api-docs --check
+
   frontend:
     runs-on: ubuntu-22.04
     steps:

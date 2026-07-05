@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ananke-api.workspace = true
+ananke-config.workspace = true
 
 tokio.workspace = true
 hyper.workspace = true
