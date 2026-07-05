@@ -68,7 +68,8 @@ export function openaiBaseUrlFromListen(listen: string | undefined): string {
 }
 
 // Preprocess time-series data so the line drops to 0 during gaps in
-// activity. When consecutive datapoints are more than `gapSec` apart,
+// activity. When consecutive datapoints are more than the gap threshold
+// apart (derived from the data's cadence unless `gapSec` is given),
 // inserts a zero just after the earlier point and another just before
 // the later one, creating a sharp drop and rise instead of a long
 // interpolation. Also pads the chart edges: if the first or last point
@@ -87,13 +88,21 @@ export function zeroFillGaps(
   data: (number | null)[][],
   xMin: number,
   xMax: number,
-  gapSec = 900,
+  gapSec?: number,
   epsSec = 1,
 ): (number | null)[][] {
   if (data.length === 0) return [[], []];
 
   const ts = data[0] as number[];
   const valueSeries = data.slice(1);
+
+  // Derive the gap threshold from the data's own cadence unless overridden:
+  // a "gap" is more than 1.5x the median spacing between points. This keeps a
+  // run of evenly-spaced buckets connected at any resolution — the fixed
+  // 15-min default used to treat every point in the 24h view (1h buckets, now
+  // 30m) as a gap and drop to zero between them, rendering continuous traffic
+  // as a series of spikes.
+  const threshold = gapSec ?? medianGapThreshold(ts);
 
   // No timestamps — flat 0 line across the full range.
   if (ts.length === 0) {
@@ -118,7 +127,7 @@ export function zeroFillGaps(
   };
 
   // Leading edge: pad from xMin to just before the first point.
-  if (ts[0]! - xMin > gapSec) {
+  if (ts[0]! - xMin > threshold) {
     outTs.push(xMin, ts[0]! - epsSec);
     pushZero();
     pushZero();
@@ -126,7 +135,7 @@ export function zeroFillGaps(
 
   for (let i = 0; i < ts.length; i++) {
     // Gap between consecutive points — drop to 0 and back up.
-    if (i > 0 && ts[i]! - ts[i - 1]! > gapSec) {
+    if (i > 0 && ts[i]! - ts[i - 1]! > threshold) {
       outTs.push(ts[i - 1]! + epsSec);
       pushZero();
       outTs.push(ts[i]! - epsSec);
@@ -138,7 +147,7 @@ export function zeroFillGaps(
 
   // Trailing edge: pad from just after the last point to xMax.
   const last = ts[ts.length - 1]!;
-  if (xMax - last > gapSec) {
+  if (xMax - last > threshold) {
     outTs.push(last + epsSec, xMax);
     pushZero();
     pushZero();
@@ -147,10 +156,25 @@ export function zeroFillGaps(
   return [outTs, ...outVals];
 }
 
+// Gap threshold (seconds) derived from a series' own point spacing: 1.5x the
+// median interval between consecutive points, so evenly-spaced buckets never
+// register as gaps while genuinely missing spans still do. Falls back to
+// 15 minutes when there are too few points to estimate a cadence.
+function medianGapThreshold(ts: number[]): number {
+  if (ts.length < 2) return 900;
+  const diffs: number[] = [];
+  for (let i = 1; i < ts.length; i++) diffs.push(ts[i]! - ts[i - 1]!);
+  diffs.sort((a, b) => a - b);
+  const mid = Math.floor(diffs.length / 2);
+  const median =
+    diffs.length % 2 === 1 ? diffs[mid]! : (diffs[mid - 1]! + diffs[mid]!) / 2;
+  return median * 1.5;
+}
+
 export type TimeRange = { label: string; ms: number; bucket: string };
 
 export const RANGES: TimeRange[] = [
   { label: "1h", ms: 3_600_000, bucket: "1m" },
   { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
-  { label: "24h", ms: 24 * 3_600_000, bucket: "1h" },
+  { label: "24h", ms: 24 * 3_600_000, bucket: "30m" },
 ];
