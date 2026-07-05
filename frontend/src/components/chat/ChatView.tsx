@@ -12,7 +12,6 @@ import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import DOMPurify from "dompurify";
 
 import { useServices, useInfo } from "../../api/hooks.ts";
 import { type ServiceSummary } from "../../api/client.ts";
@@ -578,9 +577,7 @@ function MessageBubble({
                   ),
                 }}
               >
-                {DOMPurify.sanitize(message.content, {
-                  USE_PROFILES: { html: true },
-                })}
+                {message.content}
               </ReactMarkdown>
             </div>
           ) : null
