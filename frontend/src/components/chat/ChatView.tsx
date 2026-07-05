@@ -11,7 +11,10 @@ import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 import { useServices, useInfo } from "../../api/hooks.ts";
 import { type ServiceSummary } from "../../api/client.ts";
@@ -46,8 +49,8 @@ import { useStickToBottom } from "../../hooks/useStickToBottom.ts";
 function MarkdownContent({ children }: { children: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeHighlight, rehypeKatex]}
       components={{
         // Fenced blocks arrive wrapped in a <pre> from react-markdown; this
         // styles that box. Inline code is a bare <code> (no <pre>), so it must
