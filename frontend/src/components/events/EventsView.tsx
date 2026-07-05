@@ -4,7 +4,7 @@
 // the top, newest at the bottom; autoscrolls to the bottom when new
 // events arrive unless the user has scrolled up.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -12,6 +12,7 @@ import {
   useEventFeed,
   type SystemEvent,
 } from "../../api/events.ts";
+import { useStickToBottom } from "../../hooks/useStickToBottom.ts";
 import { formatTimestamp } from "../../util.ts";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Badge, type BadgeVariant } from "../ui/Badge.tsx";
@@ -46,21 +47,7 @@ export function EventsView() {
     });
   }
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(true);
-
-  function onScroll() {
-    const el = scrollRef.current;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
-    autoScrollRef.current = atBottom;
-  }
-
-  useEffect(() => {
-    if (scrollRef.current && autoScrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [events.length]);
+  const { scrollRef, onScroll } = useStickToBottom(events.length);
 
   return (
     <div className="flex h-full flex-col">

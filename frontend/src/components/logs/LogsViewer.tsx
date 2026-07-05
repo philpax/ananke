@@ -5,8 +5,9 @@
 // Aims for GCP Log Explorer parity on the essentials: jump-to-time,
 // text search within the buffer, run filtering, and live tail.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useStickToBottom } from "../../hooks/useStickToBottom.ts";
 import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
 import type { LogLine } from "../../api/client.ts";
 import { formatTimestamp } from "../../util.ts";
@@ -74,8 +75,6 @@ export function LogsViewer({ name }: LogsViewerProps) {
   >("both");
   const [search, setSearch] = useState("");
   const [runFilter, setRunFilter] = useState<number | null>(null);
-  const [autoFollow, setAutoFollow] = useState(true);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Collect unique run IDs from loaded lines.
   const runIds = useMemo(() => {
@@ -97,12 +96,11 @@ export function LogsViewer({ name }: LogsViewerProps) {
     return result;
   }, [win.lines, streamFilter, runFilter, search]);
 
-  // Auto-follow: scroll to bottom when new lines arrive.
-  useEffect(() => {
-    if (autoFollow && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [lines, autoFollow]);
+  // Auto-follow: stick to the bottom as new lines arrive while pinned there.
+  // Scrolling up detaches (the follow button dims); scrolling back to the
+  // bottom — or clicking follow — re-attaches.
+  const { scrollRef, onScroll, pinned, scrollToBottom } =
+    useStickToBottom(lines);
 
   // When switching to custom mode, pre-fill the since field if empty.
   function selectCustom() {
@@ -156,9 +154,9 @@ export function LogsViewer({ name }: LogsViewerProps) {
             <span className="text-warning">{t("logs.truncated")}</span>
           )}
           <button
-            onClick={() => setAutoFollow((v) => !v)}
+            onClick={scrollToBottom}
             className={`rounded-sm px-2 py-0.5 transition-colors ${
-              autoFollow ? "text-accent" : "text-tertiary hover:text-secondary"
+              pinned ? "text-accent" : "text-tertiary hover:text-secondary"
             }`}
           >
             {t("logs.follow")}
@@ -222,6 +220,7 @@ export function LogsViewer({ name }: LogsViewerProps) {
       {/* Log lines */}
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         className="flex-1 overflow-auto px-4 py-2 font-mono text-xs"
       >
         {win.loading ? (

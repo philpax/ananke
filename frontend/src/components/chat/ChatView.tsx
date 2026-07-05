@@ -38,6 +38,7 @@ import { StatusDot } from "../ui/StatusDot.tsx";
 import { CopyButton } from "../ui/CopyButton.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { ExternalLinkIcon, TrashIcon } from "../ui/icons.tsx";
+import { useStickToBottom } from "../../hooks/useStickToBottom.ts";
 
 // Renders assistant markdown (both the answer and the reasoning trace)
 // through one pipeline. react-markdown escapes raw HTML by default, so no
@@ -131,21 +132,7 @@ export function ChatView() {
   // navigation away and back even when the URL lacks ?model=.
   const selectedModel = chat.currentModel;
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(true);
-
-  function onScroll() {
-    const el = scrollRef.current;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
-    autoScrollRef.current = atBottom;
-  }
-
-  useEffect(() => {
-    if (scrollRef.current && autoScrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [chat.messages]);
+  const { scrollRef, onScroll } = useStickToBottom(chat.messages);
 
   async function handleSend() {
     if (!selectedModel) return;
