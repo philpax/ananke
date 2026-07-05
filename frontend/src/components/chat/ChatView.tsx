@@ -39,6 +39,58 @@ import { CopyButton } from "../ui/CopyButton.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { ExternalLinkIcon, TrashIcon } from "../ui/icons.tsx";
 
+// Renders assistant markdown (both the answer and the reasoning trace)
+// through one pipeline. react-markdown escapes raw HTML by default, so no
+// pre-sanitization is needed or wanted (see #24).
+function MarkdownContent({ children }: { children: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={{
+        // Fenced blocks arrive wrapped in a <pre> from react-markdown; this
+        // styles that box. Inline code is a bare <code> (no <pre>), so it must
+        // not be promoted to a block.
+        pre: ({ children }) => (
+          <pre className="my-2 overflow-x-auto bg-base p-2 font-mono text-xs">
+            {children}
+          </pre>
+        ),
+        code: ({ children, className }) => {
+          // rehype-highlight tags fenced blocks with a language/hljs class;
+          // fall back to a newline check for language-less fences. Inline code
+          // gets a subtle chip; block code is left to the <pre> above.
+          const isBlock =
+            !!className ||
+            (typeof children === "string" && children.includes("\n"));
+          if (isBlock) {
+            const lang = className?.replace("language-", "");
+            return (
+              <code data-lang={lang} className={className}>
+                {children}
+              </code>
+            );
+          }
+          return (
+            <code className="rounded bg-base px-1 py-0.5 font-mono text-[0.9em]">
+              {children}
+            </code>
+          );
+        },
+        table: ({ children }) => (
+          <div className="my-2 overflow-x-auto">
+            <table className="min-w-full border-collapse text-xs">
+              {children}
+            </table>
+          </div>
+        ),
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
+}
+
 export function ChatView() {
   const { t } = useTranslation();
   const services = useServices();
@@ -548,37 +600,15 @@ function MessageBubble({
             <summary className="cursor-pointer select-none text-xs text-secondary hover:text-primary">
               {t("chat.reasoning")}
             </summary>
-            <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-secondary">
-              {message.reasoning}
+            <div className="mt-1 max-h-40 overflow-y-auto break-words text-xs text-secondary">
+              <MarkdownContent>{message.reasoning}</MarkdownContent>
             </div>
           </details>
         )}
         {isAssistant ? (
           message.content ? (
             <div className="flex flex-col gap-3 overflow-hidden break-words">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
-                components={{
-                  code: ({ children, className }) => {
-                    const lang = className?.replace("language-", "");
-                    return (
-                      <pre className="my-2 overflow-x-auto bg-base p-2 font-mono text-xs">
-                        <code data-lang={lang}>{children}</code>
-                      </pre>
-                    );
-                  },
-                  table: ({ children }) => (
-                    <div className="my-2 overflow-x-auto">
-                      <table className="min-w-full border-collapse text-xs">
-                        {children}
-                      </table>
-                    </div>
-                  ),
-                }}
-              >
-                {message.content}
-              </ReactMarkdown>
+              <MarkdownContent>{message.content}</MarkdownContent>
             </div>
           ) : null
         ) : (
