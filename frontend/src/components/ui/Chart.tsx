@@ -59,7 +59,7 @@ export function Chart({ data, series, height = 160, xMin, xMax }: ChartProps) {
           width: s.width ?? 1.5,
           fill: s.fill,
           points: { show: true, size: 3 },
-          spanGaps: true,
+          spanGaps: s.spanGaps ?? true,
         })),
       ],
       scales: {
@@ -226,6 +226,11 @@ export type ChartSeries = {
   fill?: string;
   width?: number;
   unit?: string;
+  /** Draw a continuous line across null gaps. Defaults to `true`. Set
+   * `false` for sparse metrics (e.g. a decode rate that is undefined when
+   * nothing is generating) so the line breaks instead of interpolating a
+   * misleading flat value across the gap. */
+  spanGaps?: boolean;
 };
 
 export type ChartProps = {

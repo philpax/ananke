@@ -294,12 +294,17 @@ export function MetricsView() {
                           stroke: CHART_PALETTE[0],
                           fill: "rgba(139,124,248,0.08)",
                           unit: "tok/s",
+                          // Decode/prefill rate is undefined when nothing is
+                          // generating; break the line rather than interpolate
+                          // a stale flat value across a stall.
+                          spanGaps: false,
                         },
                         {
                           label: t("stats.tpsOut"),
                           stroke: CHART_PALETTE[1],
                           fill: "rgba(69,201,138,0.08)",
                           unit: "tok/s",
+                          spanGaps: false,
                         },
                       ]
                     : []),
@@ -308,6 +313,7 @@ export function MetricsView() {
                     stroke: CHART_PALETTE[2],
                     fill: "rgba(224,168,60,0.08)",
                     unit: "tok/s",
+                    spanGaps: false,
                   },
                 ]}
               />
@@ -343,6 +349,9 @@ export function MetricsView() {
                     label: s.serviceName,
                     stroke: CHART_PALETTE[i % CHART_PALETTE.length],
                     unit: "tok/s",
+                    // Sparse decode rate: break the line where a service is
+                    // idle or producing nothing rather than interpolating.
+                    spanGaps: false,
                   }))}
                 />
               </Card>
