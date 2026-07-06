@@ -465,6 +465,9 @@ pub struct RawAutoRestart {
     /// Periodic restart. Disabled by default; a table with an `interval`
     /// enables it (write `periodic = false` to be explicit).
     pub periodic: Option<Toggle<RawPeriodicSettings>>,
+    /// Time-to-first-token stall watchdog. Enabled by default (write
+    /// `ttft_stall = false` to opt a service out). A table tunes the timeout.
+    pub ttft_stall: Option<Toggle<RawTtftStallSettings>>,
     /// Minimum uptime a fresh run must reach before another auto-restart
     /// may fire — the anti-flap cooldown.
     pub min_uptime: Option<String>,
@@ -539,6 +542,15 @@ pub struct RawErrorRateSettings {
     /// Which HTTP statuses count as errors: `"5xx"` (server errors only,
     /// the default) or `"4xx+5xx"` (any status ≥ 400).
     pub error_statuses: Option<SmolStr>,
+}
+
+/// `[service.auto_restart.ttft_stall]` settings. Only the timeout is tunable.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawTtftStallSettings {
+    /// How long a request may stay in-flight with no response token before
+    /// the service is restarted.
+    pub timeout: Option<String>,
 }
 
 /// `[service.auto_restart.periodic]` settings.
@@ -754,6 +766,43 @@ error_rate = false
         let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
         let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
         assert!(matches!(ar.error_rate, Some(Toggle::Enabled(false))));
+    }
+
+    #[test]
+    fn parses_ttft_stall_bool_toggle() {
+        let toml = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+
+[service.auto_restart]
+ttft_stall = false
+"#;
+        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
+        assert!(matches!(ar.ttft_stall, Some(Toggle::Enabled(false))));
+    }
+
+    #[test]
+    fn ttft_stall_table_rejects_unknown_field() {
+        let toml = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+
+[service.auto_restart]
+ttft_stall = { timeuot = "90s" }
+"#;
+        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        assert!(
+            err.is_err(),
+            "expected parse error for typo'd ttft_stall field, got {:?}",
+            err.ok()
+        );
     }
 
     #[test]

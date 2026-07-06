@@ -4,6 +4,7 @@
 pub mod activity;
 pub mod inflight;
 pub mod observation;
+pub mod progress;
 pub mod rolling;
 pub mod sampler;
 

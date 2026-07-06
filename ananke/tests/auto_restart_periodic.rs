@@ -37,6 +37,7 @@ fn periodic_only(mode: PeriodicMode, interval_ms: u64) -> AutoRestartSettings {
     AutoRestartSettings {
         error_rate: None,
         periodic: Some(PeriodicTrigger { interval_ms, mode }),
+        ttft_stall: None,
         min_uptime_ms: 0,
         max_restarts: 3,
         flap_window_ms: 1_800_000,

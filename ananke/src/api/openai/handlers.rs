@@ -29,19 +29,25 @@ use crate::{
             ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing,
             ModelsResponse,
         },
+        stall::{self, StallDisarm},
     },
     daemon::app_state::AppState,
     supervise::{EnsureFailure, EnsureOutcome, await_ensure, state::ServiceState},
-    tracking::inflight::InflightGuard,
+    tracking::{inflight::InflightGuard, progress::ProgressCell},
 };
 
 pin_project_lite::pin_project! {
     /// Wraps a body and holds an [`InflightGuard`] so the counter stays elevated
     /// until the full response body (including SSE streams) has been consumed.
+    /// On each forwarded data frame it stamps the per-service `progress` cell
+    /// (feeding the stall watchdog's run-level liveness check) and, on the
+    /// first frame, disarms this request's stall timer.
     struct GuardedBody<B> {
         #[pin]
         body: B,
         _guard: InflightGuard,
+        stall: Option<StallDisarm>,
+        progress: Option<ProgressCell>,
     }
 }
 
@@ -53,7 +59,21 @@ impl<B: hyper::body::Body> hyper::body::Body for GuardedBody<B> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        self.project().body.poll_frame(cx)
+        let this = self.project();
+        let polled = this.body.poll_frame(cx);
+        if let Poll::Ready(Some(Ok(frame))) = &polled
+            && frame.data_ref().is_some()
+        {
+            // Any data frame is proof the child is producing output: record
+            // service-level progress, and disarm this request's stall timer.
+            if let Some(progress) = this.progress.as_ref() {
+                progress.record();
+            }
+            if let Some(stall) = this.stall.as_mut() {
+                stall.disarm();
+            }
+        }
+        polled
     }
 
     fn is_end_stream(&self) -> bool {
@@ -267,6 +287,42 @@ async fn forward_json_post(
     let counter = state.inflight.counter(&svc.name);
     let guard = InflightGuard::new(counter);
 
+    // Per-service last-frame stamp for the stall watchdog. Present whenever the
+    // watchdog is enabled; every forwarded frame (streaming or not) bumps it,
+    // so a stalled request can tell "the whole service is silent" (wedge) from
+    // "another request is streaming fine" (just queued).
+    let progress = svc
+        .auto_restart
+        .ttft_stall
+        .map(|_| state.progress.stamp(&svc.name));
+
+    let is_streaming = parsed
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Arm the stall watchdog only for streaming requests. A streaming upstream
+    // returns headers before any token, so silence on the body is the wedge
+    // signal. Non-streaming responses only arrive once fully buffered, making
+    // TTFT indistinguishable from a slow-but-healthy generation — those are
+    // bounded by `max_request_duration`, not this watchdog. Armed before the
+    // request is sent so it also covers a child that never returns headers.
+    let mut stall = match (
+        svc.auto_restart.ttft_stall,
+        is_streaming,
+        handle.peek().run_id,
+    ) {
+        (Some(trigger), true, Some(run_id)) => progress.clone().map(|prog| {
+            stall::arm(
+                handle.clone(),
+                run_id,
+                Duration::from_millis(trigger.timeout_ms),
+                prog,
+            )
+        }),
+        _ => None,
+    };
+
     // Build hyper client and forward to the upstream service.
     let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .build_http::<http_body_util::combinators::BoxBody<
@@ -291,12 +347,24 @@ async fn forward_json_post(
         .boxed();
     let req = match req.body(upstream_body) {
         Ok(r) => r,
-        Err(e) => return errors::bad_request(format!("build request: {e}")),
+        Err(e) => {
+            // Never left the ground — disarm so the timer doesn't fire against
+            // a healthy run five minutes from now.
+            if let Some(s) = stall.as_mut() {
+                s.disarm();
+            }
+            return errors::bad_request(format!("build request: {e}"));
+        }
     };
 
     let resp = match client.request(req).await {
         Ok(r) => r,
         Err(e) => {
+            // A synchronous upstream failure (e.g. connection reset during a
+            // drain race) is not a stall — disarm before returning.
+            if let Some(s) = stall.as_mut() {
+                s.disarm();
+            }
             warn!(error = %e, model = %model, "upstream request failed");
             return errors::start_failed(&model, "upstream unavailable");
         }
@@ -320,6 +388,8 @@ async fn forward_json_post(
     let guarded = GuardedBody {
         body: boxed,
         _guard: guard,
+        stall,
+        progress,
     };
 
     // Resolve the service_id and run_id for metric recording. If the
@@ -327,10 +397,6 @@ async fn forward_json_post(
     // the proxy still works, we just don't record this request.
     let service_id = state.db.resolve_service_id(&model).await.ok().flatten();
     let run_id = handle.peek().run_id;
-    let is_streaming = parsed
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
 
     let axum_body = if let Some(service_id) = service_id {
         let recorder = MetricsRecorder::new(

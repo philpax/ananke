@@ -78,6 +78,13 @@ pub const DEFAULT_AUTO_RESTART_MAX_RESTARTS: u32 = 3;
 /// is counted (30 minutes).
 pub const DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS: u64 = 1_800_000;
 
+/// Default time-to-first-token stall timeout for the auto-restart stall
+/// watchdog (5 minutes). A proxied request that produces no response token
+/// within this window is treated as an upstream wedge and triggers a restart.
+/// Deliberately generous — healthy prefill (even image inference) reaches the
+/// first token in seconds, so a full five minutes of silence is unambiguous.
+pub const DEFAULT_AUTO_RESTART_TTFT_STALL_MS: u64 = 300_000;
+
 /// Default concurrency cap on pending start requests waiting for the same
 /// supervisor to finish starting before they are rejected with `QueueFull`.
 pub const DEFAULT_START_QUEUE_DEPTH: usize = 10;
@@ -579,6 +586,12 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "Periodic restart. Absent or `false` disables it; a table (with an `interval`) enables it.",
                 ),
                 field(
+                    "ttft_stall",
+                    "table | `false`",
+                    "on, with the defaults below",
+                    "Time-to-first-token stall watchdog. `false` disables it; a table enables it and overrides the timeout. Catches a wedged child that accepts a streaming request but never emits a frame — a failure the error-rate watchdog cannot see, because the request never completes. Restarts only when the whole service has gone silent, so it never fights healthy concurrent traffic.",
+                ),
+                field(
                     "min_uptime",
                     "duration string",
                     bt_dur(DEFAULT_AUTO_RESTART_MIN_UPTIME_MS),
@@ -588,7 +601,7 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "max_restarts",
                     "u32",
                     bt(DEFAULT_AUTO_RESTART_MAX_RESTARTS),
-                    "Error-rate restarts tolerated within `flap_window` before the service is disabled with reason `auto_restart_loop` instead of restarted again. Periodic restarts are intentional and do not count toward this cap.",
+                    "Error-rate and stall restarts tolerated within `flap_window` before the service is disabled with reason `auto_restart_loop` instead of restarted again. Periodic restarts are intentional and do not count toward this cap.",
                 ),
                 field(
                     "flap_window",
@@ -651,6 +664,16 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "How the restart is timed once the interval elapses. `immediate` drains and respawns at once (interrupting in-flight traffic gracefully). `on-idle` waits for a quiet window with no in-flight requests, then restarts — zero disruption, but may never fire under continuous load. `on-request` marks the run stale and lets the next request drive the restart, blocking that request on the fresh process; it guarantees the restart happens even under continuous load.",
                 ),
             ],
+        },
+        SectionDoc {
+            id: "service_auto_restart_ttft_stall",
+            title: "Stall trigger",
+            fields: vec![field(
+                "timeout",
+                "duration string",
+                bt_dur(DEFAULT_AUTO_RESTART_TTFT_STALL_MS),
+                "How long a streaming request may stay in-flight with no response frame before the service is restarted. A restart fires only if the *whole service* produced no frame in that window — a request merely queued behind a healthy generation does not trip it. Only streaming requests are watched (non-streaming and embeddings are bounded by `max_request_duration` instead). Does not gate on `min_uptime`; the flap cap still applies.",
+            )],
         },
         SectionDoc {
             id: "llama_cpp",

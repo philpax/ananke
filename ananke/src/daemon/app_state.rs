@@ -14,7 +14,7 @@ use crate::{
     supervise::registry::ServiceRegistry,
     tracking::{
         activity::ActivityTable, inflight::InflightTable, observation::ObservationTable,
-        rolling::RollingTable,
+        progress::ProgressTable, rolling::RollingTable,
     },
 };
 
@@ -29,6 +29,10 @@ pub struct AppState {
     pub observation: ObservationTable,
     pub db: Database,
     pub inflight: InflightTable,
+    /// Per-service timestamp of the last forwarded response frame, read by the
+    /// time-to-first-token stall watchdog to tell a wedged child from a
+    /// request queued behind healthy work.
+    pub progress: ProgressTable,
     pub port_pool: Arc<Mutex<PortPool>>,
     pub oneshots: OneshotRegistry,
     pub batcher: BatcherHandle,

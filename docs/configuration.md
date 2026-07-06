@@ -299,8 +299,9 @@ The block is resolved as a **whole unit**: a service that sets any `auto_restart
 | --- | --- | --- | --- |
 | `error_rate` | table | `false` | on, with the defaults below | Error-rate watchdog. `false` disables it; a table enables it and overrides individual thresholds. |
 | `periodic` | table | `false` | off | Periodic restart. Absent or `false` disables it; a table (with an `interval`) enables it. |
+| `ttft_stall` | table | `false` | on, with the defaults below | Time-to-first-token stall watchdog. `false` disables it; a table enables it and overrides the timeout. Catches a wedged child that accepts a streaming request but never emits a frame — a failure the error-rate watchdog cannot see, because the request never completes. Restarts only when the whole service has gone silent, so it never fights healthy concurrent traffic. |
 | `min_uptime` | duration string | `5m` | Minimum uptime a fresh run must reach before an error-rate restart may fire — the anti-flap cooldown. |
-| `max_restarts` | u32 | `3` | Error-rate restarts tolerated within `flap_window` before the service is disabled with reason `auto_restart_loop` instead of restarted again. Periodic restarts are intentional and do not count toward this cap. |
+| `max_restarts` | u32 | `3` | Error-rate and stall restarts tolerated within `flap_window` before the service is disabled with reason `auto_restart_loop` instead of restarted again. Periodic restarts are intentional and do not count toward this cap. |
 | `flap_window` | duration string | `30m` | Sliding window over which `max_restarts` is counted. |
 
 `[service.auto_restart.error_rate]` fields:
@@ -319,6 +320,12 @@ The block is resolved as a **whole unit**: a service that sets any `auto_restart
 | --- | --- | --- | --- |
 | `interval` | duration string | required | How long a run may live before a periodic restart is due, measured from when it entered `Running`. |
 | `mode` | `"immediate"` | `"on-idle"` | `"on-request"` | `on-request` | How the restart is timed once the interval elapses. `immediate` drains and respawns at once (interrupting in-flight traffic gracefully). `on-idle` waits for a quiet window with no in-flight requests, then restarts — zero disruption, but may never fire under continuous load. `on-request` marks the run stale and lets the next request drive the restart, blocking that request on the fresh process; it guarantees the restart happens even under continuous load. |
+
+`[service.auto_restart.ttft_stall]` fields:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `timeout` | duration string | `5m` | How long a streaming request may stay in-flight with no response frame before the service is restarted. A restart fires only if the *whole service* produced no frame in that window — a request merely queued behind a healthy generation does not trip it. Only streaming requests are watched (non-streaming and embeddings are bounded by `max_request_duration` instead). Does not gate on `min_uptime`; the flap cap still applies. |
 
 When a trigger fires, the service drains (SIGTERM with grace, then SIGKILL) and returns to `Idle`; the normal ensure path respawns it — on the next request for an on-demand service, or within a few seconds for a persistent one. An auto-restart emits an `auto_restarted` event on the daemon event stream (see [the API guide](api.md)). Oneshot services never auto-restart.
 

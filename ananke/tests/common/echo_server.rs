@@ -8,7 +8,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -31,6 +31,11 @@ pub struct EchoState {
     pub spawn_counter: Arc<AtomicU32>,
     /// Sink for recording request bodies from /v1/* endpoints.
     pub sink: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// When set, `/v1/*` returns 200 headers and then a body that never
+    /// yields a frame — simulating a wedged child that accepts a request but
+    /// emits no token. Used to exercise the time-to-first-token stall
+    /// watchdog.
+    pub hang: Arc<AtomicBool>,
 }
 
 type EchoBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
@@ -120,6 +125,20 @@ async fn handle(
                 .unwrap_or_default();
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                 state.sink.lock().push(v);
+            }
+            // Wedge simulation: 200 headers, then a body that never produces a
+            // frame. The proxy sees the request go in-flight and never
+            // complete — exactly the stall the watchdog must catch.
+            if state.hang.load(Ordering::Relaxed) {
+                let body = StreamBody::new(futures::stream::pending::<
+                    Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
+                >())
+                .boxed();
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(body)
+                    .unwrap());
             }
             let body = Full::new(Bytes::from(
                 r#"{"id":"cmpl-echo","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,

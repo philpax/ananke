@@ -16,9 +16,9 @@ pub use ananke_config::docs::{
     DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS, DEFAULT_AUTO_RESTART_MAX_ERROR_RATE,
     DEFAULT_AUTO_RESTART_MAX_RESTARTS, DEFAULT_AUTO_RESTART_MIN_REQUESTS,
     DEFAULT_AUTO_RESTART_MIN_UPTIME_MS, DEFAULT_AUTO_RESTART_POLL_INTERVAL_MS,
-    DEFAULT_AUTO_RESTART_WINDOW_MS, DEFAULT_DRAIN_TIMEOUT_MS, DEFAULT_EXTENDED_STREAM_DRAIN_MS,
-    DEFAULT_HEALTH_PROBE_INTERVAL_MS, DEFAULT_HEALTH_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS,
-    DEFAULT_MAX_REQUEST_DURATION_MS, DEFAULT_MIN_BORROWER_RUNTIME_MS,
+    DEFAULT_AUTO_RESTART_TTFT_STALL_MS, DEFAULT_AUTO_RESTART_WINDOW_MS, DEFAULT_DRAIN_TIMEOUT_MS,
+    DEFAULT_EXTENDED_STREAM_DRAIN_MS, DEFAULT_HEALTH_PROBE_INTERVAL_MS, DEFAULT_HEALTH_TIMEOUT_MS,
+    DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_MAX_REQUEST_DURATION_MS, DEFAULT_MIN_BORROWER_RUNTIME_MS,
     DEFAULT_OPENAI_MAX_BODY_BYTES, DEFAULT_OPENAI_MAX_BODY_MB, DEFAULT_PRIVATE_PORT_END,
     DEFAULT_PRIVATE_PORT_START, DEFAULT_SERVICE_PRIORITY,
 };
@@ -28,8 +28,8 @@ use tracing::warn;
 use crate::{
     config::parse::{
         EstimationConfig, RawAutoRestart, RawCommandService, RawConfig, RawErrorRateSettings,
-        RawExpertOffload, RawLlamaCppService, RawPeriodicSettings, RawService, SamplingConfig,
-        Toggle,
+        RawExpertOffload, RawLlamaCppService, RawPeriodicSettings, RawService,
+        RawTtftStallSettings, SamplingConfig, Toggle,
     },
     errors::ExpectedError,
 };
@@ -485,6 +485,9 @@ pub struct AutoRestartSettings {
     pub error_rate: Option<ErrorRateTrigger>,
     /// Periodic restart, or `None` if disabled (the default).
     pub periodic: Option<PeriodicTrigger>,
+    /// Time-to-first-token stall watchdog, or `None` if disabled
+    /// (`ttft_stall = false`). `Some` by default.
+    pub ttft_stall: Option<TtftStallTrigger>,
     /// Anti-flap cooldown: minimum uptime of a fresh run before another
     /// auto-restart may fire.
     pub min_uptime_ms: u64,
@@ -499,7 +502,7 @@ impl AutoRestartSettings {
     /// Whether any trigger is active — a cheap gate the supervisor uses to
     /// skip watchdog setup entirely for services that opted fully out.
     pub fn any_enabled(&self) -> bool {
-        self.error_rate.is_some() || self.periodic.is_some()
+        self.error_rate.is_some() || self.periodic.is_some() || self.ttft_stall.is_some()
     }
 
     /// Both triggers off, guardrails at their defaults. Used by test
@@ -509,6 +512,7 @@ impl AutoRestartSettings {
         Self {
             error_rate: None,
             periodic: None,
+            ttft_stall: None,
             ..Self::default()
         }
     }
@@ -519,9 +523,26 @@ impl Default for AutoRestartSettings {
         Self {
             error_rate: Some(ErrorRateTrigger::default()),
             periodic: None,
+            ttft_stall: Some(TtftStallTrigger::default()),
             min_uptime_ms: DEFAULT_AUTO_RESTART_MIN_UPTIME_MS,
             max_restarts: DEFAULT_AUTO_RESTART_MAX_RESTARTS,
             flap_window_ms: DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS,
+        }
+    }
+}
+
+/// Resolved time-to-first-token stall watchdog settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TtftStallTrigger {
+    /// How long a request may stay in-flight with no response token before
+    /// the service is restarted.
+    pub timeout_ms: u64,
+}
+
+impl Default for TtftStallTrigger {
+    fn default() -> Self {
+        Self {
+            timeout_ms: DEFAULT_AUTO_RESTART_TTFT_STALL_MS,
         }
     }
 }
@@ -1214,6 +1235,13 @@ fn validate_auto_restart(
         Some(Toggle::Settings(s)) => Some(validate_periodic(name, s)?),
     };
 
+    // Stall watchdog is on by default; only an explicit `false` disables it.
+    let ttft_stall = match &raw.ttft_stall {
+        None | Some(Toggle::Enabled(true)) => Some(TtftStallTrigger::default()),
+        Some(Toggle::Enabled(false)) => None,
+        Some(Toggle::Settings(s)) => Some(validate_ttft_stall(name, s)?),
+    };
+
     let min_uptime_ms = raw
         .min_uptime
         .as_deref()
@@ -1233,10 +1261,36 @@ fn validate_auto_restart(
     Ok(AutoRestartSettings {
         error_rate,
         periodic,
+        ttft_stall,
         min_uptime_ms,
         max_restarts,
         flap_window_ms,
     })
+}
+
+fn validate_ttft_stall(
+    name: &SmolStr,
+    s: &RawTtftStallSettings,
+) -> Result<TtftStallTrigger, ExpectedError> {
+    let d = TtftStallTrigger::default();
+    let timeout_ms = s
+        .timeout
+        .as_deref()
+        .map(|x| {
+            parse_duration_ms(x).map_err(|e| {
+                fail(format!(
+                    "service {name} auto_restart.ttft_stall.timeout: {e}"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(d.timeout_ms);
+    if timeout_ms == 0 {
+        return Err(fail(format!(
+            "service {name}: auto_restart.ttft_stall.timeout must be greater than zero"
+        )));
+    }
+    Ok(TtftStallTrigger { timeout_ms })
 }
 
 fn validate_error_rate(
@@ -1903,15 +1957,52 @@ devices.placement = "cpu-only"
         assert_eq!(er.min_requests, DEFAULT_AUTO_RESTART_MIN_REQUESTS);
         assert_eq!(er.statuses, ErrorStatusClass::ServerOnly);
         assert!(ar.periodic.is_none(), "periodic off by default");
+        let stall = ar.ttft_stall.as_ref().expect("stall on by default");
+        assert_eq!(stall.timeout_ms, DEFAULT_AUTO_RESTART_TTFT_STALL_MS);
         assert_eq!(ar.min_uptime_ms, DEFAULT_AUTO_RESTART_MIN_UPTIME_MS);
         assert_eq!(ar.max_restarts, DEFAULT_AUTO_RESTART_MAX_RESTARTS);
     }
 
     #[test]
     fn auto_restart_error_rate_false_disables_it() {
+        // Only error-rate is turned off; the stall watchdog stays on, so the
+        // policy is still active.
         let svc = svc_with_auto_restart("auto_restart = { error_rate = false }").unwrap();
         assert!(svc.auto_restart.error_rate.is_none());
+        assert!(svc.auto_restart.ttft_stall.is_some());
+        assert!(svc.auto_restart.any_enabled());
+    }
+
+    #[test]
+    fn auto_restart_all_triggers_false_disables_policy() {
+        let svc =
+            svc_with_auto_restart("auto_restart = { error_rate = false, ttft_stall = false }")
+                .unwrap();
+        assert!(svc.auto_restart.error_rate.is_none());
+        assert!(svc.auto_restart.ttft_stall.is_none());
         assert!(!svc.auto_restart.any_enabled());
+    }
+
+    #[test]
+    fn auto_restart_ttft_stall_false_disables_it() {
+        let svc = svc_with_auto_restart("auto_restart = { ttft_stall = false }").unwrap();
+        assert!(svc.auto_restart.ttft_stall.is_none());
+        // Error-rate stays on — the block only touched the stall trigger.
+        assert!(svc.auto_restart.error_rate.is_some());
+    }
+
+    #[test]
+    fn auto_restart_ttft_stall_timeout_override() {
+        let svc = svc_with_auto_restart("auto_restart.ttft_stall = { timeout = \"90s\" }").unwrap();
+        let stall = svc.auto_restart.ttft_stall.as_ref().unwrap();
+        assert_eq!(stall.timeout_ms, 90 * 1000);
+        // Error-rate stays on with defaults.
+        assert!(svc.auto_restart.error_rate.is_some());
+    }
+
+    #[test]
+    fn auto_restart_ttft_stall_rejects_zero_timeout() {
+        assert!(svc_with_auto_restart("auto_restart.ttft_stall = { timeout = \"0s\" }").is_err());
     }
 
     #[test]

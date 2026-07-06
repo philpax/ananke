@@ -82,6 +82,7 @@ async fn error_rate_watchdog_restarts_wedged_service() {
             statuses: ErrorStatusClass::ServerOnly,
         }),
         periodic: None,
+        ttft_stall: None,
         min_uptime_ms: 1_000,
         max_restarts: 3,
         flap_window_ms: 1_800_000,
@@ -164,6 +165,7 @@ async fn client_errors_do_not_trigger_under_default_5xx() {
             statuses: ErrorStatusClass::ServerOnly,
         }),
         periodic: None,
+        ttft_stall: None,
         min_uptime_ms: 1_000,
         max_restarts: 3,
         flap_window_ms: 1_800_000,
@@ -215,6 +217,7 @@ async fn repeated_storms_trip_flap_cap_and_disable() {
             statuses: ErrorStatusClass::ServerOnly,
         }),
         periodic: None,
+        ttft_stall: None,
         min_uptime_ms: 1_000,
         // One restart tolerated; the second storm disables instead.
         max_restarts: 1,
@@ -304,6 +307,7 @@ async fn reenable_after_flap_grants_fresh_restart_budget() {
             statuses: ErrorStatusClass::ServerOnly,
         }),
         periodic: None,
+        ttft_stall: None,
         min_uptime_ms: 1_000,
         // One restart tolerated, so the flap history holds one entry when the
         // second storm disables the service.

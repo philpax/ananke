@@ -102,6 +102,13 @@ pub enum SupervisorCommand {
     Disable {
         ack: tokio::sync::oneshot::Sender<DisableResult>,
     },
+    /// The time-to-first-token stall watchdog observed a proxied request that
+    /// stayed in-flight past its timeout without producing a token. `run_id`
+    /// is the run the stalled request was forwarded to; the handler ignores
+    /// the command unless it still matches the current run, so a stall from an
+    /// already-replaced run can't restart a healthy fresh one. Fire-and-forget
+    /// (no ack): the request path sends it and moves on.
+    WatchdogStall { run_id: i64 },
 }
 
 /// Result of a `SupervisorCommand::Enable`.
@@ -264,6 +271,17 @@ impl SupervisorHandle {
 
     pub fn ping(&self) {
         let _ = self.tx.try_send(SupervisorCommand::ActivityPing);
+    }
+
+    /// Signal that a proxied request forwarded to `run_id` stalled without a
+    /// first response frame. Non-blocking and best-effort: if the mailbox is
+    /// full the command is dropped; a later stalled request (or the drain the
+    /// first accepted command initiates) covers the gap. The Running handler
+    /// ignores the command unless `run_id` still matches the current run.
+    pub fn watchdog_stall(&self, run_id: i64) {
+        let _ = self
+            .tx
+            .try_send(SupervisorCommand::WatchdogStall { run_id });
     }
 
     pub async fn begin_drain(&self, reason: crate::supervise::drain::DrainReason) {
@@ -568,6 +586,13 @@ const STARTING_SIGTERM_GRACE: Duration = Duration::from_secs(5);
 /// SIGTERM grace during Running or during command-initiated drain. Longer
 /// because the child is healthy and may be mid-request.
 const RUNNING_SIGTERM_GRACE: Duration = Duration::from_secs(10);
+
+/// In-flight drain grace for a stall-triggered restart. Short by design: the
+/// stall watchdog only fires once the run has produced nothing for the whole
+/// timeout window, so its wedged in-flight request will never complete and
+/// there is no healthy traffic to preserve — a brief grace for a tailing
+/// packet, then SIGTERM.
+const STALL_DRAIN_INFLIGHT_WAIT: Duration = Duration::from_secs(5);
 
 /// Upper bound for a command service's optional `shutdown_command`.
 /// Long enough for a `docker stop` (default 10s docker grace + slack)
@@ -984,6 +1009,9 @@ impl RunLoop {
                             }
                         }
                         Some(SupervisorCommand::ActivityPing) => {}
+                        // Not running: a stall can only be reported against a
+                        // Running run, so this is always stale here.
+                        Some(SupervisorCommand::WatchdogStall { .. }) => {}
                         // Service is not running; drain/kill commands are no-ops.
                         Some(SupervisorCommand::BeginDrain { ack, .. }) => {
                             let _ = ack.send(());
@@ -2377,10 +2405,27 @@ impl RunLoop {
         run_id: i64,
         reason: crate::supervise::drain::DrainReason,
     ) {
+        self.drain_now_bounded(child, run_id, reason, None).await;
+    }
+
+    /// As [`Self::drain_now`], but with an optional override for how long the
+    /// pipeline waits for in-flight requests to finish before SIGTERM. The
+    /// stall watchdog passes a short bound: its whole premise is that the run
+    /// is producing nothing, so the default `max_request_duration` (which can
+    /// be many minutes) would just make the daemon wait on a request that will
+    /// never complete.
+    async fn drain_now_bounded(
+        &mut self,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+        reason: crate::supervise::drain::DrainReason,
+        inflight_wait: Option<Duration>,
+    ) {
         self.set_state(ServiceState::Draining);
         let current = self.current_svc();
         let cfg = DrainConfig {
-            max_request_duration: Duration::from_millis(current.max_request_duration_ms),
+            max_request_duration: inflight_wait
+                .unwrap_or_else(|| Duration::from_millis(current.max_request_duration_ms)),
             drain_timeout: Duration::from_millis(current.drain_timeout_ms),
             extended_stream_drain: Duration::from_millis(current.extended_stream_drain_ms),
             sigterm_grace: RUNNING_SIGTERM_GRACE,
@@ -2438,16 +2483,35 @@ impl RunLoop {
         ))
     }
 
-    /// Perform an error-rate-triggered restart, or disable the service if the
-    /// flap cap has been reached. Either way the child is drained; the caller
-    /// breaks out of the Running loop afterward.
+    /// Perform an error-rate-triggered restart. Thin wrapper over
+    /// [`Self::perform_auto_restart`] that labels the trigger.
     async fn perform_error_rate_restart(
         &mut self,
         child: &mut dyn ManagedChild,
         run_id: i64,
         detail: String,
     ) -> AutoRestartOutcome {
+        self.perform_auto_restart(child, run_id, "error_rate", detail)
+            .await
+    }
+
+    /// Drain the current run and return to Idle for a watchdog-triggered
+    /// restart, or disable the service if the flap cap has been reached.
+    /// Either way the child is drained; the caller breaks out of the Running
+    /// loop afterward. Shared by the error-rate and stall watchdogs — both
+    /// count toward the same flap cap.
+    async fn perform_auto_restart(
+        &mut self,
+        child: &mut dyn ManagedChild,
+        run_id: i64,
+        trigger: &'static str,
+        detail: String,
+    ) -> AutoRestartOutcome {
         let ar = self.current_svc().auto_restart;
+        // A stall restart drains a run that is by definition producing nothing,
+        // so waiting the full `max_request_duration` for its wedged in-flight
+        // request to finish is pointless — bound the wait to a short grace.
+        let inflight_wait = (trigger == "ttft_stall").then_some(STALL_DRAIN_INFLIGHT_WAIT);
         let now = tokio::time::Instant::now();
         let window = Duration::from_millis(ar.flap_window_ms);
         self.auto_restart_history
@@ -2456,21 +2520,32 @@ impl RunLoop {
             warn!(
                 service = %self.init.identity.name,
                 restarts = self.auto_restart_history.len(),
+                trigger,
                 detail = %detail,
                 "auto-restart flap cap reached; disabling instead of restarting"
             );
-            self.drain_now(child, run_id, drain::DrainReason::AutoRestart)
-                .await;
+            self.drain_now_bounded(
+                child,
+                run_id,
+                drain::DrainReason::AutoRestart,
+                inflight_wait,
+            )
+            .await;
             self.set_state(ServiceState::Disabled {
                 reason: DisableReason::AutoRestartLoop,
             });
             return AutoRestartOutcome::Disabled;
         }
         self.auto_restart_history.push(now);
-        warn!(service = %self.init.identity.name, detail = %detail, "auto-restart: error-rate watchdog firing");
-        self.emit_auto_restarted("error_rate", detail);
-        self.drain_now(child, run_id, drain::DrainReason::AutoRestart)
-            .await;
+        warn!(service = %self.init.identity.name, trigger, detail = %detail, "auto-restart: watchdog firing");
+        self.emit_auto_restarted(trigger, detail);
+        self.drain_now_bounded(
+            child,
+            run_id,
+            drain::DrainReason::AutoRestart,
+            inflight_wait,
+        )
+        .await;
         self.set_state(ServiceState::Idle);
         AutoRestartOutcome::Restarted
     }
@@ -2642,6 +2717,33 @@ impl RunLoop {
                 let _ = ack.send(DisableResult::Disabled);
                 RunningOutcome::Break
             }
+            Some(SupervisorCommand::WatchdogStall {
+                run_id: stalled_run,
+            }) => {
+                // Ignore a stall reported against a run that has already been
+                // replaced — its restart, if any, has already happened.
+                if stalled_run != run_id {
+                    return RunningOutcome::Continue;
+                }
+                let timeout_ms = self
+                    .current_svc()
+                    .auto_restart
+                    .ttft_stall
+                    .map(|t| t.timeout_ms)
+                    .unwrap_or(0);
+                let detail = format!(
+                    "no response frame for {:.0}s across the whole run (upstream stall)",
+                    timeout_ms as f64 / 1000.0
+                );
+                match self
+                    .perform_auto_restart(child, run_id, "ttft_stall", detail)
+                    .await
+                {
+                    AutoRestartOutcome::Restarted | AutoRestartOutcome::Disabled => {
+                        RunningOutcome::Break
+                    }
+                }
+            }
             None => RunningOutcome::Exit,
         }
     }
@@ -2683,6 +2785,8 @@ impl RunLoop {
                 StartingOutcome::Continue
             }
             Some(SupervisorCommand::ActivityPing) => StartingOutcome::Continue,
+            // Not yet Running: any stall report is stale.
+            Some(SupervisorCommand::WatchdogStall { .. }) => StartingOutcome::Continue,
             // Drain request while the child is still starting: abort the
             // spawn, release the allocation, and drop back to Idle. The
             // caller (retry_pack_with_eviction / try_eviction_to_fit /
@@ -2820,6 +2924,8 @@ impl RunLoop {
                         Step::Continue
                     }
                     Some(SupervisorCommand::ActivityPing) => Step::Continue,
+                    // No running child; a stall report is stale.
+                    Some(SupervisorCommand::WatchdogStall { .. }) => Step::Continue,
                     Some(SupervisorCommand::Enable { ack }) => {
                         // Failed is not disabled; enable is a no-op.
                         let _ = ack.send(EnableResult::NotDisabled);
@@ -2853,6 +2959,8 @@ impl RunLoop {
                     )));
                 }
                 Some(SupervisorCommand::ActivityPing) => {}
+                // Disabled: no running child, so a stall report is stale.
+                Some(SupervisorCommand::WatchdogStall { .. }) => {}
                 // Service is disabled; drain/kill are no-ops.
                 Some(SupervisorCommand::BeginDrain { ack, .. }) => {
                     let _ = ack.send(());

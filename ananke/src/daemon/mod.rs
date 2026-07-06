@@ -26,7 +26,7 @@ use crate::{
     errors::ExpectedError,
     oneshot::{OneshotRegistry, PortPool},
     supervise::{SupervisorHandle, orphans::reconcile, registry::ServiceRegistry},
-    tracking::{activity::ActivityTable, inflight::InflightTable},
+    tracking::{activity::ActivityTable, inflight::InflightTable, progress::ProgressTable},
 };
 
 pub async fn run() -> Result<(), ExpectedError> {
@@ -89,6 +89,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     activity.load_from_db(&db).await;
     let allocations = Arc::new(Mutex::new(AllocationTable::new()));
     let inflight = InflightTable::new();
+    let progress = ProgressTable::new();
 
     // Persistent services start in priority-desc + name-asc order;
     // on_demand services are registered but remain idle.
@@ -116,6 +117,7 @@ pub async fn run() -> Result<(), ExpectedError> {
         observation: observation.clone(),
         db: db.clone(),
         inflight: inflight.clone(),
+        progress,
         port_pool,
         oneshots,
         batcher: batcher.clone(),
