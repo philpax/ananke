@@ -50,7 +50,7 @@ type ChartField =
   | "totalDurationMs"
   | "outputTps"
   | "inputTps"
-  | "aggregateTps";
+  | "effectiveTps";
 
 function resolveField(b: AggregatedBucket, field: ChartField): number | null {
   switch (field) {
@@ -64,9 +64,9 @@ function resolveField(b: AggregatedBucket, field: ChartField): number | null {
       return b.inputTpsRequests > 0
         ? b.totalWeightedInputTps / b.inputTpsRequests
         : null;
-    case "aggregateTps":
-      return b.aggregateTpsRequests > 0
-        ? b.totalWeightedAggregateTps / b.aggregateTpsRequests
+    case "effectiveTps":
+      return b.effectiveTpsRequests > 0
+        ? b.totalWeightedEffectiveTps / b.effectiveTpsRequests
         : null;
     default:
       return b[field] as number;
@@ -75,7 +75,7 @@ function resolveField(b: AggregatedBucket, field: ChartField): number | null {
 
 // Whether any bucket in the window carries an input/output split. When
 // none do (all non-streaming with no engine timings), the token-rate
-// panel falls back to the aggregate line instead of showing two zeros.
+// panel falls back to the effective line instead of showing two zeros.
 function hasSplitTps(buckets: AggregatedBucket[]): boolean {
   return buckets.some((b) => b.outputTpsRequests > 0 || b.inputTpsRequests > 0);
 }
@@ -269,7 +269,7 @@ export function MetricsView() {
               />
             </Card>
 
-            {/* Tokens per second. The end-to-end aggregate line is always
+            {/* Tokens per second. The end-to-end effective line is always
                 shown; when the window has split-capable rows the input and
                 output decode rates are overlaid on top of it. */}
             <Card header={t("stats.tokensPerSecond")}>
@@ -284,7 +284,7 @@ export function MetricsView() {
                         aggregated.map((b) => resolveField(b, "outputTps")),
                       ]
                     : []),
-                  aggregated.map((b) => resolveField(b, "aggregateTps")),
+                  aggregated.map((b) => resolveField(b, "effectiveTps")),
                 ]}
                 series={[
                   ...(hasSplitTps(aggregated)
@@ -309,7 +309,7 @@ export function MetricsView() {
                       ]
                     : []),
                   {
-                    label: t("stats.tpsAggregate"),
+                    label: t("stats.tpsEffective"),
                     stroke: CHART_PALETTE[2],
                     fill: "rgba(224,168,60,0.08)",
                     unit: "tok/s",

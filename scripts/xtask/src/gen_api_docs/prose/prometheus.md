@@ -12,7 +12,7 @@ The `/metrics` endpoint exposes Prometheus text-format metrics for external scra
 | `ananke_memory_used_bytes` | gauge | Used memory in bytes (labelled by `device`). |
 | `ananke_output_tokens_per_second` | gauge | Average output tokens/sec during decode over the last 5 minutes. |
 | `ananke_input_tokens_per_second` | gauge | Average input tokens/sec during prompt processing over the last 5 minutes. |
-| `ananke_aggregate_tokens_per_second` | gauge | Average end-to-end throughput (total tokens over wall-clock duration) over the last 5 minutes. Not a decode rate; the fallback when no input/output split is available (non-streaming with no engine timings). |
+| `ananke_effective_tokens_per_second` | gauge | Average end-to-end effective generation throughput (completion tokens over wall-clock duration) over the last 5 minutes. Always ≤ the decode rate; the fallback when no input/output split is available (non-streaming with no engine timings). |
 | `ananke_service_state` | gauge | Numeric service state code (labelled by `service`). |
 
 ### State codes

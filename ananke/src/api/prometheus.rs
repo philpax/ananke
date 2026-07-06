@@ -190,14 +190,14 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
         "Average input tokens per second during prompt processing over the last 5 minutes.",
         "gauge",
     );
-    let mut aggregate_tps_gauge = MetricFamily::new(
-        "ananke_aggregate_tokens_per_second",
-        "Average end-to-end throughput (total tokens over wall-clock duration) over the last 5 minutes. Not a decode rate.",
+    let mut effective_tps_gauge = MetricFamily::new(
+        "ananke_effective_tokens_per_second",
+        "Average end-to-end effective generation throughput (completion tokens over wall-clock duration) over the last 5 minutes. Always <= the decode rate; not a decode rate itself.",
         "gauge",
     );
     for svc in &eff.services {
         let sid = state.db.resolve_service_id(&svc.name).await.ok().flatten();
-        let (avg_output_tps, avg_input_tps, avg_aggregate_tps) = if let Some(sid) = sid {
+        let (avg_output_tps, avg_input_tps, avg_effective_tps) = if let Some(sid) = sid {
             match state
                 .db
                 .query_request_metrics(Some(sid), tps_since, now, 5 * 60 * 1000)
@@ -222,13 +222,13 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
                         .filter(|b| b.input_tps.is_some())
                         .map(|b| b.request_count)
                         .sum();
-                    let weighted_agg: f64 = buckets
+                    let weighted_eff: f64 = buckets
                         .iter()
-                        .filter_map(|b| b.aggregate_tps.map(|v| v * b.request_count as f64))
+                        .filter_map(|b| b.effective_tps.map(|v| v * b.request_count as f64))
                         .sum();
-                    let timed_agg: i64 = buckets
+                    let timed_eff: i64 = buckets
                         .iter()
-                        .filter(|b| b.aggregate_tps.is_some())
+                        .filter(|b| b.effective_tps.is_some())
                         .map(|b| b.request_count)
                         .sum();
                     let avg = |weighted: f64, count: i64| {
@@ -241,7 +241,7 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
                     (
                         avg(weighted_out, timed_out),
                         avg(weighted_in, timed_in),
-                        avg(weighted_agg, timed_agg),
+                        avg(weighted_eff, timed_eff),
                     )
                 }
                 Err(e) => {
@@ -254,7 +254,7 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
         };
         output_tps_gauge.sample(vec![("service", svc.name.to_string())], avg_output_tps);
         input_tps_gauge.sample(vec![("service", svc.name.to_string())], avg_input_tps);
-        aggregate_tps_gauge.sample(vec![("service", svc.name.to_string())], avg_aggregate_tps);
+        effective_tps_gauge.sample(vec![("service", svc.name.to_string())], avg_effective_tps);
     }
 
     // --- Gauges: service state ---
@@ -281,7 +281,7 @@ async fn collect_metrics(state: &AppState) -> Vec<MetricFamily> {
         mem_used,
         output_tps_gauge,
         input_tps_gauge,
-        aggregate_tps_gauge,
+        effective_tps_gauge,
         svc_state,
     ]
 }

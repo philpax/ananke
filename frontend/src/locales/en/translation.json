@@ -130,7 +130,7 @@
     "durationMs": "Duration (ms)",
     "tpsIn": "TPS (in)",
     "tpsOut": "TPS (out)",
-    "tpsAggregate": "TPS (aggregate)"
+    "tpsEffective": "TPS (effective)"
   },
   "oneshots": {
     "newOneshot": "New oneshot",
@@ -258,7 +258,7 @@
     "avgLatency": "Avg latency",
     "avgTpsIn": "Avg TPS (in)",
     "avgTpsOut": "Avg TPS (out)",
-    "avgTpsAggregate": "Avg TPS (aggregate)"
+    "avgTpsEffective": "Avg TPS (effective)"
   },
   "logs": {
     "search": "search…",

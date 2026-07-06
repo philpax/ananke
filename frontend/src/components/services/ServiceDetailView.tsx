@@ -758,14 +758,14 @@ function ServiceMetrics({ name }: { name: string }) {
       1,
       buckets.reduce((s, b) => s + b.inputTpsRequests, 0),
     );
-  const avgAggregateTps =
-    buckets.reduce((s, b) => s + b.totalWeightedAggregateTps, 0) /
+  const avgEffectiveTps =
+    buckets.reduce((s, b) => s + b.totalWeightedEffectiveTps, 0) /
     Math.max(
       1,
-      buckets.reduce((s, b) => s + b.aggregateTpsRequests, 0),
+      buckets.reduce((s, b) => s + b.effectiveTpsRequests, 0),
     );
   // When no request in the window carries an input/output split (all
-  // non-streaming with no engine timings), show the end-to-end aggregate
+  // non-streaming with no engine timings), show the end-to-end effective throughput
   // instead of two zeros.
   const hasSplitTps = buckets.some(
     (b) => b.outputTpsRequests > 0 || b.inputTpsRequests > 0,
@@ -786,7 +786,7 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         }
       >
-        {/* The aggregate throughput stat is always shown; the input/output
+        {/* The effective throughput stat is always shown; the input/output
             decode rates are added alongside it when the window has
             split-capable rows. The column count tracks the tile count. */}
         <div
@@ -824,8 +824,8 @@ function ServiceMetrics({ name }: { name: string }) {
             </>
           )}
           <Stat
-            label={t("serviceDetail.avgTpsAggregate")}
-            value={totalRequests > 0 ? avgAggregateTps.toFixed(1) : "—"}
+            label={t("serviceDetail.avgTpsEffective")}
+            value={totalRequests > 0 ? avgEffectiveTps.toFixed(1) : "—"}
           />
         </div>
       </Card>
@@ -871,7 +871,7 @@ function ServiceMetrics({ name }: { name: string }) {
           />
         </Card>
       </div>
-      {/* The end-to-end aggregate line is always shown; the input/output
+      {/* The end-to-end effective line is always shown; the input/output
           decode rates are overlaid on top of it when available. */}
       <Card header={t("stats.tokensPerSecond")}>
         <Chart
@@ -894,8 +894,8 @@ function ServiceMetrics({ name }: { name: string }) {
                 ]
               : []),
             buckets.map((b) =>
-              b.aggregateTpsRequests > 0
-                ? b.totalWeightedAggregateTps / b.aggregateTpsRequests
+              b.effectiveTpsRequests > 0
+                ? b.totalWeightedEffectiveTps / b.effectiveTpsRequests
                 : null,
             ),
           ]}
@@ -917,7 +917,7 @@ function ServiceMetrics({ name }: { name: string }) {
                 ]
               : []),
             {
-              label: t("stats.tpsAggregate"),
+              label: t("stats.tpsEffective"),
               stroke: CHART_PALETTE[2],
               fill: "rgba(224,168,60,0.08)",
               unit: "tok/s",

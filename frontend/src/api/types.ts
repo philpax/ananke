@@ -812,16 +812,6 @@ export interface components {
     MetricBucketResponse: {
       /**
        * Format: double
-       * @description End-to-end aggregate throughput: total tokens (prompt + completion)
-       *     divided by total wall-clock duration. Available whenever the bucket
-       *     has any request with a recorded duration, including non-streaming
-       *     requests with no engine timings where no input/output split exists.
-       *     This is end-to-end throughput, *not* a decode rate; the UI surfaces
-       *     it as a fallback when the split figures are unavailable.
-       */
-      aggregate_tps?: number | null;
-      /**
-       * Format: double
        * @description Average request duration in milliseconds, if any requests had timing data.
        */
       avg_duration_ms?: number | null;
@@ -840,6 +830,18 @@ export interface components {
        * @description Total completion tokens across all requests in the bucket.
        */
       completion_tokens: number;
+      /**
+       * Format: double
+       * @description End-to-end effective generation throughput: completion tokens divided
+       *     by total wall-clock duration, so prefill, TTFT, and queue wait all
+       *     count against it. Available whenever the bucket has any request with a
+       *     recorded duration, including non-streaming requests with no engine
+       *     timings where no decode window exists to derive `output_tps`. Always
+       *     ≤ `output_tps`; the UI surfaces it as the fallback line and as the
+       *     end-to-end figure. A bucket that generated no tokens (e.g. only
+       *     embeddings or stalled requests) is `null`, not zero.
+       */
+      effective_tps?: number | null;
       /**
        * Format: int64
        * @description Number of requests with a 4xx/5xx status code.
