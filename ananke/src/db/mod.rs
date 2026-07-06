@@ -501,8 +501,18 @@ impl Database {
         let mut stmt = conn.prepare(&sql).map_err(|e| self.db_err(e))?;
         let rows = stmt
             .query_map(params![bucket_ms, since_ms, until_ms, service_id], |row| {
-                let tps =
-                    |tokens: i64, ms: i64| (ms > 0).then(|| tokens as f64 / (ms as f64 / 1000.0));
+                // A rate needs both a positive interval and tokens actually
+                // produced. Zero tokens over a non-zero interval is not
+                // "0 tok/s" — it is the absence of throughput (e.g. every
+                // request in the bucket stalled or errored before emitting a
+                // token), which must read as null so the chart breaks the line
+                // rather than pinning it to the floor. Without the token guard
+                // the aggregate tier (tokens / wall-clock duration) reports 0
+                // for a wedged run, while the decode/prefill tiers correctly
+                // go null — an inconsistency across the three lines.
+                let tps = |tokens: i64, ms: i64| {
+                    (ms > 0 && tokens > 0).then(|| tokens as f64 / (ms as f64 / 1000.0))
+                };
                 let output_tokens: i64 = row.get(8)?;
                 let output_ms: i64 = row.get(9)?;
                 let input_tokens: i64 = row.get(10)?;
@@ -860,6 +870,54 @@ mod tests {
         assert_eq!(buckets[2].input_tps, None);
         assert_eq!(buckets[2].output_tps, None);
         assert!(close(buckets[2].aggregate_tps, 300.0));
+    }
+
+    /// A bucket whose requests ran (non-null `duration_ms`) but produced no
+    /// tokens — the signature of a wedged run whose cancelled requests each
+    /// held the connection for their full duration — must report null for
+    /// every TPS tier, not a floor-pinned aggregate of `0 tok/s`. Otherwise
+    /// the aggregate line stays drawn across a stall while the decode/prefill
+    /// lines correctly break.
+    #[tokio::test]
+    async fn zero_token_bucket_reports_null_tps() {
+        let db = Database::open_in_memory().await.unwrap();
+        let svc = db.upsert_service("demo", 0).await.unwrap();
+        let base = |timestamp_ms| RequestMetric {
+            metric_id: 0,
+            prompt_eval_tokens: None,
+            service_id: svc,
+            run_id: Some(1),
+            timestamp_ms,
+            endpoint: "/v1/chat/completions".into(),
+            model: "demo".into(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            prompt_ms: None,
+            predicted_ms: None,
+            status_code: 200,
+        };
+
+        // Two cancelled requests: each ran ~300s and emitted nothing.
+        for i in 0..2 {
+            db.insert_request_metric(&RequestMetric {
+                duration_ms: Some(300_000),
+                ..base(i)
+            })
+            .await
+            .unwrap();
+        }
+
+        let buckets = db
+            .query_request_metrics(Some(svc), 0, 60_000, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].request_count, 2);
+        assert_eq!(buckets[0].aggregate_tps, None, "aggregate must be null");
+        assert_eq!(buckets[0].input_tps, None);
+        assert_eq!(buckets[0].output_tps, None);
     }
 
     /// Prompt caching: `prompt_tokens` is the full billed prompt (8000) but
