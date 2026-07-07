@@ -12,7 +12,10 @@
 //! frontend separately and drops the assets into `../frontend/dist`
 //! out-of-band.
 
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     if std::env::var_os("ANANKE_SKIP_FRONTEND_BUILD").is_some() {
@@ -22,9 +25,11 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let frontend = manifest_dir.parent().unwrap().join("frontend");
 
-    // Re-run when any frontend input changes. `cargo:rerun-if-changed`
-    // watches the named path recursively for directories, so `src` alone
-    // covers every component.
+    // Re-run when any frontend input changes. `cargo:rerun-if-changed` on a
+    // directory does *not* reliably detect an in-place edit of a nested file
+    // (the intermediate directory mtimes don't change), so a change to e.g.
+    // `src/locales/en/translation.json` would leave the embedded bundle stale.
+    // Emit one `rerun-if-changed` per file by walking the tree instead.
     let watched = [
         "src",
         "index.html",
@@ -37,7 +42,7 @@ fn main() {
         "eslint.config.js",
     ];
     for rel in watched {
-        println!("cargo:rerun-if-changed={}", frontend.join(rel).display());
+        watch_recursively(&frontend.join(rel));
     }
     println!("cargo:rerun-if-env-changed=ANANKE_SKIP_FRONTEND_BUILD");
 
@@ -54,6 +59,30 @@ fn main() {
         "frontend build did not produce {}",
         index_html.display()
     );
+}
+
+/// Emit `cargo:rerun-if-changed` for `path` and, if it is a directory, every
+/// file beneath it — watching each file individually so an in-place edit of a
+/// nested source triggers a rebuild. Also watches the directories themselves,
+/// so adding or removing a file is caught. Skips `node_modules` and `dist`,
+/// which are build inputs/outputs, not sources.
+fn watch_recursively(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    if !path.is_dir() {
+        return;
+    }
+    if matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some("node_modules") | Some("dist")
+    ) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        watch_recursively(&entry.path());
+    }
 }
 
 fn run(cmd: &str, args: &[&str], cwd: &std::path::Path, label: &str) {
