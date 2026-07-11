@@ -4,6 +4,7 @@
 //! and the submodules it delegates to (`drain`, `orphans`, `spawn`).
 
 pub mod drain;
+pub mod genstall;
 pub mod health;
 pub mod logs;
 pub mod orphans;
@@ -38,7 +39,8 @@ use tracing::{error, info, warn};
 use crate::{
     allocator::placement::Packed,
     config::validate::{
-        DEFAULT_SERVICE_PRIORITY, ErrorRateTrigger, Lifecycle, PeriodicMode, ServiceConfig,
+        AutoRestartSettings, DEFAULT_SERVICE_PRIORITY, ErrorRateTrigger, Lifecycle, PeriodicMode,
+        ServiceConfig,
     },
     daemon::events::EventBus,
     db::{Database, logs::BatcherHandle},
@@ -593,6 +595,23 @@ const RUNNING_SIGTERM_GRACE: Duration = Duration::from_secs(10);
 /// there is no healthy traffic to preserve — a brief grace for a tailing
 /// packet, then SIGTERM.
 const STALL_DRAIN_INFLIGHT_WAIT: Duration = Duration::from_secs(5);
+
+/// Per-request bound on a generation-stall watchdog `/metrics` fetch. The
+/// endpoint answers from memory on the loopback, so anything slower than this
+/// is indistinguishable from unreachable.
+const GENSTALL_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Live state for the generation-stall watchdog across one run: the poll
+/// cadence, the pure stall-decision state, and the HTTP bits for reaching the
+/// child's `/metrics`. Seeded at Running entry by `genstall_setup`.
+struct GenStallLoop {
+    poll: tokio::time::Interval,
+    state: genstall::GenStallState,
+    client: reqwest::Client,
+    url: String,
+    /// Whether the one-time "cannot read /metrics" warning has been logged.
+    warned_unreachable: bool,
+}
 
 /// Upper bound for a command service's optional `shutdown_command`.
 /// Long enough for a `docker stop` (default 10s docker grace + slack)
@@ -2318,6 +2337,11 @@ impl RunLoop {
             .as_ref()
             .map(|p| running_since + Duration::from_millis(p.interval_ms));
 
+        // Generation-stall watchdog: polls the child's `/metrics` progress
+        // counters. Like the error-rate poll, the first tick lands one period
+        // out so a fresh run isn't probed the instant it starts.
+        let mut genstall = self.genstall_setup(&auto_restart);
+
         loop {
             tokio::select! {
                 exit = child.wait() => {
@@ -2337,6 +2361,27 @@ impl RunLoop {
                     if let Some(detail) = self.evaluate_error_rate(run_id, running_since).await
                         && matches!(
                             self.perform_error_rate_restart(child, run_id, detail).await,
+                            AutoRestartOutcome::Restarted | AutoRestartOutcome::Disabled,
+                        )
+                    {
+                        return StartingOutcome::Break;
+                    }
+                }
+                // Generation-stall watchdog poll. Mirrors the error-rate
+                // branch: the future borrows only the local `genstall`; the
+                // fetch + decision + restart run in the handler.
+                _ = async {
+                    match genstall.as_mut() {
+                        Some(g) => { g.poll.tick().await; }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    if let Some(g) = genstall.as_mut()
+                        && let Some(detail) =
+                            self.evaluate_generation_stall(g, running_since).await
+                        && matches!(
+                            self.perform_auto_restart(child, run_id, "generation_stall", detail)
+                                .await,
                             AutoRestartOutcome::Restarted | AutoRestartOutcome::Disabled,
                         )
                     {
@@ -2483,6 +2528,79 @@ impl RunLoop {
         ))
     }
 
+    /// Build the generation-stall poll state at Running entry, or `None` when
+    /// the watchdog is off. A llama-cpp service with an explicit
+    /// `metrics = false` self-disables: the `--metrics` flag injection is
+    /// suppressed too (see `spawn.rs`), so there would be nothing to poll.
+    /// Command services keep their opt-in setting; an unreachable or
+    /// non-llama.cpp `/metrics` is handled at poll time by warning once and
+    /// never firing.
+    fn genstall_setup(&self, ar: &AutoRestartSettings) -> Option<GenStallLoop> {
+        let gs = ar.generation_stall.as_ref()?;
+        if let Some(lc) = self.current_svc().llama_cpp()
+            && lc.metrics == Some(false)
+        {
+            info!(
+                service = %self.init.identity.name,
+                "generation-stall watchdog disabled: service sets metrics = false"
+            );
+            return None;
+        }
+        let period = Duration::from_millis(gs.poll_interval_ms);
+        Some(GenStallLoop {
+            poll: tokio::time::interval_at(tokio::time::Instant::now() + period, period),
+            state: genstall::GenStallState::new(tokio::time::Instant::now()),
+            client: reqwest::Client::builder()
+                .timeout(GENSTALL_FETCH_TIMEOUT)
+                .build()
+                .expect("reqwest client build"),
+            url: format!(
+                "http://127.0.0.1:{}/metrics",
+                self.init.identity.private_port
+            ),
+            warned_unreachable: false,
+        })
+    }
+
+    /// Poll the child's `/metrics` once and decide whether the
+    /// generation-stall watchdog should fire. Returns the detail string when
+    /// it should, else `None`. Gated on the same `min_uptime` cooldown as the
+    /// error-rate watchdog; the timeout threshold is re-read live so a config
+    /// edit takes effect without a respawn.
+    async fn evaluate_generation_stall(
+        &self,
+        g: &mut GenStallLoop,
+        running_since: tokio::time::Instant,
+    ) -> Option<String> {
+        let ar = self.current_svc().auto_restart;
+        let gs = ar.generation_stall.as_ref()?;
+        if tokio::time::Instant::now().duration_since(running_since)
+            < Duration::from_millis(ar.min_uptime_ms)
+        {
+            return None;
+        }
+        let progress = genstall::fetch_progress(&g.client, &g.url).await;
+        if progress.is_none() && !g.warned_unreachable {
+            g.warned_unreachable = true;
+            warn!(
+                service = %self.init.identity.name,
+                url = %g.url,
+                "generation-stall watchdog cannot read progress counters from /metrics; the watchdog will not fire (is the child started with --metrics?)"
+            );
+        }
+        let inflight = self
+            .init
+            .inflight
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let timeout = Duration::from_millis(gs.timeout_ms);
+        g.state.observe(progress, inflight, timeout).then(|| {
+            format!(
+                "/metrics progress counters flat for {}s with {inflight} request(s) in flight (upstream wedge)",
+                gs.timeout_ms / 1000,
+            )
+        })
+    }
+
     /// Perform an error-rate-triggered restart. Thin wrapper over
     /// [`Self::perform_auto_restart`] that labels the trigger.
     async fn perform_error_rate_restart(
@@ -2498,8 +2616,8 @@ impl RunLoop {
     /// Drain the current run and return to Idle for a watchdog-triggered
     /// restart, or disable the service if the flap cap has been reached.
     /// Either way the child is drained; the caller breaks out of the Running
-    /// loop afterward. Shared by the error-rate and stall watchdogs — both
-    /// count toward the same flap cap.
+    /// loop afterward. Shared by the error-rate, TTFT-stall, and
+    /// generation-stall watchdogs — all count toward the same flap cap.
     async fn perform_auto_restart(
         &mut self,
         child: &mut dyn ManagedChild,
@@ -2511,7 +2629,8 @@ impl RunLoop {
         // A stall restart drains a run that is by definition producing nothing,
         // so waiting the full `max_request_duration` for its wedged in-flight
         // request to finish is pointless — bound the wait to a short grace.
-        let inflight_wait = (trigger == "ttft_stall").then_some(STALL_DRAIN_INFLIGHT_WAIT);
+        let inflight_wait = matches!(trigger, "ttft_stall" | "generation_stall")
+            .then_some(STALL_DRAIN_INFLIGHT_WAIT);
         let now = tokio::time::Instant::now();
         let window = Duration::from_millis(ar.flap_window_ms);
         self.auto_restart_history

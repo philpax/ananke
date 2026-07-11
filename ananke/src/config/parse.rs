@@ -468,6 +468,12 @@ pub struct RawAutoRestart {
     /// Time-to-first-token stall watchdog. Enabled by default (write
     /// `ttft_stall = false` to opt a service out). A table tunes the timeout.
     pub ttft_stall: Option<Toggle<RawTtftStallSettings>>,
+    /// Generation-stall watchdog: polls the child's Prometheus `/metrics`
+    /// progress counters and restarts when they stay flat with requests
+    /// in flight. Enabled by default on the `llama-cpp` template (write
+    /// `generation_stall = false` to opt out); disabled by default on the
+    /// `command` template. A table tunes the timeout and poll interval.
+    pub generation_stall: Option<Toggle<RawGenerationStallSettings>>,
     /// Minimum uptime a fresh run must reach before another auto-restart
     /// may fire — the anti-flap cooldown.
     pub min_uptime: Option<String>,
@@ -551,6 +557,17 @@ pub struct RawTtftStallSettings {
     /// How long a request may stay in-flight with no response token before
     /// the service is restarted.
     pub timeout: Option<String>,
+}
+
+/// `[service.auto_restart.generation_stall]` settings.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawGenerationStallSettings {
+    /// How long the child's progress counters may stay flat, with at least
+    /// one request in flight, before the service is restarted.
+    pub timeout: Option<String>,
+    /// How often the child's `/metrics` endpoint is polled.
+    pub poll_interval: Option<String>,
 }
 
 /// `[service.auto_restart.periodic]` settings.
@@ -801,6 +818,64 @@ ttft_stall = { timeuot = "90s" }
         assert!(
             err.is_err(),
             "expected parse error for typo'd ttft_stall field, got {:?}",
+            err.ok()
+        );
+    }
+
+    #[test]
+    fn parses_generation_stall_bool_toggle() {
+        let toml = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+
+[service.auto_restart]
+generation_stall = false
+"#;
+        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
+        assert!(matches!(ar.generation_stall, Some(Toggle::Enabled(false))));
+    }
+
+    #[test]
+    fn parses_generation_stall_settings_table() {
+        let toml = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+
+[service.auto_restart]
+generation_stall = { timeout = "2m", poll_interval = "10s" }
+"#;
+        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
+        let Some(Toggle::Settings(gs)) = &ar.generation_stall else {
+            panic!("expected generation_stall settings table");
+        };
+        assert_eq!(gs.timeout.as_deref(), Some("2m"));
+        assert_eq!(gs.poll_interval.as_deref(), Some("10s"));
+    }
+
+    #[test]
+    fn generation_stall_table_rejects_unknown_field() {
+        let toml = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+
+[service.auto_restart]
+generation_stall = { timeuot = "2m" }
+"#;
+        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        assert!(
+            err.is_err(),
+            "expected parse error for typo'd generation_stall field, got {:?}",
             err.ok()
         );
     }

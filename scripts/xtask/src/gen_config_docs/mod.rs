@@ -33,6 +33,8 @@ const PROSE_AUTO_RESTART: &str = include_str!("prose/auto_restart.md");
 const PROSE_AUTO_RESTART_ERROR_RATE: &str = include_str!("prose/auto_restart_error_rate.md");
 const PROSE_AUTO_RESTART_PERIODIC: &str = include_str!("prose/auto_restart_periodic.md");
 const PROSE_AUTO_RESTART_TTFT_STALL: &str = include_str!("prose/auto_restart_ttft_stall.md");
+const PROSE_AUTO_RESTART_GENERATION_STALL: &str =
+    include_str!("prose/auto_restart_generation_stall.md");
 const PROSE_AUTO_RESTART_FOOTER: &str = include_str!("prose/auto_restart_footer.md");
 const PROSE_LLAMA_CPP: &str = include_str!("prose/llama_cpp.md");
 const PROSE_ESTIMATION: &str = include_str!("prose/estimation.md");
@@ -72,6 +74,7 @@ pub fn run(args: GenConfigDocsArgs) -> Result<(), Error> {
         auto_restart_error_rate: PROSE_AUTO_RESTART_ERROR_RATE,
         auto_restart_periodic: PROSE_AUTO_RESTART_PERIODIC,
         auto_restart_ttft_stall: PROSE_AUTO_RESTART_TTFT_STALL,
+        auto_restart_generation_stall: PROSE_AUTO_RESTART_GENERATION_STALL,
         auto_restart_footer: PROSE_AUTO_RESTART_FOOTER,
         llama_cpp: PROSE_LLAMA_CPP,
         estimation: PROSE_ESTIMATION,
@@ -257,6 +260,7 @@ mod tests {
             auto_restart_error_rate: PROSE_AUTO_RESTART_ERROR_RATE,
             auto_restart_periodic: PROSE_AUTO_RESTART_PERIODIC,
             auto_restart_ttft_stall: PROSE_AUTO_RESTART_TTFT_STALL,
+            auto_restart_generation_stall: PROSE_AUTO_RESTART_GENERATION_STALL,
             auto_restart_footer: PROSE_AUTO_RESTART_FOOTER,
             llama_cpp: PROSE_LLAMA_CPP,
             estimation: PROSE_ESTIMATION,
@@ -286,6 +290,7 @@ mod tests {
             auto_restart_error_rate: "",
             auto_restart_periodic: "",
             auto_restart_ttft_stall: "",
+            auto_restart_generation_stall: "",
             auto_restart_footer: "",
             llama_cpp: "",
             estimation: "",

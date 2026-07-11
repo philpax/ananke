@@ -64,7 +64,7 @@ Emitted when the rolling estimator updates its correction factor for a service.
 
 #### `auto_restarted`
 
-Emitted when a `Running` service is drained and respawned by its auto-restart policy (see [auto-restart](configuration.md#auto-restart)). `trigger` is `"error_rate"`, `"periodic"`, or `"ttft_stall"` (the service produced no response frame within the stall timeout while a request was in flight); `detail` is a human-readable reason such as the observed error rate and window.
+Emitted when a `Running` service is drained and respawned by its auto-restart policy (see [auto-restart](configuration.md#auto-restart)). `trigger` is `"error_rate"`, `"periodic"`, `"ttft_stall"` (the service produced no response frame within the stall timeout while a request was in flight), or `"generation_stall"` (the child's `/metrics` progress counters stayed flat for the stall timeout while requests were in flight); `detail` is a human-readable reason such as the observed error rate and window.
 
 ```json
 {

@@ -300,7 +300,8 @@ The block is resolved as a **whole unit**: a service that sets any `auto_restart
 | `error_rate` | table | `false` | on, with the defaults below | Error-rate watchdog. `false` disables it; a table enables it and overrides individual thresholds. |
 | `periodic` | table | `false` | off | Periodic restart. Absent or `false` disables it; a table (with an `interval`) enables it. |
 | `ttft_stall` | table | `false` | on, with the defaults below | Time-to-first-token stall watchdog. `false` disables it; a table enables it and overrides the timeout. Catches a wedged child that accepts a streaming request but never emits a frame — a failure the error-rate watchdog cannot see, because the request never completes. Restarts only when the whole service has gone silent, so it never fights healthy concurrent traffic. |
-| `min_uptime` | duration string | `5m` | Minimum uptime a fresh run must reach before an error-rate restart may fire — the anti-flap cooldown. |
+| `generation_stall` | table | bool | on for `llama-cpp` services, off for `command` services | Generation-stall watchdog. Polls the child's `/metrics` progress counters and restarts when they stay flat while requests are in flight — the wedge `ttft_stall` cannot see, because non-streaming requests give the proxy nothing to watch. Needs the child's `--metrics` endpoint; see the generation-stall trigger section below. |
+| `min_uptime` | duration string | `5m` | Minimum uptime a fresh run must reach before an error-rate or generation-stall restart may fire — the anti-flap cooldown. |
 | `max_restarts` | u32 | `3` | Error-rate and stall restarts tolerated within `flap_window` before the service is disabled with reason `auto_restart_loop` instead of restarted again. Periodic restarts are intentional and do not count toward this cap. |
 | `flap_window` | duration string | `30m` | Sliding window over which `max_restarts` is counted. |
 
@@ -326,6 +327,15 @@ The block is resolved as a **whole unit**: a service that sets any `auto_restart
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `timeout` | duration string | `5m` | How long a streaming request may stay in-flight with no response frame before the service is restarted. A restart fires only if the *whole service* produced no frame in that window — a request merely queued behind a healthy generation does not trip it. Only streaming requests are watched (non-streaming and embeddings are bounded by `max_request_duration` instead). Does not gate on `min_uptime`; the flap cap still applies. |
+
+The generation-stall trigger reads llama.cpp's Prometheus `/metrics` progress counters (prompt + predicted tokens); flat counters under load are the signature of a wedged child that accepts requests but never advances. On `llama-cpp` services the daemon passes `--metrics` automatically while the trigger is on; an explicit `metrics = false` suppresses the flag and disables the trigger. On `command` services it is off by default (ananke does not build the child's argv, so it cannot enable the endpoint) — opt in with `generation_stall = true` once the wrapped server exposes a llama.cpp-compatible `/metrics` on the service's private port. If the endpoint is missing or unrecognisable, the trigger logs one warning and never fires.
+
+`[service.auto_restart.generation_stall]` fields:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `timeout` | duration string | `5m` | How long the child's `/metrics` progress counters may stay flat, with at least one request in flight, before the service is restarted. Healthy prefill and decode both advance the counters every batch, so the default is unambiguous under load. An idle service (nothing in flight) never trips it. |
+| `poll_interval` | duration string | `30s` | How often the child's `/metrics` endpoint is polled. |
 
 When a trigger fires, the service drains (SIGTERM with grace, then SIGKILL) and returns to `Idle`; the normal ensure path respawns it — on the next request for an on-demand service, or within a few seconds for a persistent one. An auto-restart emits an `auto_restarted` event on the daemon event stream (see [the API guide](api.md)). Oneshot services never auto-restart.
 
@@ -458,7 +468,7 @@ llama_server = "/opt/llama-cuda/llama-server"
 | `draft_model` | path | none | Separate draft-model GGUF for speculative decoding (`-md` / `--model-draft`). Requires `spec_type` to be set. |
 | `kv_unified` | bool | `false` | Use a single unified KV cache pool shared across all parallel slots (`-kvu` / `--kv-unified`). With `parallel > 1`, idle slots lend their share to active ones; total KV footprint is unchanged. |
 | `cache_idle_slots` | bool | `true` | When `false`, pass `--no-cache-idle-slots` so idle slots' prompt-cache state is dropped (a stability mitigation). |
-| `metrics` | bool | `false` | Expose llama-server's Prometheus `/metrics` endpoint. |
+| `metrics` | bool | `false`, but auto-enabled while the `generation_stall` watchdog is on | Expose llama-server's Prometheus `/metrics` endpoint. The generation-stall watchdog needs it and passes `--metrics` automatically while active; an explicit `metrics = false` suppresses the flag and disables that watchdog. |
 | `slots` | bool | `false` | Expose the `/slots` introspection endpoint. Note: reveals prompt contents - avoid on network-reachable ports. |
 | `batch_size` | u32 | none | Context batch size (`-b`). |
 | `ubatch_size` | u32 | none | Physical batch size (`-ub`). |

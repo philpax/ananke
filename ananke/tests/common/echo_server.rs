@@ -8,7 +8,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -36,6 +36,14 @@ pub struct EchoState {
     /// emits no token. Used to exercise the time-to-first-token stall
     /// watchdog.
     pub hang: Arc<AtomicBool>,
+    /// When set, `/metrics` serves a llama.cpp-style Prometheus body whose
+    /// progress counters read `metrics_counter`. Tests drive the counter to
+    /// simulate an advancing (healthy) or flat (wedged) child for the
+    /// generation-stall watchdog; when unset, `/metrics` falls through to the
+    /// generic "hello" response, simulating a child without `--metrics`.
+    pub metrics_enabled: Arc<AtomicBool>,
+    /// Value reported by both `/metrics` progress counters.
+    pub metrics_counter: Arc<AtomicU64>,
 }
 
 type EchoBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
@@ -112,6 +120,22 @@ async fn handle(
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header("content-type", "text/event-stream")
+                .body(body)
+                .unwrap())
+        }
+
+        "/metrics" if state.metrics_enabled.load(Ordering::Relaxed) => {
+            let n = state.metrics_counter.load(Ordering::Relaxed);
+            let body = format!(
+                "# TYPE llamacpp:prompt_tokens_total counter\n\
+                 llamacpp:prompt_tokens_total {n}\n\
+                 # TYPE llamacpp:tokens_predicted_total counter\n\
+                 llamacpp:tokens_predicted_total {n}\n"
+            );
+            let body = Full::new(Bytes::from(body)).map_err(|n| match n {}).boxed();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/plain; version=0.0.4")
                 .body(body)
                 .unwrap())
         }

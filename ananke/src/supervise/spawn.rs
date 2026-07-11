@@ -211,7 +211,14 @@ fn render_llama_server_flags(
     if lc.cache_idle_slots == Some(false) {
         args.push("--no-cache-idle-slots".into());
     }
-    if lc.metrics == Some(true) {
+    // `--metrics` is also auto-injected when the generation-stall watchdog is
+    // active, which polls the endpoint for progress counters. An explicit
+    // `metrics = false` wins (and disables that watchdog at runtime); the
+    // validator defaults `generation_stall` per template, so this branch only
+    // fires for llama-cpp services.
+    let genstall_needs_metrics =
+        svc.auto_restart.generation_stall.is_some() && lc.metrics != Some(false);
+    if lc.metrics == Some(true) || genstall_needs_metrics {
         args.push("--metrics".into());
     }
     if lc.slots == Some(true) {
@@ -389,7 +396,8 @@ mod tests {
 
     use super::*;
     use crate::config::validate::{
-        AllocationMode, DeviceSlot, Lifecycle, PlacementPolicy, ServiceConfig, SplitMode,
+        AllocationMode, DeviceSlot, GenerationStallTrigger, Lifecycle, PlacementPolicy,
+        ServiceConfig, SplitMode,
         test_fixtures::{expect_llama_cpp, minimal_command_service, minimal_service},
     };
 
@@ -489,6 +497,25 @@ mod tests {
         assert!(!cmd.args.iter().any(|a| a == "--metrics"));
         assert!(!cmd.args.iter().any(|a| a == "--slots"));
         assert!(!cmd.args.iter().any(|a| a == "-md"));
+    }
+
+    #[test]
+    fn generation_stall_injects_metrics_flag() {
+        let mut svc = base_service();
+        svc.auto_restart.generation_stall = Some(GenerationStallTrigger::default());
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(cmd.args.iter().any(|a| a == "--metrics"));
+    }
+
+    #[test]
+    fn explicit_metrics_false_suppresses_injection() {
+        let mut svc = base_service();
+        svc.auto_restart.generation_stall = Some(GenerationStallTrigger::default());
+        expect_llama_cpp(&mut svc).metrics = Some(false);
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(!cmd.args.iter().any(|a| a == "--metrics"));
     }
 
     #[test]

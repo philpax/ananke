@@ -13,7 +13,8 @@ use ananke_api::shared::{metadata::AnankeMetadata, modality::Modality};
 // deps. Re-exported here so existing `use crate::config::validate::DEFAULT_*`
 // paths keep working.
 pub use ananke_config::docs::{
-    DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS, DEFAULT_AUTO_RESTART_MAX_ERROR_RATE,
+    DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS, DEFAULT_AUTO_RESTART_GENERATION_STALL_MS,
+    DEFAULT_AUTO_RESTART_GENERATION_STALL_POLL_MS, DEFAULT_AUTO_RESTART_MAX_ERROR_RATE,
     DEFAULT_AUTO_RESTART_MAX_RESTARTS, DEFAULT_AUTO_RESTART_MIN_REQUESTS,
     DEFAULT_AUTO_RESTART_MIN_UPTIME_MS, DEFAULT_AUTO_RESTART_POLL_INTERVAL_MS,
     DEFAULT_AUTO_RESTART_TTFT_STALL_MS, DEFAULT_AUTO_RESTART_WINDOW_MS, DEFAULT_DRAIN_TIMEOUT_MS,
@@ -28,8 +29,8 @@ use tracing::warn;
 use crate::{
     config::parse::{
         EstimationConfig, RawAutoRestart, RawCommandService, RawConfig, RawErrorRateSettings,
-        RawExpertOffload, RawLlamaCppService, RawPeriodicSettings, RawService,
-        RawTtftStallSettings, SamplingConfig, Toggle,
+        RawExpertOffload, RawGenerationStallSettings, RawLlamaCppService, RawPeriodicSettings,
+        RawService, RawTtftStallSettings, SamplingConfig, Toggle,
     },
     errors::ExpectedError,
 };
@@ -488,6 +489,11 @@ pub struct AutoRestartSettings {
     /// Time-to-first-token stall watchdog, or `None` if disabled
     /// (`ttft_stall = false`). `Some` by default.
     pub ttft_stall: Option<TtftStallTrigger>,
+    /// Generation-stall watchdog (child `/metrics` progress polling), or
+    /// `None` if disabled. `Some` by default on the `llama-cpp` template;
+    /// `None` by default on the `command` template, where ananke cannot
+    /// inject `--metrics` into an argv it does not build.
+    pub generation_stall: Option<GenerationStallTrigger>,
     /// Anti-flap cooldown: minimum uptime of a fresh run before another
     /// auto-restart may fire.
     pub min_uptime_ms: u64,
@@ -502,10 +508,13 @@ impl AutoRestartSettings {
     /// Whether any trigger is active — a cheap gate the supervisor uses to
     /// skip watchdog setup entirely for services that opted fully out.
     pub fn any_enabled(&self) -> bool {
-        self.error_rate.is_some() || self.periodic.is_some() || self.ttft_stall.is_some()
+        self.error_rate.is_some()
+            || self.periodic.is_some()
+            || self.ttft_stall.is_some()
+            || self.generation_stall.is_some()
     }
 
-    /// Both triggers off, guardrails at their defaults. Used by test
+    /// All triggers off, guardrails at their defaults. Used by test
     /// fixtures so a supervisor under test gets no watchdog unless the test
     /// opts in explicitly.
     pub fn disabled() -> Self {
@@ -513,17 +522,22 @@ impl AutoRestartSettings {
             error_rate: None,
             periodic: None,
             ttft_stall: None,
+            generation_stall: None,
             ..Self::default()
         }
     }
 }
 
 impl Default for AutoRestartSettings {
+    /// The `llama-cpp`-template defaults. `validate_auto_restart` overrides
+    /// `generation_stall` to `None` for `command`-template services, where it
+    /// is off unless explicitly enabled.
     fn default() -> Self {
         Self {
             error_rate: Some(ErrorRateTrigger::default()),
             periodic: None,
             ttft_stall: Some(TtftStallTrigger::default()),
+            generation_stall: Some(GenerationStallTrigger::default()),
             min_uptime_ms: DEFAULT_AUTO_RESTART_MIN_UPTIME_MS,
             max_restarts: DEFAULT_AUTO_RESTART_MAX_RESTARTS,
             flap_window_ms: DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS,
@@ -543,6 +557,25 @@ impl Default for TtftStallTrigger {
     fn default() -> Self {
         Self {
             timeout_ms: DEFAULT_AUTO_RESTART_TTFT_STALL_MS,
+        }
+    }
+}
+
+/// Resolved generation-stall watchdog settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationStallTrigger {
+    /// How long the child's `/metrics` progress counters may stay flat, with
+    /// at least one request in flight, before the service is restarted.
+    pub timeout_ms: u64,
+    /// How often the child's `/metrics` endpoint is polled.
+    pub poll_interval_ms: u64,
+}
+
+impl Default for GenerationStallTrigger {
+    fn default() -> Self {
+        Self {
+            timeout_ms: DEFAULT_AUTO_RESTART_GENERATION_STALL_MS,
+            poll_interval_ms: DEFAULT_AUTO_RESTART_GENERATION_STALL_POLL_MS,
         }
     }
 }
@@ -1131,6 +1164,7 @@ fn validate_service(
             .auto_restart
             .as_ref()
             .or(daemon.defaults.auto_restart.as_ref()),
+        template_config.template(),
     )?;
 
     Ok(ServiceConfig {
@@ -1207,9 +1241,20 @@ fn validate_tracking(
 fn validate_auto_restart(
     name: &SmolStr,
     raw: Option<&RawAutoRestart>,
+    template: Template,
 ) -> Result<AutoRestartSettings, ExpectedError> {
+    // The generation-stall watchdog defaults per template: on for llama-cpp
+    // (where ananke builds the argv and can inject `--metrics`), off for
+    // command services (where it cannot; explicit opt-in soft-probes instead).
+    let default_generation_stall = match template {
+        Template::LlamaCpp => Some(GenerationStallTrigger::default()),
+        Template::Command => None,
+    };
     let Some(raw) = raw else {
-        return Ok(AutoRestartSettings::default());
+        return Ok(AutoRestartSettings {
+            generation_stall: default_generation_stall,
+            ..AutoRestartSettings::default()
+        });
     };
 
     let dur = |field: &str, s: &str| {
@@ -1242,6 +1287,15 @@ fn validate_auto_restart(
         Some(Toggle::Settings(s)) => Some(validate_ttft_stall(name, s)?),
     };
 
+    // Generation-stall watchdog defaults per template (see above); an
+    // explicit `true` or table enables it on either template.
+    let generation_stall = match &raw.generation_stall {
+        None => default_generation_stall,
+        Some(Toggle::Enabled(true)) => Some(GenerationStallTrigger::default()),
+        Some(Toggle::Enabled(false)) => None,
+        Some(Toggle::Settings(s)) => Some(validate_generation_stall(name, s)?),
+    };
+
     let min_uptime_ms = raw
         .min_uptime
         .as_deref()
@@ -1262,9 +1316,50 @@ fn validate_auto_restart(
         error_rate,
         periodic,
         ttft_stall,
+        generation_stall,
         min_uptime_ms,
         max_restarts,
         flap_window_ms,
+    })
+}
+
+fn validate_generation_stall(
+    name: &SmolStr,
+    s: &RawGenerationStallSettings,
+) -> Result<GenerationStallTrigger, ExpectedError> {
+    let d = GenerationStallTrigger::default();
+    let field = |field: &str, x: &str| {
+        parse_duration_ms(x).map_err(|e| {
+            fail(format!(
+                "service {name} auto_restart.generation_stall.{field}: {e}"
+            ))
+        })
+    };
+    let timeout_ms = s
+        .timeout
+        .as_deref()
+        .map(|x| field("timeout", x))
+        .transpose()?
+        .unwrap_or(d.timeout_ms);
+    let poll_interval_ms = s
+        .poll_interval
+        .as_deref()
+        .map(|x| field("poll_interval", x))
+        .transpose()?
+        .unwrap_or(d.poll_interval_ms);
+    if timeout_ms == 0 {
+        return Err(fail(format!(
+            "service {name}: auto_restart.generation_stall.timeout must be greater than zero"
+        )));
+    }
+    if poll_interval_ms == 0 {
+        return Err(fail(format!(
+            "service {name}: auto_restart.generation_stall.poll_interval must be greater than zero"
+        )));
+    }
+    Ok(GenerationStallTrigger {
+        timeout_ms,
+        poll_interval_ms,
     })
 }
 
@@ -1975,11 +2070,13 @@ devices.placement = "cpu-only"
 
     #[test]
     fn auto_restart_all_triggers_false_disables_policy() {
-        let svc =
-            svc_with_auto_restart("auto_restart = { error_rate = false, ttft_stall = false }")
-                .unwrap();
+        let svc = svc_with_auto_restart(
+            "auto_restart = { error_rate = false, ttft_stall = false, generation_stall = false }",
+        )
+        .unwrap();
         assert!(svc.auto_restart.error_rate.is_none());
         assert!(svc.auto_restart.ttft_stall.is_none());
+        assert!(svc.auto_restart.generation_stall.is_none());
         assert!(!svc.auto_restart.any_enabled());
     }
 
@@ -2003,6 +2100,89 @@ devices.placement = "cpu-only"
     #[test]
     fn auto_restart_ttft_stall_rejects_zero_timeout() {
         assert!(svc_with_auto_restart("auto_restart.ttft_stall = { timeout = \"0s\" }").is_err());
+    }
+
+    fn command_svc_with_auto_restart(block: &str) -> Result<ServiceConfig, ExpectedError> {
+        let src = format!(
+            r#"
+[[service]]
+name = "demo"
+template = "command"
+command = ["/bin/true"]
+port = 11435
+allocation.mode = "static"
+allocation.vram_gb = 4
+devices.placement = "cpu-only"
+{block}
+"#
+        );
+        let cfg = parse_and_merge(&src);
+        validate(&cfg).map(|ec| ec.services.into_iter().next().unwrap())
+    }
+
+    #[test]
+    fn auto_restart_generation_stall_defaults_on_for_llamacpp() {
+        let svc = svc_with_auto_restart("").unwrap();
+        let gs = svc
+            .auto_restart
+            .generation_stall
+            .as_ref()
+            .expect("generation stall on by default for llama-cpp");
+        assert_eq!(gs.timeout_ms, DEFAULT_AUTO_RESTART_GENERATION_STALL_MS);
+        assert_eq!(
+            gs.poll_interval_ms,
+            DEFAULT_AUTO_RESTART_GENERATION_STALL_POLL_MS
+        );
+    }
+
+    #[test]
+    fn auto_restart_generation_stall_defaults_off_for_command() {
+        // A command service's argv is not built by ananke, so `--metrics`
+        // cannot be injected — the watchdog is opt-in there.
+        let svc = command_svc_with_auto_restart("").unwrap();
+        assert!(svc.auto_restart.generation_stall.is_none());
+        // The default also applies when an auto_restart block is present but
+        // silent about generation_stall.
+        let svc = command_svc_with_auto_restart("auto_restart = { error_rate = false }").unwrap();
+        assert!(svc.auto_restart.generation_stall.is_none());
+    }
+
+    #[test]
+    fn auto_restart_generation_stall_explicit_true_enables_on_command() {
+        let svc =
+            command_svc_with_auto_restart("auto_restart = { generation_stall = true }").unwrap();
+        assert!(svc.auto_restart.generation_stall.is_some());
+    }
+
+    #[test]
+    fn auto_restart_generation_stall_false_disables_it() {
+        let svc = svc_with_auto_restart("auto_restart = { generation_stall = false }").unwrap();
+        assert!(svc.auto_restart.generation_stall.is_none());
+        // The other default triggers stay on.
+        assert!(svc.auto_restart.error_rate.is_some());
+        assert!(svc.auto_restart.ttft_stall.is_some());
+    }
+
+    #[test]
+    fn auto_restart_generation_stall_overrides() {
+        let svc = svc_with_auto_restart(
+            "auto_restart.generation_stall = { timeout = \"2m\", poll_interval = \"10s\" }",
+        )
+        .unwrap();
+        let gs = svc.auto_restart.generation_stall.as_ref().unwrap();
+        assert_eq!(gs.timeout_ms, 2 * 60 * 1000);
+        assert_eq!(gs.poll_interval_ms, 10 * 1000);
+    }
+
+    #[test]
+    fn auto_restart_generation_stall_rejects_zero_durations() {
+        assert!(
+            svc_with_auto_restart("auto_restart.generation_stall = { timeout = \"0s\" }").is_err()
+        );
+        assert!(
+            svc_with_auto_restart("auto_restart.generation_stall = { poll_interval = \"0s\" }")
+                .is_err()
+        );
     }
 
     #[test]

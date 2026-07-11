@@ -15,9 +15,10 @@ pub use merge::{Migration, resolve_inheritance, resolve_migrations};
 pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
     AllocationMode, AutoRestartSettings, CommandConfig, DaemonSettings, DeviceReserves, DeviceSlot,
-    EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters, HealthSettings, Lifecycle,
-    LlamaCppConfig, OffloadMode, PeriodicMode, PeriodicTrigger, PlacementPolicy, ServiceConfig,
-    SplitMode, Template, TemplateConfig, TrackingSettings, TtftStallTrigger, validate,
+    EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters, GenerationStallTrigger,
+    HealthSettings, Lifecycle, LlamaCppConfig, OffloadMode, PeriodicMode, PeriodicTrigger,
+    PlacementPolicy, ServiceConfig, SplitMode, Template, TemplateConfig, TrackingSettings,
+    TtftStallTrigger, validate,
 };
 
 /// Load, parse, merge, validate, and preflight a config file from disk.

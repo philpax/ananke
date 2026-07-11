@@ -85,6 +85,18 @@ pub const DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS: u64 = 1_800_000;
 /// first token in seconds, so a full five minutes of silence is unambiguous.
 pub const DEFAULT_AUTO_RESTART_TTFT_STALL_MS: u64 = 300_000;
 
+/// Default generation-stall timeout for the auto-restart watchdog (5
+/// minutes). While at least one request is in flight, the child's Prometheus
+/// progress counters (prompt + predicted tokens) must advance within this
+/// window or the run is treated as wedged and restarted. Matches the TTFT
+/// stall default: healthy prefill and decode both advance the counters every
+/// batch, so five minutes of flat counters under load is unambiguous.
+pub const DEFAULT_AUTO_RESTART_GENERATION_STALL_MS: u64 = 300_000;
+
+/// Default cadence at which the generation-stall watchdog polls the child's
+/// `/metrics` endpoint (30 s).
+pub const DEFAULT_AUTO_RESTART_GENERATION_STALL_POLL_MS: u64 = 30_000;
+
 /// Default concurrency cap on pending start requests waiting for the same
 /// supervisor to finish starting before they are rejected with `QueueFull`.
 pub const DEFAULT_START_QUEUE_DEPTH: usize = 10;
@@ -592,10 +604,16 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "Time-to-first-token stall watchdog. `false` disables it; a table enables it and overrides the timeout. Catches a wedged child that accepts a streaming request but never emits a frame — a failure the error-rate watchdog cannot see, because the request never completes. Restarts only when the whole service has gone silent, so it never fights healthy concurrent traffic.",
                 ),
                 field(
+                    "generation_stall",
+                    "table | bool",
+                    "on for `llama-cpp` services, off for `command` services",
+                    "Generation-stall watchdog. Polls the child's `/metrics` progress counters and restarts when they stay flat while requests are in flight — the wedge `ttft_stall` cannot see, because non-streaming requests give the proxy nothing to watch. Needs the child's `--metrics` endpoint; see the generation-stall trigger section below.",
+                ),
+                field(
                     "min_uptime",
                     "duration string",
                     bt_dur(DEFAULT_AUTO_RESTART_MIN_UPTIME_MS),
-                    "Minimum uptime a fresh run must reach before an error-rate restart may fire — the anti-flap cooldown.",
+                    "Minimum uptime a fresh run must reach before an error-rate or generation-stall restart may fire — the anti-flap cooldown.",
                 ),
                 field(
                     "max_restarts",
@@ -674,6 +692,24 @@ pub fn all_sections() -> Vec<SectionDoc> {
                 bt_dur(DEFAULT_AUTO_RESTART_TTFT_STALL_MS),
                 "How long a streaming request may stay in-flight with no response frame before the service is restarted. A restart fires only if the *whole service* produced no frame in that window — a request merely queued behind a healthy generation does not trip it. Only streaming requests are watched (non-streaming and embeddings are bounded by `max_request_duration` instead). Does not gate on `min_uptime`; the flap cap still applies.",
             )],
+        },
+        SectionDoc {
+            id: "service_auto_restart_generation_stall",
+            title: "Generation-stall trigger",
+            fields: vec![
+                field(
+                    "timeout",
+                    "duration string",
+                    bt_dur(DEFAULT_AUTO_RESTART_GENERATION_STALL_MS),
+                    "How long the child's `/metrics` progress counters may stay flat, with at least one request in flight, before the service is restarted. Healthy prefill and decode both advance the counters every batch, so the default is unambiguous under load. An idle service (nothing in flight) never trips it.",
+                ),
+                field(
+                    "poll_interval",
+                    "duration string",
+                    bt_dur(DEFAULT_AUTO_RESTART_GENERATION_STALL_POLL_MS),
+                    "How often the child's `/metrics` endpoint is polled.",
+                ),
+            ],
         },
         SectionDoc {
             id: "llama_cpp",
@@ -773,8 +809,8 @@ pub fn all_sections() -> Vec<SectionDoc> {
                 field(
                     "metrics",
                     "bool",
-                    "`false`",
-                    "Expose llama-server's Prometheus `/metrics` endpoint.",
+                    "`false`, but auto-enabled while the `generation_stall` watchdog is on",
+                    "Expose llama-server's Prometheus `/metrics` endpoint. The generation-stall watchdog needs it and passes `--metrics` automatically while active; an explicit `metrics = false` suppresses the flag and disables that watchdog.",
                 ),
                 field(
                     "slots",

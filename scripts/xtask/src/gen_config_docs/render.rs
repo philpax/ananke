@@ -27,6 +27,7 @@ pub struct ProseFragments {
     pub auto_restart_error_rate: &'static str,
     pub auto_restart_periodic: &'static str,
     pub auto_restart_ttft_stall: &'static str,
+    pub auto_restart_generation_stall: &'static str,
     pub auto_restart_footer: &'static str,
     pub llama_cpp: &'static str,
     pub estimation: &'static str,
@@ -160,6 +161,12 @@ fn render_auto_restart(out: &mut String, sections: &[SectionDoc], prose: &ProseF
     emit_table(
         out,
         find_section(sections, "service_auto_restart_ttft_stall"),
+    );
+    writeln!(out).unwrap();
+    write_prose(out, prose.auto_restart_generation_stall);
+    emit_table(
+        out,
+        find_section(sections, "service_auto_restart_generation_stall"),
     );
     writeln!(out).unwrap();
     write_prose(out, prose.auto_restart_footer);

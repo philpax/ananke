@@ -41,8 +41,9 @@ pub enum Event {
         at_ms: i64,
     },
     /// A `Running` service was drained and respawned by its auto-restart
-    /// policy. `trigger` is `"error_rate"` or `"periodic"`; `detail` is a
-    /// human-readable reason (e.g. the observed error rate and window).
+    /// policy. `trigger` is `"error_rate"`, `"periodic"`, `"ttft_stall"`, or
+    /// `"generation_stall"`; `detail` is a human-readable reason (e.g. the
+    /// observed error rate and window).
     AutoRestarted {
         #[schema(value_type = String)]
         service: SmolStr,
