@@ -393,7 +393,7 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "modality",
                     "string",
                     "`\"chat\"`",
-                    "`\"chat\"` or `\"embedding\"` (see [Embedding Services](#embedding-services)). Any other string is a hard config error.",
+                    "`\"chat\"` or `\"embedding\"` (see [Embedding Services](#embedding-services)). On `llama-cpp` services, `\"embedding\"` also passes `--embeddings` to llama-server. Any other string is a hard config error.",
                 ),
                 field(
                     "extra_args",

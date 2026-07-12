@@ -116,7 +116,7 @@ These fields appear at the top level of every `[[service]]` block, regardless of
 | `priority` | u8 | `50` (or `[defaults]` value) | Eviction priority; higher wins eviction contests. |
 | `idle_timeout` | duration string | `10m` (or `[defaults]` value) | Idle timeout for on-demand services. |
 | `description` | string | none | Human-readable description exposed through `/v1/models` and `/api/services`. |
-| `modality` | string | `"chat"` | `"chat"` or `"embedding"` (see [Embedding Services](#embedding-services)). Any other string is a hard config error. |
+| `modality` | string | `"chat"` | `"chat"` or `"embedding"` (see [Embedding Services](#embedding-services)). On `llama-cpp` services, `"embedding"` also passes `--embeddings` to llama-server. Any other string is a hard config error. |
 | `extra_args` | array of string | none | Extra argv appended to the service's launch command. |
 | `extra_args_append` | array of string | none | Extra argv appended to the inherited list (use with `extends`; concatenated with parent's list). |
 | `env` | map string → string | none | Environment variables set on the spawned process. Accepts `{port}`, `{gpu_ids}`, `{vram_mb}`, `{model}`, `{name}` placeholders. |
@@ -593,7 +593,14 @@ The rewrite happens *after* `[service.filters]` is applied, so `openai_proxy.ups
 
 #### Embedding Services
 
-By default every service is registered as a chat model. Pooling-only embedding models (Jina v5, BGE, E5, …) opt in by setting `modality = "embedding"` on the service. The proxy itself is endpoint-agnostic - it already routes `POST /v1/embeddings` by `model` field - so the `modality` field is purely a typed declaration: clients filter on it through `/v1/models` and `/api/services`, and the frontend renders a teal `embedding` badge next to the service name (mirroring the purple `vision` badge for llama.cpp services with an `mmproj`).
+By default every service is registered as a chat model. Pooling-only embedding models (Jina v5, BGE, E5, LFM2.5, …) opt in by setting `modality = "embedding"` on the service. The proxy itself is endpoint-agnostic - it already routes `POST /v1/embeddings` by `model` field.
+
+What the modality does depends on the template:
+
+- On `llama-cpp` services it passes `--embeddings` to llama-server, enabling its embeddings endpoint. The pooling strategy comes from the GGUF's `{arch}.pooling_type`.
+- On `command` services the wrapped server is expected to speak `/v1/embeddings` natively; nothing extra is passed.
+
+Beyond that the field is a typed declaration: clients filter on it through `/v1/models` and `/api/services`, and the frontend renders a teal `embedding` badge next to the service name (mirroring the purple `vision` badge for llama.cpp services with an `mmproj`).
 
 ```toml
 [[service]]

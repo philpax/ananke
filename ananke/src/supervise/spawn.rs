@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use ananke_api::shared::modality::Modality;
+
 use crate::{
     allocator::placement::CommandArgs,
     config::validate::{LlamaCppConfig, PlacementPolicy, ServiceConfig, TemplateConfig},
@@ -210,6 +212,12 @@ fn render_llama_server_flags(
     }
     if lc.cache_idle_slots == Some(false) {
         args.push("--no-cache-idle-slots".into());
+    }
+    // An embedding service needs llama-server's embeddings endpoint enabled;
+    // the pooling strategy comes from the GGUF's `{arch}.pooling_type`, so
+    // the flag is all the modality implies.
+    if svc.modality == Modality::Embedding {
+        args.push("--embeddings".into());
     }
     // `--metrics` is also auto-injected when the generation-stall watchdog is
     // active, which polls the endpoint for progress counters. An explicit
@@ -497,6 +505,19 @@ mod tests {
         assert!(!cmd.args.iter().any(|a| a == "--metrics"));
         assert!(!cmd.args.iter().any(|a| a == "--slots"));
         assert!(!cmd.args.iter().any(|a| a == "-md"));
+    }
+
+    #[test]
+    fn embedding_modality_injects_embeddings_flag() {
+        let mut svc = base_service();
+        svc.modality = ananke_api::shared::Modality::Embedding;
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(cmd.args.iter().any(|a| a == "--embeddings"));
+        // Chat services don't get it.
+        let svc = base_service();
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(!cmd.args.iter().any(|a| a == "--embeddings"));
     }
 
     #[test]
