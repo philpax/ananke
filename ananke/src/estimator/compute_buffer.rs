@@ -126,6 +126,19 @@ fn tuning_for(summary: &GgufSummary) -> Tuning {
             slope: 4,
         },
 
+        // LFM2/LFM2.5: hybrid shortconv + sparse-attention with a tiny
+        // hidden size, so the scratch is dominated by the CUDA context and
+        // nearly flat in context length. Calibrated on
+        // LFM2.5-Embedding-350M-Q8_0 (2026-07-12, single 3090, --embeddings):
+        // residuals 397/403/411/427 MiB at 2k/8k/16k/32k → (420, 1) covers
+        // the worst case with ~25 MiB of headroom. The flat residual across
+        // the sweep also confirms the per-layer-array KV term in the
+        // llama-family estimator.
+        "lfm2" => Tuning {
+            base: 420,
+            slope: 1,
+        },
+
         // Llama-family default: llama / qwen2 / qwen3 / mistral / phi3 /
         // glm4 / deci. Covers everything that doesn't match above and
         // falls through the fallback estimator too. qwen3-4b sweep

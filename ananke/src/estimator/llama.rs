@@ -64,6 +64,19 @@ pub const LLAMA_FAMILY: &[&str] = &[
     // omits `attention.head_count_kv` entirely (full MHA, no GQA), which
     // `compute_kv_per_token` resolves by falling back to `head_count`.
     "talkie",
+    // LiquidAI LFM2/LFM2.5: a hybrid where most blocks are gated short-
+    // convolution layers (`blk.N.shortconv.*` tensors, no KV cache) and a
+    // minority run GQA attention. `attention.head_count_kv` is a per-layer
+    // array with zeros on the conv layers, so the existing array handling in
+    // `compute_kv_per_token` prices the conv layers' KV at exactly zero.
+    // The shortconv tensors live under `blk.N.*` and fall through
+    // `collect_per_layer` like any other layer weight; the conv recurrent
+    // state (`shortconv.l_cache` × embedding width per layer per sequence)
+    // is a few hundred KiB total and is absorbed by the compute buffer.
+    // No `attention.key_length`/`value_length` keys, so the head-dim
+    // fallback below derives `embedding_length / head_count` (64 for the
+    // 350M embedder) the same way llama.cpp does.
+    "lfm2",
 ];
 
 pub fn is_llama_family(arch: &str) -> bool {
@@ -157,17 +170,35 @@ fn compute_kv_per_token(
 
     // Per-head byte widths. Gemma 4 uses different head dims for SWA
     // layers (`key_length_swa` / `value_length_swa`); everyone else
-    // reuses the same pair for both.
+    // reuses the same pair for both. When the keys are absent llama.cpp
+    // derives `n_embd_head = n_embd / n_head`, so mirror that before
+    // falling back to the classic 128 (which is only correct for models
+    // whose ratio happens to be 128 — e.g. lfm2's is 64).
+    let derived_head_dim = summary
+        .metadata
+        .get(&*format!("{arch}.embedding_length"))
+        .and_then(|v| v.as_u32())
+        .zip(
+            summary
+                .metadata
+                .get(&*format!("{arch}.attention.head_count"))
+                .and_then(|v| v.as_u32())
+                .filter(|&h| h > 0),
+        )
+        .map(|(embd, heads)| (embd / heads) as u64)
+        .unwrap_or(128);
     let key_length = summary
         .metadata
         .get(&*format!("{arch}.attention.key_length"))
         .and_then(|v| v.as_u32())
-        .unwrap_or(128) as u64;
+        .map(|v| v as u64)
+        .unwrap_or(derived_head_dim);
     let value_length = summary
         .metadata
         .get(&*format!("{arch}.attention.value_length"))
         .and_then(|v| v.as_u32())
-        .unwrap_or(128) as u64;
+        .map(|v| v as u64)
+        .unwrap_or(derived_head_dim);
     let key_length_swa = summary
         .metadata
         .get(&*format!("{arch}.attention.key_length_swa"))
@@ -392,6 +423,60 @@ mod tests {
         // per_layer_kv = 4 × (128*2 + 128*2) = 4 × 512 = 2048 bytes.
         // kv_per_token = 2 × 2048 = 4096 bytes.
         assert_eq!(e.kv_per_token, 4096);
+    }
+
+    #[test]
+    fn lfm2_hybrid_kv_prices_only_attention_layers() {
+        // LFM2.5-Embedding-350M shape: 16 blocks, head_count 16 (scalar),
+        // head_count_kv a per-layer array with zeros on shortconv layers,
+        // no key/value_length keys → head dim derives 1024 / 16 = 64.
+        let mut tensors = std::collections::BTreeMap::new();
+        for layer in 0..16u32 {
+            let kind = if layer % 3 == 2 {
+                "attn_q"
+            } else {
+                "shortconv.in_proj"
+            };
+            let name = format!("blk.{layer}.{kind}.weight");
+            tensors.insert(SmolStr::new(&name), tensor(&name, 1024 * 1024));
+        }
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("lfm2".into()),
+        );
+        metadata.insert(SmolStr::new("lfm2.block_count"), GgufValue::U32(16));
+        metadata.insert(SmolStr::new("lfm2.embedding_length"), GgufValue::U32(1024));
+        metadata.insert(
+            SmolStr::new("lfm2.attention.head_count"),
+            GgufValue::U32(16),
+        );
+        let kv_array: Vec<GgufValue> = (0..16)
+            .map(|i| GgufValue::U32(if i % 3 == 2 { 8 } else { 0 }))
+            .collect();
+        metadata.insert(
+            SmolStr::new("lfm2.attention.head_count_kv"),
+            GgufValue::Array(kv_array),
+        );
+        let s = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 16 * 1024 * 1024,
+            tensors,
+            metadata,
+            block_count: Some(16),
+            architecture: SmolStr::new("lfm2"),
+            shards: vec!["/fake".into()],
+        };
+
+        assert!(is_llama_family("lfm2"));
+        let empty: Vec<String> = Vec::new();
+        let e = estimate(&s, &inputs("f16", "f16", 16384, &empty));
+        // 5 attention layers (indices 2,5,8,11,14) × 8 kv-heads ×
+        // (64 + 64) head dims × 2 bytes (f16) = 5 × 2048 = 10240 B/token.
+        // Shortconv layers contribute exactly zero.
+        assert_eq!(e.kv_per_token, 10240);
+        // All 16 layers still carry weights for the layer split.
+        assert_eq!(e.per_layer_bytes.as_ref().unwrap().len(), 16);
     }
 
     #[test]
