@@ -226,22 +226,19 @@ When a new model family ships with a `general.architecture` value that ananke do
 
    The output shows the architecture name, block count, tensor categories, and every attention-related metadata key. This is the ground truth for what the estimator needs to read.
 
-2. **Choose the right family module.** The estimator dispatches on `general.architecture` through four family modules in `ananke/src/estimator/`:
-
-   - **`llama`** — dense transformer models with standard `blk.N.*` tensor layout and `{arch}.attention.*` metadata keys. Covers: llama, qwen2, qwen3, mistral, gemma, gemma2, gemma3, phi3, glm4, deci, gemma4, gemma3n, talkie. Models that omit `attention.head_count_kv` (full multi-head attention, no GQA — e.g. talkie) are handled by `compute_kv_per_token` falling back to `attention.head_count`, mirroring llama.cpp's `n_head_kv` default; small per-tensor "gain" scalars that some of these architectures add fall through the layer/non-layer walk harmlessly.
-   - **`moe`** — mixture-of-experts models with `blk.N.ffn_{gate,up,down}_exps.weight` tensors. Covers: llama4, qwen3moe, qwen3vlmoe, deepseek2, mixtral, gpt-oss, glm4moe, qwen35moe. The MoE estimator also handles `full_attention_interval` via `hybrid::kv_for_hybrid()` for hybrid MoE+SSM models.
-   - **`hybrid`** — models that mix attention with recurrent SSM layers (no MoE). Every `full_attention_interval`-th layer runs full attention with KV cache; the rest use SSM with constant per-layer state. Covers: jamba, qwen35.
-   - **`mamba`** — pure SSM models (no attention). Covers: mamba.
-
-   Pick the module that matches the tensor layout. If the new architecture uses standard `blk.N.*` tensors with `{arch}.attention.*` metadata, it goes in `llama`. If it has `_exps` expert tensors, it goes in `moe`. If it has SSM tensors (`ssm_*`) and a `full_attention_interval` metadata key but no MoE tensors, it goes in `hybrid`.
+2. **Choose the right family module.** The estimator dispatches on `general.architecture` through the family modules in `ananke/src/estimator/`. Each module's `*_FAMILY` constant lists the architectures it covers, and the module docs and per-entry comments describe the tensor layouts and metadata quirks already handled. Read those alongside the dump from step 1, and pick the module whose expectations the new architecture's tensors and metadata actually match — the existing entries are worked examples of what "matching" looks like.
 
 3. **Register and test.**
 
-   a. Add the architecture name to the family's constant array (`LLAMA_FAMILY`, `MOE_FAMILY`, `HYBRID_FAMILY`, or `MAMBA_FAMILY`).
+   a. Add the architecture name to the chosen family's `*_FAMILY` constant, with a comment describing the quirks it brings.
 
-   b. If the architecture needs a custom compute-buffer tuning curve, add a match arm in `ananke/src/estimator/compute_buffer.rs::tuning_for()`. The formula is `base + slope * (ctx / 1024)` MiB per device. Use the pattern from existing entries: calibrate against actual llama.cpp measurements at several context lengths, pick a base that covers the worst case, and keep the slope as low as the data allows.
+   b. If the architecture needs a custom compute-buffer tuning curve, add a match arm in `ananke/src/estimator/compute_buffer.rs::tuning_for()`. The formula is `base + slope * (ctx / 1024)` MiB per device. Derive the curve like this:
 
-   To derive the curve, sweep `llama-server -m <model> -c <ctx> -ngl 99` (pin one card with `CUDA_VISIBLE_DEVICES=0`) over a few context lengths, read each run's process VRAM from `nvidia-smi --query-compute-apps=pid,used_memory`, and compute the residual `compute_buffer = used - gpu_weights - kv_total`, where `gpu_weights` is the estimator's `weights_bytes` minus its `token_embd_bytes` (llama.cpp keeps token embeddings on CPU) and `kv_total = kv_per_token * ctx`. Both terms come straight from `cargo run --example estimate -- --model <model> --context <ctx>`. Fit `base + slope * (ctx / 1024)` to the residuals with a little headroom; a flat residual across the sweep also confirms `kv_per_token` is right (a wrong KV term makes the residual trend with context). One gotcha: that `estimate` example's printed `gpu_vram_mib` doubles the compute buffer (`active_devices.min(2)`) for a 2-GPU split, so pass `--active-devices 1` when comparing its total to a single-card `nvidia-smi` reading.
+   - Sweep `llama-server -m <model> -c <ctx> -ngl 99` over a few context lengths, pinning one card with `CUDA_VISIBLE_DEVICES=0`. For an embedding model, add `--embeddings` (the modality implies the same flag in production); the calibration is otherwise identical.
+   - Read each run's process VRAM from `nvidia-smi --query-compute-apps=pid,used_memory`. Match the row to the server's actual pid and wait for each server to fully exit before the next run — a leftover server silently wins the port bind and you measure the same process at every "ctx".
+   - Compute the residual `compute_buffer = used - gpu_weights - kv_total`, where `gpu_weights` is the estimator's `weights_bytes` minus its `token_embd_bytes` (llama.cpp keeps token embeddings on CPU) and `kv_total = kv_per_token * ctx`. Both terms come straight from `cargo run --example estimate -- --model <model> --context <ctx>`.
+   - Fit `base + slope * (ctx / 1024)` to the residuals: pick a base that covers the worst case with a little headroom, and keep the slope as low as the data allows. A flat residual across the sweep also confirms `kv_per_token` is right — a wrong KV term makes the residual trend with context.
+   - One gotcha: the `estimate` example's printed `gpu_vram_mib` doubles the compute buffer (`active_devices.min(2)`) for a 2-GPU split, so pass `--active-devices 1` when comparing its total to a single-card `nvidia-smi` reading.
 
    c. Add a unit test in the family module that exercises the key behaviour (KV computation, layer collection, expert detection, etc.). Use `synth_gguf::Builder` from `ananke/tests/common/mod.rs` to construct a fake GGUF summary, or write one inline with the same pattern.
 
