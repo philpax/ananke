@@ -252,6 +252,13 @@ pub struct RawLlamaCppService {
     pub ubatch_size: Option<u32>,
     pub threads: Option<u32>,
     pub threads_batch: Option<u32>,
+    /// NUMA thread-and-memory placement strategy passed to llama-server's
+    /// `--numa`: `"distribute"` (spread threads and interleave memory across
+    /// all nodes), `"isolate"` (pin to one node), or `"numactl"` (defer to
+    /// an external `numactl` mask). Validated into
+    /// [`crate::config::NumaStrategy`]. Unset leaves llama-server's default
+    /// (no `--numa` flag).
+    pub numa: Option<SmolStr>,
     pub jinja: Option<bool>,
     pub chat_template_file: Option<PathBuf>,
     pub override_tensor: Option<Vec<String>>,

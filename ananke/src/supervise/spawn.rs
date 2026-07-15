@@ -205,6 +205,10 @@ fn render_llama_server_flags(
         args.push("--threads-batch".into());
         args.push(t.to_string());
     }
+    if let Some(numa) = lc.numa {
+        args.push("--numa".into());
+        args.push(numa.as_flag().into());
+    }
     if let Some(b) = lc.batch_size {
         args.push("-b".into());
         args.push(b.to_string());
@@ -414,8 +418,8 @@ mod tests {
 
     use super::*;
     use crate::config::validate::{
-        AllocationMode, DeviceSlot, GenerationStallTrigger, Lifecycle, PlacementPolicy,
-        ServiceConfig, SplitMode,
+        AllocationMode, DeviceSlot, GenerationStallTrigger, Lifecycle, NumaStrategy,
+        PlacementPolicy, ServiceConfig, SplitMode,
         test_fixtures::{expect_llama_cpp, minimal_command_service, minimal_service},
     };
 
@@ -451,6 +455,53 @@ mod tests {
         assert!(cmd.args.iter().any(|a| a == "--port"));
         assert!(cmd.args.iter().any(|a| a == "41000"));
         assert_eq!(cmd.env.get("CUDA_VISIBLE_DEVICES").unwrap(), "0");
+    }
+
+    #[test]
+    fn renders_numa_flag() {
+        let mut svc = base_service();
+        expect_llama_cpp(&mut svc).numa = Some(NumaStrategy::Distribute);
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        let i = cmd.args.iter().position(|a| a == "--numa").unwrap();
+        assert_eq!(cmd.args[i + 1], "distribute");
+    }
+
+    #[test]
+    fn omits_numa_flag_when_unset() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        assert!(!cmd.args.iter().any(|a| a == "--numa"));
+    }
+
+    #[test]
+    fn override_tensor_rules_emit_one_comma_joined_flag() {
+        // Current llama.cpp honours only the last `-ot`; multiple rules must
+        // therefore collapse into a single comma-joined flag, not one per rule.
+        let mut svc = base_service();
+        expect_llama_cpp(&mut svc).override_tensor = vec![
+            r"blk\.0\.ffn_(gate|up|down)_exps=CPU".into(),
+            r"blk\.1\.ffn_(gate|up|down)_exps=CUDA1".into(),
+        ];
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let cmd = render_argv(&svc, &alloc, None).unwrap();
+        let ot_positions: Vec<usize> = cmd
+            .args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| (a == "-ot").then_some(i))
+            .collect();
+        assert_eq!(
+            ot_positions.len(),
+            1,
+            "exactly one -ot flag expected, got {:?}",
+            cmd.args
+        );
+        assert_eq!(
+            cmd.args[ot_positions[0] + 1],
+            r"blk\.0\.ffn_(gate|up|down)_exps=CPU,blk\.1\.ffn_(gate|up|down)_exps=CUDA1"
+        );
     }
 
     #[test]

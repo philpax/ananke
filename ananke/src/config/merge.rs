@@ -157,6 +157,7 @@ fn merge_llama_cpp(
         ubatch_size: inherit!(ubatch_size),
         threads: inherit!(threads),
         threads_batch: inherit!(threads_batch),
+        numa: inherit!(numa),
         jinja: inherit!(jinja),
         chat_template_file: inherit!(chat_template_file),
         override_tensor: inherit!(override_tensor),

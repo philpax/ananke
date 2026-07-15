@@ -23,6 +23,7 @@ pub use ananke_config::docs::{
     DEFAULT_OPENAI_MAX_BODY_BYTES, DEFAULT_OPENAI_MAX_BODY_MB, DEFAULT_PRIVATE_PORT_END,
     DEFAULT_PRIVATE_PORT_START, DEFAULT_SERVICE_PRIORITY,
 };
+use ananke_config::flags;
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -230,6 +231,8 @@ pub struct LlamaCppConfig {
     pub ubatch_size: Option<u32>,
     pub threads: Option<u32>,
     pub threads_batch: Option<u32>,
+    /// `--numa` placement strategy. See [`NumaStrategy`].
+    pub numa: Option<NumaStrategy>,
     pub jinja: Option<bool>,
     pub chat_template_file: Option<PathBuf>,
     pub override_tensor: Vec<String>,
@@ -410,14 +413,29 @@ pub enum SplitMode {
 }
 
 impl SplitMode {
-    /// The `--split-mode` flag value, also used verbatim in operator-facing
-    /// validation errors.
+    /// Variant ↔ flag binding. The strings come from
+    /// [`ananke_config::flags::split_mode`], so `as_flag`, `from_flag`, and
+    /// `valid_values` all resolve to the same single-sourced vocabulary the
+    /// schema docs use.
+    const VARIANTS: &'static [(Self, &'static str)] = &[
+        (Self::Layer, flags::split_mode::LAYER),
+        (Self::Row, flags::split_mode::ROW),
+        (Self::Tensor, flags::split_mode::TENSOR),
+    ];
+
+    /// The `--split-mode` flag value.
     pub fn as_flag(self) -> &'static str {
-        match self {
-            SplitMode::Layer => "layer",
-            SplitMode::Row => "row",
-            SplitMode::Tensor => "tensor",
-        }
+        variant_flag(Self::VARIANTS, self)
+    }
+
+    /// Parse an accepted `devices.split` string into a variant.
+    pub fn from_flag(s: &str) -> Option<Self> {
+        flag_variant(Self::VARIANTS, s)
+    }
+
+    /// Accepted values as a quoted list for operator-facing errors.
+    pub fn valid_values() -> String {
+        flags::quoted_list(flags::split_mode::ALL)
     }
 
     /// Whether this mode shards every layer across all spanned GPUs (as
@@ -425,6 +443,61 @@ impl SplitMode {
     /// balanced-distribution path.
     pub fn is_sharded(self) -> bool {
         matches!(self, SplitMode::Row | SplitMode::Tensor)
+    }
+}
+
+/// Look up a variant's flag string in its `VARIANTS` table. Every variant
+/// is registered (guarded by each enum's `*_variants_round_trip` test), so
+/// the lookup is total in practice.
+fn variant_flag<T: Copy + PartialEq>(table: &[(T, &'static str)], value: T) -> &'static str {
+    table
+        .iter()
+        .find_map(|&(v, flag)| (v == value).then_some(flag))
+        .expect("enum variant is registered in its VARIANTS table")
+}
+
+/// Inverse of [`variant_flag`]: resolve an accepted string to its variant.
+fn flag_variant<T: Copy>(table: &[(T, &'static str)], s: &str) -> Option<T> {
+    table.iter().find_map(|&(v, flag)| (flag == s).then_some(v))
+}
+
+/// NUMA thread-and-memory placement strategy for a llama-cpp service,
+/// emitted as llama.cpp's `--numa <strategy>`. Resolved from the `numa`
+/// config value; unset emits no flag (llama.cpp's default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumaStrategy {
+    /// Spread worker threads across all nodes and interleave the model's
+    /// memory allocation across them — balances memory-bandwidth load on
+    /// multi-node / multi-CCD hosts (e.g. Threadripper).
+    Distribute,
+    /// Confine threads and allocation to a single NUMA node.
+    Isolate,
+    /// Defer placement to an external `numactl` mask.
+    Numactl,
+}
+
+impl NumaStrategy {
+    /// Variant ↔ flag binding, sourced from
+    /// [`ananke_config::flags::numa`] (see [`SplitMode::VARIANTS`]).
+    const VARIANTS: &'static [(Self, &'static str)] = &[
+        (Self::Distribute, flags::numa::DISTRIBUTE),
+        (Self::Isolate, flags::numa::ISOLATE),
+        (Self::Numactl, flags::numa::NUMACTL),
+    ];
+
+    /// The `--numa` flag value.
+    pub fn as_flag(self) -> &'static str {
+        variant_flag(Self::VARIANTS, self)
+    }
+
+    /// Parse an accepted `numa` string into a variant.
+    pub fn from_flag(s: &str) -> Option<Self> {
+        flag_variant(Self::VARIANTS, s)
+    }
+
+    /// Accepted values as a quoted list for operator-facing errors.
+    pub fn valid_values() -> String {
+        flags::quoted_list(flags::numa::ALL)
     }
 }
 
@@ -974,15 +1047,14 @@ fn validate_service(
     let gpu_allow = dev.gpu_allow.clone().unwrap_or_default();
     let gpu_headroom_mb = dev.gpu_headroom_mb.unwrap_or(0);
 
-    let split_mode = match dev.split.as_deref().unwrap_or("layer") {
-        "layer" => SplitMode::Layer,
-        "row" => SplitMode::Row,
-        "tensor" => SplitMode::Tensor,
-        other => {
-            return Err(fail(format!(
-                "service {name}: unknown devices.split `{other}` (expected layer, row, or tensor)"
-            )));
-        }
+    let split_mode = match dev.split.as_deref() {
+        None => SplitMode::Layer,
+        Some(s) => SplitMode::from_flag(s).ok_or_else(|| {
+            fail(format!(
+                "service {name}: unknown devices.split `{s}` (expected {})",
+                SplitMode::valid_values()
+            ))
+        })?,
     };
 
     // Expert offload moves expert tensors to the CPU. That makes it
@@ -1530,15 +1602,26 @@ fn validate_llama_cpp(
         None => OffloadMode::Off,
         Some(RawExpertOffload::Layers(n)) => OffloadMode::Layers(*n),
         Some(RawExpertOffload::Mode(s)) => match s.as_str() {
-            "off" => OffloadMode::Off,
-            "auto" => OffloadMode::Auto,
+            flags::expert_offload::OFF => OffloadMode::Off,
+            flags::expert_offload::AUTO => OffloadMode::Auto,
             other => {
                 return Err(fail(format!(
                     "service {name}: expert_offload `{other}` is invalid \
-                     (expected \"off\", \"auto\", or an integer layer count)"
+                     (expected {}, or an integer layer count)",
+                    flags::quoted_list(flags::expert_offload::ALL)
                 )));
             }
         },
+    };
+
+    let numa = match lc.numa.as_deref() {
+        None => None,
+        Some(s) => Some(NumaStrategy::from_flag(s).ok_or_else(|| {
+            fail(format!(
+                "service {name}: numa `{s}` is invalid (expected {})",
+                NumaStrategy::valid_values()
+            ))
+        })?),
     };
 
     Ok(LlamaCppConfig {
@@ -1564,6 +1647,7 @@ fn validate_llama_cpp(
         ubatch_size: lc.ubatch_size,
         threads: lc.threads,
         threads_batch: lc.threads_batch,
+        numa,
         jinja: lc.jinja,
         chat_template_file: lc.chat_template_file.clone(),
         override_tensor: lc.override_tensor.clone().unwrap_or_default(),
@@ -1962,6 +2046,7 @@ pub mod test_fixtures {
             ubatch_size: None,
             threads: None,
             threads_batch: None,
+            numa: None,
             jinja: None,
             chat_template_file: None,
             override_tensor: Vec::new(),
@@ -1990,6 +2075,58 @@ mod tests {
         let mut cfg = parse_toml(src, Path::new("/t")).unwrap();
         resolve_inheritance(&mut cfg).unwrap();
         cfg
+    }
+
+    #[test]
+    fn split_mode_vocab_is_single_sourced_and_complete() {
+        for &(variant, flag) in SplitMode::VARIANTS {
+            assert_eq!(variant.as_flag(), flag);
+            assert_eq!(SplitMode::from_flag(flag), Some(variant));
+        }
+        // Completeness: the exhaustive match makes a newly added variant a
+        // compile error until it is handled, and the assert then requires it
+        // to be registered in VARIANTS (so `as_flag` never hits its expect).
+        for variant in [SplitMode::Layer, SplitMode::Row, SplitMode::Tensor] {
+            match variant {
+                SplitMode::Layer | SplitMode::Row | SplitMode::Tensor => {}
+            }
+            assert!(
+                SplitMode::VARIANTS.iter().any(|&(v, _)| v == variant),
+                "{variant:?} missing from SplitMode::VARIANTS"
+            );
+        }
+        assert_eq!(SplitMode::from_flag("bogus"), None);
+        // Errors and docs draw from the same vocabulary.
+        assert_eq!(
+            SplitMode::valid_values(),
+            flags::quoted_list(flags::split_mode::ALL)
+        );
+    }
+
+    #[test]
+    fn numa_vocab_is_single_sourced_and_complete() {
+        for &(variant, flag) in NumaStrategy::VARIANTS {
+            assert_eq!(variant.as_flag(), flag);
+            assert_eq!(NumaStrategy::from_flag(flag), Some(variant));
+        }
+        for variant in [
+            NumaStrategy::Distribute,
+            NumaStrategy::Isolate,
+            NumaStrategy::Numactl,
+        ] {
+            match variant {
+                NumaStrategy::Distribute | NumaStrategy::Isolate | NumaStrategy::Numactl => {}
+            }
+            assert!(
+                NumaStrategy::VARIANTS.iter().any(|&(v, _)| v == variant),
+                "{variant:?} missing from NumaStrategy::VARIANTS"
+            );
+        }
+        assert_eq!(NumaStrategy::from_flag("bogus"), None);
+        assert_eq!(
+            NumaStrategy::valid_values(),
+            flags::quoted_list(flags::numa::ALL)
+        );
     }
 
     const GOOD: &str = r#"

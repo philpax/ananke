@@ -289,6 +289,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
             ubatch_size: None,
             threads: None,
             threads_batch: None,
+            numa: None,
             jinja: None,
             chat_template_file: None,
             override_tensor: Vec::new(),

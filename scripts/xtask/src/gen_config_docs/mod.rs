@@ -167,19 +167,19 @@ mod tests {
                     name: "port",
                     ty: "u16",
                     default: "`8080`".to_string(),
-                    description: "The port.",
+                    description: "The port.".to_string(),
                 },
                 FieldDoc {
                     name: "name",
                     ty: "string",
                     default: "*required*".to_string(),
-                    description: "Service name.",
+                    description: "Service name.".to_string(),
                 },
                 FieldDoc {
                     name: "gpus",
                     ty: "array of u32",
                     default: "all visible GPUs".to_string(),
-                    description: "GPUs.",
+                    description: "GPUs.".to_string(),
                 },
             ],
         };

@@ -162,7 +162,7 @@ placement_override = { "gpu:0" = 22000, "gpu:1" = 22000 } # Hand-pin per-slot VR
 | `gpu_allow` | array of u32 | all `[devices]` GPUs | Restrict the service to these GPU ids. |
 | `gpu_headroom_mb` | u64 | `0` | Extra per-GPU VRAM (MiB) to keep free when placing *this* service, added on top of the global `[devices]` reserve. Lets a single model be packed more conservatively without bypassing the estimator. |
 | `placement_override` | map string → u64 | none | Hand-pin VRAM (MiB) per device slot. Keys: `"cpu"` or `"gpu:N"`. Overrides the estimator's per-slot distribution. Must be non-empty if present; zero values and `cpu` keys under `gpu-only` are rejected. |
-| `split` | string | `"layer"` | Multi-GPU split mode for llama.cpp services: `"layer"`, `"row"`, or `"tensor"`. Maps to llama.cpp's `--split-mode`. See [Multi-GPU split modes](#multi-gpu-split-modes) for constraints. |
+| `split` | string | `"layer"` | Multi-GPU split mode for llama.cpp services: `"layer"`, `"row"`, `"tensor"`. Maps to llama.cpp's `--split-mode`. See [Multi-GPU split modes](#multi-gpu-split-modes) for constraints. |
 
 Placement policies:
 
@@ -474,6 +474,7 @@ llama_server = "/opt/llama-cuda/llama-server"
 | `ubatch_size` | u32 | none | Physical batch size (`-ub`). |
 | `threads` | u32 | none | Number of CPU threads (`-t`). |
 | `threads_batch` | u32 | none | Number of CPU threads for batch processing (`-tb`). |
+| `numa` | string | none | NUMA thread-and-memory placement strategy (`--numa`): `"distribute"`, `"isolate"`, `"numactl"`. Unset leaves llama.cpp's default. |
 | `jinja` | bool | `false` | Use Jinja chat templates. |
 | `chat_template_file` | path | none | Path to a custom chat template file. |
 | `override_tensor` | array of string | none | Manual tensor placement rules (e.g. `[ ".ffn_(up|down)_exps.=CPU" ]`). Incompatible with sharded split modes (`row`/`tensor`). |

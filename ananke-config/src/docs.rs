@@ -158,8 +158,10 @@ pub struct FieldDoc {
     pub ty: &'static str,
     /// Rendered default value (e.g. "127.0.0.1:7071", "10m", "50").
     pub default: String,
-    /// One-line description shown in the Description column.
-    pub description: &'static str,
+    /// One-line description shown in the Description column. Accepts a
+    /// computed `String` so fields with an enum vocabulary can render the
+    /// accepted-value list straight from [`crate::flags`].
+    pub description: String,
 }
 
 /// Convenience constructor for a `FieldDoc`.
@@ -167,14 +169,26 @@ fn field(
     name: &'static str,
     ty: &'static str,
     default: impl Into<String>,
-    description: &'static str,
+    description: impl Into<String>,
 ) -> FieldDoc {
     FieldDoc {
         name,
         ty,
         default: default.into(),
-        description,
+        description: description.into(),
     }
+}
+
+/// Render an enum vocabulary from [`crate::flags`] as a backtick-quoted,
+/// comma-separated list for a field's Description column, e.g.
+/// `` `"layer"`, `"row"`, `"tensor"` ``. Keeps the accepted-value list in
+/// the docs sourced from the same constants the daemon validates against.
+fn code_values(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|v| format!("`\"{v}\"`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Wrap a value in backticks for the Default column.
@@ -489,7 +503,10 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "split",
                     "string",
                     "`\"layer\"`",
-                    "Multi-GPU split mode for llama.cpp services: `\"layer\"`, `\"row\"`, or `\"tensor\"`. Maps to llama.cpp's `--split-mode`. See [Multi-GPU split modes](#multi-gpu-split-modes) for constraints.",
+                    format!(
+                        "Multi-GPU split mode for llama.cpp services: {}. Maps to llama.cpp's `--split-mode`. See [Multi-GPU split modes](#multi-gpu-split-modes) for constraints.",
+                        code_values(crate::flags::split_mode::ALL)
+                    ),
                 ),
             ],
         },
@@ -826,6 +843,15 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "u32",
                     "none",
                     "Number of CPU threads for batch processing (`-tb`).",
+                ),
+                field(
+                    "numa",
+                    "string",
+                    "none",
+                    format!(
+                        "NUMA thread-and-memory placement strategy (`--numa`): {}. Unset leaves llama.cpp's default.",
+                        code_values(crate::flags::numa::ALL)
+                    ),
                 ),
                 field("jinja", "bool", "`false`", "Use Jinja chat templates."),
                 field(
