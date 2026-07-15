@@ -181,6 +181,7 @@ mod tests {
             model: Path::new("/fake"),
             mmproj: None,
             context,
+            ubatch: None,
             cache_type_k: Some("q8_0"),
             cache_type_v: Some("q8_0"),
             override_tensor: empty,

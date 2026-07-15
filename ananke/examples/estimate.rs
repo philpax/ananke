@@ -39,6 +39,7 @@ struct Args {
     model: PathBuf,
     mmproj: Option<PathBuf>,
     context: u32,
+    ubatch: Option<u32>,
     cache_type_k: Option<String>,
     cache_type_v: Option<String>,
     override_tensor: Vec<String>,
@@ -54,6 +55,7 @@ fn parse_args() -> Args {
     let mut model: Option<PathBuf> = None;
     let mut mmproj: Option<PathBuf> = None;
     let mut context: u32 = 4096;
+    let mut ubatch: Option<u32> = None;
     let mut cache_type_k: Option<String> = None;
     let mut cache_type_v: Option<String> = None;
     let mut override_tensor: Vec<String> = Vec::new();
@@ -69,6 +71,7 @@ fn parse_args() -> Args {
             "--context" => {
                 context = it.next().and_then(|s| s.parse().ok()).unwrap_or(context);
             }
+            "--ubatch" | "--ubatch-size" => ubatch = it.next().and_then(|s| s.parse().ok()),
             "--cache-type-k" => cache_type_k = it.next(),
             "--cache-type-v" => cache_type_v = it.next(),
             "--override-tensor" => {
@@ -95,6 +98,7 @@ fn parse_args() -> Args {
         model,
         mmproj,
         context,
+        ubatch,
         cache_type_k,
         cache_type_v,
         override_tensor,
@@ -115,6 +119,7 @@ fn main() {
         model: args.model.as_path(),
         mmproj: args.mmproj.as_deref(),
         context: args.context,
+        ubatch: args.ubatch,
         cache_type_k: args.cache_type_k.as_deref(),
         cache_type_v: args.cache_type_v.as_deref(),
         override_tensor: &args.override_tensor,

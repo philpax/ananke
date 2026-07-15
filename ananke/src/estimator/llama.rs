@@ -100,9 +100,9 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: inputs
-            .compute_buffer_mb
-            .unwrap_or_else(|| super::compute_buffer::default_for(summary, inputs.context)),
+        compute_buffer_mb: inputs.compute_buffer_mb.unwrap_or_else(|| {
+            super::compute_buffer::default_for(summary, inputs.context, inputs.ubatch)
+        }),
         mtp_bytes: 0,
         per_layer_bytes: Some(per_layer_bytes),
         attention_layers: None,
@@ -393,6 +393,7 @@ mod tests {
             model: Path::new("/fake"),
             mmproj: None,
             context,
+            ubatch: None,
             cache_type_k: Some(cache_k),
             cache_type_v: Some(cache_v),
             override_tensor: empty,

@@ -25,6 +25,12 @@ pub struct EstimatorInputs<'a> {
     pub mmproj: Option<&'a Path>,
     /// Context window the child will be launched with. Absent means 4096.
     pub context: u32,
+    /// Physical batch size (`--ubatch-size` / `-ub`) the child will launch
+    /// with. Absent means llama.cpp's default of 512. Only the deepseek4
+    /// NSA-indexer compute buffer scales with it (∝ `ubatch × context`);
+    /// every other architecture's compute buffer is ~ubatch-independent, so
+    /// the estimator ignores this outside that arch.
+    pub ubatch: Option<u32>,
     /// K-cache quantisation (f16, q8_0, etc.). Absent means f16.
     pub cache_type_k: Option<&'a str>,
     /// V-cache quantisation. Absent means f16.
@@ -62,6 +68,7 @@ impl<'a> EstimatorInputs<'a> {
             model: lc.model.as_path(),
             mmproj: lc.mmproj.as_deref(),
             context: lc.context.unwrap_or(4096),
+            ubatch: lc.ubatch_size,
             cache_type_k: lc.cache_type_k.as_deref(),
             cache_type_v: lc.cache_type_v.as_deref(),
             override_tensor: &lc.override_tensor,
@@ -90,6 +97,7 @@ impl<'a> EstimatorInputs<'a> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.context.hash(&mut hasher);
+        self.ubatch.hash(&mut hasher);
         self.cache_type_k.hash(&mut hasher);
         self.cache_type_v.hash(&mut hasher);
         self.override_tensor.hash(&mut hasher);

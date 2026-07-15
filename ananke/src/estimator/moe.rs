@@ -1,6 +1,7 @@
 //! MoE estimator.
 //!
-//! Applies to: llama4, qwen3moe, qwen3vlmoe, deepseek2, mixtral, gpt-oss.
+//! Applies to: llama4, qwen3moe, qwen3vlmoe, deepseek2, mixtral, gpt-oss,
+//! glm4moe, qwen35moe, deepseek4.
 //!
 //! Identifies expert tensors by the `_exps` suffix on
 //! `blk.N.ffn_{gate,up,down}_exps.weight` and itemises them into
@@ -13,6 +14,7 @@ use std::collections::BTreeMap;
 use smol_str::SmolStr;
 
 use super::{
+    kv,
     llama::{collect_non_layer, layer_index},
     types::{Estimate, EstimatorInputs, ExpertKind, ExpertTensor},
 };
@@ -44,6 +46,19 @@ pub const MOE_FAMILY: &[&str] = &[
     // absorbed by the compute-buffer headroom rather than modelled
     // explicitly.
     "qwen35moe",
+    // DeepSeek-V4-Flash (deepseek4) uses the standard fused-expert tensor
+    // layout — `blk.N.ffn_{gate,up,down}_exps.weight` plus a `_shexp`
+    // shared expert — so the weight accounting and expert itemisation
+    // apply unchanged. Its KV cache does *not*, though: only the ~half of
+    // layers whose `attention.compress_ratios` entry is `4` keep a
+    // key-only "CSA" (compressed sparse attention) cache of `n_ctx / 4`
+    // cells; the rest use a far smaller HCA cache (ratio 128) plus a
+    // fixed sliding-window cache. The generic `kv_for_hybrid` would price
+    // it at `head_count_kv × (key_length + value_length) × n_layers` ≈ 88
+    // KiB/token (11.5 GiB at 128k) versus the measured ~6.65 KiB/token
+    // (0.84 GiB at 128k), a 13× over-reservation, so deepseek4 routes to
+    // `deepseek4_kv_per_token` below instead.
+    "deepseek4",
 ];
 
 pub fn is_moe(arch: &str) -> bool {
@@ -95,10 +110,15 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         + non_layer.token_embd_bytes
         + non_layer.other_bytes;
 
-    // Hybrid families (qwen35moe) expose `full_attention_interval`:
-    // only every N-th layer runs full attention; the rest are SSM.
-    // Reuse the shared hybrid KV logic.
-    let kv_per_token = super::hybrid::kv_for_hybrid(summary, arch, n_layers, inputs);
+    // KV cost per token. deepseek4's compressed caches need bespoke
+    // handling (see `deepseek4_kv_per_token`); every other MoE arch either
+    // has plain per-layer KV or the qwen35moe `full_attention_interval`
+    // pattern, both covered by the shared hybrid logic.
+    let kv_per_token = if arch == "deepseek4" {
+        deepseek4_kv_per_token(summary, arch, n_layers, inputs)
+    } else {
+        super::hybrid::kv_for_hybrid(summary, arch, n_layers, inputs)
+    };
 
     let expert_layers: Vec<u32> = per_layer_exp
         .iter()
@@ -113,9 +133,9 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
     Estimate {
         weights_bytes,
         kv_per_token,
-        compute_buffer_mb: inputs
-            .compute_buffer_mb
-            .unwrap_or_else(|| super::compute_buffer::default_for(summary, inputs.context)),
+        compute_buffer_mb: inputs.compute_buffer_mb.unwrap_or_else(|| {
+            super::compute_buffer::default_for(summary, inputs.context, inputs.ubatch)
+        }),
         mtp_bytes: 0,
         per_layer_bytes: Some(per_layer_total),
         attention_layers: None,
@@ -146,6 +166,59 @@ pub(crate) fn expert_kind(name: &str) -> Option<ExpertKind> {
     } else {
         None
     }
+}
+
+/// The `attention.compress_ratios` value that marks a CSA (compressed
+/// sparse attention) layer — the only layers whose KV cache scales with
+/// context. Layers with the ratio-128 HCA value or the leading `0` full-
+/// attention value do not carry a context-scaling cache worth modelling.
+const DEEPSEEK4_CSA_RATIO: u32 = 4;
+
+/// f16 KV bytes per context token, per CSA layer, for deepseek4.
+///
+/// Calibrated, not derived from head dims: a 2×3090 f16 sweep at np=1
+/// (2026-07-15) measured total KV of 836 MiB at 131072 context and 1655
+/// MiB at 262144 — linear in context (≈ 6.65 KiB/token) across this
+/// model's 21 CSA layers, i.e. ~317 bytes/token/layer. The q8_0 sweep
+/// reconciled to the same figure once scaled by the element width, which
+/// is why the per-token cost is priced off the K-cache element size below.
+const DEEPSEEK4_CSA_KV_BYTES_PER_TOKEN_LAYER_F16: f64 = 317.0;
+
+/// KV bytes per context token for deepseek4 (DeepSeek-V4-Flash).
+///
+/// Only the CSA layers keep a context-scaling cache; it is key-only (the
+/// value projection is absorbed into the compressed latent, so llama.cpp
+/// reports `V (f16): 0.00 MiB`), so the per-token cost tracks the
+/// `cache_type_k` element width alone. The sibling HCA cache (ratio 128 →
+/// `n_ctx / 128` cells) and the fixed sliding-window cache are small and
+/// context-flat, so they fall into the compute-buffer headroom rather than
+/// this per-token term. Returns `kv_per_token` so the packer multiplies by
+/// context exactly as it does for every other family.
+fn deepseek4_kv_per_token(
+    summary: &GgufSummary,
+    arch: &str,
+    n_layers: u32,
+    inputs: &EstimatorInputs<'_>,
+) -> u64 {
+    if inputs.context == 0 || n_layers == 0 {
+        return 0;
+    }
+    let bytes_k = kv::kv_bytes_per_element(inputs.cache_type_k.unwrap_or("f16"));
+
+    // Count the CSA layers from `attention.compress_ratios` when present;
+    // fall back to the observed "roughly half the layers are CSA" ratio so
+    // a quant that drops the array still gets a sane, non-zero estimate.
+    let csa_layers = summary
+        .metadata
+        .get(&*format!("{arch}.attention.compress_ratios"))
+        .and_then(|v| v.as_u32_array())
+        .map(|ratios| ratios.iter().filter(|&&r| r == DEEPSEEK4_CSA_RATIO).count() as u64)
+        .filter(|&n| n > 0)
+        .unwrap_or((n_layers / 2) as u64);
+
+    // f16 baseline scaled to the actual K-cache element width (f16 = 2.0).
+    let per_layer = DEEPSEEK4_CSA_KV_BYTES_PER_TOKEN_LAYER_F16 * (bytes_k / 2.0);
+    (csa_layers as f64 * per_layer) as u64
 }
 
 #[cfg(test)]
@@ -217,6 +290,7 @@ mod tests {
             model: Path::new("/fake"),
             mmproj: None,
             context: 4096,
+            ubatch: None,
             cache_type_k: None,
             cache_type_v: None,
             override_tensor: &empty,
@@ -231,6 +305,164 @@ mod tests {
         // With interval=4 we only count 2 layers → kv_per_token = 4096.
         // Without the interval handling we'd naively multiply by 8 → 16384.
         assert_eq!(e.kv_per_token, 4096);
+    }
+
+    #[test]
+    fn deepseek4_kv_uses_csa_layer_count_not_naive_mla() {
+        use std::path::Path;
+
+        use crate::{
+            estimator::types::EstimatorInputs,
+            gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
+        };
+
+        // 43-layer deepseek4 shape: layers 0-1 are ratio 0 (full attn),
+        // then the rest alternate 4 (CSA) / 128 (HCA) → 21 CSA layers.
+        let n_layers = 43u32;
+        let compress_ratios: Vec<GgufValue> = (0..n_layers)
+            .map(|i| {
+                GgufValue::U32(match i {
+                    0 | 1 => 0,
+                    i if i % 2 == 0 => 4,
+                    _ => 128,
+                })
+            })
+            .collect();
+        let csa_layers = compress_ratios
+            .iter()
+            .filter(|v| matches!(v, GgufValue::U32(4)))
+            .count();
+        assert_eq!(csa_layers, 21, "sanity: fixture has 21 CSA layers");
+
+        let mut tensors = std::collections::BTreeMap::new();
+        for layer in 0..n_layers {
+            for kind in ["attn_kv", "ffn_gate_exps", "ffn_gate_shexp"] {
+                let name = format!("blk.{layer}.{kind}.weight");
+                tensors.insert(
+                    SmolStr::new(&name),
+                    GgufTensor {
+                        name: SmolStr::new(&name),
+                        dtype: GgufType::F16,
+                        shape: vec![512 * 1024],
+                        byte_size: 1024 * 1024,
+                        shard_idx: 0,
+                        offset: 0,
+                    },
+                );
+            }
+        }
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("deepseek4".into()),
+        );
+        metadata.insert(
+            SmolStr::new("deepseek4.block_count"),
+            GgufValue::U32(n_layers),
+        );
+        // Naive-MLA metadata that `kv_for_hybrid` would otherwise consume.
+        metadata.insert(
+            SmolStr::new("deepseek4.attention.head_count_kv"),
+            GgufValue::U32(1),
+        );
+        metadata.insert(
+            SmolStr::new("deepseek4.attention.key_length"),
+            GgufValue::U32(512),
+        );
+        metadata.insert(
+            SmolStr::new("deepseek4.attention.value_length"),
+            GgufValue::U32(512),
+        );
+        metadata.insert(
+            SmolStr::new("deepseek4.attention.compress_ratios"),
+            GgufValue::Array(compress_ratios),
+        );
+
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors,
+            metadata,
+            block_count: Some(n_layers),
+            architecture: SmolStr::new("deepseek4"),
+            shards: vec!["/fake".into()],
+        };
+
+        let empty: Vec<String> = Vec::new();
+        let inputs = EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context: 131072,
+            ubatch: None,
+            cache_type_k: Some("f16"),
+            cache_type_v: Some("f16"),
+            override_tensor: &empty,
+            compute_buffer_mb: None,
+            allow_fallback: false,
+            mtp: false,
+            draft_model: None,
+        };
+
+        let e = estimate(&summary, &inputs);
+        // 21 CSA layers × 317 B/token (f16) = 6657 B/token — matches the
+        // measured ~6.65 KiB/token, an order of magnitude below the naive
+        // MLA formula (1 kv-head × (512+512) × 2 × 43 = 88_064 B/token).
+        assert_eq!(e.kv_per_token, 6657);
+        assert!(
+            e.kv_per_token < 88_064 / 10,
+            "deepseek4 KV must be far below the naive MLA estimate; got {}",
+            e.kv_per_token
+        );
+        // Expert itemisation still works: 43 fused gate tensors, shared
+        // experts (`_shexp`) excluded.
+        assert_eq!(e.expert_tensors.as_ref().unwrap().len(), 43);
+    }
+
+    #[test]
+    fn deepseek4_kv_scales_with_cache_type() {
+        use std::path::Path;
+
+        use crate::{
+            estimator::types::EstimatorInputs,
+            gguf::types::{GgufSummary, GgufValue},
+        };
+
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("deepseek4".into()),
+        );
+        metadata.insert(SmolStr::new("deepseek4.block_count"), GgufValue::U32(43));
+        // No compress_ratios → falls back to n_layers / 2 = 21 CSA layers.
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors: std::collections::BTreeMap::new(),
+            metadata,
+            block_count: Some(43),
+            architecture: SmolStr::new("deepseek4"),
+            shards: vec!["/fake".into()],
+        };
+        let empty: Vec<String> = Vec::new();
+        let mk = |ctk: &'static str| EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context: 131072,
+            ubatch: None,
+            cache_type_k: Some(ctk),
+            cache_type_v: Some(ctk),
+            override_tensor: &empty,
+            compute_buffer_mb: None,
+            allow_fallback: false,
+            mtp: false,
+            draft_model: None,
+        };
+        // Fallback layer count (21) at f16 reproduces the 6657 figure.
+        assert_eq!(estimate(&summary, &mk("f16")).kv_per_token, 6657);
+        // q8_0 K-cache (1.0625 B/elem vs 2.0) shrinks the per-token cost.
+        assert!(estimate(&summary, &mk("q8_0")).kv_per_token < 6657);
     }
 
     #[test]
@@ -321,6 +553,7 @@ mod tests {
             model: Path::new("/fake"),
             mmproj: None,
             context: 4096,
+            ubatch: None,
             cache_type_k: None,
             cache_type_v: None,
             override_tensor: &empty_override,

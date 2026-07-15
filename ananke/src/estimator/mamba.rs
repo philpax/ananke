@@ -77,7 +77,7 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
         kv_per_token,
         compute_buffer_mb: inputs
             .compute_buffer_mb
-            .unwrap_or_else(|| super::compute_buffer::default_for(summary, context)),
+            .unwrap_or_else(|| super::compute_buffer::default_for(summary, context, inputs.ubatch)),
         mtp_bytes: 0,
         per_layer_bytes: Some(per_layer),
         attention_layers: None,
