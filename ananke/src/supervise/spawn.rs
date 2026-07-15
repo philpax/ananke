@@ -122,6 +122,22 @@ fn render_llama_cpp_argv(
 /// — is emitted here and reaches the launcher via the `{args}` splat.
 /// Shared by the default and launcher rendering paths so both emit
 /// identical flag sets.
+///
+/// Emit all `--override-tensor` rules as a *single* comma-joined flag
+/// rather than one `-ot` per rule. Current llama.cpp deprecated repeated
+/// `-ot` flags and now honours **only the last one** ("argument '-ot'
+/// specified multiple times … only last value will be used"), so a
+/// per-rule emission silently dropped every rule but the last — which for
+/// the packer's synthesised MoE offload meant almost no experts actually
+/// moved off the GPU, OOMing at load. Rules never contain a comma, so the
+/// join is lossless and llama.cpp parses the combined value itself.
+fn push_override_tensor(args: &mut Vec<String>, rules: &[String]) {
+    if !rules.is_empty() {
+        args.push("-ot".into());
+        args.push(rules.join(","));
+    }
+}
+
 fn render_llama_server_flags(
     svc: &ServiceConfig,
     lc: &LlamaCppConfig,
@@ -270,15 +286,9 @@ fn render_llama_server_flags(
             args.push("--tensor-split".into());
             args.push(split_str);
         }
-        for rule in &ca.override_tensor {
-            args.push("-ot".into());
-            args.push(rule.clone());
-        }
+        push_override_tensor(&mut args, &ca.override_tensor);
     } else {
-        for rule in &lc.override_tensor {
-            args.push("-ot".into());
-            args.push(rule.clone());
-        }
+        push_override_tensor(&mut args, &lc.override_tensor);
     }
 
     // Sampling params are passed as extra flags when set.
