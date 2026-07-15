@@ -657,8 +657,16 @@ impl<'a> Packer<'a> {
             return 0;
         }
         let total: u64 = self.per_layer.iter().sum();
+        // Subtract expert bytes for the expert-aware path so the fudge reflects
+        // only the non-expert weight that is pinned to a GPU as a unit. Read
+        // this from `expert_bytes_by_layer`, which persists, rather than
+        // `expert_tensors`, which `distribute_experts` drains with
+        // `mem::take` — using the latter made `add_one_layer_fudge` (which runs
+        // *after* the drain) see zero experts and reserve a full expert-inflated
+        // layer per GPU, over-committing a hybrid MoE by ~one layer's expert
+        // bytes and falsely failing the fit check.
         let total = if self.expert_aware {
-            total.saturating_sub(self.expert_tensors.iter().map(|e| e.bytes).sum())
+            total.saturating_sub(self.expert_bytes_by_layer.values().sum::<u64>())
         } else {
             total
         };
@@ -687,11 +695,19 @@ impl<'a> Packer<'a> {
             let exp_bytes = self.expert_bytes_by_layer.get(&idx).copied().unwrap_or(0);
             let nonexp = full_bytes.saturating_sub(exp_bytes);
             let layer_cost = nonexp.saturating_add(kv_per_layer);
+            // Place on the GPU with the most remaining capacity, not the first
+            // that fits. For a MoE whose non-expert weight is tiny (deepseek4's
+            // is ~a few hundred MiB/layer), first-fit would pile every layer —
+            // and therefore every layer's KV and its experts' "home" — onto
+            // gpu:0, overloading it while gpu:1 sits idle. Balancing by most-
+            // free keeps the two cards even (and is capacity-proportional on
+            // asymmetric GPUs: the bigger card stays most-free longer).
             let placed = self
                 .allowed_gpus
                 .iter()
                 .copied()
-                .find(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0) >= layer_cost);
+                .filter(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0) >= layer_cost)
+                .max_by_key(|gpu| self.gpu_remaining.get(gpu).copied().unwrap_or(0));
             match placed {
                 Some(gpu) => {
                     *self.gpu_remaining.entry(gpu).or_default() -= layer_cost;
@@ -772,43 +788,48 @@ impl<'a> Packer<'a> {
                 home.map(DeviceSlot::Gpu).unwrap_or(DeviceSlot::Cpu)
             };
         }
-        // Auto: home GPU first, then the most-free other GPU, then CPU.
-        if let Some(g) = home
-            && self.gpu_remaining.get(&g).copied().unwrap_or(0) >= e.bytes
-        {
-            return DeviceSlot::Gpu(g);
-        }
-        let mut others: Vec<u32> = self
-            .allowed_gpus
+        // Auto: fill the most-free GPU first, then CPU. Home locality is not
+        // preferred — an offloaded expert reached via `-ot` costs the same on
+        // either card, so balancing is what matters. Preferring the home GPU
+        // (which for a small-attention MoE is whichever card the non-expert
+        // walk piled onto) would refill that one card to overflowing while the
+        // other stayed empty; most-free keeps the two even. (`home` still
+        // drives the `Layers(N)` branch above and `-ot` synthesis in `finish`.)
+        self.allowed_gpus
             .iter()
             .copied()
-            .filter(|g| Some(*g) != home)
-            .collect();
-        others.sort_by_key(|g| Reverse(self.gpu_remaining.get(g).copied().unwrap_or(0)));
-        for g in others {
-            if self.gpu_remaining.get(&g).copied().unwrap_or(0) >= e.bytes {
-                return DeviceSlot::Gpu(g);
-            }
-        }
-        DeviceSlot::Cpu
+            .filter(|g| self.gpu_remaining.get(g).copied().unwrap_or(0) >= e.bytes)
+            .max_by_key(|g| self.gpu_remaining.get(g).copied().unwrap_or(0))
+            .map(DeviceSlot::Gpu)
+            .unwrap_or(DeviceSlot::Cpu)
     }
 
     /// Commit an expert tensor to its chosen device, updating remaining GPU
-    /// capacity and recording an `-ot` assignment when it lands off its home
-    /// GPU (the only case llama.cpp needs told about).
+    /// capacity and recording the `-ot` assignment llama.cpp needs to honour it.
+    ///
+    /// A CPU or off-home-GPU target always gets a rule. A home-GPU target gets
+    /// one too whenever the model spans more than one GPU: under
+    /// `--split-mode layer`, llama.cpp assigns every un-overridden tensor to a
+    /// *contiguous* GPU range derived from `--tensor-split`, which does not
+    /// match the packer's per-layer balanced placement. Without an explicit
+    /// rule a "home" expert then lands on whichever card the contiguous split
+    /// covers its layer — overloading one card and leaving no room for its
+    /// compute buffer (the live deepseek4 load OOMed on exactly this). Pinning
+    /// every GPU-resident expert makes the packer's plan authoritative. With a
+    /// single GPU there is no split to diverge from, so home experts need none.
     fn place_expert(&mut self, e: ExpertTensor, target: DeviceSlot, home: Option<u32>) {
         *self.per_device.entry(target.clone()).or_default() += e.bytes;
         if let DeviceSlot::Gpu(g) = target {
             let rem = self.gpu_remaining.entry(g).or_default();
             *rem = rem.saturating_sub(e.bytes);
         }
-        let is_home = matches!((&target, home), (DeviceSlot::Gpu(g), Some(h)) if *g == h);
-        if is_home {
-            return;
-        }
         if target == DeviceSlot::Cpu {
             self.expert_offload_cpu_bytes += e.bytes;
             self.expert_offload_cpu_layers.insert(e.layer);
+        }
+        let is_home = matches!((&target, home), (DeviceSlot::Gpu(g), Some(h)) if *g == h);
+        if is_home && self.allowed_gpus.len() < 2 {
+            return;
         }
         self.expert_assignments.push((e, target));
     }
@@ -1331,20 +1352,26 @@ mod tests {
         );
     }
 
-    /// Auto offload prefers a second GPU over the CPU: when GPU 0 fills with
-    /// the attention layers and some experts, the surplus experts move to GPU 1
-    /// (a `=CUDA1` rule) rather than the host, so nothing lands on CPU.
+    /// Auto offload spreads across both GPUs before touching the CPU: a model
+    /// that fits in the two cards' combined VRAM but not either alone lands
+    /// entirely on the GPUs, with cross-GPU `-ot` rules for the experts placed
+    /// off their layer's home card, and nothing on the host.
     #[test]
     fn expert_offload_auto_prefers_second_gpu() {
-        // 20 layers, 100 MiB attn + 900 MiB experts. GPU 0 (4 GiB) holds all
-        // attention and a little expert weight; GPU 1 (24 GiB) absorbs the rest.
+        // 20 layers, 100 MiB attn + 900 MiB experts = ~20 GiB. Two 12 GiB
+        // cards hold it together (24 GiB) but neither alone does, so the
+        // experts must split across both.
         let e = moe_estimate(20, 100, 300);
-        let snap = snapshot(&[4, 24]);
+        let snap = snapshot(&[12, 12]);
         let alloc = AllocationTable::new();
         let packed = pack(&e, &moe_svc(OffloadMode::Auto), &snap, &alloc).unwrap();
 
         assert_eq!(packed.args.ngl, Some(20));
-        assert_eq!(cpu_bytes(&packed), 0, "experts prefer GPU 1 over the CPU");
+        assert_eq!(
+            cpu_bytes(&packed),
+            0,
+            "experts prefer the GPUs over the CPU"
+        );
         assert_eq!(
             packed.expert_offload_bytes, 0,
             "CPU offload metric counts host bytes only"
@@ -1354,18 +1381,160 @@ mod tests {
                 .args
                 .override_tensor
                 .iter()
-                .any(|r| r.contains("=CUDA1")),
-            "a cross-GPU expert rule targets the second card, got {:?}",
+                .any(|r| r.contains("=CUDA")),
+            "a cross-GPU expert rule moves experts off their home card, got {:?}",
             packed.args.override_tensor
         );
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
         assert!(
-            packed
-                .allocation
-                .bytes
-                .get(&DeviceId::Gpu(1))
-                .copied()
-                .unwrap_or(0)
-                > 0
+            g0 > 0 && g1 > 0,
+            "both cards carry weight (g0={g0} g1={g1})"
+        );
+    }
+
+    /// Symmetric two-GPU balance (the deepseek4 shape): tiny non-expert weight
+    /// plus huge experts must spread evenly across both cards. First-fit used
+    /// to pile every layer — and thus every expert's home GPU — onto gpu:0,
+    /// overloading it into an `insufficient_vram` error while gpu:1 sat idle.
+    #[test]
+    fn expert_offload_auto_balances_symmetric_gpus() {
+        // 40 layers, 150 MiB attn + 3×700 MiB experts: ~6 GiB attention, ~84
+        // GiB experts — far past 2×24 GiB, so the surplus spills to CPU, but
+        // the GPU-resident half must be balanced across both cards.
+        let e = moe_estimate(40, 150, 700);
+        let snap = snapshot(&[24, 24]);
+        let packed = pack(
+            &e,
+            &moe_svc(OffloadMode::Auto),
+            &snap,
+            &AllocationTable::new(),
+        )
+        .unwrap();
+
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            g0 > 0 && g1 > 0,
+            "both cards must hold weight (g0={g0} g1={g1})"
+        );
+        assert!(
+            cpu_bytes(&packed) > 0,
+            "the surplus experts must spill to CPU"
+        );
+        // Balanced within ~one expert tensor — neither card overloaded.
+        let (hi, lo) = (g0.max(g1), g0.min(g1));
+        assert!(
+            hi - lo <= 1024 * MIB,
+            "cards must be balanced within ~1 expert (g0={g0} g1={g1})"
+        );
+        // And each card must fit inside its 24 GiB.
+        assert!(
+            g0 <= 24 * GIB && g1 <= 24 * GIB,
+            "must fit 24 GiB (g0={g0} g1={g1})"
+        );
+    }
+
+    /// Regression for the live `deepseek-v4-flash` failure: the real estimate
+    /// (~96 GiB weights, 9848 MiB compute buffer, 6657 B/token KV over 131072
+    /// context, 43 all-MoE layers) must auto-fit on two 24 GiB cards. Before
+    /// the balance + one-layer-fudge fixes this reported
+    /// `insufficient_vram: no fit on gpu:0`.
+    #[test]
+    fn deepseek4_like_auto_fits_two_24gib_cards() {
+        let n_layers = 43u32;
+        let nonexp = 140 * MIB; // ~6 GiB of attention across 43 layers
+        let exp = 700 * MIB; // 3 × 700 MiB experts/layer → ~88 GiB experts
+        let mut per_layer = Vec::new();
+        let mut experts = Vec::new();
+        for layer in 0..n_layers {
+            per_layer.push(nonexp + 3 * exp);
+            for kind in [ExpertKind::Gate, ExpertKind::Up, ExpertKind::Down] {
+                experts.push(ExpertTensor {
+                    layer,
+                    kind,
+                    bytes: exp,
+                });
+            }
+        }
+        let e = Estimate {
+            weights_bytes: (nonexp + 3 * exp) * n_layers as u64 + 414 * MIB,
+            kv_per_token: 6657,
+            compute_buffer_mb: 9848,
+            mtp_bytes: 0,
+            per_layer_bytes: Some(per_layer),
+            attention_layers: None,
+            non_layer: NonLayer {
+                output_head_bytes: 414 * MIB,
+                token_embd_bytes: 414 * MIB,
+                other_bytes: 0,
+            },
+            override_tensor_bytes: BTreeMap::new(),
+            expert_layers: (0..n_layers).collect(),
+            expert_tensors: Some(experts),
+            context: 131072,
+            architecture: SmolStr::new("deepseek4"),
+        };
+        // The real box has 125 GiB RAM for the ~60 GiB of CPU-side experts;
+        // widen the default snapshot's host budget to match.
+        let mut snap = snapshot(&[24, 24]);
+        snap.cpu = Some(CpuSnapshot {
+            total_bytes: 125 * GIB,
+            available_bytes: 110 * GIB,
+        });
+        let packed = pack(
+            &e,
+            &moe_svc(OffloadMode::Auto),
+            &snap,
+            &AllocationTable::new(),
+        )
+        .expect("deepseek4 auto must fit two 24 GiB cards");
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        // Both cards used, both within capacity, and balanced.
+        assert!(g0 > 0 && g1 > 0 && cpu_bytes(&packed) > 0);
+        assert!(
+            g0 <= 24 * GIB && g1 <= 24 * GIB,
+            "g0={g0} g1={g1} must fit 24 GiB"
+        );
+        assert!(
+            g0.abs_diff(g1) <= 1500 * MIB,
+            "cards balanced: g0={g0} g1={g1}"
+        );
+        // Roughly the empirical G8-G10: a meaningful chunk of experts on GPU.
+        assert!(
+            packed.expert_offload_layers > 0,
+            "some experts spill to CPU"
         );
     }
 
