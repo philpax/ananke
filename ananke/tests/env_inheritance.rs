@@ -49,6 +49,7 @@ fn env_test_service(name: &str, port: u16, env_inherit: bool) -> ServiceConfig {
         placement_policy: PlacementPolicy::CpuOnly,
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
+        tensor_split_weights: None,
         gpu_headroom_mb: 0,
         reserves: std::sync::Arc::new(DeviceReserves::default()),
         idle_timeout_ms: 60_000,

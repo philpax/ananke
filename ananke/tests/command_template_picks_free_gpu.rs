@@ -43,6 +43,7 @@ fn comfy_like_service(name: &str, port: u16) -> ServiceConfig {
         placement_policy: PlacementPolicy::GpuOnly,
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
+        tensor_split_weights: None,
         gpu_headroom_mb: 0,
         reserves: Arc::new(DeviceReserves::default()),
         idle_timeout_ms: 60_000,

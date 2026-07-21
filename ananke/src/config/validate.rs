@@ -100,6 +100,10 @@ pub struct ServiceConfig {
     /// [`SplitMode`]. Default [`SplitMode::Layer`] preserves the historical
     /// first-fit pipeline behaviour.
     pub split_mode: SplitMode,
+    /// Optional per-GPU weights for the `--tensor-split` ratio in sharded
+    /// (`row`/`tensor`) modes. One positive float per allowed GPU, in ascending
+    /// GPU-id order. Unset keeps the historical equal `1,1,...` split.
+    pub tensor_split_weights: Option<Vec<f32>>,
     /// Extra per-GPU VRAM (MiB) this service keeps free when packing, layered
     /// on top of [`Self::reserves`]. From `[service.devices] gpu_headroom_mb`.
     pub gpu_headroom_mb: u64,
@@ -800,6 +804,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
         management_port,
         daemon_llama_server: daemon_llama_server.as_deref(),
         reserves: &device_reserves,
+        devices: &cfg.devices,
     };
     let mut svc_state = ServiceValidationState {
         names: &mut names,
@@ -864,6 +869,9 @@ struct DaemonValidationCtx<'a> {
     /// Global device reserves resolved from `[devices]`, shared with every
     /// service so the packer can read them. The `Arc` is cloned per service.
     reserves: &'a Arc<DeviceReserves>,
+    /// Raw `[devices]` config so per-service validation can check the
+    /// configured GPU count when `gpu_allow` is unset.
+    devices: &'a crate::config::parse::DevicesConfig,
 }
 
 /// Mutable bookkeeping that accumulates across the per-service loop:
@@ -1103,6 +1111,69 @@ fn validate_service(
         }
     }
 
+    let tensor_split_weights = dev.tensor_split_weights.clone();
+    if let Some(ref weights) = tensor_split_weights {
+        if !split_mode.is_sharded() {
+            return Err(fail(format!(
+                "service {name}: devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)"
+            )));
+        }
+        // When gpu_allow is set, validate it is sorted ascending and free of
+        // duplicates. The packer sorts GPUs ascending before pairing weights
+        // by index, so the pairing is correct regardless, but catching mistakes
+        // here ensures the config matches the documented expectation and
+        // prevents a duplicate like `[0, 0]` from causing a runtime count
+        // mismatch (the runtime GPU snapshot deduplicates, so `gpu_allow =
+        // [0, 0]` with 2 weights would otherwise slip through and fail at
+        // pack time).
+        if !gpu_allow.is_empty() {
+            // Check duplicates first so `[0, 0]` reports the duplicate error,
+            // not the ordering error. Use a set to catch non-adjacent
+            // duplicates like `[1, 0, 1]` too. Then check non-decreasing order
+            // so a strictly-descending `[1, 0]` reports the ordering error.
+            let unique: BTreeSet<u32> = gpu_allow.iter().copied().collect();
+            if unique.len() != gpu_allow.len() {
+                return Err(fail(format!(
+                    "service {name}: devices.gpu_allow must not contain duplicate GPU ids when tensor_split_weights is set"
+                )));
+            }
+            if !gpu_allow.windows(2).all(|w| w[0] <= w[1]) {
+                return Err(fail(format!(
+                    "service {name}: devices.gpu_allow must be in ascending GPU-id order when tensor_split_weights is set (got {gpu_allow:?})"
+                )));
+            }
+        }
+        let n_allowed = if !gpu_allow.is_empty() {
+            gpu_allow.len()
+        } else if let Some(ref gpu_ids) = daemon.devices.gpu_ids {
+            gpu_ids.len()
+        } else {
+            // The visible GPU count is not known until runtime; validate count
+            // only when the operator has constrained it in config. Warn so the
+            // operator knows the count check is deferred to placement time.
+            tracing::warn!(
+                service = %name,
+                "tensor_split_weights has {} entries but the GPU count is not constrained (set gpu_allow or [devices].gpu_ids); count will be checked at placement time",
+                weights.len()
+            );
+            weights.len()
+        };
+        if weights.len() != n_allowed {
+            return Err(fail(format!(
+                "service {name}: devices.tensor_split_weights has {} entries but {} allowed GPU(s) (set via gpu_allow or [devices].gpu_ids)",
+                weights.len(),
+                n_allowed
+            )));
+        }
+        for (i, &w) in weights.iter().enumerate() {
+            if !w.is_finite() || w <= 0.0 {
+                return Err(fail(format!(
+                    "service {name}: devices.tensor_split_weights[{i}] must be a positive finite number, got {w}"
+                )));
+            }
+        }
+    }
+
     let health_raw = common.health.clone().unwrap_or_default();
     let health = HealthSettings {
         http_path: match &health_raw.http {
@@ -1250,6 +1321,7 @@ fn validate_service(
         placement_policy,
         gpu_allow,
         split_mode,
+        tensor_split_weights,
         gpu_headroom_mb,
         reserves: Arc::clone(daemon.reserves),
         filters,
@@ -1970,6 +2042,7 @@ pub mod test_fixtures {
             placement_policy: PlacementPolicy::CpuOnly,
             gpu_allow: Vec::new(),
             split_mode: SplitMode::Layer,
+            tensor_split_weights: None,
             gpu_headroom_mb: 0,
             reserves: Arc::new(DeviceReserves::default()),
             idle_timeout_ms: 60_000,
@@ -2693,6 +2766,176 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         assert!(format!("{err}").contains("only valid for llama-cpp"));
+    }
+
+    #[test]
+    fn parses_tensor_split_weights() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [0, 1]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let ec = validate(&cfg).unwrap();
+        assert_eq!(
+            ec.services[0].tensor_split_weights.as_deref(),
+            Some(&[2.6f32, 1.0f32][..])
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_wrong_count() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [0, 1]
+devices.tensor_split_weights = [2.6, 1.0, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("tensor_split_weights has 3 entries but 2 allowed GPU(s)"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_non_positive() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [0, 1]
+devices.tensor_split_weights = [2.6, 0.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("tensor_split_weights[1] must be a positive finite number"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_on_non_sharded_split() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.gpu_allow = [0, 1]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}")
+                .contains("tensor_split_weights is only valid with a sharded split mode"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_on_hybrid_placement() {
+        // Sharded splits already require gpu-only, so this fails on the split
+        // constraint before it reaches the weight check.
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "hybrid"
+devices.split = "tensor"
+devices.gpu_allow = [0, 1]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("requires placement=gpu-only"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_with_unsorted_gpu_allow() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [1, 0]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("devices.gpu_allow must be in ascending GPU-id order"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_with_duplicate_gpu_allow() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [0, 0]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("devices.gpu_allow must not contain duplicate GPU ids"),
+            "got: {err}"
+        );
     }
 
     #[test]

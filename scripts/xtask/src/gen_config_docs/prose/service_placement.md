@@ -24,4 +24,16 @@ split = "tensor"   # "layer" (default), "row", or "tensor"
 - Only valid for `llama-cpp` services, not `command` services.
 - Cannot be combined with `override_tensor` (manual tensor placement), since the sharded modes manage tensor placement themselves.
 
-With a sharded mode, ananke reserves an equal share of the model weights, KV cache, and compute buffer on each allowed GPU, placing the non-layer remainder (output tensor, MTP overhead, …) on the main GPU. The pledge book reflects this per-GPU split, so a co-tenant (e.g. an embedding service) sees the true free capacity on each card.
+With a sharded mode, ananke reserves an equal share of the model weights, KV cache, and compute buffer on each allowed GPU by default, placing the non-layer remainder (output tensor, MTP overhead, …) on the main GPU. The pledge book reflects this per-GPU split, so a co-tenant (e.g. an embedding service) sees the true free capacity on each card.
+
+For heterogeneous GPUs, set `devices.tensor_split_weights` to a weight per allowed GPU in ascending GPU-id order. The weights scale the per-GPU share and the emitted `--tensor-split` ratio. For example, an RTX 3090 paired with an RTX 3060, where the 3090 has roughly 2.6 times the memory bandwidth, can be weighted `[2.6, 1.0]` to give the faster card ~2.6 times the tensors instead of the historical equal split:
+
+```toml
+[service.devices]
+placement = "gpu-only"
+split = "tensor"
+gpu_allow = [0, 1]
+tensor_split_weights = [2.6, 1.0]
+```
+
+The weights are normalised by their sum, so only the ratio matters. The number of weights must match the number of allowed GPUs, and weights must be positive and finite. Weights are meaningful to four decimal places; additional precision is rounded when converting to the integer `--tensor-split` ratio.

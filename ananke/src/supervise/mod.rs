@@ -37,7 +37,7 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
-    allocator::placement::Packed,
+    allocator::placement::{PackError, Packed},
     config::validate::{
         AutoRestartSettings, DEFAULT_SERVICE_PRIORITY, ErrorRateTrigger, Lifecycle, PeriodicMode,
         ServiceConfig,
@@ -454,17 +454,23 @@ enum ReservationFailure {
 
 /// Concrete ways a service's config can prevent the estimator from even
 /// running. Expands over time as new check surfaces are added.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum MisconfiguredKind {
     /// Llama-cpp service without a `model` path. Should have been caught
     /// at config validation but the supervisor double-checks defensively.
     NoModelPath,
+    /// `tensor_split_weights` count doesn't match the spanned GPU count at
+    /// pack time. Carries the structured [`PackError`] so the operator sees
+    /// the expected/got counts. Routed here (not `PackFailed`) because eviction
+    /// cannot fix a config error.
+    InvalidTensorSplitWeights(crate::allocator::placement::PackError),
 }
 
 impl std::fmt::Display for MisconfiguredKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoModelPath => f.write_str("no model path configured"),
+            Self::InvalidTensorSplitWeights(e) => write!(f, "{e}"),
         }
     }
 }
@@ -479,6 +485,25 @@ impl ReservationFailure {
             Self::EstimatorError(e) => format!("estimator: {e}"),
             Self::PackFailed(p) => format!("placement: {p}"),
         }
+    }
+}
+
+/// Convert a [`PackError`] into the appropriate [`ReservationFailure`].
+///
+/// A [`PackError::InvalidTensorSplitWeights`] is a configuration error —
+/// eviction cannot fix a weight-count mismatch — so it is routed to
+/// [`ReservationFailure::Misconfigured`], which skips the eviction-retry loop
+/// and disables the service. All other pack errors are capacity problems
+/// routed to [`ReservationFailure::PackFailed`], which the supervisor retries
+/// with eviction.
+fn pack_err_to_reservation_failure(
+    e: crate::allocator::placement::PackError,
+) -> ReservationFailure {
+    match e {
+        e @ PackError::InvalidTensorSplitWeights { .. } => {
+            ReservationFailure::Misconfigured(MisconfiguredKind::InvalidTensorSplitWeights(e))
+        }
+        other => ReservationFailure::PackFailed(other),
     }
 }
 
@@ -1485,7 +1510,7 @@ impl RunLoop {
         } else {
             crate::allocator::placement::pack(&est, svc, snap, table)
         }
-        .map_err(ReservationFailure::PackFailed)?;
+        .map_err(pack_err_to_reservation_failure)?;
         // Convert Allocation bytes (per-DeviceId, in bytes) to the
         // BTreeMap<DeviceSlot, u64> in MB that can_fit + insert expects.
         let want_mb: std::collections::BTreeMap<crate::config::DeviceSlot, u64> = packed
@@ -3260,5 +3285,37 @@ mod auto_restart_tests {
         assert!(ErrorStatusClass::ClientAndServer.is_error(503));
         assert_eq!(ErrorStatusClass::ServerOnly.min_status_code(), 500);
         assert_eq!(ErrorStatusClass::ClientAndServer.min_status_code(), 400);
+    }
+}
+
+#[cfg(test)]
+mod pack_err_tests {
+    use super::*;
+    use crate::allocator::placement::PackError;
+
+    #[test]
+    fn pack_err_routes_invalid_tensor_split_to_misconfigured() {
+        let e = PackError::InvalidTensorSplitWeights {
+            expected: 2,
+            got: 3,
+        };
+        match pack_err_to_reservation_failure(e) {
+            ReservationFailure::Misconfigured(MisconfiguredKind::InvalidTensorSplitWeights(
+                PackError::InvalidTensorSplitWeights {
+                    expected: 2,
+                    got: 3,
+                },
+            )) => {}
+            other => panic!("expected Misconfigured(InvalidTensorSplitWeights), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pack_err_routes_capacity_errors_to_pack_failed() {
+        let e = PackError::WeightsDoNotFit;
+        assert!(matches!(
+            pack_err_to_reservation_failure(e),
+            ReservationFailure::PackFailed(PackError::WeightsDoNotFit)
+        ));
     }
 }
