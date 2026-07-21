@@ -13,6 +13,8 @@ pub fn kv_bytes_per_element(cache_type: &str) -> f64 {
         "q5_0" => 0.6875,            // 22/32
         "q4_1" => 0.625,             // 20/32
         "q4_0" | "iq4_nl" => 0.5625, // 18/32
+        "q6_0" => 0.8125,            // 26/32 (ik_llama.cpp fork)
+        "q8_kv" => 1.0,              // ik_llama.cpp fork
         _ => 2.0,                    // unknown → fall back to f16 equivalent
     }
 }

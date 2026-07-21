@@ -74,6 +74,31 @@ pub enum GgufType {
     TQ2_0,
     /// OpenAI MXFP4 4-bit, used by gpt-oss experts (ggml id 39).
     MXFP4,
+    // ik_llama.cpp fork types (ggml ids 133-158). The fork parks its
+    // additions well above mainline's range to avoid collisions; sizes
+    // taken from its ggml-common.h block structs. Seen in the wild in
+    // ik-native quants of GLM-5.2 (muzzy/sokann/ubergarm recipes).
+    /// ik q6_0: legacy-style 32-block, 26 bytes (6.5 bpw). ggml id 133.
+    Q6_0,
+    /// ik IQ2_K family, 256-superblock (ggml ids 137-141, 144-146).
+    IQ2_K,
+    IQ3_K,
+    IQ4_K,
+    IQ5_K,
+    IQ6_K,
+    IQ4_KS,
+    IQ2_KS,
+    IQ4_KSS,
+    /// ik KV-cache-oriented q8 variant, 32-block, 1.0 bpe. ggml id 151.
+    Q8_KV,
+    /// ik KS/KT/KL additions, 256-superblock (ggml ids 152-158).
+    IQ5_KS,
+    IQ2_KT,
+    IQ3_KT,
+    IQ4_KT,
+    IQ3_KS,
+    IQ2_KL,
+    IQ1_KT,
     Unknown(u32),
 }
 
@@ -112,6 +137,23 @@ impl GgufType {
             34 => Self::TQ1_0,
             35 => Self::TQ2_0,
             39 => Self::MXFP4,
+            133 => Self::Q6_0,
+            137 => Self::IQ2_K,
+            138 => Self::IQ3_K,
+            139 => Self::IQ4_K,
+            140 => Self::IQ5_K,
+            141 => Self::IQ6_K,
+            144 => Self::IQ4_KS,
+            145 => Self::IQ2_KS,
+            146 => Self::IQ4_KSS,
+            151 => Self::Q8_KV,
+            152 => Self::IQ5_KS,
+            153 => Self::IQ2_KT,
+            154 => Self::IQ3_KT,
+            155 => Self::IQ4_KT,
+            156 => Self::IQ3_KS,
+            157 => Self::IQ2_KL,
+            158 => Self::IQ1_KT,
             other => Self::Unknown(other),
         }
     }

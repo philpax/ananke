@@ -241,6 +241,25 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::TQ1_0 => elements * 54 / 256, // ternary 1.7 bpe
         GgufType::TQ2_0 => elements * 66 / 256, // ternary 2.0 bpe
         GgufType::MXFP4 => elements * 17 / 32,  // 1-byte e8m0 scale + 16 bytes 4-bit / 32 elems
+        // ik_llama.cpp fork types; block sizes measured via sizeof() on
+        // the fork's ggml-common.h structs (2026-07-21, rev 9d07d868).
+        GgufType::Q6_0 => elements * 26 / 32,
+        GgufType::Q8_KV => elements, // 1.0 bpe
+        GgufType::IQ2_K => elements * 76 / 256,
+        GgufType::IQ2_KL => elements * 86 / 256,
+        GgufType::IQ3_K => elements * 110 / 256,
+        GgufType::IQ3_KS => elements * 102 / 256,
+        GgufType::IQ4_K => elements * 144 / 256,
+        GgufType::IQ5_K => elements * 176 / 256,
+        GgufType::IQ5_KS => elements * 168 / 256,
+        GgufType::IQ6_K => elements * 212 / 256,
+        GgufType::IQ4_KS => elements * 136 / 256,
+        GgufType::IQ4_KSS => elements * 128 / 256,
+        GgufType::IQ2_KS => elements * 70 / 256,
+        GgufType::IQ1_KT => elements * 56 / 256,
+        GgufType::IQ2_KT => elements * 68 / 256,
+        GgufType::IQ3_KT => elements * 100 / 256,
+        GgufType::IQ4_KT => elements * 128 / 256,
         GgufType::Unknown(_) => {
             // The reader rejects unknown dtypes before this point, so
             // reaching here is a programming error. Render defensively
