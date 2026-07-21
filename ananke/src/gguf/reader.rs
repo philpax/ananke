@@ -218,13 +218,13 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::F16 | GgufType::BF16 | GgufType::I16 => elements * 2,
         GgufType::I8 => elements,
         GgufType::I64 | GgufType::F64 => elements * 8,
-        GgufType::Q8_0 => elements * 34 / 32,
+        GgufType::Q8_0 => elements * 34 / 32, // block=32, 34 bytes/block ≈ 1.0625 bpe
         GgufType::Q8_1 => elements * 36 / 32,
-        GgufType::Q4_0 | GgufType::IQ4_NL => elements * 18 / 32,
+        GgufType::Q4_0 | GgufType::IQ4_NL => elements * 18 / 32, // 0.5625 bpe
         GgufType::Q4_1 => elements * 20 / 32,
         GgufType::Q5_0 => elements * 22 / 32,
         GgufType::Q5_1 => elements * 24 / 32,
-        GgufType::Q2K => elements * 84 / 256,
+        GgufType::Q2K => elements * 84 / 256, // K-quant super-block 256; 84 bytes ≈ 2.625 bpe
         GgufType::Q3K => elements * 110 / 256,
         GgufType::Q4K => elements * 144 / 256,
         GgufType::Q5K => elements * 176 / 256,
@@ -238,9 +238,9 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::IQ2_S => elements * 82 / 256,
         GgufType::IQ4_XS => elements * 136 / 256,
         GgufType::IQ1_M => elements * 56 / 256,
-        GgufType::TQ1_0 => elements * 54 / 256,
-        GgufType::TQ2_0 => elements * 66 / 256,
-        GgufType::MXFP4 => elements * 17 / 32,
+        GgufType::TQ1_0 => elements * 54 / 256, // ternary 1.7 bpe
+        GgufType::TQ2_0 => elements * 66 / 256, // ternary 2.0 bpe
+        GgufType::MXFP4 => elements * 17 / 32,  // 1-byte e8m0 scale + 16 bytes 4-bit / 32 elems
         // ik_llama.cpp fork types; block sizes measured via sizeof() on
         // the fork's ggml-common.h structs (2026-07-21, rev 9d07d868).
         GgufType::Q6_0 => elements * 26 / 32,
