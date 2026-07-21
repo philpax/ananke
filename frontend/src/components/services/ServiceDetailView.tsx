@@ -955,7 +955,7 @@ function ServiceMetrics({ name }: { name: string }) {
         >
           <Stat
             label={t("serviceDetail.requestsInPeriod", {
-              range: windowLabel(timeWindow),
+              range: windowLabel(timeWindow, t),
             })}
             value={totalRequests}
           />

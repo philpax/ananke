@@ -13,7 +13,6 @@
     "copied": "Copied",
     "noData": "No data",
     "custom": "custom",
-    "rangeTo": "to",
     "unknown": "Unknown"
   },
   "nav": {
@@ -222,7 +221,6 @@
     "serving": "Serving",
     "binary": "Binary",
     "kvCache": "KV cache (K / V)",
-    "flashAttn": "Flash attention",
     "parallelSlots": "Parallel slots",
     "perSlotContext": "Context per slot",
     "kvUnified": "unified pool",
@@ -288,12 +286,9 @@
     "search": "search…",
     "emptyState": "No logs in this window.",
     "live": "live",
-    "liveParen": "(live)",
     "dropped": "{{value}} dropped",
     "truncated": "truncated",
     "follow": "follow",
-    "custom": "custom",
-    "now": "now",
     "allRuns": "all runs",
     "run": "run {{value}}",
     "lines": "{{value}} lines",

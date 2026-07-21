@@ -1,3 +1,5 @@
+import type { TimeWindow } from "./components/ui/timeWindow.ts";
+
 // Formatting helpers shared across the dashboard. All user-facing
 // formatting goes through here so units, precision, and rounding stay
 // consistent.
@@ -186,12 +188,7 @@ export function bucketFor(spanMs: number): string {
 // Resolve a TimeWindow into concrete metrics-query parameters. For
 // relative windows `now` is captured at call time — memoise on the
 // window object so the query key doesn't churn every render.
-export function metricsWindow(w: {
-  kind: string;
-  durationMs?: number;
-  sinceMs?: number;
-  untilMs?: number | null;
-}): {
+export function metricsWindow(w: TimeWindow): {
   since: number;
   until: number | undefined;
   end: number;
