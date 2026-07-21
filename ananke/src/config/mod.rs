@@ -16,8 +16,8 @@ pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
     AllocationMode, AutoRestartSettings, CommandConfig, DaemonSettings, DeviceReserves, DeviceSlot,
     EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters, GenerationStallTrigger,
-    HealthSettings, Lifecycle, LlamaCppConfig, NumaStrategy, OffloadMode, PeriodicMode,
-    PeriodicTrigger, PlacementPolicy, ServiceConfig, SplitMode, Template, TemplateConfig,
+    HealthSettings, IkSettings, Lifecycle, LlamaCppConfig, NumaStrategy, OffloadMode, PeriodicMode,
+    PeriodicTrigger, PlacementPolicy, Runtime, ServiceConfig, SplitMode, Template, TemplateConfig,
     TrackingSettings, TtftStallTrigger, validate,
 };
 

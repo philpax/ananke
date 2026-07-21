@@ -470,6 +470,7 @@ llama_server = "/opt/llama-cuda/llama-server"
 | `context` | u32 | `4096` (estimator default) | Context window size. If unset, a warning is logged and the estimator defaults to 4096 tokens. |
 | `n_gpu_layers` | i32 | `-1` | Number of layers to offload to GPU. `-1` (default) offloads all layers. Must be `0` under `placement = "cpu-only"`. |
 | `expert_offload` | string or u32 | `"off"` | MoE expert-offload policy (see [MoE Expert Offload](#moe-expert-offload)). |
+| `runtime` | table | mainline llama.cpp | Serving runtime, tagged by `kind`: `{ kind = "ik-llama", mla = 1, dsa = true, fit = true, attn_max_batch = 512, runtime_repack = false }` selects the ik_llama.cpp fork and its options (`-mla`, `-dsa -fidx`, `--fit` with ananke-computed `--gpu-fit-margin`s, `-amb`, `-rtr`). Absent means mainline. `dsa` requires f16 KV; `fit` is mutually exclusive with `expert_offload`/`override_tensor` and reserves whole allowed GPUs. Point `llama_server` at a matching binary. ik services use ik's `--spec-type` dialect (`"mtp:n_max=4,p_min=0.5"`). |
 | `flash_attn` | bool | `false` | Enable flash attention. Required for quantised KV cache types (`cache_type_k`/`cache_type_v` other than `f16`). |
 | `cache_type_k` | string | `f16` | KV cache type for keys. Non-`f16` values require `flash_attn = true`. |
 | `cache_type_v` | string | `f16` | KV cache type for values. Non-`f16` values require `flash_attn = true`. |

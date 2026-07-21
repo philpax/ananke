@@ -31,7 +31,7 @@ use crate::{
     config::parse::{
         EstimationConfig, RawAutoRestart, RawCommandService, RawConfig, RawErrorRateSettings,
         RawExpertOffload, RawGenerationStallSettings, RawLlamaCppService, RawPeriodicSettings,
-        RawService, RawTtftStallSettings, SamplingConfig, Toggle,
+        RawRuntime, RawService, RawTtftStallSettings, SamplingConfig, Toggle,
     },
     errors::ExpectedError,
 };
@@ -203,6 +203,9 @@ impl TemplateConfig {
 
 #[derive(Debug, Clone)]
 pub struct LlamaCppConfig {
+    /// Serving runtime (mainline vs ik_llama.cpp fork with its
+    /// validated knobs). See [`Runtime`].
+    pub runtime: Runtime,
     pub model: PathBuf,
     pub mmproj: Option<PathBuf>,
     pub context: Option<u32>,
@@ -503,6 +506,43 @@ impl NumaStrategy {
     pub fn valid_values() -> String {
         flags::quoted_list(flags::numa::ALL)
     }
+}
+
+/// Serving runtime for a llama-cpp-template service, mirroring
+/// [`crate::config::parse::RawRuntime`]. `IkLlama` carries the fork's
+/// validated knobs and switches spawn/estimation to the fork's flag and
+/// memory conventions.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Runtime {
+    #[default]
+    LlamaCpp,
+    IkLlama(IkSettings),
+}
+
+impl Runtime {
+    /// The fork settings, when this is the fork runtime.
+    pub fn ik(&self) -> Option<&IkSettings> {
+        match self {
+            Runtime::LlamaCpp => None,
+            Runtime::IkLlama(ik) => Some(ik),
+        }
+    }
+}
+
+/// Validated ik_llama.cpp settings. See
+/// [`crate::config::parse::RawIkSettings`] for per-field semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IkSettings {
+    /// `-mla` kernel mode (0-3).
+    pub mla: Option<u32>,
+    /// DSA sparse attention (`-dsa -fidx`).
+    pub dsa: bool,
+    /// Fork-side auto-placement (`--fit`) with ananke-computed margins.
+    pub fit: bool,
+    /// `-amb` attention scratch cap in MiB.
+    pub attn_max_batch: Option<u32>,
+    /// `-rtr` runtime repacking.
+    pub runtime_repack: bool,
 }
 
 /// MoE expert-offload policy for a llama-cpp service. Resolved from the
@@ -1629,19 +1669,100 @@ fn validate_llama_cpp(
             "service {name}: template llama-cpp requires `model`"
         ))
     })?;
+    let runtime = match &lc.runtime {
+        None | Some(RawRuntime::LlamaCpp) => {
+            // ik's --spec-type takes "mtp:..." specs; mainline's takes
+            // "draft-mtp". Catch the cross-runtime mixup at parse time.
+            if let Some(st) = lc.spec_type.as_deref()
+                && st.starts_with("mtp:")
+            {
+                return Err(fail(format!(
+                    "service {name}: spec_type `{st}` is ik_llama syntax; \
+                     mainline llama.cpp expects e.g. \"draft-mtp\" (or set \
+                     runtime = {{ kind = \"ik-llama\" }})"
+                )));
+            }
+            Runtime::LlamaCpp
+        }
+        Some(RawRuntime::IkLlama(ik)) => {
+            if let Some(m) = ik.mla
+                && m > 3
+            {
+                return Err(fail(format!(
+                    "service {name}: runtime.mla={m} is invalid \
+                     (ik_llama accepts 0-3)"
+                )));
+            }
+            if let Some(st) = lc.spec_type.as_deref()
+                && st.starts_with("draft-")
+            {
+                return Err(fail(format!(
+                    "service {name}: spec_type `{st}` is mainline syntax; \
+                     ik_llama expects e.g. \"mtp:n_max=4,p_min=0.5\""
+                )));
+            }
+            if ik.dsa == Some(true) {
+                for (key, val) in [
+                    ("cache_type_k", lc.cache_type_k.as_deref()),
+                    ("cache_type_v", lc.cache_type_v.as_deref()),
+                ] {
+                    if let Some(v) = val
+                        && v != "f16"
+                    {
+                        return Err(fail(format!(
+                            "service {name}: runtime.dsa=true requires f16 \
+                             KV, but {key}={v} (ik_llama's -dsa -fidx \
+                             rejects quantised cache types)"
+                        )));
+                    }
+                }
+            }
+            if ik.fit == Some(true) {
+                if lc.expert_offload.as_ref().is_some_and(
+                    |eo| !matches!(eo, RawExpertOffload::Mode(s) if s == flags::expert_offload::OFF),
+                ) {
+                    return Err(fail(format!(
+                        "service {name}: runtime.fit=true and \
+                         expert_offload are mutually exclusive — --fit \
+                         owns placement"
+                    )));
+                }
+                if lc.override_tensor.as_ref().is_some_and(|v| !v.is_empty()) {
+                    return Err(fail(format!(
+                        "service {name}: runtime.fit=true and \
+                         override_tensor are mutually exclusive — --fit \
+                         owns placement"
+                    )));
+                }
+            }
+            Runtime::IkLlama(IkSettings {
+                mla: ik.mla,
+                dsa: ik.dsa.unwrap_or(false),
+                fit: ik.fit.unwrap_or(false),
+                attn_max_batch: ik.attn_max_batch,
+                runtime_repack: ik.runtime_repack.unwrap_or(false),
+            })
+        }
+    };
+
     let flash = lc.flash_attn.unwrap_or(false);
-    for (key, val) in [
-        ("cache_type_k", lc.cache_type_k.as_deref()),
-        ("cache_type_v", lc.cache_type_v.as_deref()),
-    ] {
-        if let Some(v) = val
-            && v != "f16"
-            && !flash
-        {
-            return Err(fail(format!(
-                "service {name}: {key}={v} requires flash_attn=true \
-                 (llama.cpp requires FA for quantised KV)"
-            )));
+    // ik_llama predates mainline's FA-required-for-quantised-KV rule and
+    // handles quantised caches without the flag, so the check is
+    // mainline-only.
+    if runtime == Runtime::LlamaCpp {
+        for (key, val) in [
+            ("cache_type_k", lc.cache_type_k.as_deref()),
+            ("cache_type_v", lc.cache_type_v.as_deref()),
+        ] {
+            if let Some(v) = val
+                && v != "f16"
+                && !flash
+            {
+                return Err(fail(format!(
+                    "service {name}: {key}={v} requires flash_attn=true \
+                     (llama.cpp requires FA for quantised KV)"
+                )));
+            }
         }
     }
 
@@ -1697,6 +1818,7 @@ fn validate_llama_cpp(
     };
 
     Ok(LlamaCppConfig {
+        runtime,
         model,
         mmproj: lc.mmproj.clone(),
         context: lc.context,
@@ -2097,6 +2219,7 @@ pub mod test_fixtures {
 
     fn llama_cpp_fixture() -> LlamaCppConfig {
         LlamaCppConfig {
+            runtime: Default::default(),
             model: PathBuf::from("/fake/model.gguf"),
             mmproj: None,
             context: None,
@@ -2504,6 +2627,126 @@ lifecycle = "persistent"
         assert_eq!(
             ec.services[0].llama_cpp().unwrap().expert_offload,
             OffloadMode::Layers(16)
+        );
+    }
+
+    #[test]
+    fn ik_runtime_parses_and_validates() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 131072
+spec_type = "mtp:n_max=4,p_min=0.5"
+runtime = { kind = "ik-llama", mla = 1, dsa = true, fit = true, attn_max_batch = 512 }
+lifecycle = "persistent"
+"#,
+        );
+        let e = validate(&cfg).unwrap();
+        let svc = &e.services[0];
+        let lc = svc.llama_cpp().unwrap();
+        let ik = lc.runtime.ik().expect("ik runtime");
+        assert_eq!(ik.mla, Some(1));
+        assert!(ik.dsa && ik.fit);
+        assert_eq!(ik.attn_max_batch, Some(512));
+        assert!(!ik.runtime_repack);
+    }
+
+    #[test]
+    fn ik_runtime_rejects_unknown_keys_in_table() {
+        // deny_unknown_fields must hold through the internally-tagged
+        // enum's newtype variant — a typo in the runtime table is a hard
+        // error, not a silent no-op.
+        let err = crate::config::parse::parse_toml(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+runtime = { kind = "ik-llama", mla = 1, n_cpu_moe = 4 }
+"#,
+            std::path::Path::new("/fake/ananke.toml"),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("n_cpu_moe"),
+            "unknown runtime key must be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ik_runtime_gates_spec_type_dialects() {
+        // Mainline service with ik-dialect spec_type.
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+spec_type = "mtp:n_max=4"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("ik_llama syntax"), "got: {err}");
+
+        // ik service with mainline-dialect spec_type.
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+spec_type = "draft-mtp"
+runtime = { kind = "ik-llama" }
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("mainline syntax"), "got: {err}");
+    }
+
+    #[test]
+    fn ik_dsa_requires_f16_kv_and_fit_owns_placement() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+cache_type_k = "q8_0"
+flash_attn = true
+runtime = { kind = "ik-llama", dsa = true }
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(format!("{err}").contains("requires f16 KV"), "got: {err}");
+
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+expert_offload = "auto"
+devices.placement = "hybrid"
+runtime = { kind = "ik-llama", fit = true }
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("mutually exclusive"),
+            "got: {err}"
         );
     }
 

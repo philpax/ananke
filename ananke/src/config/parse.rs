@@ -198,6 +198,16 @@ impl RawService {
 pub struct RawLlamaCppService {
     #[serde(flatten)]
     pub common: RawServiceCommon,
+    /// Serving runtime, as a tagged table:
+    /// `runtime = { kind = "ik-llama", mla = 1, dsa = true, ... }`.
+    /// Absent means mainline llama.cpp. Runtime-specific options live
+    /// inside the table, so fork-only knobs are *unrepresentable* on the
+    /// mainline runtime rather than merely validated away. Fork-only
+    /// behaviour (flag dialect, `--fit` margins, estimator shapes) keys
+    /// off the variant. Point `llama_server` at a matching binary — the
+    /// validator can't check that, but each runtime rejects the other's
+    /// flags at spawn.
+    pub runtime: Option<RawRuntime>,
     pub model: Option<PathBuf>,
     pub mmproj: Option<PathBuf>,
     pub context: Option<u32>,
@@ -280,6 +290,46 @@ pub struct RawLlamaCppService {
     /// front llama-server with a docker/podman wrapper that has its own
     /// argv shape.
     pub launcher: Option<Vec<String>>,
+}
+
+/// The `runtime` table of a llama-cpp-template service, tagged by
+/// `kind`. Each variant carries only the options that runtime actually
+/// has; see [`RawLlamaCppService::runtime`].
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RawRuntime {
+    /// Mainline llama.cpp — the implicit default; carries no options
+    /// beyond what the service struct already exposes.
+    LlamaCpp,
+    /// ikawrakow's ik_llama.cpp fork.
+    IkLlama(RawIkSettings),
+}
+
+/// ik_llama.cpp-specific knobs (the `runtime` table's fields when
+/// `kind = "ik-llama"`).
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields, default)]
+pub struct RawIkSettings {
+    /// MLA kernel mode (`-mla`, 0-3). Mode 1 is the calibrated
+    /// recommendation alongside `dsa = true` — mode 3 gains ~8% shallow
+    /// prefill but collapses DSA's deep-prefill advantage (measured
+    /// 143 → 61 t/s at 58k depth on GLM-5.2).
+    pub mla: Option<u32>,
+    /// Enable DSA sparse attention (`-dsa -fidx`). Requires f16 KV —
+    /// the fork rejects quantised cache types alongside it.
+    pub dsa: Option<bool>,
+    /// Let the fork auto-place layers/experts (`--fit`). ananke computes
+    /// and emits the matching `--gpu-fit-margin` per device (the fork's
+    /// fit accounts weights+KV but NOT per-feature runtime buffers —
+    /// unmargined fits pass /health and OOM on the first request).
+    /// Mutually exclusive with `expert_offload` and `override_tensor` —
+    /// fit owns placement.
+    pub fit: Option<bool>,
+    /// Attention scratch cap in MiB (`-amb`).
+    pub attn_max_batch: Option<u32>,
+    /// Repack quants for CPU at load (`-rtr`). Adds load time;
+    /// unnecessary for the already-CPU-fast KS quants.
+    pub runtime_repack: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
