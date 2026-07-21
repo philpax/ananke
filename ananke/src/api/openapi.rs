@@ -24,7 +24,9 @@ use ananke_api::{
     },
     services::{
         command::{LaunchCommand, LaunchCommandResponse, LaunchCommandSource},
-        detail::{DevicePlacement, PlacementPreview, ServiceDetail},
+        detail::{
+            DevicePlacement, IkParams, PlacementPreview, RuntimeInfo, ServiceDetail, ServingConfig,
+        },
         disable::DisableResponse,
         enable::EnableResponse,
         list::{ServiceSummary, ServicesResponse},
@@ -99,6 +101,9 @@ use crate::{
         ServicesResponse,
         ServiceDetail,
         PlacementPreview,
+        RuntimeInfo,
+        ServingConfig,
+        IkParams,
         DevicePlacement,
         FitVerdict,
         LaunchCommand,

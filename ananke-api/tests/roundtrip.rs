@@ -179,6 +179,36 @@ fn service_detail_roundtrips() {
         modality: ananke_api::shared::modality::Modality::Chat,
         ananke_metadata: ananke_api::shared::metadata::AnankeMetadata::new(),
         last_used_ms: None,
+        runtime: Some(ananke_api::services::detail::RuntimeInfo {
+            kind: "ik-llama".into(),
+            ik: Some(ananke_api::services::detail::IkParams {
+                mla: Some(1),
+                dsa: true,
+                fit: true,
+                attn_max_batch: Some(512),
+                runtime_repack: false,
+                fit_margins_mib: vec![5120, 5120],
+            }),
+        }),
+        serving: Some(ananke_api::services::detail::ServingConfig {
+            binary: "/bin/ik-llama-server".into(),
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: false,
+            parallel: 2,
+            kv_unified: false,
+            effective_context_per_slot: Some(65536),
+            spec_type: None,
+            draft_model: None,
+            expert_offload: "off".into(),
+            batch_size: Some(2048),
+            ubatch_size: Some(2048),
+            threads: Some(24),
+            threads_batch: None,
+            numa: None,
+            mmap: false,
+            mlock: false,
+        }),
     };
     assert_eq!(v.clone(), roundtrip(v));
 }

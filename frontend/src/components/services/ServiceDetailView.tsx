@@ -14,7 +14,10 @@ import {
 import type {
   DevicePlacement,
   EstimateSummary,
+  IkParams,
   LaunchCommand,
+  RuntimeInfo,
+  ServingConfig,
   ModelInfo,
   PlacementPreview,
   ServiceDetail,
@@ -163,6 +166,16 @@ export function ServiceDetailView() {
           <Card header={t("serviceDetail.configuration")}>
             <ConfigGrid detail={d} />
           </Card>
+
+          {/* Serving (llama-cpp services only) */}
+          {d.serving && (
+            <Card
+              header={t("serviceDetail.serving")}
+              bodyClassName="max-h-72 overflow-y-auto p-4"
+            >
+              <ServingGrid serving={d.serving} runtime={d.runtime ?? null} />
+            </Card>
+          )}
 
           {/* Memory estimate */}
           {d.estimate && (
@@ -318,6 +331,150 @@ function ConfigGrid({ detail }: { detail: ServiceDetail }) {
         </>
       )}
     </dl>
+  );
+}
+
+// The Serving card: runtime kind (+ik knobs), binary, and the curated
+// perf/memory knobs, with derived values (per-slot context, fit
+// margins) that no config key or argv flag states directly. Paired
+// values share a row to keep the card near the Model card's height;
+// the card body scroll-caps as insurance.
+function ServingGrid({
+  serving,
+  runtime,
+}: {
+  serving: ServingConfig;
+  runtime: RuntimeInfo | null;
+}) {
+  const { t } = useTranslation();
+  const flag = (on: boolean) =>
+    on ? t("serviceDetail.flagOn") : t("serviceDetail.flagOff");
+  const binaryName = serving.binary.split("/").at(-1) ?? serving.binary;
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      {runtime && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.runtime")}</dt>
+          <dd className="font-mono text-primary">{runtime.kind}</dd>
+        </>
+      )}
+      <dt className="text-tertiary">{t("serviceDetail.binary")}</dt>
+      <dd className="flex items-center gap-1">
+        <span className="font-mono text-xs text-primary">{binaryName}</span>
+        <CopyButton value={serving.binary} />
+      </dd>
+      {runtime?.ik && <IkParamRows ik={runtime.ik} />}
+      <dt className="text-tertiary">{t("serviceDetail.kvCache")}</dt>
+      <dd className="font-mono text-primary">
+        {serving.cache_type_k} / {serving.cache_type_v}
+        {serving.flash_attn && <span className="text-tertiary"> · fa</span>}
+      </dd>
+      <dt className="text-tertiary">{t("serviceDetail.parallelSlots")}</dt>
+      <dd className="font-mono text-primary">
+        {serving.parallel}
+        {serving.kv_unified && (
+          <span className="text-tertiary">
+            {" "}
+            · {t("serviceDetail.kvUnified")}
+          </span>
+        )}
+      </dd>
+      {serving.effective_context_per_slot != null && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.perSlotContext")}</dt>
+          <dd className="font-mono text-primary">
+            {t("serviceDetail.tokensValue", {
+              value: serving.effective_context_per_slot.toLocaleString(),
+            })}
+          </dd>
+        </>
+      )}
+      {serving.spec_type && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.specDecode")}</dt>
+          <dd className="font-mono text-primary">
+            {serving.spec_type}
+            {serving.draft_model && (
+              <span className="text-tertiary"> · {serving.draft_model}</span>
+            )}
+          </dd>
+        </>
+      )}
+      {serving.expert_offload !== "off" && (
+        <>
+          <dt className="text-tertiary">
+            {t("serviceDetail.expertOffloadMode")}
+          </dt>
+          <dd className="font-mono text-primary">{serving.expert_offload}</dd>
+        </>
+      )}
+      {(serving.batch_size != null || serving.ubatch_size != null) && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.batchSizes")}</dt>
+          <dd className="font-mono text-primary">
+            {serving.batch_size ?? "—"} / {serving.ubatch_size ?? "—"}
+          </dd>
+        </>
+      )}
+      {(serving.threads != null || serving.threads_batch != null) && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.threadsRow")}</dt>
+          <dd className="font-mono text-primary">
+            {serving.threads ?? "—"} / {serving.threads_batch ?? "—"}
+          </dd>
+        </>
+      )}
+      {serving.numa && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.numaRow")}</dt>
+          <dd className="font-mono text-primary">{serving.numa}</dd>
+        </>
+      )}
+      <dt className="text-tertiary">{t("serviceDetail.memoryFlags")}</dt>
+      <dd className="font-mono text-primary">
+        {flag(serving.mmap)} / {flag(serving.mlock)}
+      </dd>
+    </dl>
+  );
+}
+
+// ik_llama.cpp runtime parameters, rendered inside ConfigGrid's <dl>.
+// The fit margins are ananke-computed (they appear nowhere in the
+// operator's own config), so the dashboard is the one place to read
+// them without inspecting a live argv.
+function IkParamRows({ ik }: { ik: IkParams }) {
+  const { t } = useTranslation();
+  const flag = (on: boolean) =>
+    on ? t("serviceDetail.flagOn") : t("serviceDetail.flagOff");
+  return (
+    <>
+      {ik.mla !== undefined && ik.mla !== null && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.ikMla")}</dt>
+          <dd className="font-mono text-primary">{ik.mla}</dd>
+        </>
+      )}
+      <dt className="text-tertiary">{t("serviceDetail.ikDsa")}</dt>
+      <dd className="font-mono text-primary">{flag(ik.dsa)}</dd>
+      <dt className="text-tertiary">{t("serviceDetail.ikFit")}</dt>
+      <dd className="font-mono text-primary">{flag(ik.fit)}</dd>
+      {ik.fit && ik.fit_margins_mib && ik.fit_margins_mib.length > 0 && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.ikFitMargins")}</dt>
+          <dd className="font-mono text-primary">
+            {ik.fit_margins_mib.join(" / ")}
+          </dd>
+        </>
+      )}
+      {ik.attn_max_batch !== undefined && ik.attn_max_batch !== null && (
+        <>
+          <dt className="text-tertiary">{t("serviceDetail.ikAmb")}</dt>
+          <dd className="font-mono text-primary">{ik.attn_max_batch}</dd>
+        </>
+      )}
+      <dt className="text-tertiary">{t("serviceDetail.ikRtr")}</dt>
+      <dd className="font-mono text-primary">{flag(ik.runtime_repack)}</dd>
+    </>
   );
 }
 
