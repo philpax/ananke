@@ -110,6 +110,22 @@ fn tuning_for(summary: &GgufSummary, ubatch: u32) -> Tuning {
             slope: 2,
         },
 
+        // GLM-5 (glm-dsa). Dense MLA attention (the pinned llama.cpp runs
+        // it on the deepseek2 graph; the DSA indexer path never engages),
+        // so the residual is near-flat like the pure-MoE curve but with a
+        // much fatter base: a single-3090 sweep of GLM-5.2 UD-IQ1_S with
+        // all experts on CPU (2026-07-21) measured residuals of 1849 MiB
+        // at 8k → 1899 at 32k → 1967 at 64k (slope ≈ 2 MiB per 1024
+        // tokens), with a q8_0 K-cache point reconciling the MLA KV term
+        // to within 16 MiB. Doubling ubatch to 1024 added only ~186 MiB,
+        // so the ubatch sensitivity rides in the base rather than scaling
+        // the slope. Base covers the worst measured point plus the ubatch
+        // delta with headroom.
+        "glm-dsa" => Tuning {
+            base: 2300,
+            slope: 3,
+        },
+
         // DeepSeek-V4-Flash (deepseek4). Unlike the near-flat pure-MoE
         // curve, deepseek4's NSA "lightning indexer" builds a prompt-phase
         // scratch buffer that scales hard with context (it scores each
@@ -334,6 +350,32 @@ mod tests {
     #[test]
     fn talkie_floors_to_base() {
         assert_eq!(default_for(&summary_for("talkie"), 0, None), 500);
+    }
+
+    #[test]
+    fn glm_dsa_covers_measured_and_stays_flat() {
+        // Calibrated on the GLM-5.2 UD-IQ1_S single-3090 sweep
+        // (2026-07-21): residuals 1849 MiB at 8k, 1899 at 32k, 1967 at
+        // 64k, plus ~186 MiB when ubatch doubles to 1024. The curve must
+        // cover the worst point plus the ubatch delta (~2150) and must
+        // not inherit deepseek4's ubatch-scaled slope.
+        let glm = summary_for("glm-dsa");
+        assert!(
+            default_for(&glm, 65536, None) >= 2150,
+            "must cover the measured 64k residual plus the ubatch delta (got {})",
+            default_for(&glm, 65536, None)
+        );
+        // Near-flat: dense-MLA scratch grows ~2 MiB/1k, nothing like the
+        // deepseek4 indexer curve at the same context.
+        assert!(
+            default_for(&glm, 131072, None)
+                < default_for(&summary_for("deepseek4"), 131072, None) / 2
+        );
+        // ubatch is ignored for this arch.
+        assert_eq!(
+            default_for(&glm, 131072, Some(2048)),
+            default_for(&glm, 131072, Some(512))
+        );
     }
 
     #[test]

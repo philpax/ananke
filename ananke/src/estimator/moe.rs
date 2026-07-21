@@ -59,6 +59,22 @@ pub const MOE_FAMILY: &[&str] = &[
     // (0.84 GiB at 128k), a 13× over-reservation, so deepseek4 routes to
     // `deepseek4_kv_per_token` below instead.
     "deepseek4",
+    // GLM-5 (glm-dsa) pairs the standard fused-expert layout —
+    // `blk.N.ffn_{gate,up,down}_exps.weight` plus a `_shexp` shared
+    // expert — with DeepSeek-style MLA attention, so the weight
+    // accounting applies unchanged. Its KV cache does not: llama.cpp
+    // stores no V cache at all for MLA architectures (`has_v =
+    // !is_mla`), so the cache is a single K tensor of
+    // `attention.key_length` (kv_lora_rank + rope dims, 576 for
+    // GLM-5.2) elements per token per layer, and the trailing
+    // `nextn_predict_layers` MTP block carries no main-context KV. The
+    // generic `kv_for_hybrid` would add a phantom `value_length` V term
+    // (a ~1.9× over-reservation), so glm-dsa routes to
+    // `mla_kv_per_token` below. Despite the "dsa" in the name, the
+    // pinned llama.cpp runs this arch as dense MLA (the deepseek2
+    // graph, plain KV cache); the sparse-attention indexer tensors are
+    // loaded but only the deepseek32 arch gets the DSA indexer cache.
+    "glm-dsa",
 ];
 
 pub fn is_moe(arch: &str) -> bool {
@@ -116,6 +132,8 @@ pub fn estimate(summary: &GgufSummary, inputs: &EstimatorInputs<'_>) -> Estimate
     // pattern, both covered by the shared hybrid logic.
     let kv_per_token = if arch == "deepseek4" {
         deepseek4_kv_per_token(summary, arch, n_layers, inputs)
+    } else if arch == "glm-dsa" {
+        mla_kv_per_token(summary, arch, n_layers, inputs)
     } else {
         super::hybrid::kv_for_hybrid(summary, arch, n_layers, inputs)
     };
@@ -219,6 +237,47 @@ fn deepseek4_kv_per_token(
     // f16 baseline scaled to the actual K-cache element width (f16 = 2.0).
     let per_layer = DEEPSEEK4_CSA_KV_BYTES_PER_TOKEN_LAYER_F16 * (bytes_k / 2.0);
     (csa_layers as f64 * per_layer) as u64
+}
+
+/// Fallback `attention.key_length` for MLA archs whose quant dropped the
+/// key: kv_lora_rank (512) + rope dims (64), the GLM-5 / DeepSeek-V3
+/// compressed-cache width.
+const MLA_DEFAULT_KEY_LENGTH: u64 = 576;
+
+/// KV bytes per context token for MLA architectures (glm-dsa).
+///
+/// llama.cpp allocates no V cache for MLA (`has_v = !is_mla` in
+/// `llama-kv-cache.cpp`) — the value states are recovered from the
+/// compressed latent via `attn_v_b` at compute time — so the per-token
+/// cost is a single K tensor of `attention.key_length` elements per
+/// layer, priced off `cache_type_k` alone. The trailing
+/// `nextn_predict_layers` MTP block is excluded: llama.cpp's
+/// `hparams.n_layer()` (which sizes the main-context cache) subtracts it.
+fn mla_kv_per_token(
+    summary: &GgufSummary,
+    arch: &str,
+    n_layers: u32,
+    inputs: &EstimatorInputs<'_>,
+) -> u64 {
+    if inputs.context == 0 || n_layers == 0 {
+        return 0;
+    }
+    let bytes_k = kv::kv_bytes_per_element(inputs.cache_type_k.unwrap_or("f16"));
+
+    let key_length = summary
+        .metadata
+        .get(&*format!("{arch}.attention.key_length"))
+        .and_then(|v| v.as_u32())
+        .map(u64::from)
+        .unwrap_or(MLA_DEFAULT_KEY_LENGTH);
+    let nextn_layers = summary
+        .metadata
+        .get(&*format!("{arch}.nextn_predict_layers"))
+        .and_then(|v| v.as_u32())
+        .unwrap_or(0);
+    let kv_layers = n_layers.saturating_sub(nextn_layers) as u64;
+
+    (kv_layers as f64 * key_length as f64 * bytes_k) as u64
 }
 
 #[cfg(test)]
@@ -463,6 +522,75 @@ mod tests {
         assert_eq!(estimate(&summary, &mk("f16")).kv_per_token, 6657);
         // q8_0 K-cache (1.0625 B/elem vs 2.0) shrinks the per-token cost.
         assert!(estimate(&summary, &mk("q8_0")).kv_per_token < 6657);
+    }
+
+    #[test]
+    fn glm_dsa_kv_is_key_only_and_excludes_nextn_layers() {
+        use std::path::Path;
+
+        use crate::{
+            estimator::types::EstimatorInputs,
+            gguf::types::{GgufSummary, GgufValue},
+        };
+
+        // GLM-5.2 shape: 79 blocks, 1 NextN layer, MLA cache of 576
+        // K elements per token per layer, phantom value_length of 512
+        // that must NOT be priced.
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("glm-dsa".into()),
+        );
+        metadata.insert(SmolStr::new("glm-dsa.block_count"), GgufValue::U32(79));
+        metadata.insert(
+            SmolStr::new("glm-dsa.attention.head_count_kv"),
+            GgufValue::U32(1),
+        );
+        metadata.insert(
+            SmolStr::new("glm-dsa.attention.key_length"),
+            GgufValue::U32(576),
+        );
+        metadata.insert(
+            SmolStr::new("glm-dsa.attention.value_length"),
+            GgufValue::U32(512),
+        );
+        metadata.insert(
+            SmolStr::new("glm-dsa.nextn_predict_layers"),
+            GgufValue::U32(1),
+        );
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors: std::collections::BTreeMap::new(),
+            metadata,
+            block_count: Some(79),
+            architecture: SmolStr::new("glm-dsa"),
+            shards: vec!["/fake".into()],
+        };
+        let empty: Vec<String> = Vec::new();
+        let mk = |ctk: Option<&'static str>| EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context: 32768,
+            ubatch: None,
+            cache_type_k: ctk,
+            cache_type_v: None,
+            override_tensor: &empty,
+            compute_buffer_mb: None,
+            allow_fallback: false,
+            mtp: false,
+            draft_model: None,
+        };
+        // 78 KV layers × 576 elems × 2 bytes (f16) = 89856 bytes/token.
+        // The naive K+V formula would give 79 × (576 + 512) × 2 = 171904.
+        assert_eq!(estimate(&summary, &mk(None)).kv_per_token, 89_856);
+        // q8_0 K-cache shrinks it by the element-width ratio; the V type
+        // is irrelevant because no V cache exists.
+        assert_eq!(
+            estimate(&summary, &mk(Some("q8_0"))).kv_per_token,
+            (78.0f64 * 576.0 * 1.0625) as u64
+        );
     }
 
     #[test]
