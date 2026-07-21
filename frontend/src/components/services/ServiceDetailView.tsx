@@ -121,30 +121,8 @@ export function ServiceDetailView() {
 
       <div className="flex-1 space-y-4 overflow-auto p-4">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* Model info */}
-          {d.model_info && (
-            <Card header={t("serviceDetail.model")}>
-              <ModelInfoGrid model={d.model_info} />
-            </Card>
-          )}
-
-          {/* Configuration */}
-          <Card header={t("serviceDetail.configuration")}>
-            <ConfigGrid detail={d} />
-          </Card>
-
-          {/* Memory estimate */}
-          {d.estimate && (
-            <Card header={t("serviceDetail.memoryEstimate")}>
-              <EstimateGrid
-                estimate={d.estimate}
-                observedPeakBytes={d.observed_peak_bytes}
-              />
-            </Card>
-          )}
-
           {/* Lifecycle actions */}
-          <Card header={t("serviceDetail.actions")}>
+          <Card header={t("serviceDetail.actions")} className="lg:col-span-2">
             <div className="flex flex-wrap items-center gap-2">
               <a
                 href={serviceProxyUrl(d.port)}
@@ -173,6 +151,28 @@ export function ServiceDetailView() {
               />
             </div>
           </Card>
+
+          {/* Model info */}
+          {d.model_info && (
+            <Card header={t("serviceDetail.model")}>
+              <ModelInfoGrid model={d.model_info} />
+            </Card>
+          )}
+
+          {/* Configuration */}
+          <Card header={t("serviceDetail.configuration")}>
+            <ConfigGrid detail={d} />
+          </Card>
+
+          {/* Memory estimate */}
+          {d.estimate && (
+            <Card header={t("serviceDetail.memoryEstimate")}>
+              <EstimateGrid
+                estimate={d.estimate}
+                observedPeakBytes={d.observed_peak_bytes}
+              />
+            </Card>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
