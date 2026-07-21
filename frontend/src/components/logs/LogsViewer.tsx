@@ -12,6 +12,7 @@ import { useLogWindow, type LogWindow } from "../../api/hooks.ts";
 import type { LogLine } from "../../api/client.ts";
 import { formatTimestamp } from "../../util.ts";
 import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
+import { TimeWindowSelect } from "../ui/TimeWindowSelect.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { EmptyState } from "../ui/EmptyState.tsx";
 
@@ -19,55 +20,12 @@ type LogsViewerProps = {
   name: string;
 };
 
-type WindowMode = "preset" | "custom";
-
-type WindowPreset = {
-  label: string;
-  window: LogWindow;
-};
-
-const WINDOW_PRESETS: WindowPreset[] = [
-  { label: "5m", window: { kind: "relative", durationMs: 5 * 60 * 1000 } },
-  { label: "1h", window: { kind: "relative", durationMs: 60 * 60 * 1000 } },
-  { label: "6h", window: { kind: "relative", durationMs: 6 * 60 * 60 * 1000 } },
-  {
-    label: "24h",
-    window: { kind: "relative", durationMs: 24 * 60 * 60 * 1000 },
-  },
-];
-
-// Convert a datetime-local string (e.g. "2026-06-24T14:30") to ms
-// since epoch. Returns null for empty/invalid input.
-function datetimeToMs(dt: string): number | null {
-  if (!dt) return null;
-  const t = new Date(dt).getTime();
-  return Number.isNaN(t) ? null : t;
-}
-
-// Convert ms since epoch to a datetime-local string suitable for an
-// <input type="datetime-local"> value.
-function msToDatetime(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 export function LogsViewer({ name }: LogsViewerProps) {
   const { t } = useTranslation();
-  const [windowMode, setWindowMode] = useState<WindowMode>("preset");
-  const [presetIdx, setPresetIdx] = useState(0);
-
-  // Custom time range state. Empty until the user selects "custom".
-  const [sinceInput, setSinceInput] = useState("");
-  const [untilInput, setUntilInput] = useState("");
-
-  const window: LogWindow = useMemo(() => {
-    if (windowMode === "preset") return WINDOW_PRESETS[presetIdx]!.window;
-    const since = datetimeToMs(sinceInput);
-    const until = untilInput ? datetimeToMs(untilInput) : null;
-    if (since === null) return { kind: "relative", durationMs: 5 * 60 * 1000 };
-    return { kind: "absolute", sinceMs: since, untilMs: until };
-  }, [windowMode, presetIdx, sinceInput, untilInput]);
+  const [window, setWindow] = useState<LogWindow>({
+    kind: "relative",
+    durationMs: 5 * 60 * 1000,
+  });
 
   const win = useLogWindow(name, window);
   const [streamFilter, setStreamFilter] = useState<
@@ -102,38 +60,11 @@ export function LogsViewer({ name }: LogsViewerProps) {
   const { scrollRef, onScroll, pinned, scrollToBottom } =
     useStickToBottom(lines);
 
-  // When switching to custom mode, pre-fill the since field if empty.
-  function selectCustom() {
-    if (windowMode !== "custom") {
-      const now = Date.now();
-      setSinceInput(msToDatetime(now - 60 * 60 * 1000));
-      setUntilInput("");
-    }
-    setWindowMode("custom");
-  }
-
   return (
     <div className="flex h-72 flex-col">
       {/* Toolbar row 1: time + stream + status */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-4 py-2">
-        <SegmentedToggle<number | "custom">
-          options={[
-            ...WINDOW_PRESETS.map((preset, i) => ({
-              label: preset.label,
-              value: i as number,
-            })),
-            { label: t("logs.custom"), value: "custom" as const },
-          ]}
-          selected={windowMode === "preset" ? presetIdx : "custom"}
-          onChange={(v) => {
-            if (v === "custom") {
-              selectCustom();
-            } else {
-              setPresetIdx(v);
-              setWindowMode("preset");
-            }
-          }}
-        />
+        <TimeWindowSelect onChange={setWindow} />
         <div className="mx-1 h-3 w-px bg-border-default" />
         <SegmentedToggle<"both" | "stdout" | "stderr">
           options={(["both", "stdout", "stderr"] as const).map((s) => ({
@@ -163,29 +94,6 @@ export function LogsViewer({ name }: LogsViewerProps) {
           </button>
         </div>
       </div>
-
-      {/* Toolbar row 2: custom time range (shown only in custom mode) */}
-      {windowMode === "custom" && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-4 py-2">
-          <input
-            type="datetime-local"
-            value={sinceInput}
-            onChange={(e) => setSinceInput(e.target.value)}
-            className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
-          />
-          <span className="text-xs text-tertiary">→</span>
-          <input
-            type="datetime-local"
-            value={untilInput}
-            onChange={(e) => setUntilInput(e.target.value)}
-            placeholder={t("logs.now")}
-            className="h-6 rounded-sm border border-border-default bg-base px-1.5 text-xs text-primary focus:border-accent focus:outline-none"
-          />
-          {!untilInput && (
-            <span className="text-xs text-tertiary">{t("logs.liveParen")}</span>
-          )}
-        </div>
-      )}
 
       {/* Toolbar row 3: search + run filter */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border-default px-4 py-2">

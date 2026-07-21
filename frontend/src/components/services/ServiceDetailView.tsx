@@ -1,7 +1,7 @@
 // Service detail page (`/services/:name`). Shows model info, VRAM
 // estimate, placement preview, launch command, and a logs viewer.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
@@ -27,7 +27,7 @@ import {
   formatTimestamp,
   relativeTime,
   serviceProxyUrl,
-  RANGES,
+  metricsWindow,
 } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
@@ -40,7 +40,12 @@ import { CopyButton } from "../ui/CopyButton.tsx";
 import { Button } from "../ui/Button.tsx";
 import { ButtonLink } from "../ui/ButtonLink.tsx";
 import { buttonClassName } from "../ui/buttonStyles.ts";
-import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
+import { TimeWindowSelect } from "../ui/TimeWindowSelect.tsx";
+import {
+  TIME_WINDOW_PRESETS,
+  windowLabel,
+  type TimeWindow,
+} from "../ui/timeWindow.ts";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
 import {
@@ -727,13 +732,19 @@ function shellQuote(s: string): string {
 
 function ServiceMetrics({ name }: { name: string }) {
   const { t } = useTranslation();
-  const [rangeIdx, setRangeIdx] = useState(0);
-  const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
-  const range = RANGES[rangeIdx];
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>({
+    kind: "relative",
+    durationMs: TIME_WINDOW_PRESETS[0]!.durationMs,
+  });
+  // Freeze `now` per window selection so the query key doesn't churn.
+  const { since, until, end, bucket } = useMemo(
+    () => metricsWindow(timeWindow),
+    [timeWindow],
+  );
   const xMin = since / 1000;
-  const xMax = (since + range.ms) / 1000;
+  const xMax = end / 1000;
 
-  const metrics = useMetrics({ service: name, since, bucket: range.bucket });
+  const metrics = useMetrics({ service: name, since, until, bucket });
   const buckets = aggregateBuckets(metrics.data?.buckets ?? []);
 
   const totalRequests = buckets.reduce((s, b) => s + b.requestCount, 0);
@@ -775,16 +786,7 @@ function ServiceMetrics({ name }: { name: string }) {
     <div className="space-y-4">
       <Card
         header={t("serviceDetail.stats")}
-        headerAction={
-          <SegmentedToggle
-            options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
-            selected={rangeIdx}
-            onChange={(i) => {
-              setRangeIdx(i);
-              setSince(Date.now() - RANGES[i].ms);
-            }}
-          />
-        }
+        headerAction={<TimeWindowSelect onChange={setTimeWindow} />}
       >
         {/* The effective throughput stat is always shown; the input/output
             decode rates are added alongside it when the window has
@@ -795,7 +797,9 @@ function ServiceMetrics({ name }: { name: string }) {
           }`}
         >
           <Stat
-            label={t("serviceDetail.requestsInPeriod", { range: range.label })}
+            label={t("serviceDetail.requestsInPeriod", {
+              range: windowLabel(timeWindow),
+            })}
             value={totalRequests}
           />
           <Stat label={t("serviceDetail.errors")} value={totalErrors} />

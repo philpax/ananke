@@ -171,10 +171,39 @@ function medianGapThreshold(ts: number[]): number {
   return median * 1.5;
 }
 
-export type TimeRange = { label: string; ms: number; bucket: string };
+// Pick a metrics bucket size for a window span so charts keep a
+// readable point density (~30-70 points) at any range, including the
+// 5m preset and arbitrary custom ranges. The backend accepts any
+// duration string here.
+export function bucketFor(spanMs: number): string {
+  if (spanMs <= 5 * 60_000) return "10s";
+  if (spanMs <= 3_600_000) return "1m";
+  if (spanMs <= 6 * 3_600_000) return "5m";
+  if (spanMs <= 24 * 3_600_000) return "30m";
+  return "2h";
+}
 
-export const RANGES: TimeRange[] = [
-  { label: "1h", ms: 3_600_000, bucket: "1m" },
-  { label: "6h", ms: 6 * 3_600_000, bucket: "5m" },
-  { label: "24h", ms: 24 * 3_600_000, bucket: "30m" },
-];
+// Resolve a TimeWindow into concrete metrics-query parameters. For
+// relative windows `now` is captured at call time — memoise on the
+// window object so the query key doesn't churn every render.
+export function metricsWindow(w: {
+  kind: string;
+  durationMs?: number;
+  sinceMs?: number;
+  untilMs?: number | null;
+}): {
+  since: number;
+  until: number | undefined;
+  end: number;
+  bucket: string;
+} {
+  const now = Date.now();
+  const since =
+    w.kind === "relative"
+      ? now - (w.durationMs ?? 3_600_000)
+      : (w.sinceMs ?? now);
+  const until =
+    w.kind === "absolute" && w.untilMs != null ? w.untilMs : undefined;
+  const end = until ?? now;
+  return { since, until, end, bucket: bucketFor(end - since) };
+}

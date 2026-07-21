@@ -20,7 +20,10 @@ import type {
   DeviceSampleResponse,
   MetricBucketResponse,
 } from "../../api/client.ts";
-import { formatBytes, serviceProxyUrl, RANGES } from "../../util.ts";
+import { formatBytes, serviceProxyUrl, metricsWindow } from "../../util.ts";
+import { TimeWindowSelect } from "../ui/TimeWindowSelect.tsx";
+import { TIME_WINDOW_PRESETS, type TimeWindow } from "../ui/timeWindow.ts";
+
 import { toggleFavourite, useFavourites } from "../../api/favourites.ts";
 import { Card } from "../ui/Card.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
@@ -84,19 +87,24 @@ export function DashboardView() {
   const lifecycle = useLifecycle();
   const favourites = useFavourites();
 
-  const [rangeIdx, setRangeIdx] = useState(0);
-  const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>({
+    kind: "relative",
+    durationMs: TIME_WINDOW_PRESETS[0]!.durationMs,
+  });
+  // Freeze `now` per window selection so the query key doesn't churn.
+  const { since, until, end, bucket } = useMemo(
+    () => metricsWindow(timeWindow),
+    [timeWindow],
+  );
+  const xMin = since / 1000;
+  const xMax = end / 1000;
   const [sortOrder, setSortOrder] = useState<SortOrder>(
     () => (localStorage.getItem("ananke-sort-order") as SortOrder) ?? "alpha",
   );
   useEffect(() => {
     localStorage.setItem("ananke-sort-order", sortOrder);
   }, [sortOrder]);
-  const range = RANGES[rangeIdx];
-  const xMin = since / 1000;
-  const xMax = (since + range.ms) / 1000;
-
-  const metrics = useMetrics({ since, bucket: range.bucket });
+  const metrics = useMetrics({ since, until, bucket });
   const deviceSamples = useDeviceSamples(undefined, since);
 
   const serviceSpark = useMemo(
@@ -154,14 +162,7 @@ export function DashboardView() {
           <span className="font-mono">{window.location.host}</span>
           <CopyButton value={window.location.host} />
         </div>
-        <SegmentedToggle
-          options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
-          selected={rangeIdx}
-          onChange={(i) => {
-            setRangeIdx(i);
-            setSince(Date.now() - RANGES[i].ms);
-          }}
-        />
+        <TimeWindowSelect onChange={setTimeWindow} />
         <div className="flex w-full flex-wrap items-center gap-x-5 gap-y-3 sm:w-auto sm:ml-auto">
           <Stat label={t("dashboard.totalServices")} value={totalCount} />
           <Stat label={t("dashboard.runningServices")} value={runningCount} />

@@ -12,6 +12,8 @@
     "copy": "Copy",
     "copied": "Copied",
     "noData": "No data",
+    "custom": "custom",
+    "rangeTo": "to",
     "unknown": "Unknown"
   },
   "nav": {

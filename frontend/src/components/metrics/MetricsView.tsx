@@ -13,12 +13,14 @@ import {
   type AggregatedBucket,
   type PerServiceSeries,
 } from "../../api/metrics-aggregate.ts";
-import { RANGES } from "../../util.ts";
+import { metricsWindow } from "../../util.ts";
 import { Card } from "../ui/Card.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Chart } from "../ui/Chart.tsx";
 import { CHART_PALETTE } from "../ui/chart-palette.ts";
-import { SegmentedToggle } from "../ui/SegmentedToggle.tsx";
+import { TimeWindowSelect } from "../ui/TimeWindowSelect.tsx";
+import { TIME_WINDOW_PRESETS, type TimeWindow } from "../ui/timeWindow.ts";
+
 import { Spinner } from "../ui/Spinner.tsx";
 
 type MemorySeries = {
@@ -126,19 +128,25 @@ function toMemoryData(series: MemorySeries[]): (number | null)[][] {
 
 export function MetricsView() {
   const { t } = useTranslation();
-  const [rangeIdx, setRangeIdx] = useState(0);
-  const [since, setSince] = useState(() => Date.now() - RANGES[0].ms);
-  const [serviceFilter, setServiceFilter] = useState<string>("");
-
-  const range = RANGES[rangeIdx];
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>({
+    kind: "relative",
+    durationMs: TIME_WINDOW_PRESETS[0]!.durationMs,
+  });
+  // Freeze `now` per window selection so the query key doesn't churn.
+  const { since, until, end, bucket } = useMemo(
+    () => metricsWindow(timeWindow),
+    [timeWindow],
+  );
   const xMin = since / 1000;
-  const xMax = (since + range.ms) / 1000;
+  const xMax = end / 1000;
+  const [serviceFilter, setServiceFilter] = useState<string>("");
 
   const services = useServices();
   const metrics = useMetrics({
     service: serviceFilter || undefined,
     since,
-    bucket: range.bucket,
+    until,
+    bucket,
   });
   const deviceSamples = useDeviceSamples(undefined, since);
 
@@ -163,14 +171,7 @@ export function MetricsView() {
     <div className="flex h-full flex-col">
       <ViewHeader>
         <h1 className="eyebrow !text-primary">{t("stats.title")}</h1>
-        <SegmentedToggle
-          options={RANGES.map((r, i) => ({ label: r.label, value: i }))}
-          selected={rangeIdx}
-          onChange={(i) => {
-            setRangeIdx(i);
-            setSince(Date.now() - RANGES[i].ms);
-          }}
-        />
+        <TimeWindowSelect onChange={setTimeWindow} />
         <div className="ml-auto flex items-center gap-2">
           <select
             value={serviceFilter}
