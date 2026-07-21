@@ -36,4 +36,4 @@ gpu_allow = [0, 1]
 tensor_split_weights = [2.6, 1.0]
 ```
 
-The weights are normalised by their sum, so only the ratio matters. The number of weights must match the number of allowed GPUs, and weights must be positive and finite.
+The weights are normalised by their sum, so only the ratio matters. The number of weights must match the number of allowed GPUs, and weights must be positive and finite. Weights are meaningful to four decimal places; additional precision is rounded when converting to the integer `--tensor-split` ratio.

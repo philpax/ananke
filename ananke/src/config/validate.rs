@@ -1118,13 +1118,44 @@ fn validate_service(
                 "service {name}: devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)"
             )));
         }
+        // When gpu_allow is set, validate it is sorted ascending and free of
+        // duplicates. The packer sorts GPUs ascending before pairing weights
+        // by index, so the pairing is correct regardless, but catching mistakes
+        // here ensures the config matches the documented expectation and
+        // prevents a duplicate like `[0, 0]` from causing a runtime count
+        // mismatch (the runtime GPU snapshot deduplicates, so `gpu_allow =
+        // [0, 0]` with 2 weights would otherwise slip through and fail at
+        // pack time).
+        if !gpu_allow.is_empty() {
+            // Check duplicates first so `[0, 0]` reports the duplicate error,
+            // not the ordering error. Use a set to catch non-adjacent
+            // duplicates like `[1, 0, 1]` too. Then check non-decreasing order
+            // so a strictly-descending `[1, 0]` reports the ordering error.
+            let unique: BTreeSet<u32> = gpu_allow.iter().copied().collect();
+            if unique.len() != gpu_allow.len() {
+                return Err(fail(format!(
+                    "service {name}: devices.gpu_allow must not contain duplicate GPU ids when tensor_split_weights is set"
+                )));
+            }
+            if !gpu_allow.windows(2).all(|w| w[0] <= w[1]) {
+                return Err(fail(format!(
+                    "service {name}: devices.gpu_allow must be in ascending GPU-id order when tensor_split_weights is set (got {gpu_allow:?})"
+                )));
+            }
+        }
         let n_allowed = if !gpu_allow.is_empty() {
             gpu_allow.len()
         } else if let Some(ref gpu_ids) = daemon.devices.gpu_ids {
             gpu_ids.len()
         } else {
             // The visible GPU count is not known until runtime; validate count
-            // only when the operator has constrained it in config.
+            // only when the operator has constrained it in config. Warn so the
+            // operator knows the count check is deferred to placement time.
+            tracing::warn!(
+                service = %name,
+                "tensor_split_weights has {} entries but the GPU count is not constrained (set gpu_allow or [devices].gpu_ids); count will be checked at placement time",
+                weights.len()
+            );
             weights.len()
         };
         if weights.len() != n_allowed {
@@ -2855,6 +2886,54 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         assert!(
             format!("{err}").contains("requires placement=gpu-only"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_with_unsorted_gpu_allow() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [1, 0]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("devices.gpu_allow must be in ascending GPU-id order"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_tensor_split_weights_with_duplicate_gpu_allow() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+devices.placement = "gpu-only"
+devices.split = "tensor"
+devices.gpu_allow = [0, 0]
+devices.tensor_split_weights = [2.6, 1.0]
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("devices.gpu_allow must not contain duplicate GPU ids"),
             "got: {err}"
         );
     }

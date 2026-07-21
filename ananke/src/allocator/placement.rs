@@ -78,6 +78,10 @@ pub enum PackError {
     /// overflow it. Unlike `Auto`, manual mode never spills the surplus for the
     /// operator — the fix is a larger offload count.
     ManualExpertsDoNotFit { gpu_index: u32, bytes: u64 },
+    /// `tensor_split_weights` count doesn't match the number of spanned GPUs.
+    /// This is a configuration error, not a capacity problem — eviction
+    /// cannot fix it.
+    InvalidTensorSplitWeights { expected: usize, got: usize },
 }
 
 impl std::fmt::Display for PackError {
@@ -106,6 +110,12 @@ impl std::fmt::Display for PackError {
                 write!(
                     f,
                     "manual expert_offload keeps more expert weight on gpu:{gpu_index} than it can hold (overflow at a {bytes}-byte expert tensor); raise the expert_offload count"
+                )
+            }
+            Self::InvalidTensorSplitWeights { expected, got } => {
+                write!(
+                    f,
+                    "tensor_split_weights has {got} entries but {expected} GPUs are spanned"
                 )
             }
         }
@@ -431,17 +441,26 @@ impl<'a> Packer<'a> {
             .map(|w| w.to_vec())
             .unwrap_or_else(|| vec![1.0f32; gpus.len()]);
         if weights.len() != gpus.len() {
-            return Err(PackError::WeightsDoNotFit);
+            return Err(PackError::InvalidTensorSplitWeights {
+                expected: gpus.len(),
+                got: weights.len(),
+            });
         }
-        let weights_sum: f64 = weights.iter().map(|&w| w as f64).sum();
 
-        let weights_shares = weighted_shares(per_layer_sum, &weights, weights_sum);
-        let kv_shares = weighted_shares(kv_total, &weights, weights_sum);
+        // Derive pledge shares from the same integer ratio emitted to
+        // `--tensor-split`, so no GPU is under-pledged relative to its actual
+        // tensor-split share. The integer ratio is computed once here and
+        // reused for both the pledge book and the argv.
+        let tensor_split = weighted_tensor_split(&weights);
+        let ratio_sum: u64 = tensor_split.iter().map(|&v| v as u64).sum();
+
+        let weights_shares = integer_shares(per_layer_sum, &tensor_split, ratio_sum);
+        let kv_shares = integer_shares(kv_total, &tensor_split, ratio_sum);
         let sharded_non_layer_total = non_layer.output_head_bytes + self.estimate.mtp_bytes;
         let sharded_non_layer_shares =
-            weighted_shares(sharded_non_layer_total, &weights, weights_sum);
-        let compute_shares = weighted_shares(compute_total, &weights, weights_sum);
-        let fudge_shares = weighted_shares(fudge_total, &weights, weights_sum);
+            integer_shares(sharded_non_layer_total, &tensor_split, ratio_sum);
+        let compute_shares = integer_shares(compute_total, &tensor_split, ratio_sum);
+        let fudge_shares = integer_shares(fudge_total, &tensor_split, ratio_sum);
 
         if non_layer.token_embd_bytes > 0 {
             *self.per_device.entry(DeviceSlot::Cpu).or_default() += non_layer.token_embd_bytes;
@@ -465,12 +484,10 @@ impl<'a> Packer<'a> {
             *self.per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += bytes;
         }
 
-        // Convert the float weights to small integer ratios for `--tensor-split`.
-        // The pledge book uses the floats directly; the integer values are only
-        // the argv representation. llama.cpp normalises the tensor-split list, so
-        // the integer ratio is what matters, not the absolute values.
-        let tensor_split = weighted_tensor_split(&weights);
-
+        // The integer `tensor_split` ratio was computed above so the pledge
+        // book and the argv share the same proportions. llama.cpp normalises
+        // the tensor-split list, so the integer ratio is what matters, not the
+        // absolute values.
         self.sharded = Some(ShardedPlan {
             mode: self.svc.split_mode,
             tensor_split,
@@ -885,9 +902,11 @@ impl<'a> Packer<'a> {
     /// -ot, and convert the per_device map into an `Allocation`.
     fn finish(self) -> Packed {
         // Sharded (tensor/row) split: every layer is offloaded and divided
-        // across all spanned GPUs by equal proportions, so emit `-ngl 999`,
-        // a `1`-per-GPU `--tensor-split`, the `--split-mode`, and `--main-gpu`
-        // (visible index 0 — the lowest-id GPU, which cuda_env renders first).
+        // across all spanned GPUs by the configured proportions (equal by
+        // default, or weighted via tensor_split_weights), so emit `-ngl 999`,
+        // the plan's `--tensor-split` ratio, the `--split-mode`, and
+        // `--main-gpu` (visible index 0 — the lowest-id GPU, which cuda_env
+        // renders first).
         let (ngl, tensor_split, split_mode, main_gpu) = if let Some(plan) = &self.sharded {
             (
                 Some(NGL_OFFLOAD_ALL),
@@ -1174,13 +1193,19 @@ fn gpu_reserve_bytes(svc: &ServiceConfig, gpu: u32) -> u64 {
     mb.saturating_mul(1024 * 1024)
 }
 
-/// Split `total` into per-GPU shares proportional to `weights`. Each entry is
-/// the floor of its exact share, and the main GPU (index 0, the lowest-id GPU)
-/// absorbs the rounding remainder so the shares sum exactly to `total`.
-fn weighted_shares(total: u64, weights: &[f32], weights_sum: f64) -> Vec<u64> {
-    let mut shares: Vec<u64> = weights
+/// Split `total` into per-GPU shares proportional to the integer `ratio`.
+/// Each entry is the floor of its exact share, and the main GPU (index 0, the
+/// lowest-id GPU) absorbs the rounding remainder so the shares sum exactly to
+/// `total`. Uses `u128` intermediates to avoid overflow for large totals ×
+/// ratio. The `ratio` is the same integer vector emitted to `--tensor-split`,
+/// so the pledge book tracks the actual tensor-split proportions.
+fn integer_shares(total: u64, ratio: &[u32], ratio_sum: u64) -> Vec<u64> {
+    if ratio_sum == 0 {
+        return vec![0; ratio.len()];
+    }
+    let mut shares: Vec<u64> = ratio
         .iter()
-        .map(|w| (total as f64 * (*w as f64) / weights_sum) as u64)
+        .map(|&v| (total as u128 * v as u128 / ratio_sum as u128) as u64)
         .collect();
     let allocated: u64 = shares.iter().sum();
     let remainder = total.saturating_sub(allocated);
@@ -2356,6 +2381,76 @@ mod tests {
         assert_eq!(
             weighted_tensor_split(&[2.0f32, 1.0f32, 1.0f32]),
             vec![2, 1, 1]
+        );
+    }
+
+    /// Reversed-order weights must produce the reversed ratio, confirming the
+    /// function doesn't assume descending order.
+    #[test]
+    fn weighted_tensor_split_handles_reversed_order() {
+        assert_eq!(weighted_tensor_split(&[1.0f32, 2.6f32]), vec![5, 13]);
+    }
+
+    /// `weighted_tensor_split` scales by `SCALE = 10_000`, so only 4 decimal
+    /// places are meaningful. `1.33333 × 10000 = 13333.3` rounds to `13333`;
+    /// the GCD of 13333 and 10000 is 1, so no reduction occurs. Pin this
+    /// exact output to document the precision limit.
+    #[test]
+    fn weighted_tensor_split_rounds_beyond_four_decimals() {
+        assert_eq!(
+            weighted_tensor_split(&[1.33333f32, 1.0f32]),
+            vec![13333, 10000]
+        );
+    }
+
+    /// `integer_shares` must produce pledge proportions consistent with the
+    /// emitted `--tensor-split` ratio. Weights `[2.6, 1.0]` reduce to
+    /// `[13, 5]` (ratio_sum=18). A total of 18 gives `[13, 5]` — each GPU's
+    /// pledge share equals its tensor-split value. A total of 19 gives
+    /// `[14, 5]` (floor of 13.72 and 5.28, remainder 1 to GPU 0), confirming
+    /// the proportions still track the ratio.
+    #[test]
+    fn integer_shares_match_tensor_split_ratio() {
+        let ratio = vec![13u32, 5u32];
+        let ratio_sum: u64 = 18;
+        assert_eq!(integer_shares(18, &ratio, ratio_sum), vec![13, 5]);
+        assert_eq!(integer_shares(19, &ratio, ratio_sum), vec![14, 5]);
+        // Shares always sum to total.
+        assert_eq!(
+            integer_shares(19, &ratio, ratio_sum).iter().sum::<u64>(),
+            19
+        );
+        assert_eq!(
+            integer_shares(18, &ratio, ratio_sum).iter().sum::<u64>(),
+            18
+        );
+    }
+
+    /// A weight-count mismatch at pack time returns
+    /// `PackError::InvalidTensorSplitWeights`, not `WeightsDoNotFit`. This
+    /// covers the runtime count-mismatch path that slips through validation's
+    /// gap (when `gpu_allow` is unset).
+    #[test]
+    fn packer_rejects_wrong_weight_count() {
+        let e = trivial_estimate(20, 1024);
+        let snap = snapshot(&[24, 24]);
+        let alloc = AllocationTable::new();
+        let mut s = svc(PlacementPolicy::GpuOnly, None);
+        s.split_mode = SplitMode::Tensor;
+        // 3 weights but only 2 GPUs in the snapshot.
+        s.tensor_split_weights = Some(vec![1.0f32, 1.0f32, 1.0f32]);
+        // Clear placement_override so the packer's sharded path runs.
+        s.placement_override.clear();
+        let err = pack(&e, &s, &snap, &alloc).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PackError::InvalidTensorSplitWeights {
+                    expected: 2,
+                    got: 3
+                }
+            ),
+            "expected InvalidTensorSplitWeights, got {err:?}"
         );
     }
 }
