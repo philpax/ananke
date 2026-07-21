@@ -21,8 +21,8 @@ export const TIME_WINDOW_PRESETS: TimeWindowPreset[] = [
 // Human label for a window: the matching preset label for relative
 // windows ("5m", "1h", ...), or a duration-ish fallback, or "custom"
 // for absolute ranges.
-export function windowLabel(w: TimeWindow): string {
-  if (w.kind === "absolute") return "custom";
+export function windowLabel(w: TimeWindow, t: (key: string) => string): string {
+  if (w.kind === "absolute") return t("common.custom");
   const preset = TIME_WINDOW_PRESETS.find((p) => p.durationMs === w.durationMs);
   if (preset) return preset.label;
   const mins = Math.round(w.durationMs / 60_000);

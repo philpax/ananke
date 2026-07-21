@@ -188,6 +188,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         running,
     );
     let current_allocation = read_current_allocation(&state, &svc_cfg.name);
+    let fit_gpu_count = fit_gpu_count(&current_allocation, svc_cfg, &state);
 
     let detail = ServiceDetail {
         name: svc_cfg.name.to_string(),
@@ -222,6 +223,8 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         modality: svc_cfg.modality,
         ananke_metadata: svc_cfg.metadata.clone(),
         last_used_ms: state.activity.last_ms(&svc_cfg.name),
+        runtime: runtime_info(svc_cfg, fit_gpu_count),
+        serving: serving_config(svc_cfg),
     };
     (StatusCode::OK, Json(detail)).into_response()
 }
@@ -473,6 +476,121 @@ fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<C
 
 /// Snapshot the service's current per-device pledge from the
 /// allocation table. Empty when the service isn't running.
+/// Serving-runtime block for the detail view: the runtime kind plus,
+/// for ik-llama services, the configured knobs and the fit margins
+/// ananke would emit per visible device (computed, so the dashboard is
+/// the one place an operator can read them without a spawn).
+/// Derive the GPU count for fit-margin computation. Matches spawn's
+/// `alloc.gpu_ids().len()` for running services (by counting `gpu:` keys
+/// in the live allocation table), uses `gpu_allow.len()` for
+/// configured-but-not-running services, and falls back to the host
+/// total when nothing constrains the device set.
+fn fit_gpu_count(
+    current_allocation: &std::collections::BTreeMap<String, u64>,
+    svc_cfg: &ServiceConfig,
+    state: &AppState,
+) -> usize {
+    let running = current_allocation
+        .keys()
+        .filter(|k| k.starts_with("gpu:"))
+        .count();
+    if running > 0 {
+        running
+    } else if !svc_cfg.gpu_allow.is_empty() {
+        // Mirror the packer's `allowed_gpu_list` filtering: only count
+        // gpu_allow entries that correspond to a GPU in the snapshot.
+        let snap = state.snapshot.read();
+        let existing: std::collections::HashSet<u32> = snap.gpus.iter().map(|g| g.id).collect();
+        let filtered = svc_cfg
+            .gpu_allow
+            .iter()
+            .filter(|id| existing.contains(id))
+            .count();
+        if filtered > 0 {
+            filtered
+        } else {
+            snap.gpus.len()
+        }
+    } else {
+        state.snapshot.read().gpus.len()
+    }
+}
+
+fn runtime_info(
+    svc_cfg: &ServiceConfig,
+    gpu_count: usize,
+) -> Option<ananke_api::services::detail::RuntimeInfo> {
+    use ananke_api::services::detail::{IkParams, RuntimeInfo};
+    let lc = svc_cfg.llama_cpp()?;
+    let ik = match lc.runtime.ik() {
+        None => {
+            return Some(RuntimeInfo {
+                kind: "llama-cpp".into(),
+                ik: None,
+            });
+        }
+        Some(ik) => ik,
+    };
+    let fit_margins_mib = if ik.fit {
+        (0..gpu_count)
+            .map(|dev| crate::supervise::spawn::ik_fit_margin_mib(ik, lc, dev))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(RuntimeInfo {
+        kind: "ik-llama".into(),
+        ik: Some(IkParams {
+            mla: ik.mla,
+            dsa: ik.dsa,
+            fit: ik.fit,
+            attn_max_batch: ik.attn_max_batch,
+            runtime_repack: ik.runtime_repack,
+            fit_margins_mib,
+        }),
+    })
+}
+
+/// Curated serving knobs for the detail view, including the derived
+/// per-slot context (`context / parallel` under a statically-split KV
+/// pool — the number that actually bounds a request, and one no single
+/// config key states).
+fn serving_config(svc_cfg: &ServiceConfig) -> Option<ananke_api::services::detail::ServingConfig> {
+    use crate::config::OffloadMode;
+    let lc = svc_cfg.llama_cpp()?;
+    let parallel = lc.parallel.unwrap_or(1);
+    let kv_unified = lc.kv_unified.unwrap_or(false);
+    let effective_context_per_slot = lc
+        .context
+        .and_then(|c| (parallel > 1 && !kv_unified).then_some(c / parallel.max(1)));
+    Some(ananke_api::services::detail::ServingConfig {
+        binary: lc.binary.to_string_lossy().into_owned(),
+        cache_type_k: lc.cache_type_k.as_deref().unwrap_or("f16").to_string(),
+        cache_type_v: lc.cache_type_v.as_deref().unwrap_or("f16").to_string(),
+        flash_attn: lc.flash_attn.unwrap_or(false),
+        parallel,
+        kv_unified,
+        effective_context_per_slot,
+        spec_type: lc.spec_type.as_deref().map(str::to_string),
+        draft_model: lc
+            .draft_model
+            .as_deref()
+            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned())),
+        expert_offload: match lc.expert_offload {
+            OffloadMode::Off => "off".to_string(),
+            OffloadMode::Auto => "auto".to_string(),
+            OffloadMode::Layers(n) => format!("{n} layers"),
+        },
+        batch_size: lc.batch_size,
+        ubatch_size: lc.ubatch_size,
+        threads: lc.threads,
+        threads_batch: lc.threads_batch,
+        numa: lc.numa.map(|n| n.as_flag().to_string()),
+        mmap: lc.mmap.unwrap_or(true),
+        mlock: lc.mlock.unwrap_or(false),
+    })
+}
+
 fn read_current_allocation(
     state: &AppState,
     name: &SmolStr,

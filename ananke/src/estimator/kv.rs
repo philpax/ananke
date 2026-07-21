@@ -29,6 +29,8 @@ pub fn kv_bytes_for_type(t: GgufType) -> f64 {
         GgufType::Q5_0 => 0.6875,
         GgufType::Q4_1 => 0.625,
         GgufType::Q4_0 | GgufType::IQ4_NL => 0.5625,
+        GgufType::Q6_0 => 0.8125,
+        GgufType::Q8_KV => 1.0,
         _ => 2.0,
     }
 }
@@ -45,5 +47,11 @@ mod tests {
     #[test]
     fn unknown_falls_back_to_f16() {
         assert_eq!(kv_bytes_per_element("this-is-bogus"), 2.0);
+    }
+
+    #[test]
+    fn q6_0_and_q8_kv_have_correct_bpe() {
+        assert_eq!(kv_bytes_for_type(GgufType::Q6_0), 0.8125);
+        assert_eq!(kv_bytes_for_type(GgufType::Q8_KV), 1.0);
     }
 }

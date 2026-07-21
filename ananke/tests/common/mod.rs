@@ -268,6 +268,7 @@ pub fn minimal_llama_service(name: &str, port: u16) -> ServiceConfig {
         tracking: ananke::config::TrackingSettings::default(),
         metadata: ananke_api::shared::AnankeMetadata::new(),
         template_config: TemplateConfig::LlamaCpp(Box::new(LlamaCppConfig {
+            runtime: Default::default(),
             model: PathBuf::from("/fake/model.gguf"),
             mmproj: None,
             context: None,

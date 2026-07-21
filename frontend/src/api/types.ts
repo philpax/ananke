@@ -720,6 +720,36 @@ export interface components {
      * @enum {string}
      */
     FitVerdict: "fits" | "needs_eviction" | "does_not_fit";
+    /**
+     * @description The ik_llama.cpp knobs of a `runtime = { kind = "ik-llama", ... }`
+     *     service, mirrored from the validated config, plus the fit margins
+     *     ananke derives from them (which appear nowhere in the operator's
+     *     own config).
+     */
+    IkParams: {
+      /**
+       * Format: int32
+       * @description `-amb` attention scratch cap in MiB, when set.
+       */
+      attn_max_batch?: number | null;
+      /** @description DSA sparse attention (`-dsa -fidx`). */
+      dsa: boolean;
+      /** @description Fork-side auto-placement (`--fit`). */
+      fit: boolean;
+      /**
+       * @description The `--gpu-fit-margin` values (MiB) ananke computes and emits
+       *     per visible device when `fit` is on: index 0 is the child's
+       *     device 0, and so on. Empty when `fit` is off.
+       */
+      fit_margins_mib?: number[];
+      /**
+       * Format: int32
+       * @description MLA kernel mode (`-mla`, 0-3), when set.
+       */
+      mla?: number | null;
+      /** @description `-rtr` runtime repacking. */
+      runtime_repack: boolean;
+    };
     /** @description One launch command — argv and environment. */
     LaunchCommand: {
       /**
@@ -1136,6 +1166,15 @@ export interface components {
       /** @description Whether the placement fits right now without eviction or reclaim. */
       verdict: components["schemas"]["FitVerdict"];
     };
+    /**
+     * @description Which llama-server implementation serves a llama-cpp service, plus
+     *     the fork-specific configuration when it is not mainline.
+     */
+    RuntimeInfo: {
+      ik?: null | components["schemas"]["IkParams"];
+      /** @description `"llama-cpp"` (mainline) or `"ik-llama"` (ikawrakow fork). */
+      kind: string;
+    };
     /** @description `GET /api/services/{name}` response body. */
     ServiceDetail: {
       /**
@@ -1223,6 +1262,8 @@ export interface components {
        * @description Active run id if any.
        */
       run_id?: number | null;
+      runtime?: null | components["schemas"]["RuntimeInfo"];
+      serving?: null | components["schemas"]["ServingConfig"];
       /** @description Current state name. */
       state: string;
       /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
@@ -1311,6 +1352,75 @@ export interface components {
       openai_api_port: number;
       /** @description Registered services. */
       services: components["schemas"]["ServiceSummary"][];
+    };
+    /**
+     * @description Curated serving configuration for a llama-cpp service: the knobs an
+     *     operator reaches for when comparing services or debugging
+     *     performance, plus derived values (per-slot context) that no single
+     *     config key or argv flag states directly.
+     */
+    ServingConfig: {
+      /**
+       * Format: int32
+       * @description Logical batch size (`-b`), when set.
+       */
+      batch_size?: number | null;
+      /**
+       * @description The llama-server executable path serving this service. With
+       *     multiple runtimes installed (mainline + ik_llama), which binary
+       *     a service uses is a first-class fact.
+       */
+      binary: string;
+      /** @description KV cache type for keys (`f16` when unset). */
+      cache_type_k: string;
+      /** @description KV cache type for values (`f16` when unset). */
+      cache_type_v: string;
+      /**
+       * @description Draft model file name (not full path), when a separate draft
+       *     GGUF is configured.
+       */
+      draft_model?: string | null;
+      /**
+       * Format: int32
+       * @description The context window a single request actually gets: `context`
+       *     divided by `parallel` when the KV pool is statically split,
+       *     or the full window when unified (slots borrow from each other).
+       */
+      effective_context_per_slot?: number | null;
+      /** @description MoE expert-offload mode: `"off"`, `"auto"`, or a layer count. */
+      expert_offload: string;
+      /** @description Flash attention enabled. */
+      flash_attn: boolean;
+      /** @description Unified KV pool across slots (`--kv-unified`). */
+      kv_unified: boolean;
+      /** @description Model locked in RAM (`--mlock`). */
+      mlock: boolean;
+      /** @description Model file memory-mapped (llama.cpp's default is `true`). */
+      mmap: boolean;
+      /** @description `--numa` strategy, when set. */
+      numa?: string | null;
+      /**
+       * Format: int32
+       * @description Request parallelism (`-np`).
+       */
+      parallel: number;
+      /** @description `--spec-type` value, when speculative decoding is on. */
+      spec_type?: string | null;
+      /**
+       * Format: int32
+       * @description Generation threads (`-t`), when set.
+       */
+      threads?: number | null;
+      /**
+       * Format: int32
+       * @description Prompt-processing threads (`-tb`), when set.
+       */
+      threads_batch?: number | null;
+      /**
+       * Format: int32
+       * @description Physical batch size (`-ub`), when set.
+       */
+      ubatch_size?: number | null;
     };
     /** @description `POST /api/services/{name}/start` response body. */
     StartResponse:

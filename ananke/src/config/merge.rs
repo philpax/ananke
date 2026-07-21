@@ -135,6 +135,9 @@ fn merge_llama_cpp(
 
     Ok(RawLlamaCppService {
         common,
+        // The runtime table inherits whole, not per-field: a child
+        // overriding the parent's runtime replaces it entirely.
+        runtime: inherit!(runtime),
         model: inherit!(model),
         mmproj: inherit!(mmproj),
         context: inherit!(context),

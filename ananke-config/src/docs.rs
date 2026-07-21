@@ -769,22 +769,28 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "MoE expert-offload policy (see [MoE Expert Offload](#moe-expert-offload)).",
                 ),
                 field(
+                    "runtime",
+                    "table",
+                    "mainline llama.cpp",
+                    "Serving runtime, tagged by `kind`: `{ kind = \"ik-llama\", mla = 1, dsa = true, fit = true, attn_max_batch = 512, runtime_repack = false }` selects the ik_llama.cpp fork and its options (`-mla`, `-dsa -fidx`, `--fit` with ananke-computed `--gpu-fit-margin`s, `-amb`, `-rtr`). Absent means mainline. `dsa` requires f16 KV; `fit` is mutually exclusive with `expert_offload`/`override_tensor` and reserves whole allowed GPUs. Point `llama_server` at a matching binary. ik services use ik's `--spec-type` dialect (`\"mtp:n_max=4,p_min=0.5\"`).",
+                ),
+                field(
                     "flash_attn",
                     "bool",
                     "`false`",
-                    "Enable flash attention. Required for quantised KV cache types (`cache_type_k`/`cache_type_v` other than `f16`).",
+                    "Enable flash attention. Required for quantised KV cache types (`cache_type_k`/`cache_type_v` other than `f16`) on mainline llama.cpp; ik_llama handles quantised caches without this flag.",
                 ),
                 field(
                     "cache_type_k",
                     "string",
                     "`f16`",
-                    "KV cache type for keys. Non-`f16` values require `flash_attn = true`.",
+                    "KV cache type for keys. Non-`f16` values require `flash_attn = true` (mainline only; ik_llama is exempt).",
                 ),
                 field(
                     "cache_type_v",
                     "string",
                     "`f16`",
-                    "KV cache type for values. Non-`f16` values require `flash_attn = true`.",
+                    "KV cache type for values. Non-`f16` values require `flash_attn = true` (mainline only; ik_llama is exempt).",
                 ),
                 field("mmap", "bool", "`true`", "Memory-map the model file."),
                 field(

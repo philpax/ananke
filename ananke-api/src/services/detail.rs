@@ -77,6 +77,105 @@ pub struct ServiceDetail {
     /// service has never been started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_ms: Option<i64>,
+    /// Serving-runtime details for a llama-cpp service. `None` for
+    /// command-template services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeInfo>,
+    /// Curated serving knobs for a llama-cpp service. `None` for
+    /// command-template services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving: Option<ServingConfig>,
+}
+
+/// Curated serving configuration for a llama-cpp service: the knobs an
+/// operator reaches for when comparing services or debugging
+/// performance, plus derived values (per-slot context) that no single
+/// config key or argv flag states directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ServingConfig {
+    /// The llama-server executable path serving this service. With
+    /// multiple runtimes installed (mainline + ik_llama), which binary
+    /// a service uses is a first-class fact.
+    pub binary: String,
+    /// KV cache type for keys (`f16` when unset).
+    pub cache_type_k: String,
+    /// KV cache type for values (`f16` when unset).
+    pub cache_type_v: String,
+    /// Flash attention enabled.
+    pub flash_attn: bool,
+    /// Request parallelism (`-np`).
+    pub parallel: u32,
+    /// Unified KV pool across slots (`--kv-unified`).
+    pub kv_unified: bool,
+    /// The context window a single request actually gets: `context`
+    /// divided by `parallel` when the KV pool is statically split,
+    /// or the full window when unified (slots borrow from each other).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_context_per_slot: Option<u32>,
+    /// `--spec-type` value, when speculative decoding is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_type: Option<String>,
+    /// Draft model file name (not full path), when a separate draft
+    /// GGUF is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_model: Option<String>,
+    /// MoE expert-offload mode: `"off"`, `"auto"`, or a layer count.
+    pub expert_offload: String,
+    /// Logical batch size (`-b`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<u32>,
+    /// Physical batch size (`-ub`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ubatch_size: Option<u32>,
+    /// Generation threads (`-t`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<u32>,
+    /// Prompt-processing threads (`-tb`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads_batch: Option<u32>,
+    /// `--numa` strategy, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numa: Option<String>,
+    /// Model file memory-mapped (llama.cpp's default is `true`).
+    pub mmap: bool,
+    /// Model locked in RAM (`--mlock`).
+    pub mlock: bool,
+}
+
+/// Which llama-server implementation serves a llama-cpp service, plus
+/// the fork-specific configuration when it is not mainline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RuntimeInfo {
+    /// `"llama-cpp"` (mainline) or `"ik-llama"` (ikawrakow fork).
+    pub kind: String,
+    /// ik_llama.cpp parameters; present only when `kind == "ik-llama"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ik: Option<IkParams>,
+}
+
+/// The ik_llama.cpp knobs of a `runtime = { kind = "ik-llama", ... }`
+/// service, mirrored from the validated config, plus the fit margins
+/// ananke derives from them (which appear nowhere in the operator's
+/// own config).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IkParams {
+    /// MLA kernel mode (`-mla`, 0-3), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mla: Option<u32>,
+    /// DSA sparse attention (`-dsa -fidx`).
+    pub dsa: bool,
+    /// Fork-side auto-placement (`--fit`).
+    pub fit: bool,
+    /// `-amb` attention scratch cap in MiB, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attn_max_batch: Option<u32>,
+    /// `-rtr` runtime repacking.
+    pub runtime_repack: bool,
+    /// The `--gpu-fit-margin` values (MiB) ananke computes and emits
+    /// per visible device when `fit` is on: index 0 is the child's
+    /// device 0, and so on. Empty when `fit` is off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fit_margins_mib: Vec<u32>,
 }
 
 /// GGUF-derived facts about a model file. Read once per service per

@@ -592,6 +592,36 @@ Get service detail
   rolling_mean?: number | null
   rolling_samples: number
   run_id?: number | null
+  runtime?: {
+    ik?: {
+      attn_max_batch?: number | null
+      dsa: boolean
+      fit: boolean
+      fit_margins_mib?: number[]
+      mla?: number | null
+      runtime_repack: boolean
+    } | null
+    kind: string
+  } | null
+  serving?: {
+    batch_size?: number | null
+    binary: string
+    cache_type_k: string
+    cache_type_v: string
+    draft_model?: string | null
+    effective_context_per_slot?: number | null
+    expert_offload: string
+    flash_attn: boolean
+    kv_unified: boolean
+    mlock: boolean
+    mmap: boolean
+    numa?: string | null
+    parallel: number
+    spec_type?: string | null
+    threads?: number | null
+    threads_batch?: number | null
+    ubatch_size?: number | null
+  } | null
   state: string
   template: string
 }
