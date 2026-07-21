@@ -199,6 +199,17 @@ fn pack_inner(
         packer.distribute_sharded()?;
         return Ok(packer.finish());
     }
+    // ik-llama `--fit` services: the fork owns layer/expert placement, so
+    // the packer's job reduces to reservation accounting.
+    if packer
+        .svc
+        .llama_cpp()
+        .and_then(|lc| lc.runtime.ik())
+        .is_some_and(|ik| ik.fit)
+    {
+        packer.reserve_fit()?;
+        return Ok(packer.finish());
+    }
     packer.seed_non_layer();
     packer.seed_mtp_overhead();
     if packer.expert_aware {
@@ -607,6 +618,44 @@ impl<'a> Packer<'a> {
         // Keep the configured headroom (global `[devices]` reserve + this
         // service's `gpu_headroom_mb`) free on the card.
         avail.saturating_sub(gpu_reserve_bytes(self.svc, gpu))
+    }
+
+    /// ik-llama `--fit` reservation: claim every allowed GPU's remaining
+    /// capacity — the fork's fit fills each card up to the emitted
+    /// `--gpu-fit-margin`, and the margins themselves are consumed at
+    /// request time by the service's own runtime buffers, so the whole
+    /// card is genuinely this service's. The weights + KV bytes that
+    /// don't fit on the claimed GPUs land on CPU (requires a
+    /// CPU-allowing placement for models bigger than VRAM).
+    /// `fallback_on_gpu` drives `-ngl 999` emission; no `-ot` rules are
+    /// synthesised — fit owns placement.
+    fn reserve_fit(&mut self) -> Result<(), PackError> {
+        // Claiming *exactly* the available bytes races nvml jitter between
+        // packing and the admission re-check (observed 768 KiB of drift
+        // failing a live start); leave a small epsilon unclaimed.
+        const FIT_CLAIM_EPSILON: u64 = 64 * 1024 * 1024;
+        let mut gpu_total = 0u64;
+        for gpu in self.allowed_gpus.clone() {
+            let avail = self.gpu_available(gpu).saturating_sub(FIT_CLAIM_EPSILON);
+            if avail > 0 {
+                self.per_device.insert(DeviceSlot::Gpu(gpu), avail);
+                gpu_total += avail;
+            }
+        }
+        self.fallback_on_gpu = !self.allowed_gpus.is_empty();
+        let kv_total = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        let need = self.estimate.weights_bytes.saturating_add(kv_total);
+        let cpu_bytes = need.saturating_sub(gpu_total);
+        if cpu_bytes > 0 {
+            if !self.allow_cpu {
+                return Err(PackError::WeightsDoNotFit);
+            }
+            *self.per_device.entry(DeviceSlot::Cpu).or_default() += cpu_bytes;
+        }
+        self.check_cpu_capacity()
     }
 
     /// Fallback for architectures (Mamba, unknown) that didn't supply a
@@ -1425,6 +1474,42 @@ mod tests {
                 Err(PackError::CpuDoesNotFit { .. })
             ),
             "conservative pack must still respect live free RAM"
+        );
+    }
+
+    #[test]
+    fn ik_fit_reserves_whole_gpus_and_spills_rest_to_cpu() {
+        use crate::config::{IkSettings, Runtime};
+        // 10 layers × 1 GiB (10 GiB model) against two 4 GiB cards: the
+        // fit branch claims both cards fully, sends the remainder to the
+        // CPU pledge, and synthesises no -ot rules.
+        let e = moe_estimate(10, 100, 300);
+        let snap = snapshot(&[4, 4]);
+        let alloc = AllocationTable::new();
+        let mut svc = moe_svc(OffloadMode::Off);
+        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
+            fit: true,
+            ..Default::default()
+        });
+        let packed = pack(&e, &svc, &snap, &alloc).unwrap();
+
+        assert_eq!(packed.args.ngl, Some(NGL_OFFLOAD_ALL));
+        assert!(
+            packed.args.override_tensor.is_empty(),
+            "fit owns placement; no -ot, got {:?}",
+            packed.args.override_tensor
+        );
+        let gpu_total: u64 = packed
+            .allocation
+            .bytes
+            .iter()
+            .filter(|(d, _)| matches!(d, DeviceId::Gpu(_)))
+            .map(|(_, b)| *b)
+            .sum();
+        assert!(gpu_total > 0, "both cards claimed");
+        assert!(
+            cpu_bytes(&packed) > 0,
+            "weights beyond VRAM land on the CPU pledge"
         );
     }
 
