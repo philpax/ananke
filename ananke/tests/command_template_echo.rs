@@ -42,6 +42,7 @@ fn command_argv_substitutes_port() {
         placement_policy: PlacementPolicy::GpuOnly,
         gpu_allow: Vec::new(),
         split_mode: SplitMode::Layer,
+        tensor_split_weights: None,
         gpu_headroom_mb: 0,
         reserves: Arc::new(DeviceReserves::default()),
         idle_timeout_ms: 600_000,

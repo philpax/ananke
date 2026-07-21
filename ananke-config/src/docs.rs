@@ -508,6 +508,12 @@ pub fn all_sections() -> Vec<SectionDoc> {
                         code_values(crate::flags::split_mode::ALL)
                     ),
                 ),
+                field(
+                    "tensor_split_weights",
+                    "array of f32",
+                    "none",
+                    "Optional per-GPU weights for the `--tensor-split` ratio in sharded (`row`/`tensor`) modes. One positive weight per allowed GPU, in ascending GPU-id order. Unset keeps the historical equal `1,1,...` split. Use this for heterogeneous GPUs (e.g. weight by relative memory bandwidth). See [Multi-GPU split modes](#multi-gpu-split-modes).",
+                ),
             ],
         },
         SectionDoc {

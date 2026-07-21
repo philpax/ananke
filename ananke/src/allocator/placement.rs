@@ -128,13 +128,17 @@ pub struct Packed {
 }
 
 /// A tensor/row-split distribution decided by [`Packer::distribute_sharded`].
-/// [`Packer::finish`] turns it into `--split-mode`, `--main-gpu`, and an equal
-/// `--tensor-split`.
+/// [`Packer::finish`] turns it into `--split-mode`, `--main-gpu`, and the
+/// `--tensor-split` ratio (equal `1`s by default, or the weighted integers
+/// derived from `tensor_split_weights`).
 #[derive(Debug)]
 struct ShardedPlan {
     mode: SplitMode,
-    /// Spanned GPUs in ascending id order; `gpus[0]` is the main GPU.
-    gpus: Vec<u32>,
+    /// Integer tensor-split values emitted for this sharded plan. Stored here
+    /// so `finish` can render the same ratio that `distribute_sharded` used
+    /// for the pledge book. The length is one entry per spanned GPU, in
+    /// ascending GPU-id order.
+    tensor_split: Vec<u32>,
 }
 
 /// Pack `estimate` onto allowed devices, respecting `policy`,
@@ -376,17 +380,19 @@ impl<'a> Packer<'a> {
     }
 
     /// Tensor/row split: shard the whole model across every spanned GPU in
-    /// parallel rather than assigning whole layers. Each GPU pledges an equal
-    /// share of the layer weights, the KV cache, the output head, and the MTP
-    /// draft context, plus its own compute buffer and one-layer fudge.
-    /// llama.cpp's tensor-parallel modes split those tensors across the
-    /// spanned devices — empirically the main GPU carries no measurable output-
-    /// head or MTP premium — so modelling them as a per-GPU share rather than a
-    /// lump on `--main-gpu` keeps the pledge in line with the real footprint.
-    /// Only the vision projector (the residual "other" weights, which llama.cpp
-    /// keeps on the main device) and any weight bytes not in the per-layer
-    /// breakdown ride the main GPU. Token embeddings ride the CPU, as on the
-    /// layer path.
+    /// parallel rather than assigning whole layers. Each GPU pledges a
+    /// proportional share of the layer weights, the KV cache, the output head,
+    /// the MTP draft context, and the compute buffer, plus a proportional share
+    /// of the one-layer fudge. The proportion is taken from
+    /// `tensor_split_weights` when set, otherwise every GPU gets the historical
+    /// equal `1/n` share. llama.cpp's tensor-parallel modes split those tensors
+    /// across the spanned devices — empirically the main GPU carries no
+    /// measurable output-head or MTP premium — so modelling them as a per-GPU
+    /// share rather than a lump on `--main-gpu` keeps the pledge in line with
+    /// the real footprint. Only the vision projector (the residual "other"
+    /// weights, which llama.cpp keeps on the main device) and any weight bytes
+    /// not in the per-layer breakdown ride the main GPU. Token embeddings ride
+    /// the CPU, as on the layer path.
     ///
     /// There is no CPU spill: a share that overruns a spanned GPU's capacity
     /// is a hard [`PackError::ShardDoesNotFit`], since tensor parallelism ties
@@ -396,7 +402,6 @@ impl<'a> Packer<'a> {
         let mut gpus = self.allowed_gpus.clone();
         gpus.sort_unstable();
         let main = gpus[0];
-        let n = gpus.len() as u64;
 
         let n_layers = self.per_layer.len() as u64;
         let per_layer_sum: u64 = self.per_layer.iter().sum();
@@ -414,22 +419,40 @@ impl<'a> Packer<'a> {
             .estimate
             .kv_per_token
             .saturating_mul(self.estimate.context as u64);
-        let compute = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
-        let fudge = ONE_LAYER_FUDGE_MULTIPLIER * (per_layer_avg + kv_total / n_layers);
+        let compute_total = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
+        let fudge_total = ONE_LAYER_FUDGE_MULTIPLIER * (per_layer_avg + kv_total / n_layers);
 
-        let weights_per_gpu = per_layer_sum / n;
-        let kv_per_gpu = kv_total / n;
-        // The output head and the MTP draft context are tensor-parallel
-        // sharded, so each GPU carries an equal slice rather than the main GPU
-        // owning the whole thing.
-        let sharded_non_layer = (non_layer.output_head_bytes + self.estimate.mtp_bytes) / n;
+        // Default weights give the historical equal split; explicit weights are
+        // validated to be one-per-allowed-GPU in ascending id order.
+        let weights = self
+            .svc
+            .tensor_split_weights
+            .as_deref()
+            .map(|w| w.to_vec())
+            .unwrap_or_else(|| vec![1.0f32; gpus.len()]);
+        if weights.len() != gpus.len() {
+            return Err(PackError::WeightsDoNotFit);
+        }
+        let weights_sum: f64 = weights.iter().map(|&w| w as f64).sum();
+
+        let weights_shares = weighted_shares(per_layer_sum, &weights, weights_sum);
+        let kv_shares = weighted_shares(kv_total, &weights, weights_sum);
+        let sharded_non_layer_total = non_layer.output_head_bytes + self.estimate.mtp_bytes;
+        let sharded_non_layer_shares =
+            weighted_shares(sharded_non_layer_total, &weights, weights_sum);
+        let compute_shares = weighted_shares(compute_total, &weights, weights_sum);
+        let fudge_shares = weighted_shares(fudge_total, &weights, weights_sum);
 
         if non_layer.token_embd_bytes > 0 {
             *self.per_device.entry(DeviceSlot::Cpu).or_default() += non_layer.token_embd_bytes;
         }
 
-        for &gpu in &gpus {
-            let mut bytes = weights_per_gpu + kv_per_gpu + sharded_non_layer + compute + fudge;
+        for (idx, &gpu) in gpus.iter().enumerate() {
+            let mut bytes = weights_shares[idx]
+                + kv_shares[idx]
+                + sharded_non_layer_shares[idx]
+                + compute_shares[idx]
+                + fudge_shares[idx];
             if gpu == main {
                 bytes += main_only + remainder;
             }
@@ -442,9 +465,15 @@ impl<'a> Packer<'a> {
             *self.per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += bytes;
         }
 
+        // Convert the float weights to small integer ratios for `--tensor-split`.
+        // The pledge book uses the floats directly; the integer values are only
+        // the argv representation. llama.cpp normalises the tensor-split list, so
+        // the integer ratio is what matters, not the absolute values.
+        let tensor_split = weighted_tensor_split(&weights);
+
         self.sharded = Some(ShardedPlan {
             mode: self.svc.split_mode,
-            gpus,
+            tensor_split,
         });
         Ok(())
     }
@@ -862,7 +891,7 @@ impl<'a> Packer<'a> {
         let (ngl, tensor_split, split_mode, main_gpu) = if let Some(plan) = &self.sharded {
             (
                 Some(NGL_OFFLOAD_ALL),
-                Some(vec![1u32; plan.gpus.len()]),
+                Some(plan.tensor_split.clone()),
                 Some(plan.mode),
                 Some(0),
             )
@@ -1143,6 +1172,71 @@ fn gpu_reserve_bytes(svc: &ServiceConfig, gpu: u32) -> u64 {
         .unwrap_or(r.default_gpu_mb)
         .saturating_add(svc.gpu_headroom_mb);
     mb.saturating_mul(1024 * 1024)
+}
+
+/// Split `total` into per-GPU shares proportional to `weights`. Each entry is
+/// the floor of its exact share, and the main GPU (index 0, the lowest-id GPU)
+/// absorbs the rounding remainder so the shares sum exactly to `total`.
+fn weighted_shares(total: u64, weights: &[f32], weights_sum: f64) -> Vec<u64> {
+    let mut shares: Vec<u64> = weights
+        .iter()
+        .map(|w| (total as f64 * (*w as f64) / weights_sum) as u64)
+        .collect();
+    let allocated: u64 = shares.iter().sum();
+    let remainder = total.saturating_sub(allocated);
+    if !shares.is_empty() {
+        shares[0] += remainder;
+    }
+    shares
+}
+
+/// Convert float `weights` into small integer ratios for `--tensor-split`.
+///
+/// llama.cpp accepts a comma-separated list of proportions and normalises by
+/// the sum, so only the ratio matters. We scale the weights by a fixed factor,
+/// round to integers, and reduce by the GCD so the emitted values stay small
+/// and readable (e.g. `[2.6, 1.0]` becomes `[13, 5]`). If the reduced values do
+/// not fit in `u32`, they are scaled down further while preserving the ratio as
+/// closely as possible. This keeps the historical `vec![1, 1]` shape when the
+/// operator does not override weights, and emits a matching integer ratio when
+/// they do.
+fn weighted_tensor_split(weights: &[f32]) -> Vec<u32> {
+    const SCALE: f64 = 10_000.0;
+    let scaled: Vec<u64> = weights
+        .iter()
+        .map(|&w| ((w as f64 * SCALE).round() as u64).max(1))
+        .collect();
+    let g = scaled.iter().fold(0u64, |a, &b| gcd_u64(a, b));
+    let reduced: Vec<u64> = scaled
+        .iter()
+        .map(|&v| v.checked_div(g).unwrap_or(v))
+        .collect();
+    let max = reduced.iter().copied().max().unwrap_or(1);
+    if max > u32::MAX as u64 {
+        let factor = max / (u32::MAX as u64) + 1;
+        reduced
+            .iter()
+            .map(|&v| (v / factor).max(1) as u32)
+            .collect()
+    } else {
+        reduced.iter().map(|&v| v as u32).collect()
+    }
+}
+
+fn gcd_u64(a: u64, b: u64) -> u64 {
+    if a == 0 {
+        return b;
+    }
+    if b == 0 {
+        return a;
+    }
+    let (mut a, mut b) = (a, b);
+    while b != 0 {
+        let tmp = a % b;
+        a = b;
+        b = tmp;
+    }
+    a
 }
 
 #[cfg(test)]
@@ -2200,5 +2294,68 @@ mod tests {
         assert_eq!(packed.args.split_mode, None);
         assert_eq!(packed.args.main_gpu, None);
         assert_eq!(packed.args.ngl, Some(4), "single-GPU layer count, not 999");
+    }
+
+    /// Heterogeneous GPUs: a 2.6:1 weight ratio gives the smaller GPU a smaller
+    /// share so a model that would overflow under an equal split fits. The emitted
+    /// `--tensor-split` preserves the same ratio as integers, and the main GPU
+    /// (lowest id) absorbs the rounding remainder so the pledge sums are exact.
+    #[test]
+    fn tensor_split_weighted_shards_proportionally_and_fits_smaller_gpu() {
+        let e = trivial_estimate(20, 1024); // 20 layers × 1 GiB = 20 GiB
+        // 24 GB + 8 GB cards. Equal split would give each GPU a 10 GiB shard
+        // plus compute/fudge, which does not fit the 8 GB card.
+        let snap = snapshot(&[24, 8]);
+        let alloc = AllocationTable::new();
+        let mut s = svc(PlacementPolicy::GpuOnly, None);
+        s.split_mode = SplitMode::Tensor;
+        s.tensor_split_weights = Some(vec![2.6f32, 1.0f32]);
+        let packed = pack(&e, &s, &snap, &alloc).unwrap();
+
+        assert_eq!(packed.args.ngl, Some(999));
+        assert_eq!(packed.args.split_mode, Some(SplitMode::Tensor));
+        assert_eq!(packed.args.main_gpu, Some(0));
+        // 2.6:1 reduces to an integer ratio of 13:5.
+        assert_eq!(
+            packed.args.tensor_split.as_deref(),
+            Some(&[13u32, 5][..]),
+            "expected 2.6:1 to reduce to 13:5, got {:?}",
+            packed.args.tensor_split
+        );
+
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        // GPU 1 must be pledged less than the equal-split case (~10 GiB).
+        assert!(
+            g1 < 8 * GIB,
+            "weighted split must give the smaller GPU a smaller share; got {g1}"
+        );
+        // The larger GPU carries the bulk of the model plus the rounding remainder.
+        assert!(
+            g0 > g1,
+            "GPU 0 (weight 2.6) must be pledged more than GPU 1 (weight 1.0); got g0={g0} g1={g1}"
+        );
+    }
+
+    #[test]
+    fn weighted_tensor_split_converts_floats_to_integer_ratio() {
+        assert_eq!(weighted_tensor_split(&[2.6f32, 1.0f32]), vec![13, 5]);
+        assert_eq!(weighted_tensor_split(&[1.0f32, 1.0f32]), vec![1, 1]);
+        assert_eq!(weighted_tensor_split(&[3.0f32, 1.0f32]), vec![3, 1]);
+        // Three-way weights reduce by their GCD.
+        assert_eq!(
+            weighted_tensor_split(&[2.0f32, 1.0f32, 1.0f32]),
+            vec![2, 1, 1]
+        );
     }
 }

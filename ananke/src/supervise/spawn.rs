@@ -673,6 +673,24 @@ mod tests {
         assert_eq!(cmd.args[ts + 1], "1,1");
     }
 
+    #[test]
+    fn placement_cmd_args_emit_weighted_tensor_split() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let ca = CommandArgs {
+            ngl: Some(999),
+            tensor_split: Some(vec![13, 5]),
+            override_tensor: vec![],
+            split_mode: Some(SplitMode::Tensor),
+            main_gpu: Some(0),
+        };
+        let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
+        let ts = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();
+        assert_eq!(cmd.args[ts + 1], "13,5");
+        let sm = cmd.args.iter().position(|a| a == "--split-mode").unwrap();
+        assert_eq!(cmd.args[sm + 1], "tensor");
+    }
+
     /// Regression for the scenario-01 `CUDA_VISIBLE_DEVICES=` empty-env bug:
     /// `SupervisorInit::allocation` is built from `placement_override` when the
     /// registry is constructed. For any estimator-driven service (no override),

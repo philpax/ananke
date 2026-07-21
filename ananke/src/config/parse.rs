@@ -405,6 +405,10 @@ pub struct RawServiceDevices {
     /// `--split-mode` for multi-GPU llama.cpp services: `"layer"` (default),
     /// `"row"`, or `"tensor"`. Validated into [`crate::config::SplitMode`].
     pub split: Option<SmolStr>,
+    /// Optional per-GPU weights for the `--tensor-split` ratio in sharded
+    /// (`row`/`tensor`) modes. One positive float per allowed GPU, in ascending
+    /// GPU-id order. Unset keeps the historical equal `1,1,...` split.
+    pub tensor_split_weights: Option<Vec<f32>>,
 }
 
 /// Raw `expert_offload` value before validation: a mode string (`"off"` /

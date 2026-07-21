@@ -285,6 +285,7 @@ fn merge_common(
             placement_override: c.placement_override.or(p.placement_override),
             gpu_headroom_mb: c.gpu_headroom_mb.or(p.gpu_headroom_mb),
             split: c.split.or(p.split),
+            tensor_split_weights: c.tensor_split_weights.or(p.tensor_split_weights),
         }),
     };
 
