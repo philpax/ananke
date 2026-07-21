@@ -212,19 +212,19 @@ fn read_value<R: Read>(r: &mut R, tag: u32) -> Result<GgufValue, ReadError> {
 }
 
 fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
-    let elements: u64 = shape.iter().product();
-    match dtype {
+    let elements: u128 = shape.iter().map(|&d| d as u128).product();
+    let bytes: u128 = match dtype {
         GgufType::F32 | GgufType::I32 => elements * 4,
         GgufType::F16 | GgufType::BF16 | GgufType::I16 => elements * 2,
         GgufType::I8 => elements,
         GgufType::I64 | GgufType::F64 => elements * 8,
-        GgufType::Q8_0 => elements * 34 / 32, // block=32, 34 bytes/block ≈ 1.0625 bpe
+        GgufType::Q8_0 => elements * 34 / 32,
         GgufType::Q8_1 => elements * 36 / 32,
-        GgufType::Q4_0 | GgufType::IQ4_NL => elements * 18 / 32, // 0.5625 bpe
+        GgufType::Q4_0 | GgufType::IQ4_NL => elements * 18 / 32,
         GgufType::Q4_1 => elements * 20 / 32,
         GgufType::Q5_0 => elements * 22 / 32,
         GgufType::Q5_1 => elements * 24 / 32,
-        GgufType::Q2K => elements * 84 / 256, // K-quant super-block 256; 84 bytes ≈ 2.625 bpe
+        GgufType::Q2K => elements * 84 / 256,
         GgufType::Q3K => elements * 110 / 256,
         GgufType::Q4K => elements * 144 / 256,
         GgufType::Q5K => elements * 176 / 256,
@@ -238,13 +238,13 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
         GgufType::IQ2_S => elements * 82 / 256,
         GgufType::IQ4_XS => elements * 136 / 256,
         GgufType::IQ1_M => elements * 56 / 256,
-        GgufType::TQ1_0 => elements * 54 / 256, // ternary 1.7 bpe
-        GgufType::TQ2_0 => elements * 66 / 256, // ternary 2.0 bpe
-        GgufType::MXFP4 => elements * 17 / 32,  // 1-byte e8m0 scale + 16 bytes 4-bit / 32 elems
+        GgufType::TQ1_0 => elements * 54 / 256,
+        GgufType::TQ2_0 => elements * 66 / 256,
+        GgufType::MXFP4 => elements * 17 / 32,
         // ik_llama.cpp fork types; block sizes measured via sizeof() on
         // the fork's ggml-common.h structs (2026-07-21, rev 9d07d868).
         GgufType::Q6_0 => elements * 26 / 32,
-        GgufType::Q8_KV => elements, // 1.0 bpe
+        GgufType::Q8_KV => elements,
         GgufType::IQ2_K => elements * 76 / 256,
         GgufType::IQ2_KL => elements * 86 / 256,
         GgufType::IQ3_K => elements * 110 / 256,
@@ -266,7 +266,10 @@ fn tensor_byte_size(dtype: GgufType, shape: &[u64]) -> u64 {
             // rather than panicking mid-estimate.
             elements * 2
         }
-    }
+    };
+    bytes
+        .try_into()
+        .expect("tensor byte size exceeds u64 range")
 }
 
 #[cfg(test)]
@@ -349,5 +352,18 @@ mod tests {
             "expected unsupported-dtype error, got: {}",
             err.0
         );
+    }
+
+    #[test]
+    fn tensor_byte_size_large_tensor_does_not_overflow() {
+        // Q8K: elements * 292 / 256. With 10^17 elements,
+        // `elements * 292` = 2.92×10^19 which overflows u64 (>2^64).
+        // The u128 intermediate prevents silent overflow; the final
+        // result (≈1.14×10^17) fits in u64.
+        let shape: Vec<u64> = vec![100_000_000_000_000_000];
+        let result = tensor_byte_size(GgufType::Q8K, &shape);
+        let elements: u128 = 100_000_000_000_000_000u128;
+        let expected = (elements * 292 / 256) as u64;
+        assert_eq!(result, expected);
     }
 }

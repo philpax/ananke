@@ -778,19 +778,19 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "flash_attn",
                     "bool",
                     "`false`",
-                    "Enable flash attention. Required for quantised KV cache types (`cache_type_k`/`cache_type_v` other than `f16`).",
+                    "Enable flash attention. Required for quantised KV cache types (`cache_type_k`/`cache_type_v` other than `f16`) on mainline llama.cpp; ik_llama handles quantised caches without this flag.",
                 ),
                 field(
                     "cache_type_k",
                     "string",
                     "`f16`",
-                    "KV cache type for keys. Non-`f16` values require `flash_attn = true`.",
+                    "KV cache type for keys. Non-`f16` values require `flash_attn = true` (mainline only; ik_llama is exempt).",
                 ),
                 field(
                     "cache_type_v",
                     "string",
                     "`f16`",
-                    "KV cache type for values. Non-`f16` values require `flash_attn = true`.",
+                    "KV cache type for values. Non-`f16` values require `flash_attn = true` (mainline only; ik_llama is exempt).",
                 ),
                 field("mmap", "bool", "`true`", "Memory-map the model file."),
                 field(

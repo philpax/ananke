@@ -188,6 +188,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         running,
     );
     let current_allocation = read_current_allocation(&state, &svc_cfg.name);
+    let fit_gpu_count = fit_gpu_count(&current_allocation, svc_cfg, &state);
 
     let detail = ServiceDetail {
         name: svc_cfg.name.to_string(),
@@ -222,7 +223,7 @@ pub async fn service_detail(State(state): State<AppState>, Path(name): Path<Stri
         modality: svc_cfg.modality,
         ananke_metadata: svc_cfg.metadata.clone(),
         last_used_ms: state.activity.last_ms(&svc_cfg.name),
-        runtime: runtime_info(&state, svc_cfg),
+        runtime: runtime_info(svc_cfg, fit_gpu_count),
         serving: serving_config(svc_cfg),
     };
     (StatusCode::OK, Json(detail)).into_response()
@@ -479,9 +480,45 @@ fn compute_estimate_entry(state: &AppState, svc_cfg: &ServiceConfig) -> Option<C
 /// for ik-llama services, the configured knobs and the fit margins
 /// ananke would emit per visible device (computed, so the dashboard is
 /// the one place an operator can read them without a spawn).
-fn runtime_info(
-    state: &AppState,
+/// Derive the GPU count for fit-margin computation. Matches spawn's
+/// `alloc.gpu_ids().len()` for running services (by counting `gpu:` keys
+/// in the live allocation table), uses `gpu_allow.len()` for
+/// configured-but-not-running services, and falls back to the host
+/// total when nothing constrains the device set.
+fn fit_gpu_count(
+    current_allocation: &std::collections::BTreeMap<String, u64>,
     svc_cfg: &ServiceConfig,
+    state: &AppState,
+) -> usize {
+    let running = current_allocation
+        .keys()
+        .filter(|k| k.starts_with("gpu:"))
+        .count();
+    if running > 0 {
+        running
+    } else if !svc_cfg.gpu_allow.is_empty() {
+        // Mirror the packer's `allowed_gpu_list` filtering: only count
+        // gpu_allow entries that correspond to a GPU in the snapshot.
+        let snap = state.snapshot.read();
+        let existing: std::collections::HashSet<u32> = snap.gpus.iter().map(|g| g.id).collect();
+        let filtered = svc_cfg
+            .gpu_allow
+            .iter()
+            .filter(|id| existing.contains(id))
+            .count();
+        if filtered > 0 {
+            filtered
+        } else {
+            snap.gpus.len()
+        }
+    } else {
+        state.snapshot.read().gpus.len()
+    }
+}
+
+fn runtime_info(
+    svc_cfg: &ServiceConfig,
+    gpu_count: usize,
 ) -> Option<ananke_api::services::detail::RuntimeInfo> {
     use ananke_api::services::detail::{IkParams, RuntimeInfo};
     let lc = svc_cfg.llama_cpp()?;
@@ -495,7 +532,6 @@ fn runtime_info(
         Some(ik) => ik,
     };
     let fit_margins_mib = if ik.fit {
-        let gpu_count = state.snapshot.read().gpus.len();
         (0..gpu_count)
             .map(|dev| crate::supervise::spawn::ik_fit_margin_mib(ik, lc, dev))
             .collect()

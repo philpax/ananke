@@ -1147,7 +1147,16 @@ fn validate_service(
                     split_mode.as_flag()
                 )));
             }
-            TemplateConfig::LlamaCpp(_) => {}
+            TemplateConfig::LlamaCpp(lc) => {
+                if lc.runtime.ik().is_some_and(|ik| ik.fit) {
+                    return Err(fail(format!(
+                        "service {name}: runtime.fit=true is incompatible \
+                         with a sharded split mode (row/tensor) — --fit owns \
+                         layer placement, sharded split divides every layer \
+                         across GPUs"
+                    )));
+                }
+            }
         }
     }
 
@@ -1191,7 +1200,7 @@ fn validate_service(
             // The visible GPU count is not known until runtime; validate count
             // only when the operator has constrained it in config. Warn so the
             // operator knows the count check is deferred to placement time.
-            tracing::warn!(
+            warn!(
                 service = %name,
                 "tensor_split_weights has {} entries but the GPU count is not constrained (set gpu_allow or [devices].gpu_ids); count will be checked at placement time",
                 weights.len()
@@ -1744,6 +1753,14 @@ fn validate_llama_cpp(
             })
         }
     };
+
+    if let Runtime::IkLlama(ik) = &runtime
+        && ik.attn_max_batch == Some(0)
+    {
+        return Err(fail(format!(
+            "service {name}: runtime.attn_max_batch must be > 0"
+        )));
+    }
 
     let flash = lc.flash_attn.unwrap_or(false);
     // ik_llama predates mainline's FA-required-for-quantised-KV rule and
@@ -2746,6 +2763,47 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         assert!(
             format!("{err}").contains("mutually exclusive"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_attn_max_batch_zero() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+runtime = { kind = "ik-llama", attn_max_batch = 0 }
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("attn_max_batch must be > 0"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_fit_with_sharded_split() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+runtime = { kind = "ik-llama", fit = true }
+devices = { placement = "gpu-only", split = "tensor" }
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        assert!(
+            format!("{err}").contains("fit=true is incompatible"),
             "got: {err}"
         );
     }

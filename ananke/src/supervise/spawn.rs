@@ -154,7 +154,7 @@ pub(crate) fn ik_fit_margin_mib(
     // Runtime/prefill scratch scales with ubatch; 2048 → 2 GiB measured,
     // floor at 1 GiB for small ubatches.
     let ub = lc.ubatch_size.unwrap_or(512);
-    let mut mib = (2048 * ub.max(1024) / 2048).max(1024);
+    let mut mib = ((2048u64 * ub.max(1024) as u64 / 2048) as u32).max(1024);
     if ik.dsa {
         mib += 3072;
     }
@@ -1000,5 +1000,27 @@ mod tests {
         assert_eq!(resolved.get("PATH").unwrap(), "/custom/bin");
         // Inherited key not overridden is preserved.
         assert_eq!(resolved.get("HOME").unwrap(), "/home/test");
+    }
+
+    #[test]
+    fn ik_fit_margin_mib_large_ubatch_does_not_overflow() {
+        use crate::config::{IkSettings, Runtime};
+        let mut svc = base_service();
+        svc.placement_override = BTreeMap::new();
+        {
+            let lc = expect_llama_cpp(&mut svc);
+            lc.runtime = Runtime::IkLlama(IkSettings {
+                fit: true,
+                ..Default::default()
+            });
+            // 2_097_152 ubatch would overflow u32 in the old
+            // `2048 * ub.max(1024) / 2048` expression.
+            lc.ubatch_size = Some(2_097_152);
+        }
+        // Should not panic; the margin is clamped by the u64 intermediate.
+        let lc = svc.llama_cpp().unwrap();
+        let ik = lc.runtime.ik().unwrap();
+        let mib = ik_fit_margin_mib(ik, lc, 0);
+        assert!(mib >= 1024);
     }
 }

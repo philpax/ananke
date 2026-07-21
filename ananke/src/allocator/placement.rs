@@ -635,14 +635,16 @@ impl<'a> Packer<'a> {
         // failing a live start); leave a small epsilon unclaimed.
         const FIT_CLAIM_EPSILON: u64 = 64 * 1024 * 1024;
         let mut gpu_total = 0u64;
+        let mut any_gpu_claimed = false;
         for gpu in self.allowed_gpus.clone() {
             let avail = self.gpu_available(gpu).saturating_sub(FIT_CLAIM_EPSILON);
             if avail > 0 {
                 self.per_device.insert(DeviceSlot::Gpu(gpu), avail);
                 gpu_total += avail;
+                any_gpu_claimed = true;
             }
         }
-        self.fallback_on_gpu = !self.allowed_gpus.is_empty();
+        self.fallback_on_gpu = any_gpu_claimed;
         let kv_total = self
             .estimate
             .kv_per_token
@@ -1510,6 +1512,33 @@ mod tests {
         assert!(
             cpu_bytes(&packed) > 0,
             "weights beyond VRAM land on the CPU pledge"
+        );
+    }
+
+    #[test]
+    fn ik_fit_all_gpus_full_spills_to_cpu_without_ngl() {
+        use crate::config::{IkSettings, Runtime};
+        // Both GPUs have 0 free bytes: the fit branch should not claim
+        // any GPU, set fallback_on_gpu = false, and emit -ngl 0 (not 999).
+        let e = moe_estimate(10, 100, 300);
+        let snap = snapshot(&[0, 0]);
+        let alloc = AllocationTable::new();
+        let mut svc = moe_svc(OffloadMode::Off);
+        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
+            fit: true,
+            ..Default::default()
+        });
+        let packed = pack(&e, &svc, &snap, &alloc).unwrap();
+
+        assert_eq!(
+            packed.args.ngl,
+            Some(NGL_CPU_ONLY),
+            "all GPUs full → -ngl 0, not 999; got {:?}",
+            packed.args.ngl
+        );
+        assert!(
+            cpu_bytes(&packed) > 0,
+            "weights spill to CPU when no GPU has room"
         );
     }
 

@@ -214,6 +214,73 @@ fn service_detail_roundtrips() {
 }
 
 #[test]
+fn service_detail_roundtrips_mainline() {
+    let v = ServiceDetail {
+        name: "demo".into(),
+        state: "idle".into(),
+        lifecycle: "persistent".into(),
+        priority: 50,
+        port: 11435,
+        private_port: 40000,
+        template: "llamacpp".into(),
+        placement_override: Default::default(),
+        idle_timeout_ms: 600_000,
+        run_id: None,
+        pid: None,
+        recent_logs: vec![],
+        rolling_mean: None,
+        rolling_samples: 0,
+        observed_peak_bytes: 0,
+        elastic_borrower: None,
+        model_info: None,
+        estimate: None,
+        placement_preview: None,
+        current_allocation: Default::default(),
+        modality: ananke_api::shared::modality::Modality::Chat,
+        ananke_metadata: ananke_api::shared::metadata::AnankeMetadata::new(),
+        last_used_ms: None,
+        runtime: Some(ananke_api::services::detail::RuntimeInfo {
+            kind: "llama-cpp".into(),
+            ik: None,
+        }),
+        serving: None,
+    };
+    assert_eq!(v.clone(), roundtrip(v));
+}
+
+#[test]
+fn service_detail_roundtrips_no_runtime() {
+    let v = ServiceDetail {
+        name: "demo".into(),
+        state: "idle".into(),
+        lifecycle: "persistent".into(),
+        priority: 50,
+        port: 11435,
+        private_port: 40000,
+        template: "command".into(),
+        placement_override: Default::default(),
+        idle_timeout_ms: 600_000,
+        run_id: None,
+        pid: None,
+        recent_logs: vec![],
+        rolling_mean: None,
+        rolling_samples: 0,
+        observed_peak_bytes: 0,
+        elastic_borrower: None,
+        model_info: None,
+        estimate: None,
+        placement_preview: None,
+        current_allocation: Default::default(),
+        modality: ananke_api::shared::modality::Modality::Chat,
+        ananke_metadata: ananke_api::shared::metadata::AnankeMetadata::new(),
+        last_used_ms: None,
+        runtime: None,
+        serving: None,
+    };
+    assert_eq!(v.clone(), roundtrip(v));
+}
+
+#[test]
 fn oneshot_response_roundtrips() {
     let v = OneshotResponse {
         id: "oneshot_01H".into(),
