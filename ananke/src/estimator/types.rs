@@ -119,6 +119,18 @@ pub struct Estimate {
     pub kv_per_token: u64,
     /// Compute buffer per device in MB (default 400).
     pub compute_buffer_mb: u32,
+    /// Output logits buffer bytes — the `n_vocab × ubatch`-sized activation
+    /// llama.cpp allocates only on the device that holds the output head
+    /// (the first GPU). Every other GPU's real compute buffer is smaller by
+    /// this amount, since it never materialises logits. The packer reserves
+    /// the full [`Self::compute_buffer_mb`] on the head GPU but subtracts
+    /// this term on the secondaries, so they fill with more expert weight
+    /// instead of a phantom logits buffer. Deliberately a conservative
+    /// under-estimate of the real logits allocation (see
+    /// [`super::compute_buffer::output_logits_bytes`]): subtracting less than
+    /// the true value keeps the secondaries safe, subtracting more would
+    /// under-reserve and OOM them.
+    pub output_buffer_bytes: u64,
     /// Extra VRAM (bytes) for the MTP / NextN draft context when the
     /// service runs `--spec-type draft-mtp`. Zero when MTP is off or the
     /// model carries no MTP head. Reserved as a single lump on the

@@ -184,6 +184,8 @@ fn main() {
         "compute_buffer_mb": estimate.compute_buffer_mb,
         "mtp_bytes": estimate.mtp_bytes,
         "mtp_mib": estimate.mtp_bytes / (1024 * 1024),
+        "output_buffer_bytes": estimate.output_buffer_bytes,
+        "output_buffer_mib": estimate.output_buffer_bytes / (1024 * 1024),
         "per_layer_count": estimate.per_layer_bytes.as_ref().map(|v| v.len()),
         "non_layer_output_head_bytes": estimate.non_layer.output_head_bytes,
         "non_layer_token_embd_bytes": estimate.non_layer.token_embd_bytes,

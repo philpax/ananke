@@ -65,6 +65,7 @@ fn flat_estimate(n_layers: usize, per_layer_mib: u64) -> Estimate {
         weights_bytes: per_layer_bytes * n_layers as u64,
         kv_per_token: 0,
         compute_buffer_mb: 0,
+        output_buffer_bytes: 0,
         mtp_bytes: 0,
         per_layer_bytes: Some(vec![per_layer_bytes; n_layers]),
         attention_layers: None,

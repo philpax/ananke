@@ -34,6 +34,7 @@ pub fn estimate_fallback(summary: &GgufSummary, context: u32) -> Estimate {
         // the default ubatch is fine here.
         compute_buffer_mb: super::compute_buffer::default_for(summary, context, None),
         mtp_bytes: 0,
+        output_buffer_bytes: 0,
         per_layer_bytes: None,
         attention_layers: None,
         non_layer: NonLayer {

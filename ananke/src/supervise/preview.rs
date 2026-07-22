@@ -370,6 +370,7 @@ mod tests {
             weights_bytes: per * n_layers as u64,
             kv_per_token: 0,
             compute_buffer_mb: 0,
+            output_buffer_bytes: 0,
             mtp_bytes: 0,
             per_layer_bytes: Some(vec![per; n_layers as usize]),
             attention_layers: None,

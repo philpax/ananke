@@ -228,6 +228,32 @@ fn tuning_for(summary: &GgufSummary, ubatch: u32) -> Tuning {
     }
 }
 
+/// llama.cpp materialises the output logits (`n_vocab × n_tokens` floats)
+/// only on the device holding the output head — the packer's first GPU. This
+/// estimates that head-only buffer so the packer can leave it *off* every
+/// secondary GPU's reservation, freeing that VRAM for expert weight.
+///
+/// The reservation is deliberately conservative — modelled as `n_vocab ×
+/// ubatch × 2` bytes rather than the `× 4` (f32) upper bound. The packer
+/// *subtracts* this from the secondaries, so under-estimating the real logits
+/// buffer keeps them safe (they simply keep a little extra headroom), whereas
+/// over-estimating would under-reserve and OOM them. The measured head-only
+/// delta on Laguna (2×3090, ub2048) was ~660 MiB, comfortably above this
+/// `× 2` figure, confirming the direction. `n_vocab` is read from the output
+/// head's shape, falling back to the token-embedding table for tied-embedding
+/// models that ship no separate `output.weight`.
+pub fn output_logits_bytes(summary: &GgufSummary, ubatch: Option<u32>) -> u64 {
+    let n_vocab = summary
+        .tensors
+        .get("output.weight")
+        .or_else(|| summary.tensors.get("token_embd.weight"))
+        .and_then(|t| t.shape.iter().max().copied())
+        .unwrap_or(0);
+    n_vocab
+        .saturating_mul(ubatch.unwrap_or(DEFAULT_UBATCH) as u64)
+        .saturating_mul(2)
+}
+
 /// Default per-device compute-buffer reservation for `summary` at
 /// `context` tokens and the service's physical batch size. `ubatch = None`
 /// (or an unset config) means llama.cpp's [`DEFAULT_UBATCH`]. Operators can

@@ -581,15 +581,25 @@ impl<'a> Packer<'a> {
             .saturating_mul(self.estimate.context as u64);
         let per_layer_kv = kv_total.checked_div(n_layers).unwrap_or(0);
         let compute_headroom = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
-        let gpu_headroom_each =
-            compute_headroom + (per_layer_avg + per_layer_kv) * ONE_LAYER_FUDGE_MULTIPLIER;
+        let fudge = (per_layer_avg + per_layer_kv) * ONE_LAYER_FUDGE_MULTIPLIER;
+        // The output logits buffer lives only on the head GPU (the first
+        // allowed), so every secondary GPU needs `output_buffer_bytes` less
+        // compute headroom — freeing that room for expert weight. This must
+        // stay in lockstep with [`Self::add_compute_buffer`], which books the
+        // same per-device amount at the end of packing.
+        let head_gpu = self.allowed_gpus.first().copied();
 
         for gpu in &self.allowed_gpus {
             let slot = DeviceSlot::Gpu(*gpu);
+            let device_compute = if head_gpu == Some(*gpu) {
+                compute_headroom
+            } else {
+                compute_headroom.saturating_sub(self.estimate.output_buffer_bytes)
+            };
             let available = self.gpu_available(*gpu);
             let raw = available.saturating_sub(*self.per_device.get(&slot).unwrap_or(&0));
             self.gpu_remaining
-                .insert(*gpu, raw.saturating_sub(gpu_headroom_each));
+                .insert(*gpu, raw.saturating_sub(device_compute + fudge));
         }
     }
 
@@ -629,18 +639,29 @@ impl<'a> Packer<'a> {
     /// CPU-allowing placement for models bigger than VRAM).
     /// `fallback_on_gpu` drives `-ngl 999` emission; no `-ot` rules are
     /// synthesised — fit owns placement.
+    ///
+    /// Unlike the layer-walk path, `--fit` delegates weight placement to
+    /// ik_llama at runtime, so the packer can't know exactly how many
+    /// layers land on each GPU. But the compute buffer and KV cache are
+    /// non-offloadable GPU costs — ik_llama needs them resident
+    /// regardless of how `--fit` distributes weights. When the available
+    /// GPU VRAM is below this minimum, return `WeightsDoNotFit` so the
+    /// supervisor's eviction-retry path can free room before attempting
+    /// a start that would OOM at runtime.
     fn reserve_fit(&mut self) -> Result<(), PackError> {
         // Claiming *exactly* the available bytes races nvml jitter between
         // packing and the admission re-check (observed 768 KiB of drift
         // failing a live start); leave a small epsilon unclaimed.
         const FIT_CLAIM_EPSILON: u64 = 64 * 1024 * 1024;
         let mut gpu_total = 0u64;
+        let mut claimed_gpus = 0u32;
         let mut any_gpu_claimed = false;
         for gpu in self.allowed_gpus.clone() {
             let avail = self.gpu_available(gpu).saturating_sub(FIT_CLAIM_EPSILON);
             if avail > 0 {
                 self.per_device.insert(DeviceSlot::Gpu(gpu), avail);
                 gpu_total += avail;
+                claimed_gpus += 1;
                 any_gpu_claimed = true;
             }
         }
@@ -649,6 +670,20 @@ impl<'a> Packer<'a> {
             .estimate
             .kv_per_token
             .saturating_mul(self.estimate.context as u64);
+        // Minimum GPU VRAM the service needs regardless of how --fit
+        // distributes weights: the compute buffer on every claimed GPU
+        // (ik_llama allocates one per device) plus the full KV cache
+        // (which must be GPU-resident — it can't be offloaded to CPU).
+        // Without this check the packer happily claims a sliver of VRAM
+        // (e.g. 2 GiB across two full GPUs), spills all weights to CPU,
+        // and reports "fits" — then ik_llama's --fit OOMs at runtime
+        // because there's no room for the compute buffer + KV.
+        let compute_total =
+            self.estimate.compute_buffer_mb as u64 * 1024 * 1024 * claimed_gpus as u64;
+        let gpu_min = compute_total.saturating_add(kv_total);
+        if gpu_total < gpu_min {
+            return Err(PackError::WeightsDoNotFit);
+        }
         let need = self.estimate.weights_bytes.saturating_add(kv_total);
         let cpu_bytes = need.saturating_sub(gpu_total);
         if cpu_bytes > 0 {
@@ -712,9 +747,24 @@ impl<'a> Packer<'a> {
     /// Step 4: compute buffer per active backend (default 400 MB).
     fn add_compute_buffer(&mut self) {
         let compute_bytes = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
+        // The output logits buffer is materialised only on the GPU holding
+        // the output head (the first allowed GPU). `compute_buffer_mb` is
+        // calibrated against that head GPU, so it already includes the logits
+        // term; every *other* GPU's real compute buffer is smaller by that
+        // amount. Trim it off the secondaries so their reservation reflects
+        // reality and the freed VRAM fills with expert weight instead. CPU
+        // and the head GPU keep the full term. See
+        // [`Estimate::output_buffer_bytes`].
+        let head_gpu = self.allowed_gpus.first().copied();
         let active_slots: Vec<DeviceSlot> = self.per_device.keys().cloned().collect();
         for slot in active_slots {
-            *self.per_device.entry(slot).or_default() += compute_bytes;
+            let mut add = compute_bytes;
+            if let DeviceSlot::Gpu(id) = slot
+                && head_gpu != Some(id)
+            {
+                add = add.saturating_sub(self.estimate.output_buffer_bytes);
+            }
+            *self.per_device.entry(slot).or_default() += add;
         }
     }
 
@@ -1383,6 +1433,7 @@ mod tests {
             weights_bytes: per_layer_mb * 1024 * 1024 * n_layers as u64,
             kv_per_token: 0,
             compute_buffer_mb: 400,
+            output_buffer_bytes: 0,
             mtp_bytes: 0,
             per_layer_bytes: Some(vec![per_layer_mb * 1024 * 1024; n_layers as usize]),
             attention_layers: None,
@@ -1431,6 +1482,7 @@ mod tests {
             weights_bytes: layer_total * n_layers as u64,
             kv_per_token: 0,
             compute_buffer_mb: 400,
+            output_buffer_bytes: 0,
             mtp_bytes: 0,
             per_layer_bytes: Some(per_layer),
             attention_layers: None,
@@ -1540,6 +1592,84 @@ mod tests {
             cpu_bytes(&packed) > 0,
             "weights spill to CPU when no GPU has room"
         );
+    }
+
+    #[test]
+    fn ik_fit_rejects_when_gpu_vram_below_compute_plus_kv() {
+        use crate::config::{IkSettings, Runtime};
+        // Regression: a --fit Hybrid service against nearly-full GPUs.
+        // The packer must not claim a sliver of VRAM, spill all weights
+        // to CPU, and report "fits" — ik_llama's --fit would OOM at
+        // runtime because the compute buffer + KV cache can't be
+        // offloaded. The packer should return WeightsDoNotFit so the
+        // supervisor's eviction-retry path can free room first.
+        //
+        // 10 GiB model, kv_per_token = 1 KiB, context 4096 → 4 MiB KV.
+        // compute_buffer_mb = 400 → 800 MiB across two GPUs.
+        // gpu_min = 800 MiB + 4 MiB = 804 MiB.
+        // Two GPUs with 256 MiB free each → 512 MiB total < 804 MiB.
+        let mut e = moe_estimate(10, 100, 300);
+        e.kv_per_token = 1024; // 1 KiB/token
+        let snap = snapshot(&[0, 0]);
+        // Override free_bytes to 256 MiB per GPU (snapshot uses GiB units).
+        let snap = DeviceSnapshot {
+            gpus: snap
+                .gpus
+                .into_iter()
+                .map(|g| GpuSnapshot {
+                    free_bytes: 256 * 1024 * 1024,
+                    ..g
+                })
+                .collect(),
+            ..snap
+        };
+        let alloc = AllocationTable::new();
+        let mut svc = moe_svc(OffloadMode::Off);
+        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
+            fit: true,
+            ..Default::default()
+        });
+        let err = pack(&e, &svc, &snap, &alloc).unwrap_err();
+        assert!(
+            matches!(err, PackError::WeightsDoNotFit),
+            "expected WeightsDoNotFit, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn ik_fit_succeeds_when_gpu_vram_covers_compute_plus_kv() {
+        use crate::config::{IkSettings, Runtime};
+        // Same model as above, but GPUs have enough free VRAM to cover
+        // the compute buffer + KV cache minimum. The packer should
+        // succeed, claim the GPUs, and spill the weights to CPU.
+        let mut e = moe_estimate(10, 100, 300);
+        e.kv_per_token = 1024; // 1 KiB/token → 4 MiB KV
+        // Two GPUs with 1 GiB free each → 2 GiB total.
+        // gpu_min = 800 MiB + 4 MiB = 804 MiB. 2 GiB > 804 MiB. ✓
+        let snap = DeviceSnapshot {
+            gpus: (0..2)
+                .map(|i| GpuSnapshot {
+                    id: i,
+                    name: format!("GPU {i}"),
+                    total_bytes: 24 * GIB,
+                    free_bytes: GIB,
+                })
+                .collect(),
+            cpu: Some(CpuSnapshot {
+                total_bytes: 128 * GIB,
+                available_bytes: 64 * GIB,
+            }),
+            taken_at_ms: 0,
+        };
+        let alloc = AllocationTable::new();
+        let mut svc = moe_svc(OffloadMode::Off);
+        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
+            fit: true,
+            ..Default::default()
+        });
+        let packed = pack(&e, &svc, &snap, &alloc).unwrap();
+        assert_eq!(packed.args.ngl, Some(NGL_OFFLOAD_ALL));
+        assert!(cpu_bytes(&packed) > 0, "weights spill to CPU");
     }
 
     #[test]
@@ -1733,6 +1863,37 @@ mod tests {
         );
     }
 
+    /// The output logits buffer is materialised only on the head GPU (the
+    /// first allowed), so the packer reserves the full compute buffer there
+    /// but trims `output_buffer_bytes` off every secondary GPU. That freed
+    /// VRAM fills with expert weight, so a nonzero `output_buffer_bytes` keeps
+    /// strictly more experts on the GPUs (less spills to CPU) than the same
+    /// estimate with the term zeroed — the whole point of the split.
+    #[test]
+    fn output_buffer_frees_secondary_gpu_for_experts() {
+        // ~84 GiB of experts over 40 layers on 2×24 GiB → most spill to CPU;
+        // the GPU-resident count is bounded by per-card compute headroom.
+        let snap = snapshot(&[24, 24]);
+        let svc = moe_svc(OffloadMode::Auto);
+
+        let mut without = moe_estimate(40, 150, 700);
+        without.compute_buffer_mb = 3000;
+        without.output_buffer_bytes = 0;
+
+        let mut with = without.clone();
+        // A logits buffer worth ~two 700 MiB expert tensors on the secondary.
+        with.output_buffer_bytes = 1400 * MIB;
+
+        let cpu_without = cpu_bytes(&pack(&without, &svc, &snap, &AllocationTable::new()).unwrap());
+        let cpu_with = cpu_bytes(&pack(&with, &svc, &snap, &AllocationTable::new()).unwrap());
+
+        assert!(
+            cpu_with < cpu_without,
+            "trimming the head-only logits buffer off the secondary GPU must \
+             keep more experts resident (cpu_with={cpu_with} cpu_without={cpu_without})"
+        );
+    }
+
     /// Regression for the live `deepseek-v4-flash` failure: the real estimate
     /// (~96 GiB weights, 9848 MiB compute buffer, 6657 B/token KV over 131072
     /// context, 43 all-MoE layers) must auto-fit on two 24 GiB cards. Before
@@ -1759,6 +1920,7 @@ mod tests {
             weights_bytes: (nonexp + 3 * exp) * n_layers as u64 + 414 * MIB,
             kv_per_token: 6657,
             compute_buffer_mb: 9848,
+            output_buffer_bytes: 0,
             mtp_bytes: 0,
             per_layer_bytes: Some(per_layer),
             attention_layers: None,
@@ -2017,6 +2179,7 @@ mod tests {
             weights_bytes,
             kv_per_token: 45220,
             compute_buffer_mb: 3792,
+            output_buffer_bytes: 0,
             mtp_bytes: 0,
             per_layer_bytes: Some(per_layer_bytes),
             attention_layers: None,
@@ -2059,6 +2222,7 @@ mod tests {
             weights_bytes,
             kv_per_token: 120_000,
             compute_buffer_mb: 2048,
+            output_buffer_bytes: 0,
             mtp_bytes: 0,
             per_layer_bytes: Some(per_layer_bytes),
             attention_layers: None,
@@ -2297,6 +2461,7 @@ mod tests {
             weights_bytes,
             kv_per_token: 0,
             compute_buffer_mb: 1000,
+            output_buffer_bytes: 0,
             mtp_bytes,
             per_layer_bytes: Some(per_layer_bytes),
             attention_layers: None,
@@ -2392,6 +2557,7 @@ mod tests {
             weights_bytes,
             kv_per_token: 0,
             compute_buffer_mb: 400,
+            output_buffer_bytes: 0,
             mtp_bytes,
             per_layer_bytes: Some(per_layer_bytes),
             attention_layers: None,

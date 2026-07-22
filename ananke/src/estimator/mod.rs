@@ -166,6 +166,11 @@ pub fn estimate_with_summary(
     };
     est.mtp_bytes = mtp::mtp_overhead_bytes(&summary, draft_summary.as_ref(), inputs);
 
+    // Output logits buffer: a head-GPU-only cost the packer subtracts from
+    // secondary GPUs. Architecture-independent (reads n_vocab + ubatch), so
+    // it's computed once here rather than in each family estimate.
+    est.output_buffer_bytes = compute_buffer::output_logits_bytes(&summary, inputs.ubatch);
+
     info!(
         service = %inputs.name,
         weights_gb = est.weights_bytes / (1024 * 1024 * 1024),
