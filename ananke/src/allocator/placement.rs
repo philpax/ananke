@@ -14,7 +14,7 @@ use crate::{
     allocator::AllocationTable,
     config::{DeviceSlot, OffloadMode, PlacementPolicy, ServiceConfig, SplitMode},
     devices::{Allocation, DeviceId, DeviceSnapshot},
-    estimator::{Estimate, ExpertKind, ExpertTensor},
+    estimator::Estimate,
 };
 
 /// Number of per-layer-equivalents added to every active backend as slop
@@ -209,17 +209,6 @@ fn pack_inner(
         packer.distribute_sharded()?;
         return Ok(packer.finish());
     }
-    // ik-llama `--fit` services: the fork owns layer/expert placement, so
-    // the packer's job reduces to reservation accounting.
-    if packer
-        .svc
-        .llama_cpp()
-        .and_then(|lc| lc.runtime.ik())
-        .is_some_and(|ik| ik.fit)
-    {
-        packer.reserve_fit()?;
-        return Ok(packer.finish());
-    }
     packer.seed_non_layer();
     packer.seed_mtp_overhead();
     if packer.expert_aware {
@@ -288,9 +277,6 @@ struct Packer<'a> {
     /// Layers whose whole weight (including experts) spilled to CPU in Phase A;
     /// their experts are part of that lump and skipped in Phase B.
     spilled_layers: BTreeSet<u32>,
-    /// Expert tensors placed somewhere other than their layer's home GPU — the
-    /// set that needs explicit `-ot` rules. Pairs the tensor with its target.
-    expert_assignments: Vec<(ExpertTensor, DeviceSlot)>,
     /// Total expert bytes moved to the CPU (for the placement preview).
     expert_offload_cpu_bytes: u64,
     /// Distinct layers with at least one expert offloaded to CPU.
@@ -361,7 +347,6 @@ impl<'a> Packer<'a> {
             expert_bytes_by_layer,
             layer_home: BTreeMap::new(),
             spilled_layers: BTreeSet::new(),
-            expert_assignments: Vec::new(),
             expert_offload_cpu_bytes: 0,
             expert_offload_cpu_layers: BTreeSet::new(),
             n_cpu_moe: None,
@@ -646,71 +631,6 @@ impl<'a> Packer<'a> {
         // Keep the configured headroom (global `[devices]` reserve + this
         // service's `gpu_headroom_mb`) free on the card.
         avail.saturating_sub(gpu_reserve_bytes(self.svc, gpu))
-    }
-
-    /// ik-llama `--fit` reservation: claim every allowed GPU's remaining
-    /// capacity — the fork's fit fills each card up to the emitted
-    /// `--gpu-fit-margin`, and the margins themselves are consumed at
-    /// request time by the service's own runtime buffers, so the whole
-    /// card is genuinely this service's. The weights + KV bytes that
-    /// don't fit on the claimed GPUs land on CPU (requires a
-    /// CPU-allowing placement for models bigger than VRAM).
-    /// `fallback_on_gpu` drives `-ngl 999` emission; no `-ot` rules are
-    /// synthesised — fit owns placement.
-    ///
-    /// Unlike the layer-walk path, `--fit` delegates weight placement to
-    /// ik_llama at runtime, so the packer can't know exactly how many
-    /// layers land on each GPU. But the compute buffer and KV cache are
-    /// non-offloadable GPU costs — ik_llama needs them resident
-    /// regardless of how `--fit` distributes weights. When the available
-    /// GPU VRAM is below this minimum, return `WeightsDoNotFit` so the
-    /// supervisor's eviction-retry path can free room before attempting
-    /// a start that would OOM at runtime.
-    fn reserve_fit(&mut self) -> Result<(), PackError> {
-        // Claiming *exactly* the available bytes races nvml jitter between
-        // packing and the admission re-check (observed 768 KiB of drift
-        // failing a live start); leave a small epsilon unclaimed.
-        const FIT_CLAIM_EPSILON: u64 = 64 * 1024 * 1024;
-        let mut gpu_total = 0u64;
-        let mut claimed_gpus = 0u32;
-        let mut any_gpu_claimed = false;
-        for gpu in self.allowed_gpus.clone() {
-            let avail = self.gpu_available(gpu).saturating_sub(FIT_CLAIM_EPSILON);
-            if avail > 0 {
-                self.per_device.insert(DeviceSlot::Gpu(gpu), avail);
-                gpu_total += avail;
-                claimed_gpus += 1;
-                any_gpu_claimed = true;
-            }
-        }
-        self.fallback_on_gpu = any_gpu_claimed;
-        let kv_total = self
-            .estimate
-            .kv_per_token
-            .saturating_mul(self.estimate.context as u64);
-        // Minimum GPU VRAM the service needs regardless of how --fit
-        // distributes weights: the compute buffer on every claimed GPU
-        // (ik_llama allocates one per device) plus the full KV cache
-        // (which must be GPU-resident — it can't be offloaded to CPU).
-        // Without this check the packer happily claims a sliver of VRAM
-        // (e.g. 2 GiB across two full GPUs), spills all weights to CPU,
-        // and reports "fits" — then ik_llama's --fit OOMs at runtime
-        // because there's no room for the compute buffer + KV.
-        let compute_total =
-            self.estimate.compute_buffer_mb as u64 * 1024 * 1024 * claimed_gpus as u64;
-        let gpu_min = compute_total.saturating_add(kv_total);
-        if gpu_total < gpu_min {
-            return Err(PackError::WeightsDoNotFit);
-        }
-        let need = self.estimate.weights_bytes.saturating_add(kv_total);
-        let cpu_bytes = need.saturating_sub(gpu_total);
-        if cpu_bytes > 0 {
-            if !self.allow_cpu {
-                return Err(PackError::WeightsDoNotFit);
-            }
-            *self.per_device.entry(DeviceSlot::Cpu).or_default() += cpu_bytes;
-        }
-        self.check_cpu_capacity()
     }
 
     /// Fallback for architectures (Mamba, unknown) that didn't supply a
@@ -1137,25 +1057,14 @@ impl<'a> Packer<'a> {
             (ngl, tensor_split, None, None)
         };
 
-        // Operator-declared rules first, then the packer's synthesised expert
-        // offload rules. The `-ot` device index for a cross-GPU move is the
-        // target GPU's rank among the GPU ids in the final allocation, matching
-        // `cuda_env::render`'s ascending CUDA_VISIBLE_DEVICES ordering.
-        let mut override_tensor = self
+        // Operator-declared `-ot` rules pass straight through; the packer no
+        // longer synthesises expert-offload rules (whole-layer offload rides
+        // on `--n-cpu-moe`, emitted above).
+        let override_tensor = self
             .svc
             .llama_cpp()
             .map(|lc| lc.override_tensor.clone())
             .unwrap_or_default();
-        let mut gpu_ids: Vec<u32> = self
-            .per_device
-            .keys()
-            .filter_map(|s| match s {
-                DeviceSlot::Gpu(g) => Some(*g),
-                DeviceSlot::Cpu => None,
-            })
-            .collect();
-        gpu_ids.sort_unstable();
-        override_tensor.extend(synth_expert_ot_rules(&self.expert_assignments, &gpu_ids));
 
         let expert_offload_bytes = self.expert_offload_cpu_bytes;
         let expert_offload_layers = self.expert_offload_cpu_layers.len() as u32;
@@ -1188,64 +1097,6 @@ impl<'a> Packer<'a> {
             expert_offload_layers,
         }
     }
-}
-
-/// Build compact `-ot <regex>=<device>` rules from the packer's off-home expert
-/// placements. Groups by target device and identical kind-set so a tail of
-/// fully-offloaded layers collapses to a single
-/// `blk\.(16|17|18)\.ffn_(gate|up|down)_exps\.=CPU` rule. `gpu_ids` is the
-/// ascending allocation GPU-id list used to map a physical id to its CUDA
-/// visible index.
-fn synth_expert_ot_rules(
-    assignments: &[(ExpertTensor, DeviceSlot)],
-    gpu_ids: &[u32],
-) -> Vec<String> {
-    // device token -> (layer -> set of offloaded kinds).
-    let mut by_device: BTreeMap<String, BTreeMap<u32, BTreeSet<ExpertKind>>> = BTreeMap::new();
-    for (e, slot) in assignments {
-        let token = match slot {
-            DeviceSlot::Cpu => "CPU".to_string(),
-            DeviceSlot::Gpu(g) => {
-                let idx = gpu_ids.iter().position(|x| x == g).unwrap_or(0);
-                format!("CUDA{idx}")
-            }
-        };
-        by_device
-            .entry(token)
-            .or_default()
-            .entry(e.layer)
-            .or_default()
-            .insert(e.kind);
-    }
-
-    let mut rules = Vec::new();
-    for (token, layers) in by_device {
-        // Group layers that share an identical kind-set into one rule.
-        let mut by_kinds: BTreeMap<Vec<ExpertKind>, Vec<u32>> = BTreeMap::new();
-        for (layer, kinds) in layers {
-            by_kinds
-                .entry(kinds.into_iter().collect())
-                .or_default()
-                .push(layer);
-        }
-        for (kinds, mut group) in by_kinds {
-            group.sort_unstable();
-            let layer_alt = group
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join("|");
-            let kind_alt = kinds
-                .iter()
-                .map(|k| k.tensor_token())
-                .collect::<Vec<_>>()
-                .join("|");
-            rules.push(format!(
-                r"blk\.({layer_alt})\.ffn_({kind_alt})_exps\.={token}"
-            ));
-        }
-    }
-    rules
 }
 
 /// VRAM-aware GPU pick for a command-template service.
@@ -1608,147 +1459,6 @@ mod tests {
             ),
             "conservative pack must still respect live free RAM"
         );
-    }
-
-    #[test]
-    fn ik_fit_reserves_whole_gpus_and_spills_rest_to_cpu() {
-        use crate::config::{IkSettings, Runtime};
-        // 10 layers × 1 GiB (10 GiB model) against two 4 GiB cards: the
-        // fit branch claims both cards fully, sends the remainder to the
-        // CPU pledge, and synthesises no -ot rules.
-        let e = moe_estimate(10, 100, 300);
-        let snap = snapshot(&[4, 4]);
-        let alloc = AllocationTable::new();
-        let mut svc = moe_svc(OffloadMode::Off);
-        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
-            fit: true,
-            ..Default::default()
-        });
-        let packed = pack(&e, &svc, &snap, &alloc).unwrap();
-
-        assert_eq!(packed.args.ngl, Some(NGL_OFFLOAD_ALL));
-        assert!(
-            packed.args.override_tensor.is_empty(),
-            "fit owns placement; no -ot, got {:?}",
-            packed.args.override_tensor
-        );
-        let gpu_total: u64 = packed
-            .allocation
-            .bytes
-            .iter()
-            .filter(|(d, _)| matches!(d, DeviceId::Gpu(_)))
-            .map(|(_, b)| *b)
-            .sum();
-        assert!(gpu_total > 0, "both cards claimed");
-        assert!(
-            cpu_bytes(&packed) > 0,
-            "weights beyond VRAM land on the CPU pledge"
-        );
-    }
-
-    #[test]
-    fn ik_fit_all_gpus_full_spills_to_cpu_without_ngl() {
-        use crate::config::{IkSettings, Runtime};
-        // Both GPUs have 0 free bytes: the fit branch should not claim
-        // any GPU, set fallback_on_gpu = false, and emit -ngl 0 (not 999).
-        let e = moe_estimate(10, 100, 300);
-        let snap = snapshot(&[0, 0]);
-        let alloc = AllocationTable::new();
-        let mut svc = moe_svc(OffloadMode::Off);
-        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
-            fit: true,
-            ..Default::default()
-        });
-        let packed = pack(&e, &svc, &snap, &alloc).unwrap();
-
-        assert_eq!(
-            packed.args.ngl,
-            Some(NGL_CPU_ONLY),
-            "all GPUs full → -ngl 0, not 999; got {:?}",
-            packed.args.ngl
-        );
-        assert!(
-            cpu_bytes(&packed) > 0,
-            "weights spill to CPU when no GPU has room"
-        );
-    }
-
-    #[test]
-    fn ik_fit_rejects_when_gpu_vram_below_compute_plus_kv() {
-        use crate::config::{IkSettings, Runtime};
-        // Regression: a --fit Hybrid service against nearly-full GPUs.
-        // The packer must not claim a sliver of VRAM, spill all weights
-        // to CPU, and report "fits" — ik_llama's --fit would OOM at
-        // runtime because the compute buffer + KV cache can't be
-        // offloaded. The packer should return WeightsDoNotFit so the
-        // supervisor's eviction-retry path can free room first.
-        //
-        // 10 GiB model, kv_per_token = 1 KiB, context 4096 → 4 MiB KV.
-        // compute_buffer_mb = 400 → 800 MiB across two GPUs.
-        // gpu_min = 800 MiB + 4 MiB = 804 MiB.
-        // Two GPUs with 256 MiB free each → 512 MiB total < 804 MiB.
-        let mut e = moe_estimate(10, 100, 300);
-        e.kv_per_token = 1024; // 1 KiB/token
-        let snap = snapshot(&[0, 0]);
-        // Override free_bytes to 256 MiB per GPU (snapshot uses GiB units).
-        let snap = DeviceSnapshot {
-            gpus: snap
-                .gpus
-                .into_iter()
-                .map(|g| GpuSnapshot {
-                    free_bytes: 256 * 1024 * 1024,
-                    ..g
-                })
-                .collect(),
-            ..snap
-        };
-        let alloc = AllocationTable::new();
-        let mut svc = moe_svc(OffloadMode::Off);
-        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
-            fit: true,
-            ..Default::default()
-        });
-        let err = pack(&e, &svc, &snap, &alloc).unwrap_err();
-        assert!(
-            matches!(err, PackError::WeightsDoNotFit),
-            "expected WeightsDoNotFit, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn ik_fit_succeeds_when_gpu_vram_covers_compute_plus_kv() {
-        use crate::config::{IkSettings, Runtime};
-        // Same model as above, but GPUs have enough free VRAM to cover
-        // the compute buffer + KV cache minimum. The packer should
-        // succeed, claim the GPUs, and spill the weights to CPU.
-        let mut e = moe_estimate(10, 100, 300);
-        e.kv_per_token = 1024; // 1 KiB/token → 4 MiB KV
-        // Two GPUs with 1 GiB free each → 2 GiB total.
-        // gpu_min = 800 MiB + 4 MiB = 804 MiB. 2 GiB > 804 MiB. ✓
-        let snap = DeviceSnapshot {
-            gpus: (0..2)
-                .map(|i| GpuSnapshot {
-                    id: i,
-                    name: format!("GPU {i}"),
-                    total_bytes: 24 * GIB,
-                    free_bytes: GIB,
-                })
-                .collect(),
-            cpu: Some(CpuSnapshot {
-                total_bytes: 128 * GIB,
-                available_bytes: 64 * GIB,
-            }),
-            taken_at_ms: 0,
-        };
-        let alloc = AllocationTable::new();
-        let mut svc = moe_svc(OffloadMode::Off);
-        expect_llama_cpp(&mut svc).runtime = Runtime::IkLlama(IkSettings {
-            fit: true,
-            ..Default::default()
-        });
-        let packed = pack(&e, &svc, &snap, &alloc).unwrap();
-        assert_eq!(packed.args.ngl, Some(NGL_OFFLOAD_ALL));
-        assert!(cpu_bytes(&packed) > 0, "weights spill to CPU");
     }
 
     #[test]
@@ -2116,32 +1826,6 @@ mod tests {
 
     /// The `-ot` synthesiser collapses a tail of fully-offloaded layers into a
     /// single grouped rule with layer and kind alternations.
-    #[test]
-    fn synth_expert_ot_rules_groups_layers_and_kinds() {
-        let assignments: Vec<(ExpertTensor, DeviceSlot)> = [18u32, 16, 17]
-            .into_iter()
-            .flat_map(|layer| {
-                [ExpertKind::Gate, ExpertKind::Up, ExpertKind::Down]
-                    .into_iter()
-                    .map(move |kind| {
-                        (
-                            ExpertTensor {
-                                layer,
-                                kind,
-                                bytes: MIB,
-                            },
-                            DeviceSlot::Cpu,
-                        )
-                    })
-            })
-            .collect();
-        let rules = synth_expert_ot_rules(&assignments, &[]);
-        assert_eq!(
-            rules,
-            vec![r"blk\.(16|17|18)\.ffn_(gate|up|down)_exps\.=CPU".to_string()]
-        );
-    }
-
     #[test]
     fn single_gpu_fits() {
         let e = trivial_estimate(10, 100); // 10 layers × 100 MiB = 1 GiB

@@ -722,9 +722,7 @@ export interface components {
     FitVerdict: "fits" | "needs_eviction" | "does_not_fit";
     /**
      * @description The ik_llama.cpp knobs of a `runtime = { kind = "ik-llama", ... }`
-     *     service, mirrored from the validated config, plus the fit margins
-     *     ananke derives from them (which appear nowhere in the operator's
-     *     own config).
+     *     service, mirrored from the validated config.
      */
     IkParams: {
       /**
@@ -734,14 +732,6 @@ export interface components {
       attn_max_batch?: number | null;
       /** @description DSA sparse attention (`-dsa -fidx`). */
       dsa: boolean;
-      /** @description Fork-side auto-placement (`--fit`). */
-      fit: boolean;
-      /**
-       * @description The `--gpu-fit-margin` values (MiB) ananke computes and emits
-       *     per visible device when `fit` is on: index 0 is the child's
-       *     device 0, and so on. Empty when `fit` is off.
-       */
-      fit_margins_mib?: number[];
       /**
        * Format: int32
        * @description MLA kernel mode (`-mla`, 0-3), when set.

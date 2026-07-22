@@ -537,8 +537,6 @@ pub struct IkSettings {
     pub mla: Option<u32>,
     /// DSA sparse attention (`-dsa -fidx`).
     pub dsa: bool,
-    /// Fork-side auto-placement (`--fit`) with ananke-computed margins.
-    pub fit: bool,
     /// `-amb` attention scratch cap in MiB.
     pub attn_max_batch: Option<u32>,
     /// `-rtr` runtime repacking.
@@ -1147,16 +1145,7 @@ fn validate_service(
                     split_mode.as_flag()
                 )));
             }
-            TemplateConfig::LlamaCpp(lc) => {
-                if lc.runtime.ik().is_some_and(|ik| ik.fit) {
-                    return Err(fail(format!(
-                        "service {name}: runtime.fit=true is incompatible \
-                         with a sharded split mode (row/tensor) — --fit owns \
-                         layer placement, sharded split divides every layer \
-                         across GPUs"
-                    )));
-                }
-            }
+            TemplateConfig::LlamaCpp(_) => {}
         }
     }
 
@@ -1726,28 +1715,9 @@ fn validate_llama_cpp(
                     }
                 }
             }
-            if ik.fit == Some(true) {
-                if lc.expert_offload.as_ref().is_some_and(
-                    |eo| !matches!(eo, RawExpertOffload::Mode(s) if s == flags::expert_offload::OFF),
-                ) {
-                    return Err(fail(format!(
-                        "service {name}: runtime.fit=true and \
-                         expert_offload are mutually exclusive — --fit \
-                         owns placement"
-                    )));
-                }
-                if lc.override_tensor.as_ref().is_some_and(|v| !v.is_empty()) {
-                    return Err(fail(format!(
-                        "service {name}: runtime.fit=true and \
-                         override_tensor are mutually exclusive — --fit \
-                         owns placement"
-                    )));
-                }
-            }
             Runtime::IkLlama(IkSettings {
                 mla: ik.mla,
                 dsa: ik.dsa.unwrap_or(false),
-                fit: ik.fit.unwrap_or(false),
                 attn_max_batch: ik.attn_max_batch,
                 runtime_repack: ik.runtime_repack.unwrap_or(false),
             })
@@ -2658,7 +2628,7 @@ model = "/m/x.gguf"
 port = 11435
 context = 131072
 spec_type = "mtp:n_max=4,p_min=0.5"
-runtime = { kind = "ik-llama", mla = 1, dsa = true, fit = true, attn_max_batch = 512 }
+runtime = { kind = "ik-llama", mla = 1, dsa = true, attn_max_batch = 512 }
 lifecycle = "persistent"
 "#,
         );
@@ -2667,7 +2637,7 @@ lifecycle = "persistent"
         let lc = svc.llama_cpp().unwrap();
         let ik = lc.runtime.ik().expect("ik runtime");
         assert_eq!(ik.mla, Some(1));
-        assert!(ik.dsa && ik.fit);
+        assert!(ik.dsa);
         assert_eq!(ik.attn_max_batch, Some(512));
         assert!(!ik.runtime_repack);
     }
@@ -2730,7 +2700,7 @@ lifecycle = "persistent"
     }
 
     #[test]
-    fn ik_dsa_requires_f16_kv_and_fit_owns_placement() {
+    fn ik_dsa_requires_f16_kv() {
         let cfg = parse_and_merge(
             r#"
 [[service]]
@@ -2746,25 +2716,6 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         assert!(format!("{err}").contains("requires f16 KV"), "got: {err}");
-
-        let cfg = parse_and_merge(
-            r#"
-[[service]]
-name = "demo"
-template = "llama-cpp"
-model = "/m/x.gguf"
-port = 11435
-expert_offload = "auto"
-devices.placement = "hybrid"
-runtime = { kind = "ik-llama", fit = true }
-lifecycle = "persistent"
-"#,
-        );
-        let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("mutually exclusive"),
-            "got: {err}"
-        );
     }
 
     #[test]
@@ -2783,27 +2734,6 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         assert!(
             format!("{err}").contains("attn_max_batch must be > 0"),
-            "got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_fit_with_sharded_split() {
-        let cfg = parse_and_merge(
-            r#"
-[[service]]
-name = "demo"
-template = "llama-cpp"
-model = "/m/x.gguf"
-port = 11435
-runtime = { kind = "ik-llama", fit = true }
-devices = { placement = "gpu-only", split = "tensor" }
-lifecycle = "persistent"
-"#,
-        );
-        let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("fit=true is incompatible"),
             "got: {err}"
         );
     }

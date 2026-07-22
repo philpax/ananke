@@ -772,7 +772,7 @@ pub fn all_sections() -> Vec<SectionDoc> {
                     "runtime",
                     "table",
                     "mainline llama.cpp",
-                    "Serving runtime, tagged by `kind`: `{ kind = \"ik-llama\", mla = 1, dsa = true, fit = true, attn_max_batch = 512, runtime_repack = false }` selects the ik_llama.cpp fork and its options (`-mla`, `-dsa -fidx`, `--fit` with ananke-computed `--gpu-fit-margin`s, `-amb`, `-rtr`). Absent means mainline. `dsa` requires f16 KV; `fit` is mutually exclusive with `expert_offload`/`override_tensor` and reserves whole allowed GPUs. Point `llama_server` at a matching binary. ik services use ik's `--spec-type` dialect (`\"mtp:n_max=4,p_min=0.5\"`).",
+                    "Serving runtime, tagged by `kind`: `{ kind = \"ik-llama\", mla = 1, dsa = true, attn_max_batch = 512, runtime_repack = false }` selects the ik_llama.cpp fork and its options (`-mla`, `-dsa -fidx`, `-amb`, `-rtr`). Absent means mainline. `dsa` requires f16 KV. Point `llama_server` at a matching binary. ik services use ik's `--spec-type` dialect (`\"mtp:n_max=4,p_min=0.5\"`).",
                 ),
                 field(
                     "flash_attn",

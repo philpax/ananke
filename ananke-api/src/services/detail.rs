@@ -154,9 +154,7 @@ pub struct RuntimeInfo {
 }
 
 /// The ik_llama.cpp knobs of a `runtime = { kind = "ik-llama", ... }`
-/// service, mirrored from the validated config, plus the fit margins
-/// ananke derives from them (which appear nowhere in the operator's
-/// own config).
+/// service, mirrored from the validated config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IkParams {
     /// MLA kernel mode (`-mla`, 0-3), when set.
@@ -164,18 +162,11 @@ pub struct IkParams {
     pub mla: Option<u32>,
     /// DSA sparse attention (`-dsa -fidx`).
     pub dsa: bool,
-    /// Fork-side auto-placement (`--fit`).
-    pub fit: bool,
     /// `-amb` attention scratch cap in MiB, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attn_max_batch: Option<u32>,
     /// `-rtr` runtime repacking.
     pub runtime_repack: bool,
-    /// The `--gpu-fit-margin` values (MiB) ananke computes and emits
-    /// per visible device when `fit` is on: index 0 is the child's
-    /// device 0, and so on. Empty when `fit` is off.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fit_margins_mib: Vec<u32>,
 }
 
 /// GGUF-derived facts about a model file. Read once per service per

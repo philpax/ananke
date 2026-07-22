@@ -234,8 +234,6 @@
     "memoryFlags": "mmap / mlock",
     "ikMla": "MLA mode",
     "ikDsa": "DSA sparse attention",
-    "ikFit": "Auto-fit (--fit)",
-    "ikFitMargins": "Fit margins (MiB/GPU)",
     "ikAmb": "Attention batch cap",
     "ikRtr": "Runtime repack",
     "flagOn": "on",

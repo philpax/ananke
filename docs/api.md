@@ -596,8 +596,6 @@ Get service detail
     ik?: {
       attn_max_batch?: number | null
       dsa: boolean
-      fit: boolean
-      fit_margins_mib?: number[]
       mla?: number | null
       runtime_repack: boolean
     } | null

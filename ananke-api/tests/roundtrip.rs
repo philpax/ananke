@@ -184,10 +184,8 @@ fn service_detail_roundtrips() {
             ik: Some(ananke_api::services::detail::IkParams {
                 mla: Some(1),
                 dsa: true,
-                fit: true,
                 attn_max_batch: Some(512),
                 runtime_repack: false,
-                fit_margins_mib: vec![5120, 5120],
             }),
         }),
         serving: Some(ananke_api::services::detail::ServingConfig {

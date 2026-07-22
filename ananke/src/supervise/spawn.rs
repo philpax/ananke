@@ -69,7 +69,7 @@ fn render_llama_cpp_argv(
     let mut env: BTreeMap<String, String> = svc.env.clone();
     env.insert("CUDA_VISIBLE_DEVICES".into(), cuda_env::render(alloc));
 
-    let standard_args = render_llama_server_flags(svc, lc, alloc, cmd_args);
+    let standard_args = render_llama_server_flags(svc, lc, cmd_args);
 
     if let Some(launcher) = &lc.launcher {
         // Launcher template: `{model}` is exposed as a standalone
@@ -138,40 +138,9 @@ fn push_override_tensor(args: &mut Vec<String>, rules: &[String]) {
     }
 }
 
-/// Per-GPU VRAM margin (MiB) ananke reserves when an ik-llama service
-/// uses `--fit`. The fork's fit accounts weights + KV but not runtime
-/// buffers, so an unmargined fit passes /health and OOMs on the first
-/// request. Calibrated on GLM-5.2 smol-IQ2_KS, 2×3090 (2026-07-22, see
-/// the model dir's RECOMMENDED.md + bench/logs/): prefill/runtime
-/// scratch ≈2 GiB per card at ub 2048, DSA indexer scratch ≈3 GiB per
-/// card at 128k, and the MTP draft context wants ≈4.2 GiB on the first
-/// visible device only.
-pub(crate) fn ik_fit_margin_mib(
-    ik: &crate::config::IkSettings,
-    lc: &LlamaCppConfig,
-    dev: usize,
-) -> u32 {
-    // Runtime/prefill scratch scales with ubatch; 2048 → 2 GiB measured,
-    // floor at 1 GiB for small ubatches.
-    let ub = lc.ubatch_size.unwrap_or(512);
-    let mut mib = ((2048u64 * ub.max(1024) as u64 / 2048) as u32).max(1024);
-    if ik.dsa {
-        mib += 3072;
-    }
-    let mtp = lc
-        .spec_type
-        .as_deref()
-        .is_some_and(|s| s.starts_with("mtp"));
-    if mtp && dev == 0 {
-        mib += 4352;
-    }
-    mib
-}
-
 fn render_llama_server_flags(
     svc: &ServiceConfig,
     lc: &LlamaCppConfig,
-    alloc: &Allocation,
     cmd_args: Option<&CommandArgs>,
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
@@ -191,16 +160,6 @@ fn render_llama_server_flags(
         }
         if ik.runtime_repack {
             args.push("-rtr".into());
-        }
-        if ik.fit {
-            args.push("--fit".into());
-            // Margins address the child's renumbered device space (the
-            // supervisor sets CUDA_VISIBLE_DEVICES from the allocation),
-            // so emit 0..n regardless of which host GPUs were picked.
-            for dev in 0..alloc.gpu_ids().len() {
-                args.push("--gpu-fit-margin".into());
-                args.push(format!("{dev},{}", ik_fit_margin_mib(ik, lc, dev)));
-            }
         }
     }
 
@@ -525,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_ik_runtime_flags_with_fit_margins() {
+    fn renders_ik_runtime_flags() {
         use crate::config::{IkSettings, Runtime};
         let mut svc = base_service();
         let mut placement = BTreeMap::new();
@@ -537,7 +496,6 @@ mod tests {
             lc.runtime = Runtime::IkLlama(IkSettings {
                 mla: Some(1),
                 dsa: true,
-                fit: true,
                 attn_max_batch: Some(512),
                 runtime_repack: false,
             });
@@ -556,16 +514,6 @@ mod tests {
         let i = a.iter().position(|x| x == "-amb").unwrap();
         assert_eq!(a[i + 1], "512");
         assert!(!a.iter().any(|x| x == "-rtr"));
-        assert!(a.iter().any(|x| x == "--fit"));
-        // Margins: ub2048 base 2048 + DSA 3072 = 5120; dev0 additionally
-        // carries the MTP context's 4352.
-        let margins: Vec<&String> = a
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| *x == "--gpu-fit-margin")
-            .map(|(i, _)| &a[i + 1])
-            .collect();
-        assert_eq!(margins, vec!["0,9472", "1,5120"]);
     }
 
     #[test]
@@ -573,15 +521,7 @@ mod tests {
         let svc = base_service();
         let alloc = Allocation::from_override(&svc.placement_override);
         let cmd = render_argv(&svc, &alloc, None).unwrap();
-        for flag in [
-            "-mla",
-            "-dsa",
-            "-fidx",
-            "-amb",
-            "-rtr",
-            "--fit",
-            "--gpu-fit-margin",
-        ] {
+        for flag in ["-mla", "-dsa", "-fidx", "-amb", "-rtr"] {
             assert!(!cmd.args.iter().any(|a| a == flag), "unexpected {flag}");
         }
     }
@@ -1035,27 +975,5 @@ mod tests {
         assert_eq!(resolved.get("PATH").unwrap(), "/custom/bin");
         // Inherited key not overridden is preserved.
         assert_eq!(resolved.get("HOME").unwrap(), "/home/test");
-    }
-
-    #[test]
-    fn ik_fit_margin_mib_large_ubatch_does_not_overflow() {
-        use crate::config::{IkSettings, Runtime};
-        let mut svc = base_service();
-        svc.placement_override = BTreeMap::new();
-        {
-            let lc = expect_llama_cpp(&mut svc);
-            lc.runtime = Runtime::IkLlama(IkSettings {
-                fit: true,
-                ..Default::default()
-            });
-            // 2_097_152 ubatch would overflow u32 in the old
-            // `2048 * ub.max(1024) / 2048` expression.
-            lc.ubatch_size = Some(2_097_152);
-        }
-        // Should not panic; the margin is clamped by the u64 intermediate.
-        let lc = svc.llama_cpp().unwrap();
-        let ik = lc.runtime.ik().unwrap();
-        let mib = ik_fit_margin_mib(ik, lc, 0);
-        assert!(mib >= 1024);
     }
 }

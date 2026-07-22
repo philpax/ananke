@@ -203,7 +203,7 @@ pub struct RawLlamaCppService {
     /// Absent means mainline llama.cpp. Runtime-specific options live
     /// inside the table, so fork-only knobs are *unrepresentable* on the
     /// mainline runtime rather than merely validated away. Fork-only
-    /// behaviour (flag dialect, `--fit` margins, estimator shapes) keys
+    /// behaviour (flag dialect, estimator shapes) keys
     /// off the variant. Point `llama_server` at a matching binary — the
     /// validator can't check that, but each runtime rejects the other's
     /// flags at spawn.
@@ -318,13 +318,6 @@ pub struct RawIkSettings {
     /// Enable DSA sparse attention (`-dsa -fidx`). Requires f16 KV —
     /// the fork rejects quantised cache types alongside it.
     pub dsa: Option<bool>,
-    /// Let the fork auto-place layers/experts (`--fit`). ananke computes
-    /// and emits the matching `--gpu-fit-margin` per device (the fork's
-    /// fit accounts weights+KV but NOT per-feature runtime buffers —
-    /// unmargined fits pass /health and OOM on the first request).
-    /// Mutually exclusive with `expert_offload` and `override_tensor` —
-    /// fit owns placement.
-    pub fit: Option<bool>,
     /// Attention scratch cap in MiB (`-amb`).
     pub attn_max_batch: Option<u32>,
     /// Repack quants for CPU at load (`-rtr`). Adds load time;
