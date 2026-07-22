@@ -51,6 +51,16 @@ pub struct CommandArgs {
     /// KV in sharded modes. Always the lowest-id spanned GPU, which
     /// `cuda_env::render`'s ascending ordering places at visible index 0.
     pub main_gpu: Option<u32>,
+    /// `--n-cpu-moe N` — offload the trailing `N` expert layers' experts to
+    /// CPU as whole layers. Set on the coarse expert-offload path instead of
+    /// synthesising per-tensor `-ot` rules: keeping whole layers together
+    /// keeps the runtime's fused multi-threaded CPU MoE kernel engaged
+    /// (~24× faster on ik_llama than scattered `-ot`) and stays under
+    /// llama.cpp's `GGML_SCHED_MAX_SPLIT_INPUTS` graph-split limit. When
+    /// set, the runtime distributes the GPU-resident experts across cards
+    /// itself, so `-ngl 999` is emitted and no expert `-ot`/`--tensor-split`
+    /// is synthesised. `None` on the non-expert paths.
+    pub n_cpu_moe: Option<u32>,
 }
 
 /// Structured packer failure modes. Each variant carries the numbers the
@@ -214,10 +224,12 @@ fn pack_inner(
     packer.seed_mtp_overhead();
     if packer.expert_aware {
         // Two-phase MoE placement: pin every layer's attention + KV on a GPU,
-        // then distribute the experts, offloading the surplus to CPU (or a
-        // secondary GPU) and recording `-ot` rules for what moved.
+        // then offload the trailing surplus expert *layers* to CPU as whole
+        // units via `--n-cpu-moe`. Whole-layer offload (rather than per-tensor
+        // `-ot`) keeps the runtime's fused multi-threaded CPU MoE kernel
+        // engaged and stays under llama.cpp's graph-split limit.
         packer.place_nonexpert_layers()?;
-        packer.distribute_experts()?;
+        packer.distribute_experts_ncmoe()?;
     } else {
         packer.walk_layers()?;
         packer.place_fallback_weights()?;
@@ -265,8 +277,6 @@ struct Packer<'a> {
 
     /// MoE expert-offload policy for this service.
     offload_mode: OffloadMode,
-    /// Offloadable expert tensors (the estimator's menu). Empty for non-MoE.
-    expert_tensors: Vec<ExpertTensor>,
     /// `true` when the two-phase expert-aware path runs: an offload mode is
     /// enabled *and* the model carries experts. Set in [`Self::new`].
     expert_aware: bool,
@@ -285,6 +295,10 @@ struct Packer<'a> {
     expert_offload_cpu_bytes: u64,
     /// Distinct layers with at least one expert offloaded to CPU.
     expert_offload_cpu_layers: BTreeSet<u32>,
+    /// `--n-cpu-moe N` value set by [`Self::distribute_experts_ncmoe`]. Drives
+    /// the coarse whole-layer offload emission in [`Self::finish`] (and
+    /// suppresses the per-tensor `-ot`/`--tensor-split` there).
+    n_cpu_moe: Option<u32>,
 }
 
 impl<'a> Packer<'a> {
@@ -340,7 +354,6 @@ impl<'a> Packer<'a> {
             optimistic_remaining,
             sharded: None,
             offload_mode,
-            expert_tensors,
             expert_aware,
             expert_bytes_by_layer,
             layer_home: BTreeMap::new(),
@@ -348,6 +361,7 @@ impl<'a> Packer<'a> {
             expert_assignments: Vec::new(),
             expert_offload_cpu_bytes: 0,
             expert_offload_cpu_layers: BTreeSet::new(),
+            n_cpu_moe: None,
         }
     }
 
@@ -878,107 +892,112 @@ impl<'a> Packer<'a> {
         Ok(())
     }
 
-    /// Phase B of the expert-aware path: place each layer's fused expert tensors.
-    /// `Auto` keeps an expert on its home GPU while that GPU has room, spills to
-    /// the most-free other GPU next, and finally to CPU — so the experts that
-    /// end up on CPU are the trailing ones (the walk is in `(layer, kind)`
-    /// order), which keeps the synthesised `-ot` rules compact. `Layers(N)`
-    /// sends the experts of the N tail-most expert layers to CPU and pins the
-    /// rest to their home GPU regardless of fit — so an `N` too small to relieve
-    /// the card overflows it, which we reject as [`PackError::ManualExpertsDoNotFit`]
-    /// rather than silently over-committing the GPU. Anything placed off its
-    /// home GPU is recorded for `-ot` synthesis in [`Self::finish`].
-    fn distribute_experts(&mut self) -> Result<(), PackError> {
-        let manual = matches!(self.offload_mode, OffloadMode::Layers(_));
-        let manual_cpu_layers: BTreeSet<u32> = match self.offload_mode {
-            OffloadMode::Layers(n) => {
-                let mut layers: Vec<u32> = self.expert_bytes_by_layer.keys().copied().collect();
-                layers.sort_unstable();
-                layers.iter().rev().take(n as usize).copied().collect()
-            }
-            _ => BTreeSet::new(),
-        };
+    /// Phase B: offload the trailing surplus expert *layers* to CPU as whole
+    /// units and record `--n-cpu-moe N`, letting the runtime split the
+    /// GPU-resident experts across cards itself.
+    ///
+    /// This replaces per-tensor `-ot` placement. Scattering a layer's
+    /// gate/up/down across CUDA0/CUDA1/CPU defeats the runtime's fused
+    /// multi-threaded CPU MoE kernel (measured ~24× slower generation on
+    /// ik_llama — the CPU experts fall back to a ~2-core path) and can exceed
+    /// llama.cpp's `GGML_SCHED_MAX_SPLIT_INPUTS` graph-split limit, a hard
+    /// abort at load. `--n-cpu-moe` keeps whole layers together, avoiding both.
+    ///
+    /// `-ncmoe` offloads the *last* `N` MoE layers, so the retained set is
+    /// always a leading prefix. `Auto` picks the smallest `N` that lets the
+    /// leading expert layers fit the combined GPU pool (what remains after
+    /// non-expert weights + KV + compute headroom were reserved); `Layers(n)`
+    /// uses `n` directly and fails with [`PackError::ManualExpertsDoNotFit`]
+    /// if the retained experts still overflow. Whole layers spilled in Phase A
+    /// already carry their experts in the CPU lump and are skipped here.
+    fn distribute_experts_ncmoe(&mut self) -> Result<(), PackError> {
+        let mut layers: Vec<u32> = self
+            .expert_bytes_by_layer
+            .keys()
+            .copied()
+            .filter(|l| !self.spilled_layers.contains(l))
+            .collect();
+        layers.sort_unstable();
+        let total = layers.len() as u32;
 
-        for e in std::mem::take(&mut self.expert_tensors) {
-            if self.spilled_layers.contains(&e.layer) {
-                continue;
+        // Combined GPU budget for experts across all allowed cards; the runtime
+        // balances the layer split, so account against the pool, not per-card.
+        let pool: u64 = self
+            .allowed_gpus
+            .iter()
+            .map(|g| self.gpu_remaining.get(g).copied().unwrap_or(0))
+            .sum();
+
+        let n_cpu = match self.offload_mode {
+            OffloadMode::Layers(n) => n.min(total),
+            OffloadMode::Auto => {
+                let mut used = 0u64;
+                let mut keep = 0u32;
+                for &l in &layers {
+                    let b = self.expert_bytes_by_layer[&l];
+                    if used.saturating_add(b) <= pool {
+                        used += b;
+                        keep += 1;
+                    } else {
+                        break;
+                    }
+                }
+                total - keep
             }
-            let home = self.layer_home.get(&e.layer).copied();
-            let target = self.choose_expert_target(&e, home, &manual_cpu_layers);
-            // `Auto` only ever targets a GPU that has room; `Layers(N)`
-            // force-pins to the home GPU, so it is the one path that can overflow.
-            if manual
-                && let DeviceSlot::Gpu(g) = target
-                && self.gpu_remaining.get(&g).copied().unwrap_or(0) < e.bytes
-            {
-                return Err(PackError::ManualExpertsDoNotFit {
-                    gpu_index: g,
-                    bytes: e.bytes,
-                });
+            OffloadMode::Off => 0,
+        };
+        let keep = total - n_cpu;
+
+        // Trailing `n_cpu` expert layers → CPU; leading `keep` stay on GPU.
+        let mut gpu_expert_bytes = 0u64;
+        for (i, &l) in layers.iter().enumerate() {
+            let b = self.expert_bytes_by_layer[&l];
+            if (i as u32) < keep {
+                gpu_expert_bytes += b;
+            } else {
+                *self.per_device.entry(DeviceSlot::Cpu).or_default() += b;
+                self.expert_offload_cpu_bytes += b;
+                self.expert_offload_cpu_layers.insert(l);
             }
-            self.place_expert(e, target, home);
+        }
+
+        // A manual `Layers(n)` too small to relieve the cards overflows the
+        // GPU pool; reject rather than silently over-committing (`Auto` chose
+        // `keep` to fit, so it never trips this).
+        if gpu_expert_bytes > pool {
+            return Err(PackError::ManualExpertsDoNotFit {
+                gpu_index: self.allowed_gpus.first().copied().unwrap_or(0),
+                bytes: gpu_expert_bytes.saturating_sub(pool),
+            });
+        }
+
+        // Distribute the retained experts evenly across the GPUs — the runtime
+        // balances the layer split the same way, so this mirrors the real
+        // per-card footprint for the reservation. The sub-`n_gpus`-byte
+        // remainder rides on the first card.
+        let n_gpus = self.allowed_gpus.len() as u64;
+        if n_gpus > 0 && gpu_expert_bytes > 0 {
+            let share = gpu_expert_bytes / n_gpus;
+            let mut remainder = gpu_expert_bytes - share * n_gpus;
+            for gpu in self.allowed_gpus.clone() {
+                let add = share + std::mem::take(&mut remainder);
+                *self.per_device.entry(DeviceSlot::Gpu(gpu)).or_default() += add;
+                let rem = self.gpu_remaining.entry(gpu).or_default();
+                *rem = rem.saturating_sub(add);
+            }
+        }
+
+        // When nothing is offloaded (the whole model fits), keep the plain
+        // layer-split shape — no `--n-cpu-moe 0`, and `ngl` stays the layer
+        // count — so a fully-resident MoE looks identical to a non-MoE fit.
+        if n_cpu > 0 {
+            self.n_cpu_moe = Some(n_cpu);
+            // `-ngl 999` puts all layers on GPU; `-ncmoe` then pulls the
+            // trailing experts back to CPU and the runtime owns the cross-GPU
+            // split.
+            self.fallback_on_gpu = true;
         }
         Ok(())
-    }
-
-    /// Pick where one expert tensor lands. See [`Self::distribute_experts`].
-    fn choose_expert_target(
-        &self,
-        e: &ExpertTensor,
-        home: Option<u32>,
-        manual_cpu_layers: &BTreeSet<u32>,
-    ) -> DeviceSlot {
-        if matches!(self.offload_mode, OffloadMode::Layers(_)) {
-            return if manual_cpu_layers.contains(&e.layer) {
-                DeviceSlot::Cpu
-            } else {
-                home.map(DeviceSlot::Gpu).unwrap_or(DeviceSlot::Cpu)
-            };
-        }
-        // Auto: fill the most-free GPU first, then CPU. Home locality is not
-        // preferred — an offloaded expert reached via `-ot` costs the same on
-        // either card, so balancing is what matters. Preferring the home GPU
-        // (which for a small-attention MoE is whichever card the non-expert
-        // walk piled onto) would refill that one card to overflowing while the
-        // other stayed empty; most-free keeps the two even. (`home` still
-        // drives the `Layers(N)` branch above and `-ot` synthesis in `finish`.)
-        self.allowed_gpus
-            .iter()
-            .copied()
-            .filter(|g| self.gpu_remaining.get(g).copied().unwrap_or(0) >= e.bytes)
-            .max_by_key(|g| self.gpu_remaining.get(g).copied().unwrap_or(0))
-            .map(DeviceSlot::Gpu)
-            .unwrap_or(DeviceSlot::Cpu)
-    }
-
-    /// Commit an expert tensor to its chosen device, updating remaining GPU
-    /// capacity and recording the `-ot` assignment llama.cpp needs to honour it.
-    ///
-    /// A CPU or off-home-GPU target always gets a rule. A home-GPU target gets
-    /// one too whenever the model spans more than one GPU: under
-    /// `--split-mode layer`, llama.cpp assigns every un-overridden tensor to a
-    /// *contiguous* GPU range derived from `--tensor-split`, which does not
-    /// match the packer's per-layer balanced placement. Without an explicit
-    /// rule a "home" expert then lands on whichever card the contiguous split
-    /// covers its layer — overloading one card and leaving no room for its
-    /// compute buffer (the live deepseek4 load OOMed on exactly this). Pinning
-    /// every GPU-resident expert makes the packer's plan authoritative. With a
-    /// single GPU there is no split to diverge from, so home experts need none.
-    fn place_expert(&mut self, e: ExpertTensor, target: DeviceSlot, home: Option<u32>) {
-        *self.per_device.entry(target.clone()).or_default() += e.bytes;
-        if let DeviceSlot::Gpu(g) = target {
-            let rem = self.gpu_remaining.entry(g).or_default();
-            *rem = rem.saturating_sub(e.bytes);
-        }
-        if target == DeviceSlot::Cpu {
-            self.expert_offload_cpu_bytes += e.bytes;
-            self.expert_offload_cpu_layers.insert(e.layer);
-        }
-        let is_home = matches!((&target, home), (DeviceSlot::Gpu(g), Some(h)) if *g == h);
-        if is_home && self.allowed_gpus.len() < 2 {
-            return;
-        }
-        self.expert_assignments.push((e, target));
     }
 
     /// Reject the pack if the bytes the packer wants to keep on the host exceed
@@ -1041,21 +1060,25 @@ impl<'a> Packer<'a> {
                 Some(total_on_gpus)
             };
 
-            let tensor_split = if self.allowed_gpus.len() > 1 && total_on_gpus > 0 {
-                // Ratios in CUDA_VISIBLE_DEVICES-remapped order: must be in
-                // ascending GPU-id order to match CUDA device numbering,
-                // regardless of the placement sort order.
-                let mut gpus_by_id = self.allowed_gpus.clone();
-                gpus_by_id.sort_unstable();
-                Some(
-                    gpus_by_id
-                        .iter()
-                        .map(|g| self.layers_per_gpu.get(g).copied().unwrap_or(0))
-                        .collect(),
-                )
-            } else {
-                None
-            };
+            // `--n-cpu-moe` lets the runtime own the cross-GPU layer split, so
+            // the packer emits no `--tensor-split` (it balances the retained
+            // experts + KV itself, matching the even reservation split).
+            let tensor_split =
+                if self.allowed_gpus.len() > 1 && total_on_gpus > 0 && self.n_cpu_moe.is_none() {
+                    // Ratios in CUDA_VISIBLE_DEVICES-remapped order: must be in
+                    // ascending GPU-id order to match CUDA device numbering,
+                    // regardless of the placement sort order.
+                    let mut gpus_by_id = self.allowed_gpus.clone();
+                    gpus_by_id.sort_unstable();
+                    Some(
+                        gpus_by_id
+                            .iter()
+                            .map(|g| self.layers_per_gpu.get(g).copied().unwrap_or(0))
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
             (ngl, tensor_split, None, None)
         };
 
@@ -1104,6 +1127,7 @@ impl<'a> Packer<'a> {
                 override_tensor,
                 split_mode,
                 main_gpu,
+                n_cpu_moe: self.n_cpu_moe,
             },
             expert_offload_bytes,
             expert_offload_layers,
@@ -1682,17 +1706,22 @@ mod tests {
         let alloc = AllocationTable::new();
         let packed = pack(&e, &moe_svc(OffloadMode::Auto), &snap, &alloc).unwrap();
 
-        assert_eq!(packed.args.ngl, Some(10), "every layer stays on the GPU");
+        assert_eq!(
+            packed.args.ngl,
+            Some(NGL_OFFLOAD_ALL),
+            "-ngl 999: all layers on GPU, then -ncmoe pulls trailing experts back"
+        );
         assert!(cpu_bytes(&packed) > 0, "surplus experts land on the CPU");
         assert!(packed.expert_offload_bytes > 0);
         assert!(packed.expert_offload_layers > 0);
         assert!(
-            packed
-                .args
-                .override_tensor
-                .iter()
-                .any(|r| r.contains("_exps") && r.ends_with("=CPU")),
-            "a synthesised expert -ot rule is emitted, got {:?}",
+            matches!(packed.args.n_cpu_moe, Some(n) if n > 0),
+            "coarse whole-layer offload via --n-cpu-moe, got {:?}",
+            packed.args.n_cpu_moe
+        );
+        assert!(
+            packed.args.override_tensor.is_empty(),
+            "no per-tensor expert -ot is synthesised, got {:?}",
             packed.args.override_tensor
         );
         // The GPU pledge must stay within the card.
@@ -1722,7 +1751,7 @@ mod tests {
     }
 
     /// `expert_offload = N` offloads exactly the N tail-most expert layers to
-    /// CPU even on a roomy card, and the synthesised rule names those layers.
+    /// CPU even on a roomy card, via `--n-cpu-moe N` (not per-tensor `-ot`).
     #[test]
     fn expert_offload_layers_n_offloads_tail_layers() {
         let e = moe_estimate(10, 100, 100); // fits easily
@@ -1730,14 +1759,23 @@ mod tests {
         let alloc = AllocationTable::new();
         let packed = pack(&e, &moe_svc(OffloadMode::Layers(3)), &snap, &alloc).unwrap();
 
-        assert_eq!(packed.args.ngl, Some(10), "attention stays on GPU");
+        assert_eq!(
+            packed.args.ngl,
+            Some(NGL_OFFLOAD_ALL),
+            "attention stays on GPU; -ncmoe pulls the trailing experts back"
+        );
+        assert_eq!(
+            packed.args.n_cpu_moe,
+            Some(3),
+            "offload the 3 tail expert layers"
+        );
         assert_eq!(packed.expert_offload_layers, 3);
         // 3 layers × 3 experts × 100 MiB.
         assert_eq!(packed.expert_offload_bytes, 9 * 100 * MIB);
-        assert_eq!(
-            packed.args.override_tensor,
-            vec![r"blk\.(7|8|9)\.ffn_(gate|up|down)_exps\.=CPU".to_string()],
-            "offloads exactly the 3 tail expert layers"
+        assert!(
+            packed.args.override_tensor.is_empty(),
+            "no per-tensor -ot, got {:?}",
+            packed.args.override_tensor
         );
     }
 
@@ -1762,8 +1800,8 @@ mod tests {
 
     /// Auto offload spreads across both GPUs before touching the CPU: a model
     /// that fits in the two cards' combined VRAM but not either alone lands
-    /// entirely on the GPUs, with cross-GPU `-ot` rules for the experts placed
-    /// off their layer's home card, and nothing on the host.
+    /// entirely on the GPUs. Nothing is offloaded, so no `--n-cpu-moe` and no
+    /// `-ot` — the runtime splits the layers across both cards itself.
     #[test]
     fn expert_offload_auto_prefers_second_gpu() {
         // 20 layers, 100 MiB attn + 900 MiB experts = ~20 GiB. Two 12 GiB
@@ -1776,6 +1814,10 @@ mod tests {
 
         assert_eq!(packed.args.ngl, Some(20));
         assert_eq!(
+            packed.args.n_cpu_moe, None,
+            "nothing offloaded → no --n-cpu-moe"
+        );
+        assert_eq!(
             cpu_bytes(&packed),
             0,
             "experts prefer the GPUs over the CPU"
@@ -1785,12 +1827,8 @@ mod tests {
             "CPU offload metric counts host bytes only"
         );
         assert!(
-            packed
-                .args
-                .override_tensor
-                .iter()
-                .any(|r| r.contains("=CUDA")),
-            "a cross-GPU expert rule moves experts off their home card, got {:?}",
+            packed.args.override_tensor.is_empty(),
+            "the runtime owns the cross-GPU split; no synthesised -ot, got {:?}",
             packed.args.override_tensor
         );
         let g0 = packed

@@ -349,6 +349,14 @@ fn render_llama_server_flags(
             args.push("--tensor-split".into());
             args.push(split_str);
         }
+        // Coarse whole-layer expert offload. Both mainline and ik_llama accept
+        // `--n-cpu-moe`; emitted instead of per-tensor `-ot` so the runtime's
+        // fused CPU MoE kernel stays engaged. `-ngl 999` (from the packer) puts
+        // every layer on GPU first, then this pulls the trailing N back to CPU.
+        if let Some(n) = ca.n_cpu_moe {
+            args.push("--n-cpu-moe".into());
+            args.push(n.to_string());
+        }
         push_override_tensor(&mut args, &ca.override_tensor);
     } else {
         push_override_tensor(&mut args, &lc.override_tensor);
@@ -763,6 +771,7 @@ mod tests {
             override_tensor: vec![],
             split_mode: None,
             main_gpu: None,
+            n_cpu_moe: None,
         };
         let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
         let ngl_idx = cmd.args.iter().position(|a| a == "-ngl").unwrap();
@@ -775,6 +784,30 @@ mod tests {
     }
 
     #[test]
+    fn placement_cmd_args_emit_n_cpu_moe() {
+        let svc = base_service();
+        let alloc = Allocation::from_override(&svc.placement_override);
+        let ca = CommandArgs {
+            ngl: Some(999),
+            tensor_split: None,
+            override_tensor: vec![],
+            split_mode: None,
+            main_gpu: None,
+            n_cpu_moe: Some(25),
+        };
+        let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
+        let idx = cmd
+            .args
+            .iter()
+            .position(|a| a == "--n-cpu-moe")
+            .expect("--n-cpu-moe emitted");
+        assert_eq!(cmd.args[idx + 1], "25");
+        // The coarse path pins nothing per-tensor and lets the runtime split.
+        assert!(!cmd.args.iter().any(|a| a == "-ot"));
+        assert!(!cmd.args.iter().any(|a| a == "--tensor-split"));
+    }
+
+    #[test]
     fn placement_cmd_args_emit_tensor_split_mode_flags() {
         let svc = base_service();
         let alloc = Allocation::from_override(&svc.placement_override);
@@ -784,6 +817,7 @@ mod tests {
             override_tensor: vec![],
             split_mode: Some(SplitMode::Tensor),
             main_gpu: Some(0),
+            n_cpu_moe: None,
         };
         let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
         let sm = cmd.args.iter().position(|a| a == "--split-mode").unwrap();
@@ -804,6 +838,7 @@ mod tests {
             override_tensor: vec![],
             split_mode: Some(SplitMode::Tensor),
             main_gpu: Some(0),
+            n_cpu_moe: None,
         };
         let cmd = render_argv(&svc, &alloc, Some(&ca)).unwrap();
         let ts = cmd.args.iter().position(|a| a == "--tensor-split").unwrap();

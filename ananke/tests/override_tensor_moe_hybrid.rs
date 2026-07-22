@@ -84,7 +84,7 @@ fn override_tensor_rules_propagate_to_command_args() {
 }
 
 #[test]
-fn auto_expert_offload_synthesizes_ot_under_hybrid() {
+fn auto_expert_offload_emits_n_cpu_moe_under_hybrid() {
     let path = std::path::Path::new("/fake/moe-auto.gguf");
     // 4 layers, tiny attention, 256 MiB per fused expert tensor (≈3 GiB of
     // experts) — far more than the 1 GiB card can hold.
@@ -134,9 +134,10 @@ fn auto_expert_offload_synthesizes_ot_under_hybrid() {
     let packed = placement::pack(&est, &svc, &snap, &AllocationTable::new())
         .expect("hybrid auto-offload must pack on a 1 GiB card");
 
-    // Every layer's attention stays on the GPU.
-    assert_eq!(packed.args.ngl, Some(4));
-    // Surplus experts landed on the CPU, with a synthesised -ot rule.
+    // -ngl 999: all layers to GPU, then --n-cpu-moe pulls the trailing
+    // experts back to CPU (the runtime owns the cross-GPU split).
+    assert_eq!(packed.args.ngl, Some(999));
+    // Surplus experts landed on the CPU via coarse whole-layer offload.
     assert!(
         packed
             .allocation
@@ -149,12 +150,13 @@ fn auto_expert_offload_synthesizes_ot_under_hybrid() {
     );
     assert!(packed.expert_offload_bytes > 0);
     assert!(
-        packed
-            .args
-            .override_tensor
-            .iter()
-            .any(|r| r.contains("_exps") && r.ends_with("=CPU")),
-        "a synthesised expert -ot rule must be present, got {:?}",
+        matches!(packed.args.n_cpu_moe, Some(n) if n > 0),
+        "coarse --n-cpu-moe offload must be set, got {:?}",
+        packed.args.n_cpu_moe
+    );
+    assert!(
+        packed.args.override_tensor.is_empty(),
+        "no per-tensor expert -ot is synthesised, got {:?}",
         packed.args.override_tensor
     );
 }
