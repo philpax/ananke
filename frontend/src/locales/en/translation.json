@@ -90,6 +90,8 @@
     "promptTokens": "prompt {{value}} tokens",
     "outputTokens": "output {{value}} tokens",
     "tokensPerSecond": "{{value}} tokens/s",
+    "inputTokensPerSecond": "in {{value}} tok/s",
+    "outputTokensPerSecond": "out {{value}} tok/s",
     "reasoning": "reasoning",
     "assistant": "assistant"
   },

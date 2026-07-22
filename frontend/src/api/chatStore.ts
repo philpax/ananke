@@ -13,6 +13,16 @@ export type StreamStats = {
   ttftMs: number | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  /// Decode throughput: completion tokens divided by the engine-reported
+  /// decode window (`timings.predicted_ms`). Null when the engine does
+  /// not emit timings, in which case `predictedPerSecond` is the fallback.
+  outputTokPerSec: number | null;
+  /// Prefill throughput: cache-aware prompt tokens (`timings.prompt_n`)
+  /// divided by prefill time (`timings.prompt_ms`). Null when absent.
+  inputTokPerSec: number | null;
+  /// Effective end-to-end rate: completion tokens over total wall-clock
+  /// elapsed. Always computable; shown only as a fallback when the engine
+  /// does not provide the input/output split.
   predictedPerSecond: number | null;
 };
 
@@ -52,6 +62,8 @@ const EMPTY_STATS: StreamStats = {
   ttftMs: null,
   promptTokens: null,
   completionTokens: null,
+  outputTokPerSec: null,
+  inputTokPerSec: null,
   predictedPerSecond: null,
 };
 
@@ -373,6 +385,11 @@ export async function send(
               prompt_tokens?: number;
               completion_tokens?: number;
             };
+            timings?: {
+              prompt_ms?: number;
+              predicted_ms?: number;
+              prompt_n?: number;
+            };
           };
 
           const delta = chunk.choices?.[0]?.delta;
@@ -421,6 +438,38 @@ export async function send(
             finalStats.completionTokens = completionTokens;
             finalStats.predictedPerSecond =
               elapsed > 0 ? completionTokens / elapsed : null;
+
+            // Engine-reported phase timings (llama.cpp). The `timings`
+            // object sits next to `usage` in the final chunk and carries
+            // `prompt_ms` (prefill), `predicted_ms` (decode), and
+            // `prompt_n` (tokens actually evaluated — excludes cache-served
+            // tokens, unlike `usage.prompt_tokens`). When present, these
+            // yield the true prefill and decode rates. When absent
+            // (non-llama.cpp engines), the split fields stay null and the
+            // UI falls back to the effective rate above.
+            const timings = chunk.timings;
+            if (timings) {
+              const promptMs = timings.prompt_ms;
+              const predictedMs = timings.predicted_ms;
+              const promptN = timings.prompt_n;
+              if (
+                promptMs != null &&
+                promptMs > 0 &&
+                promptN != null &&
+                promptN > 0
+              ) {
+                finalStats.inputTokPerSec = promptN / (promptMs / 1000);
+              }
+              if (
+                predictedMs != null &&
+                predictedMs > 0 &&
+                completionTokens > 0
+              ) {
+                finalStats.outputTokPerSec =
+                  completionTokens / (predictedMs / 1000);
+              }
+            }
+
             setSnapshot((prev) => ({ ...prev, stats: { ...finalStats } }));
           }
         } catch {

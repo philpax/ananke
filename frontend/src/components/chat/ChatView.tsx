@@ -19,6 +19,7 @@ import "katex/dist/katex.min.css";
 import { useServices, useInfo } from "../../api/hooks.ts";
 import { type ServiceSummary } from "../../api/client.ts";
 import { openaiBaseUrlFromListen } from "../../util.ts";
+import { formatTokenRate } from "../../util.ts";
 import {
   addAttachment,
   cancel as cancelSend,
@@ -565,12 +566,28 @@ function MessageBubble({
                 })}
               </span>
             )}
-            {displayStats.predictedPerSecond !== null && (
-              <span>
-                {t("chat.tokensPerSecond", {
-                  value: displayStats.predictedPerSecond.toFixed(1),
-                })}
-              </span>
+            {displayStats.inputTokPerSec !== null &&
+            displayStats.outputTokPerSec !== null ? (
+              <>
+                <span>
+                  {t("chat.inputTokensPerSecond", {
+                    value: formatTokenRate(displayStats.inputTokPerSec),
+                  })}
+                </span>
+                <span>
+                  {t("chat.outputTokensPerSecond", {
+                    value: formatTokenRate(displayStats.outputTokPerSec),
+                  })}
+                </span>
+              </>
+            ) : (
+              displayStats.predictedPerSecond !== null && (
+                <span>
+                  {t("chat.tokensPerSecond", {
+                    value: displayStats.predictedPerSecond.toFixed(1),
+                  })}
+                </span>
+              )
             )}
           </span>
         )}
