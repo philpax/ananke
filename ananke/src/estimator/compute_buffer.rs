@@ -126,6 +126,13 @@ fn tuning_for(summary: &GgufSummary, ubatch: u32) -> Tuning {
             slope: 3,
         },
 
+        // Laguna MoE. Calibrated against 2×3090 --fit runs at 128K context;
+        // single anchor point, slope errs toward over-reservation.
+        "laguna" => Tuning {
+            base: 2400,
+            slope: 28,
+        },
+
         // DeepSeek-V4-Flash (deepseek4). Unlike the near-flat pure-MoE
         // curve, deepseek4's NSA "lightning indexer" builds a prompt-phase
         // scratch buffer that scales hard with context (it scores each

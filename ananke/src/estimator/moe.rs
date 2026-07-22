@@ -1,7 +1,7 @@
 //! MoE estimator.
 //!
 //! Applies to: llama4, qwen3moe, qwen3vlmoe, deepseek2, mixtral, gpt-oss,
-//! glm4moe, qwen35moe, deepseek4.
+//! glm4moe, qwen35moe, deepseek4, glm-dsa, laguna.
 //!
 //! Identifies expert tensors by the `_exps` suffix on
 //! `blk.N.ffn_{gate,up,down}_exps.weight` and itemises them into
@@ -75,6 +75,13 @@ pub const MOE_FAMILY: &[&str] = &[
     // graph, plain KV cache); the sparse-attention indexer tensors are
     // loaded but only the deepseek32 arch gets the DSA indexer cache.
     "glm-dsa",
+    // Laguna MoE: fused-expert layout (`ffn_{gate,up,down}_exps` + `_shexp`
+    // shared experts), plain GQA KV (scalar `head_count_kv`, constant
+    // `key_length`/`value_length`). The per-layer `attention.head_count`
+    // array only sizes Q projections and is irrelevant to KV, so the generic
+    // `kv_for_hybrid` path is correct. Advertises `sliding_window` but
+    // `kv_for_hybrid` doesn't model SWA eviction — safe over-estimation.
+    "laguna",
 ];
 
 pub fn is_moe(arch: &str) -> bool {
@@ -705,5 +712,153 @@ mod tests {
         // per_layer_bytes keeps the full cost (1 MiB attn + experts).
         let per_layer = e.per_layer_bytes.expect("per-layer breakdown");
         assert_eq!(per_layer[1], (1 + 10) * 1024 * 1024);
+    }
+
+    #[test]
+    fn laguna_kv_uses_scalar_head_count_kv_not_variable_head_count() {
+        // Laguna's Q-projection head count is a per-layer array, but KV uses
+        // a scalar `head_count_kv` — the array must not leak into the KV term.
+        use std::path::Path;
+
+        use crate::{
+            estimator::types::EstimatorInputs,
+            gguf::types::{GgufSummary, GgufTensor, GgufType, GgufValue},
+        };
+
+        let n_layers = 48u32;
+        let mut tensors = std::collections::BTreeMap::new();
+        // Layer 0 is dense (no experts); layers 1..47 are MoE.
+        for layer in 0..n_layers {
+            for kind in ["attn_q", "attn_k", "attn_v", "attn_output"] {
+                let name = format!("blk.{layer}.{kind}.weight");
+                tensors.insert(
+                    SmolStr::new(&name),
+                    GgufTensor {
+                        name: SmolStr::new(&name),
+                        dtype: GgufType::F16,
+                        shape: vec![512 * 1024],
+                        byte_size: 1024 * 1024,
+                        shard_idx: 0,
+                        offset: 0,
+                    },
+                );
+            }
+            if layer > 0 {
+                // Fused routed experts + shared expert per MoE layer.
+                for kind in ["ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"] {
+                    let name = format!("blk.{layer}.{kind}.weight");
+                    tensors.insert(
+                        SmolStr::new(&name),
+                        GgufTensor {
+                            name: SmolStr::new(&name),
+                            dtype: GgufType::F16,
+                            shape: vec![512 * 1024],
+                            byte_size: 1024 * 1024,
+                            shard_idx: 0,
+                            offset: 0,
+                        },
+                    );
+                }
+                for kind in ["ffn_gate_shexp", "ffn_up_shexp", "ffn_down_shexp"] {
+                    let name = format!("blk.{layer}.{kind}.weight");
+                    tensors.insert(
+                        SmolStr::new(&name),
+                        GgufTensor {
+                            name: SmolStr::new(&name),
+                            dtype: GgufType::F16,
+                            shape: vec![512 * 1024],
+                            byte_size: 1024 * 1024,
+                            shard_idx: 0,
+                            offset: 0,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(
+            SmolStr::new("general.architecture"),
+            GgufValue::String("laguna".into()),
+        );
+        metadata.insert(SmolStr::new("laguna.block_count"), GgufValue::U32(n_layers));
+        // The variable Q head count — must not affect KV.
+        let head_count: Vec<GgufValue> = (0..n_layers)
+            .map(|i| GgufValue::U32(if i % 4 == 0 { 48 } else { 72 }))
+            .collect();
+        metadata.insert(
+            SmolStr::new("laguna.attention.head_count"),
+            GgufValue::Array(head_count),
+        );
+        // Scalar KV head count — this is what kv_for_hybrid reads.
+        metadata.insert(
+            SmolStr::new("laguna.attention.head_count_kv"),
+            GgufValue::U32(8),
+        );
+        metadata.insert(
+            SmolStr::new("laguna.attention.key_length"),
+            GgufValue::U32(128),
+        );
+        metadata.insert(
+            SmolStr::new("laguna.attention.value_length"),
+            GgufValue::U32(128),
+        );
+        metadata.insert(
+            SmolStr::new("laguna.attention.sliding_window"),
+            GgufValue::U32(512),
+        );
+
+        let summary = GgufSummary {
+            path: "/fake".into(),
+            total_tensor_bytes: 0,
+            tensors,
+            metadata,
+            block_count: Some(n_layers),
+            architecture: SmolStr::new("laguna"),
+            shards: vec!["/fake".into()],
+        };
+
+        let empty: Vec<String> = Vec::new();
+        let inputs = EstimatorInputs {
+            name: "demo",
+            model: Path::new("/fake"),
+            mmproj: None,
+            context: 32768,
+            ubatch: None,
+            cache_type_k: Some("f16"),
+            cache_type_v: Some("f16"),
+            override_tensor: &empty,
+            compute_buffer_mb: None,
+            allow_fallback: false,
+            mtp: false,
+            draft_model: None,
+        };
+
+        let e = estimate(&summary, &inputs);
+
+        // KV must use the scalar head_count_kv (8), not the variable
+        // head_count array (48/72). 48 layers × 8 heads × (128+128) × 2
+        // bytes (f16) = 196_608 bytes/token.
+        assert_eq!(e.kv_per_token, 196_608);
+
+        // 47 MoE layers × 3 fused expert projections (gate/up/down) =
+        // 141 itemised expert tensors. The dense layer 0 has none, and
+        // the `_shexp` shared experts are excluded (always-on, not
+        // offloadable).
+        let experts = e.expert_tensors.expect("MoE arch must itemise experts");
+        assert_eq!(experts.len(), 141);
+        assert_eq!(e.expert_layers.len(), 47);
+        // Layer 0 (dense) must not appear in the expert layer list.
+        assert!(!e.expert_layers.contains(&0u32));
+
+        // q8_0 KV shrinks by the element-width ratio (1.0625 / 2.0).
+        let inputs_q8 = EstimatorInputs {
+            cache_type_k: Some("q8_0"),
+            cache_type_v: Some("q8_0"),
+            ..inputs
+        };
+        let e_q8 = estimate(&summary, &inputs_q8);
+        assert_eq!(e_q8.kv_per_token, 104_448);
+        assert!(e_q8.kv_per_token < e.kv_per_token);
     }
 }
