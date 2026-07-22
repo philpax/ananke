@@ -263,10 +263,7 @@ export async function send(
       },
     ],
     attachments: [],
-    // For hot models the message is already visible as a bubble, so
-    // clear the textarea immediately. Cold models keep the text until
-    // the model starts responding (cleared on first token).
-    input: needsStart ? prev.input : "",
+    input: "",
     stats: { ...EMPTY_STATS },
   }));
 
