@@ -126,11 +126,20 @@ fn tuning_for(summary: &GgufSummary, ubatch: u32) -> Tuning {
             slope: 3,
         },
 
-        // Laguna MoE. Calibrated against 2×3090 --fit runs at 128K context;
-        // single anchor point, slope errs toward over-reservation.
+        // Laguna MoE. Recalibrated 2026-07-22 against ik_llama's own
+        // per-device buffer report under ananke-planned placement (not
+        // --fit), 2×3090, ub2048, q8_0 KV: the CUDA0 compute buffer measured
+        // 2058 MiB at 131072 context and is effectively flat in context
+        // (sliding window 512 caps the attention scratch), so the old
+        // (2400, 28) — a single --fit anchor — over-reserved by ~3.9 GiB per
+        // card, needlessly spilling ~7.8 GiB of experts to CPU. The base
+        // covers the 2058 measurement plus the active-prefill transient and
+        // CUDA-context/fragmentation overhead (~1 GiB observed as
+        // nvidia-smi minus ik's reported buffers), which the compute-buffer
+        // term must absorb now that there is no --fit margin backstopping it.
         "laguna" => Tuning {
-            base: 2400,
-            slope: 28,
+            base: 2800,
+            slope: 2,
         },
 
         // DeepSeek-V4-Flash (deepseek4). Unlike the near-flat pure-MoE
