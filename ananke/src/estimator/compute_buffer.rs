@@ -138,7 +138,7 @@ fn tuning_for(summary: &GgufSummary, ubatch: u32) -> Tuning {
         // nvidia-smi minus ik's reported buffers), which the compute-buffer
         // term must absorb now that there is no --fit margin backstopping it.
         "laguna" => Tuning {
-            base: 2800,
+            base: 2250,
             slope: 2,
         },
 
