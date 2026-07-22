@@ -110,20 +110,25 @@ fn tuning_for(summary: &GgufSummary, ubatch: u32) -> Tuning {
             slope: 2,
         },
 
-        // GLM-5 (glm-dsa). Dense MLA attention (the pinned llama.cpp runs
-        // it on the deepseek2 graph; the DSA indexer path never engages),
-        // so the residual is near-flat like the pure-MoE curve but with a
-        // much fatter base: a single-3090 sweep of GLM-5.2 UD-IQ1_S with
-        // all experts on CPU (2026-07-21) measured residuals of 1849 MiB
-        // at 8k → 1899 at 32k → 1967 at 64k (slope ≈ 2 MiB per 1024
-        // tokens), with a q8_0 K-cache point reconciling the MLA KV term
-        // to within 16 MiB. Doubling ubatch to 1024 added only ~186 MiB,
-        // so the ubatch sensitivity rides in the base rather than scaling
-        // the slope. Base covers the worst measured point plus the ubatch
-        // delta with headroom.
+        // GLM-5 (glm-dsa) served by ik_llama with DSA sparse attention
+        // (`-dsa -fidx -mla 1 -amb 512`). The old (2300, 3) was calibrated
+        // on *mainline* llama.cpp, which runs glm on the deepseek2 graph with
+        // the DSA indexer disabled — it under-reserves the ik path by ~1.9 GiB
+        // per card (the OOM direction), because ananke now plans placement
+        // itself rather than leaning on the `--gpu-fit-margin` that used to
+        // carry the indexer scratch. Recalibrated 2026-07-23 against ik's own
+        // per-device buffer report under `--fit` (2×3090, ub2048, f16 MLA KV):
+        // the head-GPU compute buffer measured 4578 MiB at 131072 (CUDA1
+        // 3216 — the ~1362 delta is the output logits on the head card, which
+        // the packer already trims off secondaries). The DSA indexer scratch
+        // scales with context, so the slope tracks it (~15 MiB per 1024
+        // tokens, ≈1.9 GiB of indexer at 131072 over the ~2.7 GiB dense-MLA
+        // floor); the base covers the low-context floor plus the active-prefill
+        // and CUDA-context overhead (~1 GiB measured as nvidia-smi minus ik's
+        // reported buffers). Lands ~5620 at 131072, covering 4578 + headroom.
         "glm-dsa" => Tuning {
-            base: 2300,
-            slope: 3,
+            base: 3700,
+            slope: 15,
         },
 
         // Laguna MoE. Recalibrated 2026-07-22 against ik_llama's own
@@ -395,25 +400,24 @@ mod tests {
     }
 
     #[test]
-    fn glm_dsa_covers_measured_and_stays_flat() {
-        // Calibrated on the GLM-5.2 UD-IQ1_S single-3090 sweep
-        // (2026-07-21): residuals 1849 MiB at 8k, 1899 at 32k, 1967 at
-        // 64k, plus ~186 MiB when ubatch doubles to 1024. The curve must
-        // cover the worst point plus the ubatch delta (~2150) and must
-        // not inherit deepseek4's ubatch-scaled slope.
+    fn glm_dsa_covers_measured_dsa_compute() {
+        // Recalibrated for the ik `-dsa` path (2026-07-23): the head-GPU
+        // compute buffer measured 4578 MiB at 131072, ub2048. The DSA indexer
+        // scratch scales with context, so the curve must (a) cover the 4578
+        // measurement at 131072 with headroom, and (b) still stay below
+        // deepseek4, whose NSA indexer scales with ubatch × context and is far
+        // steeper.
         let glm = summary_for("glm-dsa");
         assert!(
-            default_for(&glm, 65536, None) >= 2150,
-            "must cover the measured 64k residual plus the ubatch delta (got {})",
-            default_for(&glm, 65536, None)
-        );
-        // Near-flat: dense-MLA scratch grows ~2 MiB/1k, nothing like the
-        // deepseek4 indexer curve at the same context.
-        assert!(
+            default_for(&glm, 131072, None) >= 4578,
+            "must cover the measured 4578 MiB -dsa compute at 131072 (got {})",
             default_for(&glm, 131072, None)
-                < default_for(&summary_for("deepseek4"), 131072, None) / 2
         );
-        // ubatch is ignored for this arch.
+        assert!(
+            default_for(&glm, 131072, None) < default_for(&summary_for("deepseek4"), 131072, None),
+            "glm-dsa's indexer is less steep than deepseek4's NSA curve"
+        );
+        // ubatch is not a factor for glm-dsa (unlike deepseek4).
         assert_eq!(
             default_for(&glm, 131072, Some(2048)),
             default_for(&glm, 131072, Some(512))
