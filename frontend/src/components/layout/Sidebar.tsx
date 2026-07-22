@@ -81,7 +81,7 @@ export function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-14 lg:w-52 flex-col border-r border-border-default bg-surface">
-      <div className="flex h-14 items-center gap-2.5 border-b border-border-default px-3 lg:px-4">
+      <div className="flex h-[var(--header-height)] items-center gap-2.5 border-b border-border-default px-3 lg:px-4">
         <SpindleMark />
         <span className="hidden font-mono text-sm font-semibold tracking-[0.04em] text-primary lg:block">
           ananke
@@ -109,12 +109,7 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-border-default px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span className={`h-2 w-2 rounded-full ${healthVariant}`} />
-          <span className="hidden truncate font-mono text-xs text-tertiary lg:inline">
-            {window.location.host}
-          </span>
-        </div>
+        <span className={`h-2 w-2 rounded-full ${healthVariant}`} />
       </div>
     </aside>
   );

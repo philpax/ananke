@@ -54,6 +54,10 @@
   --color-vision: #d96fb8; /* moved off purple so iris owns the brand */
   --color-embedding: #38bdc4;
 
+  /* Shared header height for the sidebar header and every view header,
+   * so their bottom borders align on the same horizontal line. */
+  --header-height: 4rem;
+
   /* Solid action-button fills. One perceptual family — uniform OKLCH
    * lightness (0.48) so a row of action buttons reads as siblings under
    * white ink, dark enough to clear 4.5:1 against it. Hues are spread

@@ -157,10 +157,12 @@ export function DashboardView() {
   return (
     <div className="flex h-full flex-col">
       <ViewHeader className="gap-3 sm:gap-5">
-        <h1 className="eyebrow !text-primary">{t("dashboard.title")}</h1>
-        <div className="hidden items-center gap-1.5 text-xs text-tertiary sm:flex">
-          <span className="font-mono">{window.location.host}</span>
-          <CopyButton value={window.location.host} />
+        <div className="flex flex-col gap-0.5">
+          <h1 className="eyebrow !text-primary">{t("dashboard.title")}</h1>
+          <div className="flex items-center gap-1 text-xs text-tertiary">
+            <span className="font-mono">{window.location.host}</span>
+            <CopyButton value={window.location.host} />
+          </div>
         </div>
         <TimeWindowSelect onChange={setTimeWindow} />
         <div className="flex w-full flex-wrap items-center gap-x-5 gap-y-3 sm:w-auto sm:ml-auto">
