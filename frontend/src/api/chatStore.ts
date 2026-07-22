@@ -150,6 +150,17 @@ export function removeAttachment(index: number): void {
 }
 
 export function clearConversation(): void {
+  // Abort any in-flight send so it does not re-add the user message
+  // after the conversation is cleared. Without this, a queued-start
+  // send() that is still polling for the model to come online would
+  // re-read the snapshot after loading completes and push the user
+  // message back into the cleared conversation.
+  if (
+    snapshot.chatState.kind === "streaming" ||
+    snapshot.chatState.kind === "starting"
+  ) {
+    snapshot.chatState.controller.abort();
+  }
   setSnapshot((prev) => ({
     ...prev,
     messages: [],
