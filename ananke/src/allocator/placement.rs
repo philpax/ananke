@@ -365,8 +365,8 @@ impl<'a> Packer<'a> {
             *self.per_device.entry(DeviceSlot::Cpu).or_default() += non_layer.token_embd_bytes;
         }
 
-        let head_target = match self.allowed_gpus.first() {
-            Some(first_gpu) => DeviceSlot::Gpu(*first_gpu),
+        let head_target = match self.head_gpu() {
+            Some(head) => DeviceSlot::Gpu(head),
             None => DeviceSlot::Cpu,
         };
         if non_layer.output_head_bytes > 0 {
@@ -564,6 +564,31 @@ impl<'a> Packer<'a> {
         Ok(())
     }
 
+    /// The GPU that carries the output head + logits buffer at runtime: the
+    /// lowest-id allowed GPU. `cuda_env` remaps the allowed cards to
+    /// `CUDA_VISIBLE_DEVICES` in ascending id order, so the lowest id is CUDA
+    /// visible index 0 — llama.cpp's default `main_gpu`, where the output/logits
+    /// live, and the head the `--tensor-split` emission assumes. `allowed_gpus`
+    /// is sorted by *descending headroom* for the layer walk, so `.first()` is
+    /// the most-free card, which is the head only when VRAM is symmetric; using
+    /// it as the head mis-attributes the fixed output cost in the pledge book
+    /// once a resident model makes the cards asymmetric.
+    fn head_gpu(&self) -> Option<u32> {
+        self.allowed_gpus.iter().min().copied()
+    }
+
+    /// Output logits buffer bytes attributed to the head GPU only, capped at
+    /// half the compute buffer. The cap guards a large-vocab MoE on an
+    /// *uncalibrated* arch (whose `compute_buffer_mb` is the 400 MiB default),
+    /// where `n_vocab × ubatch × 2` could exceed the whole compute buffer and
+    /// otherwise zero out — or, in the tensor-split, over-bias — a secondary
+    /// card's compute reservation. Shipping calibrated archs have
+    /// `compute_buffer_mb` far above this term, so the cap never binds there.
+    fn head_logits_bytes(&self) -> u64 {
+        let compute = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
+        self.estimate.output_buffer_bytes.min(compute / 2)
+    }
+
     /// Reserve the fixed per-GPU headroom that does not depend on how layers
     /// end up distributed: compute buffer + one-layer fudge. The per-layer KV
     /// *of placed layers* is reserved incrementally during the walk (folded
@@ -585,19 +610,19 @@ impl<'a> Packer<'a> {
         let per_layer_kv = kv_total.checked_div(n_layers).unwrap_or(0);
         let compute_headroom = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
         let fudge = (per_layer_avg + per_layer_kv) * ONE_LAYER_FUDGE_MULTIPLIER;
-        // The output logits buffer lives only on the head GPU (the first
-        // allowed), so every secondary GPU needs `output_buffer_bytes` less
-        // compute headroom — freeing that room for expert weight. This must
-        // stay in lockstep with [`Self::add_compute_buffer`], which books the
-        // same per-device amount at the end of packing.
-        let head_gpu = self.allowed_gpus.first().copied();
+        // The output logits buffer lives only on the head GPU, so every
+        // secondary GPU needs that much less compute headroom — freeing the
+        // room for expert weight. Must stay in lockstep with
+        // [`Self::add_compute_buffer`] (same head, same trim).
+        let head_gpu = self.head_gpu();
+        let logits = self.head_logits_bytes();
 
         for gpu in &self.allowed_gpus {
             let slot = DeviceSlot::Gpu(*gpu);
             let device_compute = if head_gpu == Some(*gpu) {
                 compute_headroom
             } else {
-                compute_headroom.saturating_sub(self.estimate.output_buffer_bytes)
+                compute_headroom.saturating_sub(logits)
             };
             let available = self.gpu_available(*gpu);
             let raw = available.saturating_sub(*self.per_device.get(&slot).unwrap_or(&0));
@@ -685,22 +710,23 @@ impl<'a> Packer<'a> {
     /// Step 4: compute buffer per active backend (default 400 MB).
     fn add_compute_buffer(&mut self) {
         let compute_bytes = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
-        // The output logits buffer is materialised only on the GPU holding
-        // the output head (the first allowed GPU). `compute_buffer_mb` is
-        // calibrated against that head GPU, so it already includes the logits
-        // term; every *other* GPU's real compute buffer is smaller by that
-        // amount. Trim it off the secondaries so their reservation reflects
-        // reality and the freed VRAM fills with expert weight instead. CPU
-        // and the head GPU keep the full term. See
-        // [`Estimate::output_buffer_bytes`].
-        let head_gpu = self.allowed_gpus.first().copied();
+        // The output logits buffer is materialised only on the head GPU.
+        // `compute_buffer_mb` is calibrated against that head GPU, so it already
+        // includes the logits term; every *other* GPU's real compute buffer is
+        // smaller by that amount. Trim it off the secondaries so their
+        // reservation reflects reality and the freed VRAM fills with expert
+        // weight instead. CPU and the head GPU keep the full term. Must use the
+        // same head + trim as [`Self::initialise_gpu_remaining`] and the
+        // tensor-split. See [`Estimate::output_buffer_bytes`].
+        let head_gpu = self.head_gpu();
+        let logits = self.head_logits_bytes();
         let active_slots: Vec<DeviceSlot> = self.per_device.keys().cloned().collect();
         for slot in active_slots {
             let mut add = compute_bytes;
             if let DeviceSlot::Gpu(id) = slot
                 && head_gpu != Some(id)
             {
-                add = add.saturating_sub(self.estimate.output_buffer_bytes);
+                add = add.saturating_sub(logits);
             }
             *self.per_device.entry(slot).or_default() += add;
         }
@@ -1018,7 +1044,11 @@ impl<'a> Packer<'a> {
                     // both cards land at the same total. MiB counts act as
                     // proportions; llama normalises.
                     let compute_bytes = self.estimate.compute_buffer_mb as u64 * 1024 * 1024;
-                    let head = gpus_by_id.first().copied();
+                    // Same head as the reservation (lowest id = CUDA visible 0 =
+                    // runtime main_gpu), and the same capped logits term, so the
+                    // split and the pledge book agree on which card is the head.
+                    let head = self.head_gpu();
+                    let logits = self.head_logits_bytes();
                     let last = gpus_by_id.last().copied();
                     // Whether the retained experts *clump* on the last card
                     // (needing a bias) or distribute evenly (no bias). Measured:
@@ -1036,8 +1066,7 @@ impl<'a> Packer<'a> {
                             .map(|g| {
                                 let mut fixed = compute_bytes;
                                 if head == Some(*g) {
-                                    fixed += self.estimate.output_buffer_bytes
-                                        + self.estimate.non_layer.output_head_bytes;
+                                    fixed += logits + self.estimate.non_layer.output_head_bytes;
                                 }
                                 if last == Some(*g) && experts_clump {
                                     // Only when experts clump: count half the
@@ -1703,6 +1732,49 @@ mod tests {
             cpu_with < cpu_without,
             "trimming the head-only logits buffer off the secondary GPU must \
              keep more experts resident (cpu_with={cpu_with} cpu_without={cpu_without})"
+        );
+    }
+
+    /// The output head/logits are hosted on the lowest-id GPU at runtime (CUDA
+    /// visible index 0 = llama.cpp `main_gpu`), which must match the head the
+    /// `--tensor-split` assumes — NOT `allowed_gpus`' most-free ordering. Under
+    /// asymmetric pledge headroom (a resident model already on gpu:0) the packer
+    /// sorts gpu:1 first, but the output head must still land on gpu:0 so the
+    /// per-card pledge book agrees with where the runtime puts it.
+    #[test]
+    fn output_head_goes_to_lowest_id_gpu_under_asymmetric_headroom() {
+        let mut e = trivial_estimate(1, 1024); // 1 layer, ~1 GiB
+        e.non_layer.output_head_bytes = 5 * GIB;
+        let mut svc = minimal_service("m");
+        svc.placement_override = BTreeMap::new();
+        svc.placement_policy = PlacementPolicy::GpuOnly;
+        let snap = snapshot(&[24, 24]);
+        // A resident model pledges 15 GiB on gpu:0, so gpu:1 has more pledge
+        // headroom and sorts first — `allowed_gpus.first()` is now gpu:1.
+        let mut reserved = AllocationTable::new();
+        let mut resident = BTreeMap::new();
+        resident.insert(DeviceSlot::Gpu(0), 15 * GIB);
+        reserved.insert(SmolStr::new("resident"), resident);
+        let packed = pack(&e, &svc, &snap, &reserved).unwrap();
+        let g0 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(0))
+            .copied()
+            .unwrap_or(0);
+        let g1 = packed
+            .allocation
+            .bytes
+            .get(&DeviceId::Gpu(1))
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            g0 >= 5 * GIB,
+            "output head (5 GiB) must be booked on the lowest-id gpu:0, got g0={g0}"
+        );
+        assert!(
+            g1 < 5 * GIB,
+            "the most-free gpu:1 must not carry the output head, got g1={g1}"
         );
     }
 
