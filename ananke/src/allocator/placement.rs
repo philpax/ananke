@@ -800,7 +800,16 @@ impl<'a> Packer<'a> {
                     *self.layers_per_gpu.entry(gpu).or_default() += 1;
                     self.layer_home.insert(idx, gpu);
                 }
-                None if self.allow_cpu => {
+                // A whole-layer CPU spill is valid only for a non-MoE hybrid.
+                // On the expert-aware (`--n-cpu-moe`) path the runtime keeps
+                // every layer's non-expert weight + KV on GPU (`-ngl 999`) and
+                // spills only experts, so a non-expert layer that fits no GPU
+                // is *not* offloadable: fail here so admission evicts a resident
+                // model and retries with real VRAM, rather than planning a
+                // CPU-spill the `-ngl 999` child ignores and then OOMs on
+                // (a live "child exited during starting" when loading laguna
+                // on top of a resident gemma).
+                None if self.allow_cpu && !self.expert_aware => {
                     *self.per_device.entry(DeviceSlot::Cpu).or_default() += full_bytes;
                     self.layers_on_cpu += 1;
                     self.spilled_layers.insert(idx);
@@ -1785,10 +1794,10 @@ mod tests {
     /// is rejected with `CpuDoesNotFit` rather than silently over-committing.
     #[test]
     fn expert_offload_rejects_when_cpu_is_full() {
-        let e = moe_estimate(10, 100, 900); // ~27 GiB of experts
-        // 1 GiB card forces almost everything to CPU, but the host has only
-        // 2 GiB available.
-        let mut snap = snapshot(&[1]);
+        let e = moe_estimate(10, 100, 900); // ~1 GiB attn, ~27 GiB experts
+        // A 24 GiB card holds the attention plus most experts; the ~4 GiB
+        // expert surplus must spill, but the host has only 2 GiB free.
+        let mut snap = snapshot(&[24]);
         snap.cpu = Some(CpuSnapshot {
             total_bytes: 4 * GIB,
             available_bytes: 2 * GIB,
@@ -1799,6 +1808,26 @@ mod tests {
         assert!(
             matches!(err, PackError::CpuDoesNotFit { .. }),
             "expected CpuDoesNotFit, got {err:?}"
+        );
+    }
+
+    /// On the expert-aware path a layer's non-expert weight is GPU-only
+    /// (`-ngl 999`), so when it doesn't fit the available VRAM the pack must
+    /// fail (`LayerDoesNotFit`) — driving the supervisor to evict a resident
+    /// model and retry — rather than spilling the whole layer to CPU and
+    /// reporting a fit that the `-ngl 999` child then OOMs on.
+    #[test]
+    fn expert_offload_nonexpert_gpu_only_fails_instead_of_cpu_spilling() {
+        // ~2 GiB of attention across 20 layers; a resident model has left only
+        // ~1 GiB free on the single card, so the attention cannot all fit.
+        let e = moe_estimate(20, 100, 700);
+        let snap = snapshot(&[1]); // 24 GiB card with only 1 GiB free
+        let alloc = AllocationTable::new();
+        let err = pack(&e, &moe_svc(OffloadMode::Auto), &snap, &alloc)
+            .expect_err("non-expert weight is GPU-only; a tight card must fail, not CPU-spill");
+        assert!(
+            matches!(err, PackError::LayerDoesNotFit { .. }),
+            "expected LayerDoesNotFit (→ evict + retry), got {err:?}"
         );
     }
 
