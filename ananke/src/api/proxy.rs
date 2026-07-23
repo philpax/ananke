@@ -5,7 +5,7 @@ use std::{
     error::Error,
     net::SocketAddr,
     sync::{Arc, atomic::AtomicU64},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -25,7 +25,15 @@ use hyper_util::{
 use tokio::{net::TcpListener, sync::watch};
 use tracing::{debug, info, warn};
 
-use crate::{api::errors::ApiErrorCode, errors::ExpectedError, tracking::inflight::InflightGuard};
+use crate::{
+    api::{
+        errors::ApiErrorCode,
+        openai::metrics::{MetricsBody, MetricsRecorder},
+    },
+    db::Database,
+    errors::ExpectedError,
+    tracking::inflight::InflightGuard,
+};
 
 /// How often to bump the per-service activity stamp while a WebSocket
 /// session is open. Without this, the supervisor's idle-eviction loop
@@ -74,6 +82,55 @@ impl WebSocketLifecycle {
     }
 }
 
+/// Per-service metrics context threaded from `provision_service` into the
+/// proxy request path. Present only for the per-service proxy (the OpenAI
+/// multiplexer records its own metrics); when `None` the proxy is a pure
+/// byte-forwarder as before.
+///
+/// Cloned per connection, so every field is cheap to clone: `Database` is an
+/// `Arc`-backed handle, `model` is a `SmolStr`, and `run_id` is a closure
+/// that reads the supervisor's mirror cell at request time (the run_id
+/// changes on every reload, so it cannot be captured eagerly).
+#[derive(Clone)]
+pub struct ProxyMetrics {
+    db: Database,
+    /// Stable service row id, resolved once at provision time.
+    service_id: i64,
+    /// The service/model name recorded on each `RequestMetric`.
+    model: smol_str::SmolStr,
+    /// Reads the current run_id at request time — it is reassigned on each
+    /// (re)load, so capturing it once would tag metrics with a stale run.
+    run_id: Arc<dyn Fn() -> Option<i64> + Send + Sync>,
+}
+
+impl ProxyMetrics {
+    pub fn new(
+        db: Database,
+        service_id: i64,
+        model: smol_str::SmolStr,
+        run_id: Arc<dyn Fn() -> Option<i64> + Send + Sync>,
+    ) -> Self {
+        Self {
+            db,
+            service_id,
+            model,
+            run_id,
+        }
+    }
+}
+
+/// Map a request path to the token-generating endpoint whose responses carry
+/// `usage`/`timings`. Returns the matched `&'static str` for the metric's
+/// `endpoint` column, or `None` for every other path (`/health`, `/metrics`,
+/// `/v1/models`, upgrades, …) so those are forwarded without recording.
+fn metrics_endpoint(path: &str) -> Option<&'static str> {
+    match path {
+        "/v1/chat/completions" => Some("/v1/chat/completions"),
+        "/v1/completions" => Some("/v1/completions"),
+        _ => None,
+    }
+}
+
 pub async fn serve(
     listen: SocketAddr,
     upstream_port: u16,
@@ -104,7 +161,7 @@ pub async fn serve(
                 tokio::spawn(async move {
                     let svc = service_fn(move |req: Request<Incoming>| {
                         let client = client.clone();
-                        async move { handle(req, client, upstream_port, peer, None).await }
+                        async move { handle(req, client, upstream_port, peer, None, None).await }
                     });
                     if let Err(e) = auto::Builder::new(TokioExecutor::new())
                         .serve_connection_with_upgrades(io, svc)
@@ -136,6 +193,7 @@ pub async fn serve_with_activity(
     before_request: Arc<dyn Fn() -> BoxFuture<'static, Option<ProxyError>> + Send + Sync>,
     inflight_counter: Arc<AtomicU64>,
     activity_ping: Arc<dyn Fn() + Send + Sync>,
+    metrics: Option<ProxyMetrics>,
 ) -> Result<(), ExpectedError> {
     let listener = TcpListener::bind(listen)
         .await
@@ -163,12 +221,14 @@ pub async fn serve_with_activity(
                 let before_request = before_request.clone();
                 let counter = inflight_counter.clone();
                 let ws_lifecycle = ws_lifecycle.clone();
+                let metrics = metrics.clone();
                 tokio::spawn(async move {
                     let svc = service_fn(move |req: Request<Incoming>| {
                         let fut = (before_request)();
                         let counter = counter.clone();
                         let client = client.clone();
                         let ws_lifecycle = ws_lifecycle.clone();
+                        let metrics = metrics.clone();
                         async move {
                             if let Some(short) = fut.await {
                                 return Ok(short);
@@ -182,7 +242,8 @@ pub async fn serve_with_activity(
                             // pipeline only cares that the counter reaches
                             // zero, not what its peak was.
                             let _guard = InflightGuard::new(counter);
-                            handle(req, client, upstream_port, peer, Some(ws_lifecycle)).await
+                            handle(req, client, upstream_port, peer, Some(ws_lifecycle), metrics)
+                                .await
                         }
                     });
                     if let Err(e) = auto::Builder::new(TokioExecutor::new())
@@ -227,8 +288,9 @@ async fn handle(
     upstream_port: u16,
     peer: SocketAddr,
     ws_lifecycle: Option<WebSocketLifecycle>,
+    metrics: Option<ProxyMetrics>,
 ) -> Result<Response<ProxyBody>, Infallible> {
-    match try_handle(req, client, upstream_port, peer, ws_lifecycle).await {
+    match try_handle(req, client, upstream_port, peer, ws_lifecycle, metrics).await {
         Ok(resp) => Ok(resp),
         Err(e) => {
             warn!(error = %e, peer = %peer, "proxy error");
@@ -245,14 +307,25 @@ async fn try_handle(
     upstream_port: u16,
     peer: SocketAddr,
     ws_lifecycle: Option<WebSocketLifecycle>,
+    metrics: Option<ProxyMetrics>,
 ) -> Result<Response<ProxyBody>, Box<dyn std::error::Error + Send + Sync>> {
     // Upgrade requests (WebSocket and friends) need a raw byte splice between
     // the client and the upstream after the 101 — the pooled HTTP client
     // can't model that, and stripping the response's `Connection` header
-    // would make aiohttp's WebSocket client reject the handshake.
+    // would make aiohttp's WebSocket client reject the handshake. Upgrades
+    // never carry token usage, so they bypass the metrics path entirely.
     if is_upgrade_request(&req) {
         return handle_upgrade(req, upstream_port, peer, ws_lifecycle).await;
     }
+
+    // Only the token-generating endpoints get recorded; every other path is a
+    // pure passthrough. Match on the path (sans query) before it is consumed.
+    let metric_endpoint = metrics
+        .as_ref()
+        .and_then(|_| metrics_endpoint(req.uri().path()));
+    // Wall-clock start for the request, captured before the upstream round-trip
+    // so TTFT and total duration cover the full server-visible latency.
+    let request_start = Instant::now();
 
     let (parts, body) = req.into_parts();
     let path_and_query = parts
@@ -293,7 +366,36 @@ async fn try_handle(
         |e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) },
     )
     .boxed();
-    let mut out = Response::from_parts(parts, boxed);
+
+    // Record per-request token metrics for the token-generating endpoints,
+    // mirroring the OpenAI multiplexer's `MetricsBody` wrap. `is_streaming` is
+    // inferred from the upstream `Content-Type` (`text/event-stream`); the
+    // recorder handles both SSE and plain JSON, so this only affects TTFT
+    // bookkeeping. Any other endpoint (or an absent context) forwards the body
+    // verbatim.
+    let body: ProxyBody = match (metric_endpoint, metrics) {
+        (Some(endpoint), Some(metrics)) => {
+            let status_code = parts.status.as_u16();
+            let is_streaming = parts
+                .headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.starts_with("text/event-stream"))
+                .unwrap_or(false);
+            let recorder = MetricsRecorder::new(
+                request_start,
+                metrics.service_id,
+                (metrics.run_id)(),
+                metrics.model.to_string(),
+                endpoint,
+                is_streaming,
+            );
+            MetricsBody::new(boxed, recorder, metrics.db.clone(), status_code).boxed()
+        }
+        _ => boxed,
+    };
+
+    let mut out = Response::from_parts(parts, body);
     out.headers_mut().remove(header::CONNECTION);
     out.headers_mut().remove("transfer-encoding");
     Ok(out)

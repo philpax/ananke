@@ -141,6 +141,20 @@ pub async fn provision_service(
         let name = svc.name.clone();
         Arc::new(move || activity.ping(&name))
     };
+    // Record per-request token metrics for direct hits on the per-service
+    // port, matching what the OpenAI multiplexer records for its own traffic.
+    // `service_id` is stable (resolved once above via `upsert_service`); the
+    // run_id changes on each (re)load, so it is read from the supervisor's
+    // mirror cell at request time via the closure.
+    let metrics = {
+        let run_handle = handle.clone();
+        proxy::ProxyMetrics::new(
+            deps.db.clone(),
+            service_id,
+            svc.name.clone(),
+            Arc::new(move || run_handle.peek().run_id),
+        )
+    };
     let proxy_task = tokio::spawn(async move {
         if let Err(e) = proxy::serve_with_activity(
             listen,
@@ -149,6 +163,7 @@ pub async fn provision_service(
             before_request,
             inflight_counter,
             activity_ping,
+            Some(metrics),
         )
         .await
         {

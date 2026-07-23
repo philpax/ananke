@@ -235,6 +235,7 @@ async fn websocket_session_holds_inflight_and_pings_activity() {
         before_request,
         inflight_counter.clone(),
         activity_ping,
+        None,
     ));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
