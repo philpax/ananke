@@ -54,9 +54,6 @@ impl AllocationMode {
     /// associated reservation knobs. Shared by the TOML validator and the
     /// oneshot API so both paths agree on the semantics of `"static"`,
     /// `"dynamic"`, and the llama-cpp exclusions.
-    ///
-    /// The returned error is a bare sentence fragment; the caller is
-    /// expected to prepend context (e.g. `service {name}: `).
     pub fn from_parts(
         template: Template,
         mode: Option<&str>,
@@ -64,22 +61,24 @@ impl AllocationMode {
         min_reserve_gb: Option<f32>,
         max_reserve_gb: Option<f32>,
         min_borrower_runtime_ms: u64,
-    ) -> Result<AllocationMode, String> {
+    ) -> Result<AllocationMode, crate::validate::ConstraintReason> {
         match mode {
             Some("static") => {
                 let gb = reserve_gb
-                    .ok_or_else(|| "allocation.mode=static requires reserve_gb".to_string())?;
+                    .ok_or(crate::validate::ConstraintReason::AllocationStaticRequiresReserveGb)?;
                 Ok(AllocationMode::Static {
                     reserve_mb: gib_to_mib(gb),
                 })
             }
             Some("dynamic") => {
-                let min = min_reserve_gb
-                    .ok_or_else(|| "allocation.mode=dynamic requires min_reserve_gb".to_string())?;
-                let max = max_reserve_gb
-                    .ok_or_else(|| "allocation.mode=dynamic requires max_reserve_gb".to_string())?;
+                let min = min_reserve_gb.ok_or(
+                    crate::validate::ConstraintReason::AllocationDynamicRequiresMinReserveGb,
+                )?;
+                let max = max_reserve_gb.ok_or(
+                    crate::validate::ConstraintReason::AllocationDynamicRequiresMaxReserveGb,
+                )?;
                 if max <= min {
-                    return Err("max_reserve_gb must be > min_reserve_gb".to_string());
+                    return Err(crate::validate::ConstraintReason::AllocationMaxMustExceedMin);
                 }
                 Ok(AllocationMode::Dynamic {
                     min_mb: gib_to_mib(min),
@@ -87,14 +86,16 @@ impl AllocationMode {
                     min_borrower_runtime_ms,
                 })
             }
-            Some(other) => Err(format!("unknown allocation.mode `{other}`")),
+            Some(other) => Err(crate::validate::ConstraintReason::AllocationModeUnknown {
+                value: other.into(),
+            }),
             // A llama-cpp service without one is estimated and packed, which
             // is the normal path. A command service cannot be: ananke does not
             // build its argv and so cannot know what it will allocate.
             None => match template {
                 Template::LlamaCpp => Ok(AllocationMode::None),
                 Template::Command => {
-                    Err("command template requires allocation.mode (static|dynamic)".to_string())
+                    Err(crate::validate::ConstraintReason::AllocationCommandRequiresMode)
                 }
             },
         }
@@ -150,7 +151,9 @@ mod tests {
     use super::*;
     use crate::{
         parse::parse_toml,
-        validate::{test_fixtures::parse_and_merge, validate},
+        validate::{
+            ConfigDiagnosticKind, ConstraintReason, test_fixtures::parse_and_merge, validate,
+        },
     };
 
     #[test]
@@ -167,7 +170,14 @@ devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("oneshot"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LifecycleOneshotInvalid,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -376,6 +386,13 @@ allocation.max_reserve_gb = 5
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("max_reserve_gb"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::AllocationMaxMustExceedMin,
+                ..
+            }
+        ));
     }
 }

@@ -45,7 +45,8 @@ pub async fn spawn_oneshot(
         req.allocation.min_reserve_gb,
         req.allocation.max_reserve_gb,
         DEFAULT_MIN_BORROWER_RUNTIME_MS,
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
 
     // OneshotRequest doesn't carry a model path, so llama-cpp oneshots are
     // structurally ill-defined at the request level. Reject them explicitly

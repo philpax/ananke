@@ -1,7 +1,6 @@
 //! Per-trigger validation for the auto-restart watchdogs: spec collapse,
 //! generation stall, TTFT stall, and error rate.
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
 use crate::{
@@ -10,21 +9,25 @@ use crate::{
         RawTtftStallSettings,
     },
     validate::{
-        ErrorRateTrigger, ErrorStatusClass, GenerationStallTrigger, SpecCollapseTrigger,
-        TtftStallTrigger, fail, parse_duration_ms,
+        ConfigDiagnostic, ConstraintReason, ErrorRateTrigger, ErrorStatusClass,
+        GenerationStallTrigger, SpecCollapseTrigger, TtftStallTrigger, ValidationErrorCode,
+        parse_duration_ms,
     },
 };
 
 pub(crate) fn validate_spec_collapse(
     name: &SmolStr,
     s: &RawSpecCollapseSettings,
-) -> Result<SpecCollapseTrigger, ExpectedError> {
+) -> Result<SpecCollapseTrigger, crate::validate::ConfigDiagnostic> {
     let d = SpecCollapseTrigger::default();
     let field = |field: &str, x: &str| {
-        parse_duration_ms(x).map_err(|e| {
-            fail(format!(
-                "service {name} auto_restart.spec_collapse.{field}: {e}"
-            ))
+        parse_duration_ms(x).map_err(|error| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec![format!("auto_restart.spec_collapse.{field}")],
+                ConstraintReason::DurationParseError { error },
+            )
         })
     };
     let window_ms = s
@@ -41,19 +44,28 @@ pub(crate) fn validate_spec_collapse(
         .transpose()?
         .unwrap_or(d.poll_interval_ms);
     if window_ms == 0 {
-        return Err(fail(format!(
-            "service {name}: auto_restart.spec_collapse.window must be greater than zero"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["auto_restart.spec_collapse.window".into()],
+            ConstraintReason::SpecCollapseWindowZero,
+        ));
     }
     if min_draft_tokens == 0 {
-        return Err(fail(format!(
-            "service {name}: auto_restart.spec_collapse.min_draft_tokens must be greater than zero"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["auto_restart.spec_collapse.min_draft_tokens".into()],
+            ConstraintReason::SpecCollapseMinDraftTokensZero,
+        ));
     }
     if poll_interval_ms == 0 {
-        return Err(fail(format!(
-            "service {name}: auto_restart.spec_collapse.poll_interval must be greater than zero"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["auto_restart.spec_collapse.poll_interval".into()],
+            ConstraintReason::SpecCollapsePollIntervalZero,
+        ));
     }
     Ok(SpecCollapseTrigger {
         window_ms,
@@ -65,13 +77,16 @@ pub(crate) fn validate_spec_collapse(
 pub(crate) fn validate_generation_stall(
     name: &SmolStr,
     s: &RawGenerationStallSettings,
-) -> Result<GenerationStallTrigger, ExpectedError> {
+) -> Result<GenerationStallTrigger, crate::validate::ConfigDiagnostic> {
     let d = GenerationStallTrigger::default();
     let field = |field: &str, x: &str| {
-        parse_duration_ms(x).map_err(|e| {
-            fail(format!(
-                "service {name} auto_restart.generation_stall.{field}: {e}"
-            ))
+        parse_duration_ms(x).map_err(|error| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec![format!("auto_restart.generation_stall.{field}")],
+                ConstraintReason::DurationParseError { error },
+            )
         })
     };
     let timeout_ms = s
@@ -87,14 +102,20 @@ pub(crate) fn validate_generation_stall(
         .transpose()?
         .unwrap_or(d.poll_interval_ms);
     if timeout_ms == 0 {
-        return Err(fail(format!(
-            "service {name}: auto_restart.generation_stall.timeout must be greater than zero"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["auto_restart.generation_stall.timeout".into()],
+            ConstraintReason::GenerationStallTimeoutZero,
+        ));
     }
     if poll_interval_ms == 0 {
-        return Err(fail(format!(
-            "service {name}: auto_restart.generation_stall.poll_interval must be greater than zero"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["auto_restart.generation_stall.poll_interval".into()],
+            ConstraintReason::GenerationStallPollIntervalZero,
+        ));
     }
     Ok(GenerationStallTrigger {
         timeout_ms,
@@ -105,24 +126,30 @@ pub(crate) fn validate_generation_stall(
 pub(crate) fn validate_ttft_stall(
     name: &SmolStr,
     s: &RawTtftStallSettings,
-) -> Result<TtftStallTrigger, ExpectedError> {
+) -> Result<TtftStallTrigger, crate::validate::ConfigDiagnostic> {
     let d = TtftStallTrigger::default();
     let timeout_ms = s
         .timeout
         .as_deref()
         .map(|x| {
-            parse_duration_ms(x).map_err(|e| {
-                fail(format!(
-                    "service {name} auto_restart.ttft_stall.timeout: {e}"
-                ))
+            parse_duration_ms(x).map_err(|error| {
+                ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["auto_restart.ttft_stall.timeout".into()],
+                    ConstraintReason::DurationParseError { error },
+                )
             })
         })
         .transpose()?
         .unwrap_or(d.timeout_ms);
     if timeout_ms == 0 {
-        return Err(fail(format!(
-            "service {name}: auto_restart.ttft_stall.timeout must be greater than zero"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["auto_restart.ttft_stall.timeout".into()],
+            ConstraintReason::TtftStallTimeoutZero,
+        ));
     }
     Ok(TtftStallTrigger { timeout_ms })
 }
@@ -130,16 +157,19 @@ pub(crate) fn validate_ttft_stall(
 pub(crate) fn validate_error_rate(
     name: &SmolStr,
     s: &RawErrorRateSettings,
-) -> Result<ErrorRateTrigger, ExpectedError> {
+) -> Result<ErrorRateTrigger, crate::validate::ConfigDiagnostic> {
     let d = ErrorRateTrigger::default();
     let window_ms = s
         .window
         .as_deref()
         .map(|x| {
-            parse_duration_ms(x).map_err(|e| {
-                fail(format!(
-                    "service {name} auto_restart.error_rate.window: {e}"
-                ))
+            parse_duration_ms(x).map_err(|error| {
+                ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["auto_restart.error_rate.window".into()],
+                    ConstraintReason::DurationParseError { error },
+                )
             })
         })
         .transpose()?
@@ -148,19 +178,27 @@ pub(crate) fn validate_error_rate(
         None => d.max_error_rate,
         Some(r) if r > 0.0 && r <= 1.0 => r,
         Some(r) => {
-            return Err(fail(format!(
-                "service {name}: auto_restart.error_rate.max_error_rate must be in (0.0, 1.0], got {r}"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["auto_restart.error_rate.max_error_rate".into()],
+                ConstraintReason::ErrorRateOutOfRange {
+                    value: r.to_string(),
+                },
+            ));
         }
     };
     let poll_interval_ms = s
         .poll_interval
         .as_deref()
         .map(|x| {
-            parse_duration_ms(x).map_err(|e| {
-                fail(format!(
-                    "service {name} auto_restart.error_rate.poll_interval: {e}"
-                ))
+            parse_duration_ms(x).map_err(|error| {
+                ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["auto_restart.error_rate.poll_interval".into()],
+                    ConstraintReason::DurationParseError { error },
+                )
             })
         })
         .transpose()?
@@ -170,9 +208,14 @@ pub(crate) fn validate_error_rate(
         Some("5xx") => ErrorStatusClass::ServerOnly,
         Some("4xx+5xx") => ErrorStatusClass::ClientAndServer,
         Some(other) => {
-            return Err(fail(format!(
-                "service {name}: auto_restart.error_rate.error_statuses must be `5xx` or `4xx+5xx`, got `{other}`"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["auto_restart.error_rate.error_statuses".into()],
+                ConstraintReason::ErrorStatusClassInvalid {
+                    value: other.into(),
+                },
+            ));
         }
     };
     Ok(ErrorRateTrigger {
@@ -186,6 +229,8 @@ pub(crate) fn validate_error_rate(
 
 #[cfg(test)]
 mod tests {
+    use ananke_errors::ExpectedError;
+
     use super::*;
     use crate::{
         docs::{
@@ -238,7 +283,9 @@ devices.placement = "cpu-only"
 "#
         );
         let cfg = parse_and_merge(&src);
-        validate(&cfg).map(|ec| ec.services.into_iter().next().unwrap())
+        validate(&cfg)
+            .map(|ec| ec.services.into_iter().next().unwrap())
+            .map_err(|report| report.into_expected_error(std::path::PathBuf::from("<config>")))
     }
 
     #[test]
@@ -359,10 +406,7 @@ devices.placement = "cpu-only"
         // An explicit per-service enable on a service that can never produce
         // draft counts is a configuration error, not a silent no-op.
         let err = svc_with_auto_restart("auto_restart = { spec_collapse = true }").unwrap_err();
-        assert!(
-            format!("{err}").contains("requires spec_type"),
-            "unexpected error: {err}"
-        );
+        assert!(err.to_string().contains("spec_collapse requires spec_type"));
         assert!(command_svc_with_auto_restart("auto_restart = { spec_collapse = true }").is_err());
         // An explicit disable is always fine.
         assert!(svc_with_auto_restart("auto_restart = { spec_collapse = false }").is_ok());

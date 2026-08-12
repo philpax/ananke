@@ -1,13 +1,13 @@
 //! Validate a post-merge `RawConfig`, producing an `EffectiveConfig` of
 //! per-service validated configs plus daemon-global settings.
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
 mod auto_restart_types;
 mod auto_restart_validation;
 mod command_validation;
 mod common;
+mod error;
 mod llama_cpp_validation;
 mod metadata;
 mod orchestrate;
@@ -27,13 +27,19 @@ pub mod test_fixtures;
 // xtask and CLI can reference them without pulling in the daemon's heavy
 // deps. Re-exported here so they are reachable as
 // `crate::validate::DEFAULT_*`.
+pub use ananke_api::config::validate::ValidationErrorCode;
 pub use auto_restart_types::{
     AutoRestartSettings, DEFAULT_AUTO_RESTART_PERIODIC_MODE, ErrorRateTrigger, ErrorStatusClass,
     GenerationStallTrigger, PeriodicMode, PeriodicTrigger, SpecCollapseTrigger, TtftStallTrigger,
 };
 pub(crate) use auto_restart_validation::validate_auto_restart;
 pub(crate) use command_validation::{command_uses_port_placeholder, validate_command};
-pub use common::{fail, flag_variant, gib_to_mib, parse_duration_ms, variant_flag};
+pub use common::{flag_variant, gib_to_mib, parse_duration_ms, variant_flag};
+pub use error::{
+    ConfigDiagnostic, ConfigDiagnosticKind, ConfigDiagnosticReport, ConfigPipelineError,
+    ConstraintReason, DiagnosticContext, DiagnosticLocation, DurationParseError, MergeReason,
+    PlaceholderError, ValueDiagnosticDetail, byte_offset_to_line_column,
+};
 pub(crate) use llama_cpp_validation::validate_llama_cpp;
 pub(crate) use metadata::{build_ananke_metadata, toml_value_to_json};
 pub(crate) use orchestrate::{DaemonValidationCtx, ServiceValidationState};
@@ -58,10 +64,10 @@ pub use crate::docs::{
 // injects it through `validate_with_checks`.
 /// Dry-run checker for placeholder-substituted argv, injected by the
 /// daemon because the template engine lives outside this crate.
-pub trait PlaceholderChecker {
+pub trait PlaceholderChecker: Send + Sync {
     /// Dry-run substitute `argv` for `field`, failing on unresolved or
     /// malformed placeholders.
-    fn check(&self, name: &SmolStr, field: &str, argv: &[String]) -> Result<(), ExpectedError>;
+    fn check(&self, name: &SmolStr, field: &str, argv: &[String]) -> Result<(), ConfigDiagnostic>;
 }
 
 /// Checker that skips the dry-run. Used by `validate` when the caller
@@ -70,7 +76,12 @@ pub trait PlaceholderChecker {
 pub struct NoopPlaceholderChecker;
 
 impl PlaceholderChecker for NoopPlaceholderChecker {
-    fn check(&self, _name: &SmolStr, _field: &str, _argv: &[String]) -> Result<(), ExpectedError> {
+    fn check(
+        &self,
+        _name: &SmolStr,
+        _field: &str,
+        _argv: &[String],
+    ) -> Result<(), ConfigDiagnostic> {
         Ok(())
     }
 }

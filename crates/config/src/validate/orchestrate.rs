@@ -7,22 +7,21 @@ use std::{
     sync::Arc,
 };
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
 use crate::{
     docs::DEFAULT_OPENAI_MAX_BODY_MB,
     parse::RawConfig,
     validate::{
-        DaemonSettings, DeviceReserves, EffectiveConfig, NoopPlaceholderChecker,
-        PlaceholderChecker, PrivatePortAllocator, PrivatePortRange, fail, parse_duration_ms,
-        validate_service,
+        ConfigDiagnostic, ConfigDiagnosticReport, ConstraintReason, DaemonSettings, DeviceReserves,
+        EffectiveConfig, NoopPlaceholderChecker, PlaceholderChecker, PrivatePortAllocator,
+        PrivatePortRange, ValidationErrorCode, parse_duration_ms, validate_service,
     },
 };
 
 /// Validate a `RawConfig` with the no-op placeholder checker. Library
 /// callers with a template-based checker should use [`validate_with_checks`].
-pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
+pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ConfigDiagnosticReport> {
     validate_with_checks(cfg, &NoopPlaceholderChecker)
 }
 
@@ -32,7 +31,7 @@ pub fn validate(cfg: &RawConfig) -> Result<EffectiveConfig, ExpectedError> {
 pub fn validate_with_checks(
     cfg: &RawConfig,
     checker: &dyn PlaceholderChecker,
-) -> Result<EffectiveConfig, ExpectedError> {
+) -> Result<EffectiveConfig, ConfigDiagnosticReport> {
     let data_dir = cfg.daemon.data_dir.clone().unwrap_or_else(|| {
         std::env::var("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -44,32 +43,57 @@ pub fn validate_with_checks(
             .join("ananke")
     });
 
+    let mut report = ConfigDiagnosticReport::new();
     let shutdown_timeout_str = if cfg.daemon.shutdown_timeout.is_empty() {
         "120s"
     } else {
         &cfg.daemon.shutdown_timeout
     };
-    let shutdown_timeout_ms = parse_duration_ms(shutdown_timeout_str)
-        .map_err(|e| fail(format!("daemon.shutdown_timeout: {e}")))?;
+    let shutdown_timeout_ms = match parse_duration_ms(shutdown_timeout_str) {
+        Ok(value) => value,
+        Err(error) => {
+            report.push(ConfigDiagnostic::value(
+                crate::validate::ValidationErrorCode::DurationInvalid,
+                "daemon.shutdown_timeout",
+                shutdown_timeout_str,
+                Some(error.to_string()),
+            ));
+            120_000
+        }
+    };
 
     let management_addr = if cfg.daemon.management_listen.is_empty() {
         crate::defaults::MANAGEMENT_LISTEN.into()
     } else {
         cfg.daemon.management_listen.clone()
     };
-    let mgmt_socket_addr: std::net::SocketAddr = management_addr
-        .parse()
-        .map_err(|e: std::net::AddrParseError| fail(format!("daemon.management_listen: {e}")))?;
-    if !mgmt_socket_addr.ip().is_loopback() && !cfg.daemon.allow_external_management {
-        return Err(fail(
-            "daemon.management_listen is non-loopback but daemon.allow_external_management is false; \
-             the management API has no authentication".into(),
+    let mgmt_socket_addr = match management_addr.parse::<std::net::SocketAddr>() {
+        Ok(address) => Some(address),
+        Err(error) => {
+            report.push(ConfigDiagnostic::value(
+                crate::validate::ValidationErrorCode::ValueInvalid,
+                "daemon.management_listen",
+                management_addr.clone(),
+                Some(error.to_string()),
+            ));
+            None
+        }
+    };
+    if let Some(address) = mgmt_socket_addr
+        && !address.ip().is_loopback()
+        && !cfg.daemon.allow_external_management
+    {
+        report.push(ConfigDiagnostic::constraint(
+            ValidationErrorCode::ValueInvalid,
+            None,
+            vec![
+                "daemon.management_listen".into(),
+                "daemon.allow_external_management".into(),
+            ],
+            ConstraintReason::DaemonNonLoopbackWithoutFlag,
         ));
     }
-    let management_port = management_addr
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse::<u16>().ok());
+    let management_port = mgmt_socket_addr.map(|address| address.port());
     let openai_listen = cfg
         .openai_api
         .listen
@@ -83,11 +107,24 @@ pub fn validate_with_checks(
         .saturating_mul(1024 * 1024)
         .min(usize::MAX as u64) as usize;
 
-    let private_port_range =
-        PrivatePortRange::from_config(cfg.daemon.private_port_start, cfg.daemon.private_port_end)?;
+    let private_port_range = match PrivatePortRange::from_config(
+        cfg.daemon.private_port_start,
+        cfg.daemon.private_port_end,
+    ) {
+        Ok(range) => range,
+        Err(error) => {
+            report.push(error);
+            PrivatePortRange {
+                start: crate::validate::DEFAULT_PRIVATE_PORT_START,
+                end: crate::validate::DEFAULT_PRIVATE_PORT_END,
+            }
+        }
+    };
     let mut private_ports = PrivatePortAllocator::new(private_port_range);
     let daemon_llama_server = cfg.daemon.llama_server.clone();
-    let device_reserves = Arc::new(resolve_device_reserves(&cfg.devices)?);
+    let (device_reserves, reserve_report) = resolve_device_reserves(&cfg.devices);
+    report.extend(reserve_report);
+    let device_reserves = Arc::new(device_reserves);
 
     let mut names: BTreeSet<SmolStr> = BTreeSet::new();
     let mut ports: BTreeSet<u16> = BTreeSet::new();
@@ -101,15 +138,34 @@ pub fn validate_with_checks(
         devices: &cfg.devices,
         placeholder_checker: checker,
     };
-    let mut svc_state = ServiceValidationState {
-        names: &mut names,
-        ports: &mut ports,
-        private_ports: &mut private_ports,
-    };
+    for (resolved_index, raw) in cfg.services.iter().enumerate() {
+        let source_index = cfg
+            .service_source_indices
+            .get(resolved_index)
+            .copied()
+            .unwrap_or(resolved_index);
+        let mut candidate_names = names.clone();
+        let mut candidate_ports = ports.clone();
+        let mut candidate_private_ports = private_ports.clone();
+        let mut candidate_state = ServiceValidationState {
+            names: &mut candidate_names,
+            ports: &mut candidate_ports,
+            private_ports: &mut candidate_private_ports,
+        };
+        match validate_service(source_index, raw, &daemon_ctx, &mut candidate_state) {
+            Ok(svc) => {
+                names = candidate_names;
+                ports = candidate_ports;
+                private_ports = candidate_private_ports;
+                out.push(svc);
+            }
+            Err(error) => report.push(error.with_source_index(source_index)),
+        }
+    }
 
-    for (i, raw) in cfg.services.iter().enumerate() {
-        let svc = validate_service(i, raw, &daemon_ctx, &mut svc_state)?;
-        out.push(svc);
+    report.sort_by_source_index();
+    if !report.is_empty() {
+        return Err(report);
     }
 
     Ok(EffectiveConfig {
@@ -132,25 +188,34 @@ pub fn validate_with_checks(
 /// hard config error rather than a silently ignored reservation.
 fn resolve_device_reserves(
     dev: &crate::parse::DevicesConfig,
-) -> Result<DeviceReserves, ExpectedError> {
+) -> (DeviceReserves, ConfigDiagnosticReport) {
     let mut per_gpu_mb = BTreeMap::new();
+    let mut report = ConfigDiagnosticReport::new();
     for (key, mb) in &dev.gpu_reserved_mb {
-        let id: u32 = key.parse().map_err(|_| {
-            fail(format!(
-                "devices.gpu_reserved_mb: invalid GPU id key `{key}` (expected a number like \"0\")"
-            ))
-        })?;
-        per_gpu_mb.insert(id, *mb);
+        match key.parse::<u32>() {
+            Ok(id) => {
+                per_gpu_mb.insert(id, *mb);
+            }
+            Err(_) => report.push(ConfigDiagnostic::value(
+                crate::validate::ValidationErrorCode::ValueInvalid,
+                "devices.gpu_reserved_mb",
+                key,
+                Some("a numeric GPU id such as `0`".into()),
+            )),
+        }
     }
-    Ok(DeviceReserves {
-        default_gpu_mb: dev.default_gpu_reserved_mb.unwrap_or(0),
-        per_gpu_mb,
-        cpu_bytes: dev
-            .cpu
-            .reserved_gb
-            .unwrap_or(0)
-            .saturating_mul(1024 * 1024 * 1024),
-    })
+    (
+        DeviceReserves {
+            default_gpu_mb: dev.default_gpu_reserved_mb.unwrap_or(0),
+            per_gpu_mb,
+            cpu_bytes: dev
+                .cpu
+                .reserved_gb
+                .unwrap_or(0)
+                .saturating_mul(1024 * 1024 * 1024),
+        },
+        report,
+    )
 }
 
 /// Daemon-scoped inputs that don't change across services within a
@@ -183,7 +248,10 @@ pub(crate) struct ServiceValidationState<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::{DeviceSlot, TemplateConfig, test_fixtures::parse_and_merge};
+    use crate::validate::{
+        ConfigDiagnosticKind, DeviceSlot, TemplateConfig, ValidationErrorCode,
+        test_fixtures::parse_and_merge,
+    };
 
     const GOOD: &str = r#"
 [[service]]
@@ -268,7 +336,14 @@ devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("duplicate") && format!("{err}").contains("port"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Value {
+                code: ValidationErrorCode::ServicePortDuplicate,
+                ..
+            }
+        ));
     }
 
     #[test]

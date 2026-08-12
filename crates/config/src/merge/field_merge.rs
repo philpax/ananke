@@ -4,16 +4,18 @@
 
 use std::collections::BTreeMap;
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
-use crate::parse::{RawCommandService, RawLlamaCppService, RawServiceCommon};
+use crate::{
+    parse::{RawCommandService, RawLlamaCppService, RawServiceCommon},
+    validate::{ConfigDiagnostic, MergeReason},
+};
 
 pub(crate) fn merge_llama_cpp(
     parent: &RawLlamaCppService,
     child: &RawLlamaCppService,
     child_name: &SmolStr,
-) -> Result<RawLlamaCppService, ExpectedError> {
+) -> Result<RawLlamaCppService, ConfigDiagnostic> {
     let common = merge_common(&parent.common, &child.common, child_name)?;
 
     macro_rules! inherit {
@@ -82,7 +84,7 @@ pub(crate) fn merge_command(
     parent: &RawCommandService,
     child: &RawCommandService,
     child_name: &SmolStr,
-) -> Result<RawCommandService, ExpectedError> {
+) -> Result<RawCommandService, ConfigDiagnostic> {
     let common = merge_common(&parent.common, &child.common, child_name)?;
 
     Ok(RawCommandService {
@@ -116,13 +118,15 @@ fn merge_common(
     parent: &RawServiceCommon,
     child: &RawServiceCommon,
     child_name: &SmolStr,
-) -> Result<RawServiceCommon, ExpectedError> {
+) -> Result<RawServiceCommon, ConfigDiagnostic> {
     // Child must supply its own port; inheriting silently from a parent leads to
     // port conflicts that are hard to diagnose, so we make it an explicit error.
     if child.port.is_none() {
-        return Err(ExpectedError::config_unparseable(
-            std::path::PathBuf::from("<config>"),
-            format!("service {child_name} must override port from parent"),
+        return Err(ConfigDiagnostic::merge(
+            Some(child_name.to_string()),
+            None,
+            parent.name.as_ref().map(ToString::to_string),
+            MergeReason::PortMustOverride,
         ));
     }
 
@@ -241,9 +245,12 @@ fn deep_merge_strs(
 
 #[cfg(test)]
 mod tests {
-    use crate::merge::{
-        resolve_inheritance,
-        test_support::{find_llama, parse},
+    use crate::{
+        merge::{
+            resolve_inheritance,
+            test_support::{find_llama, parse},
+        },
+        validate::{ConfigDiagnosticKind, MergeReason},
     };
 
     #[test]
@@ -316,7 +323,14 @@ extends = "a"
 "#,
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
-        assert!(format!("{err}").contains("port"), "error: {err}");
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Merge {
+                reason: MergeReason::PortMustOverride,
+                ..
+            }
+        ));
     }
     #[test]
     fn env_inherit_inherited_from_parent() {

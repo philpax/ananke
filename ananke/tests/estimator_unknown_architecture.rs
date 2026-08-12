@@ -61,5 +61,8 @@ fn a_llama_cpp_service_may_declare_its_own_reservation() {
 fn a_declared_mode_without_its_reservation_is_rejected() {
     let err = AllocationMode::from_parts(Template::LlamaCpp, Some("static"), None, None, None, 0)
         .expect_err("static without reserve_gb must fail");
-    assert!(err.contains("reserve_gb"), "unhelpful error: {err}");
+    assert!(
+        err.to_string().contains("reserve_gb"),
+        "unhelpful error: {err}"
+    );
 }

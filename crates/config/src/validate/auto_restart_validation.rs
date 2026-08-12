@@ -1,7 +1,6 @@
 //! Resolve a service's `[auto_restart]` block — the guardrails, the trigger
 //! toggles, and the periodic-restart timer — into [`AutoRestartSettings`].
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
 use crate::{
@@ -11,10 +10,11 @@ use crate::{
     },
     parse::{RawAutoRestart, RawPeriodicSettings, Toggle},
     validate::{
-        AutoRestartSettings, DEFAULT_AUTO_RESTART_PERIODIC_MODE, ErrorRateTrigger,
-        GenerationStallTrigger, PeriodicMode, PeriodicTrigger, SpecCollapseTrigger, Template,
-        TtftStallTrigger, fail, parse_duration_ms, validate_error_rate, validate_generation_stall,
-        validate_spec_collapse, validate_ttft_stall,
+        AutoRestartSettings, ConfigDiagnostic, ConstraintReason,
+        DEFAULT_AUTO_RESTART_PERIODIC_MODE, ErrorRateTrigger, GenerationStallTrigger, PeriodicMode,
+        PeriodicTrigger, SpecCollapseTrigger, Template, TtftStallTrigger, ValidationErrorCode,
+        parse_duration_ms, validate_error_rate, validate_generation_stall, validate_spec_collapse,
+        validate_ttft_stall,
     },
 };
 
@@ -31,7 +31,7 @@ pub(crate) fn validate_auto_restart(
     template: Template,
     has_spec_type: bool,
     from_service_block: bool,
-) -> Result<AutoRestartSettings, ExpectedError> {
+) -> Result<AutoRestartSettings, crate::validate::ConfigDiagnostic> {
     // The generation-stall watchdog defaults per template: on for llama-cpp
     // (where ananke builds the argv and can inject `--metrics`), off for
     // command services (where it cannot; explicit opt-in soft-probes instead).
@@ -52,7 +52,14 @@ pub(crate) fn validate_auto_restart(
     };
 
     let dur = |field: &str, s: &str| {
-        parse_duration_ms(s).map_err(|e| fail(format!("service {name} auto_restart.{field}: {e}")))
+        parse_duration_ms(s).map_err(|error| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec![format!("auto_restart.{field}")],
+                ConstraintReason::DurationParseError { error },
+            )
+        })
     };
 
     // Error-rate watchdog is on by default; only an explicit `false` disables it.
@@ -67,9 +74,12 @@ pub(crate) fn validate_auto_restart(
     let periodic = match &raw.periodic {
         None | Some(Toggle::Enabled(false)) => None,
         Some(Toggle::Enabled(true)) => {
-            return Err(fail(format!(
-                "service {name}: auto_restart.periodic = true needs an interval; write `periodic = {{ interval = \"6h\" }}`"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["auto_restart.periodic".into()],
+                ConstraintReason::PeriodicNeedsInterval,
+            ));
         }
         Some(Toggle::Settings(s)) => Some(validate_periodic(name, s)?),
     };
@@ -99,11 +109,12 @@ pub(crate) fn validate_auto_restart(
         Some(Toggle::Enabled(false)) => None,
         Some(_) if !has_spec_type => {
             if from_service_block {
-                return Err(fail(format!(
-                    "service {name}: auto_restart.spec_collapse requires spec_type to be set \
-                     (without speculative decoding, responses carry no draft counts and the \
-                     watchdog can never fire)"
-                )));
+                return Err(ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["auto_restart.spec_collapse".into()],
+                    ConstraintReason::SpecCollapseRequiresSpecType,
+                ));
             }
             None
         }
@@ -142,17 +153,23 @@ pub(crate) fn validate_auto_restart(
 pub(crate) fn validate_periodic(
     name: &SmolStr,
     s: &RawPeriodicSettings,
-) -> Result<PeriodicTrigger, ExpectedError> {
+) -> Result<PeriodicTrigger, crate::validate::ConfigDiagnostic> {
     let interval_ms = match s.interval.as_deref() {
-        Some(x) => parse_duration_ms(x).map_err(|e| {
-            fail(format!(
-                "service {name} auto_restart.periodic.interval: {e}"
-            ))
+        Some(x) => parse_duration_ms(x).map_err(|error| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["auto_restart.periodic.interval".into()],
+                ConstraintReason::DurationParseError { error },
+            )
         })?,
         None => {
-            return Err(fail(format!(
-                "service {name}: auto_restart.periodic requires an `interval`"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["auto_restart.periodic".into()],
+                ConstraintReason::PeriodicMissingInterval,
+            ));
         }
     };
     let mode = match s.mode.as_deref() {
@@ -161,9 +178,14 @@ pub(crate) fn validate_periodic(
         Some("on-idle") => PeriodicMode::OnIdle,
         Some("on-request") => PeriodicMode::OnRequest,
         Some(other) => {
-            return Err(fail(format!(
-                "service {name}: auto_restart.periodic.mode must be `immediate`, `on-idle`, or `on-request`, got `{other}`"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["auto_restart.periodic.mode".into()],
+                ConstraintReason::PeriodicModeInvalid {
+                    value: other.to_string(),
+                },
+            ));
         }
     };
     Ok(PeriodicTrigger { interval_ms, mode })

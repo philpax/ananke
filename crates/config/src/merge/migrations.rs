@@ -3,10 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
-use crate::parse::{RawConfig, RawService};
+use crate::{
+    parse::{RawConfig, RawService},
+    validate::{ConfigDiagnostic, ConfigDiagnosticReport, MergeReason},
+};
 
 /// One service rename produced by a `migrate_from` chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,17 +23,21 @@ pub struct Migration {
 ///
 /// Returns pairs in topological order (sources before dependents) so the
 /// database layer can reparent sequentially. Cycles are errors.
-pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, ExpectedError> {
+pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, ConfigDiagnosticReport> {
     let mut out: Vec<Migration> = Vec::new();
+    let mut report = ConfigDiagnosticReport::new();
     let mut by_name: BTreeMap<SmolStr, &RawService> = BTreeMap::new();
     for s in &cfg.services {
-        let name = s.common().name.clone().ok_or_else(|| {
-            ExpectedError::config_unparseable(
-                std::path::PathBuf::from("<config>"),
-                "service without a name during migrate_from resolution".to_string(),
-            )
-        })?;
-        by_name.insert(name, s);
+        let Some(name) = s.common().name.clone() else {
+            report.push(ConfigDiagnostic::merge(
+                None,
+                None,
+                None,
+                MergeReason::MissingNameDuringMigration,
+            ));
+            continue;
+        };
+        by_name.entry(name).or_insert(s);
     }
 
     let mut visiting: BTreeSet<SmolStr> = BTreeSet::new();
@@ -43,15 +49,17 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
         visiting: &mut BTreeSet<SmolStr>,
         visited: &mut BTreeSet<SmolStr>,
         out: &mut Vec<Migration>,
-    ) -> Result<(), ExpectedError> {
+    ) -> Result<(), ConfigDiagnosticReport> {
         if visited.contains(name) {
             return Ok(());
         }
         if !visiting.insert(name.clone()) {
-            return Err(ExpectedError::config_unparseable(
-                std::path::PathBuf::from("<config>"),
-                format!("migrate_from cycle involving {name}"),
-            ));
+            return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
+                Some(name.to_string()),
+                None,
+                None,
+                MergeReason::MigrationCycle,
+            )));
         }
         if let Some(svc) = by_name.get(name)
             && let Some(old) = &svc.common().migrate_from
@@ -71,7 +79,9 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
 
     let names: Vec<SmolStr> = by_name.keys().cloned().collect();
     for n in &names {
-        visit(n, &by_name, &mut visiting, &mut visited, &mut out)?;
+        if let Err(child_report) = visit(n, &by_name, &mut visiting, &mut visited, &mut out) {
+            report.extend(child_report);
+        }
     }
 
     // Clear the migrate_from field on services so downstream code doesn't re-process.
@@ -79,7 +89,11 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, Expecte
         svc.common_mut().migrate_from = None;
     }
 
-    Ok(out)
+    if report.is_empty() {
+        Ok(out)
+    } else {
+        Err(report)
+    }
 }
 
 #[cfg(test)]

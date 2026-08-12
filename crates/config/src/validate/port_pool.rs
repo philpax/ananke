@@ -1,10 +1,12 @@
 //! Hand out the private loopback ports supervised children bind to, from the
 //! bounded range configured by `daemon.private_port_start` / `_end`.
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
-use crate::validate::{DEFAULT_PRIVATE_PORT_END, DEFAULT_PRIVATE_PORT_START, fail};
+use crate::validate::{
+    ConfigDiagnostic, DEFAULT_PRIVATE_PORT_END, DEFAULT_PRIVATE_PORT_START, ValidationErrorCode,
+    ValueDiagnosticDetail,
+};
 
 // `DEFAULT_PRIVATE_PORT_START` / `DEFAULT_PRIVATE_PORT_END` are re-exported
 // from `ananke_config` (see the `pub use` at the top of this module).
@@ -23,13 +25,20 @@ impl PrivatePortRange {
         (self.end as u32) - (self.start as u32) + 1
     }
 
-    pub(crate) fn from_config(start: Option<u16>, end: Option<u16>) -> Result<Self, ExpectedError> {
+    pub(crate) fn from_config(
+        start: Option<u16>,
+        end: Option<u16>,
+    ) -> Result<Self, ConfigDiagnostic> {
         let start = start.unwrap_or(DEFAULT_PRIVATE_PORT_START);
         let end = end.unwrap_or(DEFAULT_PRIVATE_PORT_END);
         if end <= start {
-            return Err(fail(format!(
-                "daemon.private_port_end ({end}) must exceed daemon.private_port_start ({start})"
-            )));
+            return Err(ConfigDiagnostic::value_with_detail(
+                ValidationErrorCode::PrivatePortRangeInvalid,
+                ValueDiagnosticDetail::PrivatePortRangeInvalid,
+                "daemon.private_port_range",
+                format!("{start}..={end}"),
+                Some("private_port_end greater than private_port_start".into()),
+            ));
         }
         Ok(Self { start, end })
     }
@@ -40,6 +49,7 @@ impl PrivatePortRange {
 /// detected at spawn time by llama-server's bind failure, not by this
 /// allocator — probing here would only narrow a race window that the
 /// supervisor already surfaces as a `StartFailure`.
+#[derive(Clone)]
 pub(crate) struct PrivatePortAllocator {
     pub(crate) range: PrivatePortRange,
     next: u32,
@@ -53,14 +63,19 @@ impl PrivatePortAllocator {
         }
     }
 
-    pub(crate) fn allocate(&mut self, svc_name: &SmolStr) -> Result<u16, ExpectedError> {
+    pub(crate) fn allocate(&mut self, svc_name: &SmolStr) -> Result<u16, ConfigDiagnostic> {
         if self.next > self.range.end as u32 {
-            return Err(fail(format!(
-                "service {svc_name}: private_port_range [{}, {}] exhausted ({} slots) — widen the range or reduce service count",
-                self.range.start,
-                self.range.end,
-                self.range.width()
-            )));
+            return Err(ConfigDiagnostic::value(
+                ValidationErrorCode::PrivatePortExhausted,
+                "daemon.private_port_range",
+                format!(
+                    "service {svc_name}: private_port_range [{}, {}] exhausted ({} slots) — widen the range or reduce service count",
+                    self.range.start,
+                    self.range.end,
+                    self.range.width()
+                ),
+                Some("an available private port".into()),
+            ));
         }
         let port = self.next as u16;
         self.next += 1;

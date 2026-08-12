@@ -4,93 +4,171 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
 use crate::{
     merge::field_merge::{merge_command, merge_llama_cpp},
     parse::{RawConfig, RawService},
+    validate::{ConfigDiagnostic, ConfigDiagnosticReport, MergeReason},
 };
+
+#[derive(Clone)]
+struct IndexedService {
+    service: RawService,
+    source_index: usize,
+}
 
 /// Resolve every service's `extends` chain, merging inherited fields into
 /// each service and enforcing that a service only extends the same template.
-pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ExpectedError> {
-    // Index services by name; require names and disallow duplicates.
-    let mut by_name: BTreeMap<SmolStr, RawService> = BTreeMap::new();
-    for s in std::mem::take(&mut cfg.services) {
-        let name = s.common().name.clone().ok_or_else(|| {
-            ExpectedError::config_unparseable(
-                std::path::PathBuf::from("<config>"),
-                "service block missing name".into(),
-            )
-        })?;
-        if by_name.insert(name.clone(), s).is_some() {
-            return Err(ExpectedError::config_unparseable(
-                std::path::PathBuf::from("<config>"),
-                format!("duplicate service name: {name}"),
-            ));
+///
+/// The effective services remain BTreeMap ordered, while their original source
+/// indexes are retained on [`RawConfig`] for diagnostic ordering.
+pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticReport> {
+    let mut report = ConfigDiagnosticReport::new();
+    let source_indices = if cfg.service_source_indices.len() == cfg.services.len() {
+        cfg.service_source_indices.clone()
+    } else {
+        (0..cfg.services.len()).collect()
+    };
+    let mut by_name: BTreeMap<SmolStr, IndexedService> = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for (source_index, service) in std::mem::take(&mut cfg.services).into_iter().enumerate() {
+        let source_index = source_indices
+            .get(source_index)
+            .copied()
+            .unwrap_or(source_index);
+        let Some(name) = service.common().name.clone() else {
+            report.push(
+                ConfigDiagnostic::value(
+                    crate::validate::ValidationErrorCode::FieldMissing,
+                    format!("service[{source_index}].name"),
+                    "<missing>",
+                    Some("a service name".into()),
+                )
+                .with_source_index(source_index),
+            );
+            skipped.push(IndexedService {
+                service,
+                source_index,
+            });
+            continue;
+        };
+        if by_name.contains_key(&name) {
+            report.push(
+                ConfigDiagnostic::value(
+                    crate::validate::ValidationErrorCode::ServiceNameDuplicate,
+                    "service.name",
+                    name.to_string(),
+                    Some("a unique service name".into()),
+                )
+                .with_source_index(source_index),
+            );
+            skipped.push(IndexedService {
+                service,
+                source_index,
+            });
+            continue;
+        }
+        by_name.insert(
+            name,
+            IndexedService {
+                service,
+                source_index,
+            },
+        );
+    }
+
+    let mut resolved: BTreeMap<SmolStr, IndexedService> = BTreeMap::new();
+    let names: Vec<SmolStr> = by_name.keys().cloned().collect();
+    for name in &names {
+        if let Err(child_report) = resolve_one(name, &by_name, &mut resolved, &mut BTreeSet::new())
+        {
+            report.extend(child_report);
+            if let Some(entry) = by_name.get(name) {
+                skipped.push(entry.clone());
+            }
         }
     }
 
-    // Topologically resolve each service's extends chain.
-    let mut resolved: BTreeMap<SmolStr, RawService> = BTreeMap::new();
-    let names: Vec<SmolStr> = by_name.keys().cloned().collect();
-    for name in &names {
-        resolve_one(name, &by_name, &mut resolved, &mut BTreeSet::new())?;
+    cfg.services = resolved
+        .values()
+        .map(|entry| entry.service.clone())
+        .chain(skipped.iter().map(|entry| entry.service.clone()))
+        .collect();
+    cfg.service_source_indices = resolved
+        .values()
+        .map(|entry| entry.source_index)
+        .chain(skipped.iter().map(|entry| entry.source_index))
+        .collect();
+    if report.is_empty() {
+        Ok(())
+    } else {
+        Err(report)
     }
-
-    cfg.services = resolved.into_values().collect();
-    Ok(())
 }
 
 fn resolve_one(
     name: &SmolStr,
-    source: &BTreeMap<SmolStr, RawService>,
-    resolved: &mut BTreeMap<SmolStr, RawService>,
+    source: &BTreeMap<SmolStr, IndexedService>,
+    resolved: &mut BTreeMap<SmolStr, IndexedService>,
     stack: &mut BTreeSet<SmolStr>,
-) -> Result<(), ExpectedError> {
+) -> Result<(), ConfigDiagnosticReport> {
     if resolved.contains_key(name) {
         return Ok(());
     }
     if !stack.insert(name.clone()) {
-        return Err(ExpectedError::config_unparseable(
-            std::path::PathBuf::from("<config>"),
-            format!("extends cycle involving service {name}"),
-        ));
+        return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
+            Some(name.to_string()),
+            source.get(name).map(|entry| entry.source_index),
+            None,
+            MergeReason::Cycle,
+        )));
     }
 
-    let raw = source.get(name).cloned().ok_or_else(|| {
-        ExpectedError::config_unparseable(
-            std::path::PathBuf::from("<config>"),
-            format!("service {name} not found during extends resolution"),
-        )
-    })?;
-
+    let Some(raw_entry) = source.get(name).cloned() else {
+        return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
+            Some(name.to_string()),
+            None,
+            None,
+            MergeReason::ServiceNotFound,
+        )));
+    };
+    let raw = raw_entry.service.clone();
     let merged = match raw.common().extends.clone() {
         None => raw,
         Some(parent_name) => {
             if !source.contains_key(&parent_name) {
-                return Err(ExpectedError::config_unparseable(
-                    std::path::PathBuf::from("<config>"),
-                    format!("service {name} extends {parent_name} which does not exist"),
-                ));
+                return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
+                    Some(name.to_string()),
+                    Some(raw_entry.source_index),
+                    Some(parent_name.to_string()),
+                    MergeReason::ParentNotFound,
+                )));
             }
             resolve_one(&parent_name, source, resolved, stack)?;
-            let parent = resolved
+            let Some(parent) = resolved
                 .get(&parent_name)
-                .ok_or_else(|| {
-                    ExpectedError::config_unparseable(
-                        std::path::PathBuf::from("<config>"),
-                        format!("service {name} extends {parent_name} which resolved to nothing"),
-                    )
-                })?
-                .clone();
-            merge_service(&parent, &raw, name)?
+                .map(|entry| entry.service.clone())
+            else {
+                return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
+                    Some(name.to_string()),
+                    Some(raw_entry.source_index),
+                    Some(parent_name.to_string()),
+                    MergeReason::ParentResolvedToNothing,
+                )));
+            };
+            merge_service(&parent, &raw, name).map_err(ConfigDiagnosticReport::from)?
         }
     };
 
     stack.remove(name);
-    resolved.insert(name.clone(), merged);
+    resolved.insert(
+        name.clone(),
+        IndexedService {
+            service: merged,
+            source_index: raw_entry.source_index,
+        },
+    );
     Ok(())
 }
 
@@ -98,7 +176,7 @@ fn merge_service(
     parent: &RawService,
     child: &RawService,
     child_name: &SmolStr,
-) -> Result<RawService, ExpectedError> {
+) -> Result<RawService, ConfigDiagnostic> {
     match (parent, child) {
         (RawService::LlamaCpp(p), RawService::LlamaCpp(c)) => Ok(RawService::LlamaCpp(Box::new(
             merge_llama_cpp(p, c, child_name)?,
@@ -106,14 +184,14 @@ fn merge_service(
         (RawService::Command(p), RawService::Command(c)) => Ok(RawService::Command(Box::new(
             merge_command(p, c, child_name)?,
         ))),
-        _ => Err(ExpectedError::config_unparseable(
-            std::path::PathBuf::from("<config>"),
-            format!(
-                "service {child_name}: template `{}` does not match parent's template `{}`; \
-                 cross-template extends is not allowed",
-                child.template_label(),
-                parent.template_label(),
-            ),
+        _ => Err(ConfigDiagnostic::merge(
+            Some(child_name.to_string()),
+            None,
+            parent.common().name.as_ref().map(ToString::to_string),
+            MergeReason::TemplateMismatch {
+                child: child.template_label().to_string(),
+                parent: parent.template_label().to_string(),
+            },
         )),
     }
 }
@@ -121,7 +199,10 @@ fn merge_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::merge::test_support::{find_llama, parse};
+    use crate::{
+        merge::test_support::{find_llama, parse},
+        validate::{ConfigDiagnosticKind, MergeReason},
+    };
 
     #[test]
     fn transitive_extends() {
@@ -173,7 +254,14 @@ extends = "a"
 "#,
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
-        assert!(format!("{err}").contains("cycle"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Merge {
+                reason: MergeReason::Cycle,
+                ..
+            }
+        ));
     }
     #[test]
     fn missing_extends_target_is_error() {
@@ -188,7 +276,14 @@ extends = "does-not-exist"
 "#,
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
-        assert!(format!("{err}").contains("does-not-exist"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Merge {
+                reason: MergeReason::ParentNotFound,
+                ..
+            }
+        ));
     }
     #[test]
     fn cross_template_extends_is_error() {
@@ -209,10 +304,13 @@ model = "/m/a.gguf"
 "#,
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("template") && msg.contains("cross-template"),
-            "unexpected error: {msg}"
-        );
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Merge {
+                reason: MergeReason::TemplateMismatch { .. },
+                ..
+            }
+        ));
     }
 }

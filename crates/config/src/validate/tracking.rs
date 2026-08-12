@@ -1,10 +1,9 @@
 //! Snapshotter attribution hints (`[[service]].tracking`) and their
 //! validation.
 
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 
-use crate::validate::fail;
+use crate::validate::{ConfigDiagnostic, ValidationErrorCode, ValueDiagnosticDetail};
 
 /// Snapshotter attribution hints. Empty (`Default::default()`) by default,
 /// in which case the snapshotter falls back to "registered pid +
@@ -19,36 +18,52 @@ pub struct TrackingSettings {
 }
 
 pub(crate) fn validate_tracking(
-    name: &SmolStr,
+    _name: &SmolStr,
     raw: Option<&crate::parse::RawTracking>,
-) -> Result<TrackingSettings, ExpectedError> {
+) -> Result<TrackingSettings, ConfigDiagnostic> {
     let Some(raw) = raw else {
         return Ok(TrackingSettings::default());
     };
     let cgroup_parent = match &raw.cgroup_parent {
         Some(s) if s.is_empty() => {
-            return Err(fail(format!(
-                "service {name}: tracking.cgroup_parent is empty — omit the field or supply a non-empty cgroup path"
-            )));
+            return Err(ConfigDiagnostic::value_with_detail(
+                ValidationErrorCode::TrackingConstraint,
+                ValueDiagnosticDetail::TrackingEmpty,
+                "tracking.cgroup_parent",
+                s.to_string(),
+                Some("a non-empty cgroup path".into()),
+            ));
         }
         Some(s) if !s.starts_with('/') => {
-            return Err(fail(format!(
-                "service {name}: tracking.cgroup_parent must be an absolute cgroup v2 path starting with `/` (got `{s}`)"
-            )));
+            return Err(ConfigDiagnostic::value_with_detail(
+                ValidationErrorCode::TrackingConstraint,
+                ValueDiagnosticDetail::TrackingNotAbsolute,
+                "tracking.cgroup_parent",
+                s.to_string(),
+                Some("an absolute cgroup v2 path".into()),
+            ));
         }
         Some(s) if s.ends_with('/') => {
-            return Err(fail(format!(
-                "service {name}: tracking.cgroup_parent must not end with `/` (got `{s}`)"
-            )));
+            return Err(ConfigDiagnostic::value_with_detail(
+                ValidationErrorCode::TrackingConstraint,
+                ValueDiagnosticDetail::TrackingTrailingSlash,
+                "tracking.cgroup_parent",
+                s.to_string(),
+                Some("a path without a trailing slash".into()),
+            ));
         }
         Some(s)
             if !s
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-')) =>
         {
-            return Err(fail(format!(
-                "service {name}: tracking.cgroup_parent contains invalid characters (allowed: alphanumeric, `.`, `_`, `/`, `-`); got `{s}`"
-            )));
+            return Err(ConfigDiagnostic::value_with_detail(
+                ValidationErrorCode::TrackingConstraint,
+                ValueDiagnosticDetail::TrackingInvalidCharacters,
+                "tracking.cgroup_parent",
+                s.to_string(),
+                Some("alphanumeric, `.`, `_`, `/`, and `-` characters".into()),
+            ));
         }
         Some(s) => Some(s.clone()),
         None => None,
@@ -58,7 +73,9 @@ pub(crate) fn validate_tracking(
 
 #[cfg(test)]
 mod tests {
-    use crate::validate::{test_fixtures::parse_and_merge, validate};
+    use crate::validate::{
+        ConfigDiagnosticKind, ValueDiagnosticDetail, test_fixtures::parse_and_merge, validate,
+    };
 
     #[test]
     fn tracking_cgroup_parent_accepted_when_well_formed() {
@@ -99,10 +116,14 @@ tracking.cgroup_parent = "ananke-comfyui.slice"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("absolute cgroup v2 path"),
-            "expected absolute-path error, got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Value {
+                detail: ValueDiagnosticDetail::TrackingNotAbsolute,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -121,9 +142,13 @@ tracking.cgroup_parent = "/system.slice/ananke-comfyui.slice/"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("must not end with"),
-            "expected trailing-slash error, got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Value {
+                detail: ValueDiagnosticDetail::TrackingTrailingSlash,
+                ..
+            }
+        ));
     }
 }

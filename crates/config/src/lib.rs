@@ -26,12 +26,13 @@ pub use file::{PathSources, resolve_config_path, resolve_from_env};
 pub use merge::{Migration, resolve_inheritance, resolve_migrations};
 pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
-    AllocationMode, AutoRestartSettings, CommandConfig, DaemonSettings, DeviceReserves, DeviceSlot,
-    EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters, GenerationStallTrigger,
-    HealthSettings, IkSettings, Lifecycle, LlamaCppConfig, NumaStrategy, OffloadMode, PeriodicMode,
-    PeriodicTrigger, PlacementPolicy, Runtime, RuntimeConfig, ServiceConfig, SpecCollapseTrigger,
-    SplitMode, Template, TemplateConfig, TrackingSettings, TtftStallTrigger, validate,
-    validate_with_checks,
+    AllocationMode, AutoRestartSettings, CommandConfig, ConfigDiagnostic, ConfigDiagnosticKind,
+    ConfigDiagnosticReport, ConfigPipelineError, DaemonSettings, DeviceReserves, DeviceSlot,
+    DiagnosticContext, DiagnosticLocation, EffectiveConfig, ErrorRateTrigger, ErrorStatusClass,
+    Filters, GenerationStallTrigger, HealthSettings, IkSettings, Lifecycle, LlamaCppConfig,
+    NumaStrategy, OffloadMode, PeriodicMode, PeriodicTrigger, PlacementPolicy, Runtime,
+    RuntimeConfig, ServiceConfig, SpecCollapseTrigger, SplitMode, Template, TemplateConfig,
+    TrackingSettings, TtftStallTrigger, ValidationErrorCode, validate, validate_with_checks,
 };
 
 /// Load, parse, merge, validate, and preflight a config file from disk.
@@ -55,8 +56,9 @@ pub fn load_config_with_fs(
     source: &str,
 ) -> Result<(EffectiveConfig, Vec<Migration>), ananke_errors::ExpectedError> {
     let (effective, migrations) =
-        load_config_from_str_with_checks(source, origin, &validate::NoopPlaceholderChecker)?;
-    preflight_ggufs(&effective, fs)?;
+        load_config_from_str_with_checks(source, origin, &validate::NoopPlaceholderChecker)
+            .map_err(|error| error.into_expected_error(origin.to_path_buf()))?;
+    preflight_ggufs(origin, &effective, fs)?;
     Ok((effective, migrations))
 }
 
@@ -65,8 +67,9 @@ pub fn load_config_with_fs(
 pub fn load_config_from_str(
     source: &str,
     origin: &std::path::Path,
-) -> Result<(EffectiveConfig, Vec<Migration>), ananke_errors::ExpectedError> {
+) -> Result<(EffectiveConfig, Vec<Migration>), validate::ConfigDiagnosticReport> {
     load_config_from_str_with_checks(source, origin, &validate::NoopPlaceholderChecker)
+        .map_err(validate::ConfigPipelineError::into_report)
 }
 
 /// [`load_config_from_str`] with an injected placeholder dry-run checker.
@@ -74,17 +77,46 @@ pub fn load_config_from_str_with_checks(
     source: &str,
     origin: &std::path::Path,
     checker: &dyn validate::PlaceholderChecker,
-) -> Result<(EffectiveConfig, Vec<Migration>), ananke_errors::ExpectedError> {
-    let mut raw = parse_toml(source, origin)?;
-    resolve_inheritance(&mut raw)?;
-    let migrations = resolve_migrations(&mut raw)?;
-    let effective = validate_with_checks(&raw, checker)?;
-    Ok((effective, migrations))
+) -> Result<(EffectiveConfig, Vec<Migration>), validate::ConfigPipelineError> {
+    let mut raw = parse_toml(source, origin).map_err(|diagnostic| {
+        validate::ConfigPipelineError::Parse(validate::ConfigDiagnosticReport::from(diagnostic))
+    })?;
+    let mut report = validate::ConfigDiagnosticReport::new();
+    let mut merge_failed = false;
+    if let Err(merge_report) = resolve_inheritance(&mut raw) {
+        merge_failed = true;
+        report.extend(merge_report);
+    }
+    let migrations = match resolve_migrations(&mut raw) {
+        Ok(migrations) => migrations,
+        Err(migration_report) => {
+            merge_failed = true;
+            report.extend(migration_report);
+            Vec::new()
+        }
+    };
+    match validate_with_checks(&raw, checker) {
+        Ok(effective) if report.is_empty() => Ok((effective, migrations)),
+        Ok(_) => Err(if merge_failed {
+            validate::ConfigPipelineError::Merge(report)
+        } else {
+            validate::ConfigPipelineError::Validation(report)
+        }),
+        Err(validation_report) => {
+            report.extend(validation_report);
+            Err(if merge_failed {
+                validate::ConfigPipelineError::Merge(report)
+            } else {
+                validate::ConfigPipelineError::Validation(report)
+            })
+        }
+    }
 }
 
 /// Walk every llama-cpp service's GGUF through `fs` and ensure the reader
 /// can enumerate each tensor table.
 pub fn preflight_ggufs(
+    origin: &std::path::Path,
     cfg: &EffectiveConfig,
     fs: &dyn ananke_fs::Fs,
 ) -> Result<(), ananke_errors::ExpectedError> {
@@ -94,18 +126,121 @@ pub fn preflight_ggufs(
         };
         ananke_gguf::read(fs, &lc.model).map_err(|e| {
             ananke_errors::ExpectedError::config_unparseable(
-                std::path::PathBuf::from("<preflight>"),
+                origin.to_path_buf(),
                 format!("service {}: {}", svc.name, e),
             )
         })?;
         if let Some(mmproj) = &lc.mmproj {
             ananke_gguf::read(fs, mmproj.as_path()).map_err(|e| {
                 ananke_errors::ExpectedError::config_unparseable(
-                    std::path::PathBuf::from("<preflight>"),
+                    origin.to_path_buf(),
                     format!("service {} mmproj: {}", svc.name, e),
                 )
             })?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn loader_preserves_pipeline_phase_for_parser_failures() {
+        let error = load_config_from_str_with_checks(
+            "this is not valid toml [[[",
+            Path::new("/tmp/config.toml"),
+            &validate::NoopPlaceholderChecker,
+        )
+        .expect_err("malformed TOML must fail");
+        assert!(matches!(error, ConfigPipelineError::Parse(_)));
+    }
+
+    #[test]
+    fn loader_preserves_pipeline_phase_for_merge_failures() {
+        let source = r#"
+[[service]]
+name = "broken"
+template = "command"
+extends = "missing"
+port = 12000
+command = ["/bin/true"]
+allocation.mode = "static"
+allocation.reserve_gb = 1
+"#;
+        let error = load_config_from_str_with_checks(
+            source,
+            Path::new("/tmp/config.toml"),
+            &validate::NoopPlaceholderChecker,
+        )
+        .expect_err("missing parent must fail");
+        let ConfigPipelineError::Merge(report) = error else {
+            panic!("expected a merge phase error");
+        };
+        assert!(
+            report
+                .as_slice()
+                .iter()
+                .any(|diagnostic| { diagnostic.code() == ValidationErrorCode::MergeConstraint })
+        );
+    }
+
+    #[test]
+    fn loader_preserves_pipeline_phase_for_semantic_failures() {
+        let source = r#"
+[daemon]
+management_listen = "not-an-address"
+"#;
+        let error = load_config_from_str_with_checks(
+            source,
+            Path::new("/tmp/config.toml"),
+            &validate::NoopPlaceholderChecker,
+        )
+        .expect_err("invalid listen address must fail");
+        let ConfigPipelineError::Validation(report) = error else {
+            panic!("expected a validation phase error");
+        };
+        assert_eq!(
+            report.as_slice()[0].code(),
+            ValidationErrorCode::ValueInvalid
+        );
+    }
+
+    #[test]
+    fn loader_keeps_effective_services_in_name_order() {
+        let source = r#"
+[[service]]
+name = "zeta"
+template = "command"
+port = 12000
+command = ["/bin/true"]
+allocation.mode = "static"
+allocation.reserve_gb = 1
+
+[[service]]
+name = "alpha"
+template = "command"
+port = 12001
+command = ["/bin/true"]
+allocation.mode = "static"
+allocation.reserve_gb = 1
+"#;
+        let (effective, _) = load_config_from_str_with_checks(
+            source,
+            Path::new("/tmp/config.toml"),
+            &validate::NoopPlaceholderChecker,
+        )
+        .expect("valid command services should load");
+        assert_eq!(
+            effective
+                .services
+                .iter()
+                .map(|service| service.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zeta"]
+        );
+    }
 }

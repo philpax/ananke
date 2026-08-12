@@ -8,7 +8,6 @@ use std::{
 };
 
 use ananke_api::shared::modality::Modality;
-use ananke_errors::ExpectedError;
 use smol_str::SmolStr;
 use tracing::warn;
 
@@ -20,11 +19,11 @@ use crate::{
     },
     parse::RawService,
     validate::{
-        AllocationMode, DaemonValidationCtx, DeviceSlot, Filters, HealthSettings, Lifecycle,
-        PlacementPolicy, ServiceConfig, ServiceValidationState, SplitMode, Template,
-        TemplateConfig, build_ananke_metadata, command_uses_port_placeholder, fail,
-        parse_duration_ms, toml_value_to_json, validate_auto_restart, validate_command,
-        validate_llama_cpp, validate_tracking,
+        AllocationMode, ConfigDiagnostic, ConstraintReason, DaemonValidationCtx, DeviceSlot,
+        Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, ServiceValidationState,
+        SplitMode, Template, TemplateConfig, ValidationErrorCode, build_ananke_metadata,
+        command_uses_port_placeholder, parse_duration_ms, toml_value_to_json,
+        validate_auto_restart, validate_command, validate_llama_cpp, validate_tracking,
     },
 };
 
@@ -33,26 +32,48 @@ pub(crate) fn validate_service(
     raw: &RawService,
     daemon: &DaemonValidationCtx<'_>,
     state: &mut ServiceValidationState<'_>,
-) -> Result<ServiceConfig, ExpectedError> {
+) -> Result<ServiceConfig, crate::validate::ConfigDiagnostic> {
     let common = raw.common();
-    let name = common
-        .name
-        .clone()
-        .ok_or_else(|| fail(format!("service[{index}] missing name")))?;
-    let port = common
-        .port
-        .ok_or_else(|| fail(format!("service {name} missing port")))?;
+    let name = common.name.clone().ok_or_else(|| {
+        ConfigDiagnostic::value(
+            ValidationErrorCode::FieldMissing,
+            format!("service[{index}].name"),
+            "<missing>",
+            Some("a service name".into()),
+        )
+    })?;
+    let port = common.port.ok_or_else(|| {
+        ConfigDiagnostic::value(
+            ValidationErrorCode::FieldMissing,
+            "service.port",
+            "<missing>",
+            Some("a public port".into()),
+        )
+    })?;
 
     if !state.names.insert(name.clone()) {
-        return Err(fail(format!("duplicate service name `{name}`")));
+        return Err(ConfigDiagnostic::value(
+            ValidationErrorCode::ServiceNameDuplicate,
+            "service.name",
+            name.to_string(),
+            Some("a unique service name".into()),
+        ));
     }
     if !state.ports.insert(port) {
-        return Err(fail(format!("duplicate service port {port}")));
+        return Err(ConfigDiagnostic::value(
+            ValidationErrorCode::ServicePortDuplicate,
+            "service.port",
+            port.to_string(),
+            Some("a unique port".into()),
+        ));
     }
     if Some(port) == daemon.management_port {
-        return Err(fail(format!(
-            "service {name} port {port} collides with daemon.management_listen"
-        )));
+        return Err(ConfigDiagnostic::value(
+            ValidationErrorCode::ServicePortManagementCollision,
+            "service.port",
+            port.to_string(),
+            Some("a port different from daemon.management_listen".into()),
+        ));
     }
 
     let (allocation_mode, template_config) = match raw {
@@ -73,7 +94,14 @@ pub(crate) fn validate_service(
                 None,
                 DEFAULT_MIN_BORROWER_RUNTIME_MS,
             )
-            .map_err(|e| fail(format!("service {name}: {e}")))?;
+            .map_err(|e| {
+                ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["allocation.mode".into()],
+                    e,
+                )
+            })?;
             (alloc, TemplateConfig::LlamaCpp(Box::new(tc)))
         }
         RawService::Command(cmd) => {
@@ -83,7 +111,14 @@ pub(crate) fn validate_service(
                 .as_deref()
                 .map(parse_duration_ms)
                 .transpose()
-                .map_err(|e| fail(format!("service {name} min_borrower_runtime: {e}")))?
+                .map_err(|e| {
+                    ConfigDiagnostic::constraint(
+                        ValidationErrorCode::TemplateConstraint,
+                        Some(name.to_string()),
+                        vec!["allocation.min_borrower_runtime".into()],
+                        ConstraintReason::DurationParseError { error: e },
+                    )
+                })?
                 .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
             let alloc = AllocationMode::from_parts(
                 Template::Command,
@@ -93,7 +128,14 @@ pub(crate) fn validate_service(
                 raw_alloc.max_reserve_gb,
                 runtime_ms,
             )
-            .map_err(|e| fail(format!("service {name}: {e}")))?;
+            .map_err(|e| {
+                ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["allocation.mode".into()],
+                    e,
+                )
+            })?;
             let tc = validate_command(&name, cmd, daemon.placeholder_checker)?;
             (alloc, TemplateConfig::Command(tc))
         }
@@ -107,22 +149,48 @@ pub(crate) fn validate_service(
         "persistent" => Lifecycle::Persistent,
         "on_demand" => Lifecycle::OnDemand,
         "oneshot" => {
-            return Err(fail(format!(
-                "service {name}: lifecycle `oneshot` is invalid in a [[service]] block (API-only)"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.lifecycle".into()],
+                ConstraintReason::LifecycleOneshotInvalid,
+            ));
         }
-        other => return Err(fail(format!("service {name}: unknown lifecycle `{other}`"))),
+        other => {
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.lifecycle".into()],
+                ConstraintReason::LifecycleUnknown {
+                    value: other.into(),
+                },
+            ));
+        }
     };
 
-    let metadata = build_ananke_metadata(common.metadata.as_ref())
-        .map_err(|e| fail(format!("service {name} metadata: {e}")))?;
+    let metadata = build_ananke_metadata(common.metadata.as_ref()).map_err(|e| {
+        ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["service.metadata".into()],
+            ConstraintReason::MetadataInvalid {
+                field: "service.metadata".into(),
+                error: e.to_string(),
+            },
+        )
+    })?;
     let modality = match common.modality.as_deref() {
         None | Some("chat") => Modality::Chat,
         Some("embedding") => Modality::Embedding,
         Some(other) => {
-            return Err(fail(format!(
-                "service {name}: unknown modality `{other}` (valid: `chat`, `embedding`)"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.modality".into()],
+                ConstraintReason::ModalityUnknown {
+                    value: other.into(),
+                },
+            ));
         }
     };
     // llama-cpp always speaks OpenAI. Command services opt in by
@@ -146,15 +214,26 @@ pub(crate) fn validate_service(
             if let Some(n) = n_gpu_layers
                 && n != 0
             {
-                return Err(fail(format!(
-                    "service {name}: devices.placement=cpu-only with n_gpu_layers={} is invalid",
-                    n
-                )));
+                return Err(ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["devices.placement".into(), "llama_cpp.n_gpu_layers".into()],
+                    ConstraintReason::CpuOnlyWithGpuLayers { n_gpu_layers: n },
+                ));
             }
             PlacementPolicy::CpuOnly
         }
         "hybrid" => PlacementPolicy::Hybrid,
-        other => return Err(fail(format!("service {name}: unknown placement `{other}`"))),
+        other => {
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["devices.placement".into()],
+                ConstraintReason::PlacementUnknown {
+                    value: other.into(),
+                },
+            ));
+        }
     };
 
     if let TemplateConfig::LlamaCpp(lc) = &template_config
@@ -168,9 +247,12 @@ pub(crate) fn validate_service(
 
     let raw_override = dev.placement_override.clone().unwrap_or_default();
     if dev.placement_override.is_some() && raw_override.is_empty() {
-        return Err(fail(format!(
-            "service {name}: devices.placement_override is empty"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["devices.placement_override".into()],
+            ConstraintReason::PlacementOverrideEmpty,
+        ));
     }
     let mut placement_override = BTreeMap::new();
     for (k, v) in raw_override {
@@ -178,22 +260,31 @@ pub(crate) fn validate_service(
             "cpu" => DeviceSlot::Cpu,
             s if s.starts_with("gpu:") => {
                 let n: u32 = s[4..].parse().map_err(|_| {
-                    fail(format!(
-                        "service {name}: invalid placement_override key `{s}`"
-                    ))
+                    ConfigDiagnostic::constraint(
+                        ValidationErrorCode::TemplateConstraint,
+                        Some(name.to_string()),
+                        vec!["devices.placement_override".into()],
+                        ConstraintReason::PlacementOverrideKeyInvalid { key: s.into() },
+                    )
                 })?;
                 DeviceSlot::Gpu(n)
             }
             other => {
-                return Err(fail(format!(
-                    "service {name}: invalid placement_override key `{other}`"
-                )));
+                return Err(ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["devices.placement_override".into()],
+                    ConstraintReason::PlacementOverrideKeyInvalid { key: other.into() },
+                ));
             }
         };
         if v == 0 {
-            return Err(fail(format!(
-                "service {name}: placement_override for {k} is zero"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["devices.placement_override".into()],
+                ConstraintReason::PlacementOverrideZero { key: k.clone() },
+            ));
         }
         placement_override.insert(slot, v);
     }
@@ -201,9 +292,12 @@ pub(crate) fn validate_service(
     if placement_policy == PlacementPolicy::GpuOnly
         && placement_override.contains_key(&DeviceSlot::Cpu)
     {
-        return Err(fail(format!(
-            "service {name}: placement=gpu-only but placement_override includes cpu"
-        )));
+        return Err(ConfigDiagnostic::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.to_string()),
+            vec!["devices.placement_override".into()],
+            ConstraintReason::GpuOnlyWithCpuOverride,
+        ));
     }
 
     let gpu_allow = dev.gpu_allow.clone().unwrap_or_default();
@@ -212,10 +306,12 @@ pub(crate) fn validate_service(
     let split_mode = match dev.split.as_deref() {
         None => SplitMode::Layer,
         Some(s) => SplitMode::from_flag(s).ok_or_else(|| {
-            fail(format!(
-                "service {name}: unknown devices.split `{s}` (expected {})",
-                SplitMode::valid_values()
-            ))
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["devices.split".into()],
+                ConstraintReason::SplitUnknown { value: s.into() },
+            )
         })?,
     };
 
@@ -228,38 +324,60 @@ pub(crate) fn validate_service(
         && lc.expert_offload.is_enabled()
     {
         if split_mode.is_sharded() {
-            return Err(fail(format!(
-                "service {name}: expert_offload cannot be combined with devices.split=`{}` (sharded split is GPU-only; expert offload targets the CPU)",
-                split_mode.as_flag()
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["llama_cpp.expert_offload".into(), "devices.split".into()],
+                ConstraintReason::ExpertOffloadConflictsShardedSplit {
+                    split: split_mode.as_flag().into(),
+                },
+            ));
         }
         if placement_policy != PlacementPolicy::Hybrid {
-            return Err(fail(format!(
-                "service {name}: expert_offload requires placement=hybrid (expert tensors offload to CPU)"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec![
+                    "llama_cpp.expert_offload".into(),
+                    "devices.placement".into(),
+                ],
+                ConstraintReason::ExpertOffloadRequiresHybridPlacement,
+            ));
         }
     }
     if split_mode.is_sharded() {
         // Tensor/row split shards every layer across all spanned GPUs in
         // parallel; there is no CPU half and no per-tensor override to honour.
         if placement_policy != PlacementPolicy::GpuOnly {
-            return Err(fail(format!(
-                "service {name}: devices.split=`{}` requires placement=gpu-only (tensor/row split cannot spill to CPU)",
-                split_mode.as_flag()
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["devices.split".into()],
+                ConstraintReason::ShardedSplitRequiresGpuOnly {
+                    split: split_mode.as_flag().into(),
+                },
+            ));
         }
         match &template_config {
             TemplateConfig::Command(_) => {
-                return Err(fail(format!(
-                    "service {name}: devices.split=`{}` is only valid for llama-cpp services",
-                    split_mode.as_flag()
-                )));
+                return Err(ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["devices.split".into()],
+                    ConstraintReason::ShardedSplitLlamaCppOnly {
+                        split: split_mode.as_flag().into(),
+                    },
+                ));
             }
             TemplateConfig::LlamaCpp(lc) if !lc.override_tensor.is_empty() => {
-                return Err(fail(format!(
-                    "service {name}: devices.split=`{}` cannot be combined with override_tensor",
-                    split_mode.as_flag()
-                )));
+                return Err(ConfigDiagnostic::constraint(
+                    ValidationErrorCode::TemplateConstraint,
+                    Some(name.to_string()),
+                    vec!["devices.split".into()],
+                    ConstraintReason::ShardedSplitConflictsOverrideTensor {
+                        split: split_mode.as_flag().into(),
+                    },
+                ));
             }
             TemplateConfig::LlamaCpp(_) => {}
         }
@@ -268,9 +386,12 @@ pub(crate) fn validate_service(
     let tensor_split_weights = dev.tensor_split_weights.clone();
     if let Some(ref weights) = tensor_split_weights {
         if !split_mode.is_sharded() {
-            return Err(fail(format!(
-                "service {name}: devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)"
-            )));
+            return Err(ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["devices.split".into()],
+                ConstraintReason::TensorSplitWeightsRequiresSharded,
+            ));
         }
         // When gpu_allow is set, validate it is sorted ascending and free of
         // duplicates. The packer sorts GPUs ascending before pairing weights
@@ -287,14 +408,20 @@ pub(crate) fn validate_service(
             // so a strictly-descending `[1, 0]` reports the ordering error.
             let unique: BTreeSet<u32> = gpu_allow.iter().copied().collect();
             if unique.len() != gpu_allow.len() {
-                return Err(fail(format!(
-                    "service {name}: devices.gpu_allow must not contain duplicate GPU ids when tensor_split_weights is set"
-                )));
+                return Err(ConfigDiagnostic::value(
+                    ValidationErrorCode::GpuAllowDuplicate,
+                    "devices.gpu_allow",
+                    format!("{gpu_allow:?}"),
+                    Some("unique GPU ids".into()),
+                ));
             }
             if !gpu_allow.windows(2).all(|w| w[0] <= w[1]) {
-                return Err(fail(format!(
-                    "service {name}: devices.gpu_allow must be in ascending GPU-id order when tensor_split_weights is set (got {gpu_allow:?})"
-                )));
+                return Err(ConfigDiagnostic::value(
+                    ValidationErrorCode::GpuAllowUnsorted,
+                    "devices.gpu_allow",
+                    format!("{gpu_allow:?}"),
+                    Some("ascending GPU ids".into()),
+                ));
             }
         }
         let n_allowed = if !gpu_allow.is_empty() {
@@ -313,17 +440,22 @@ pub(crate) fn validate_service(
             weights.len()
         };
         if weights.len() != n_allowed {
-            return Err(fail(format!(
-                "service {name}: devices.tensor_split_weights has {} entries but {} allowed GPU(s) (set via gpu_allow or [devices].gpu_ids)",
+            return Err(ConfigDiagnostic::count(
+                ValidationErrorCode::TensorSplitWeightsCount,
+                "devices.tensor_split_weights",
                 weights.len(),
-                n_allowed
-            )));
+                n_allowed,
+            ));
         }
         for (i, &w) in weights.iter().enumerate() {
             if !w.is_finite() || w <= 0.0 {
-                return Err(fail(format!(
-                    "service {name}: devices.tensor_split_weights[{i}] must be a positive finite number, got {w}"
-                )));
+                return Err(ConfigDiagnostic::index(
+                    ValidationErrorCode::TensorSplitWeightInvalid,
+                    "devices.tensor_split_weights",
+                    i,
+                    w.to_string(),
+                    Some("a positive finite number".into()),
+                ));
             }
         }
     }
@@ -338,16 +470,28 @@ pub(crate) fn validate_service(
         timeout_ms: health_raw
             .timeout
             .map(|s| {
-                parse_duration_ms(&s)
-                    .map_err(|e| fail(format!("service {name} health.timeout: {e}")))
+                parse_duration_ms(&s).map_err(|e| {
+                    ConfigDiagnostic::constraint(
+                        ValidationErrorCode::TemplateConstraint,
+                        Some(name.to_string()),
+                        vec!["health.timeout".into()],
+                        ConstraintReason::DurationParseError { error: e },
+                    )
+                })
             })
             .transpose()?
             .unwrap_or(DEFAULT_HEALTH_TIMEOUT_MS),
         probe_interval_ms: health_raw
             .probe_interval
             .map(|s| {
-                parse_duration_ms(&s)
-                    .map_err(|e| fail(format!("service {name} health.probe_interval: {e}")))
+                parse_duration_ms(&s).map_err(|e| {
+                    ConfigDiagnostic::constraint(
+                        ValidationErrorCode::TemplateConstraint,
+                        Some(name.to_string()),
+                        vec!["health.probe_interval".into()],
+                        ConstraintReason::DurationParseError { error: e },
+                    )
+                })
             })
             .transpose()?
             .unwrap_or(DEFAULT_HEALTH_PROBE_INTERVAL_MS),
@@ -363,28 +507,56 @@ pub(crate) fn validate_service(
         .or(daemon.defaults.idle_timeout.as_deref())
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| fail(format!("service {name} idle_timeout: {e}")))?
+        .map_err(|e| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.idle_timeout".into()],
+                ConstraintReason::DurationParseError { error: e },
+            )
+        })?
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
     let drain_timeout_ms = common
         .drain_timeout
         .as_deref()
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| fail(format!("service {name} drain_timeout: {e}")))?
+        .map_err(|e| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.drain_timeout".into()],
+                ConstraintReason::DurationParseError { error: e },
+            )
+        })?
         .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
     let extended_stream_drain_ms = common
         .extended_stream_drain
         .as_deref()
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| fail(format!("service {name} extended_stream_drain: {e}")))?
+        .map_err(|e| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.extended_stream_drain".into()],
+                ConstraintReason::DurationParseError { error: e },
+            )
+        })?
         .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
     let max_request_duration_ms = common
         .max_request_duration
         .as_deref()
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| fail(format!("service {name} max_request_duration: {e}")))?
+        .map_err(|e| {
+            ConfigDiagnostic::constraint(
+                ValidationErrorCode::TemplateConstraint,
+                Some(name.to_string()),
+                vec!["service.max_request_duration".into()],
+                ConstraintReason::DurationParseError { error: e },
+            )
+        })?
         .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);
 
     let mut filters = Filters::default();
@@ -394,8 +566,17 @@ pub(crate) fn validate_service(
         }
         if let Some(set) = &raw_filters.set_params {
             for (k, v) in set {
-                let json_val = toml_value_to_json(v.clone())
-                    .map_err(|e| fail(format!("service {name} filters.set_params[{k}]: {e}")))?;
+                let json_val = toml_value_to_json(v.clone()).map_err(|e| {
+                    ConfigDiagnostic::constraint(
+                        ValidationErrorCode::TemplateConstraint,
+                        Some(name.to_string()),
+                        vec![format!("filters.set_params[{k}]")],
+                        ConstraintReason::FilterSetParamsInvalid {
+                            key: k.clone(),
+                            error: e.to_string(),
+                        },
+                    )
+                })?;
                 filters.set_params.insert(k.clone(), json_val);
             }
         }

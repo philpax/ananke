@@ -49,7 +49,9 @@ devices.placement = "cpu-only"
 "#
     );
     let cfg = parse_and_merge(&src);
-    validate(&cfg).map(|ec| ec.services.into_iter().next().unwrap())
+    validate(&cfg)
+        .map(|ec| ec.services.into_iter().next().unwrap())
+        .map_err(|report| report.into_expected_error(PathBuf::from("<config>")))
 }
 
 /// Build a minimal `ServiceConfig` with CPU-only placement, suitable for

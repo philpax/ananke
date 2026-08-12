@@ -100,7 +100,10 @@ pub struct IkSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::{test_fixtures::parse_and_merge, validate};
+    use crate::validate::{
+        ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
+        test_fixtures::parse_and_merge, validate,
+    };
 
     #[test]
     fn numa_vocab_is_single_sourced_and_complete() {
@@ -231,7 +234,15 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("ik_llama syntax"), "got: {err}");
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCppSpecTypeWrongDialect { .. },
+                ..
+            }
+        ));
 
         // ik service with mainline-dialect spec_type.
         let cfg = parse_and_merge(
@@ -247,7 +258,15 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("mainline syntax"), "got: {err}");
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCppSpecTypeWrongDialect { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -266,7 +285,15 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("requires f16 KV"), "got: {err}");
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCppDsaRequiresF16Kv { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -283,10 +310,15 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("attn_max_batch must be > 0"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCppAttnMaxBatchZero,
+                ..
+            }
+        ));
     }
     #[test]
     fn expert_offload_requires_hybrid_placement() {
@@ -304,10 +336,15 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("expert_offload requires placement=hybrid"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::ExpertOffloadRequiresHybridPlacement,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -330,9 +367,14 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("expert_offload cannot be combined with devices.split"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::ExpertOffloadConflictsShardedSplit { .. },
+                ..
+            }
+        ));
     }
 }

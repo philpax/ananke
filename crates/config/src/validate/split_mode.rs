@@ -20,7 +20,10 @@ pub use crate::placement::SplitMode;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::{test_fixtures::parse_and_merge, validate};
+    use crate::validate::{
+        ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
+        test_fixtures::parse_and_merge, validate,
+    };
 
     #[test]
     fn parses_tensor_split_mode() {
@@ -72,7 +75,14 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("unknown devices.split"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::SplitUnknown { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -91,7 +101,14 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("requires placement=gpu-only"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::ShardedSplitRequiresGpuOnly { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -111,7 +128,14 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("only valid for llama-cpp"));
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::ShardedSplitLlamaCppOnly { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -156,10 +180,8 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("tensor_split_weights has 3 entries but 2 allowed GPU(s)"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TensorSplitWeightsCount);
     }
 
     #[test]
@@ -180,10 +202,8 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("tensor_split_weights[1] must be a positive finite number"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::TensorSplitWeightInvalid);
     }
 
     #[test]
@@ -203,11 +223,14 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}")
-                .contains("tensor_split_weights is only valid with a sharded split mode"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::TensorSplitWeightsRequiresSharded,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -230,10 +253,14 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("requires placement=gpu-only"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::ShardedSplitRequiresGpuOnly { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -254,10 +281,8 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("devices.gpu_allow must be in ascending GPU-id order"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::GpuAllowUnsorted);
     }
 
     #[test]
@@ -278,9 +303,7 @@ lifecycle = "persistent"
 "#,
         );
         let err = validate(&cfg).unwrap_err();
-        assert!(
-            format!("{err}").contains("devices.gpu_allow must not contain duplicate GPU ids"),
-            "got: {err}"
-        );
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.code(), ValidationErrorCode::GpuAllowDuplicate);
     }
 }
