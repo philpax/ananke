@@ -12,13 +12,13 @@ import {
   useValidateConfig,
   useSaveConfig,
 } from "../../api/hooks.ts";
-import type { ValidationError } from "../../api/client.ts";
 import { Button } from "../ui/Button.tsx";
 import { Card } from "../ui/Card.tsx";
 import { ViewHeader } from "../ui/ViewHeader.tsx";
 import { Spinner } from "../ui/Spinner.tsx";
 import { Badge } from "../ui/Badge.tsx";
 import { CodeMirrorEditor } from "./CodeMirrorEditor.tsx";
+import { ValidationPanel } from "./ValidationPanel.tsx";
 
 const VALIDATE_DEBOUNCE_MS = 600;
 
@@ -191,27 +191,6 @@ export function ConfigEditorView() {
           onDismiss={() => setHashMismatch(null)}
         />
       )}
-    </div>
-  );
-}
-
-function ValidationPanel({ errors }: { errors: ValidationError[] }) {
-  const { t } = useTranslation();
-  return (
-    <div className="max-h-40 shrink-0 overflow-auto border-t border-border-default bg-surface px-4 py-2">
-      <div className="eyebrow mb-1 text-danger">
-        {t("config.validationErrors")}
-      </div>
-      <ul className="space-y-0.5">
-        {errors.map((e, i) => (
-          <li key={i} className="font-mono text-xs text-danger">
-            <span className="text-tertiary">
-              L{e.line}:{e.column}
-            </span>{" "}
-            {e.message}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

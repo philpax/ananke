@@ -495,7 +495,7 @@ export interface components {
     };
     /** @description `POST /api/config/validate` response body. */
     ConfigValidateResponse: {
-      /** @description Structured validation errors (span-annotated where possible). */
+      /** @description Ordered structured diagnostics. */
       errors: components["schemas"]["ValidationError"][];
       /** @description `true` iff no errors were found. */
       valid: boolean;
@@ -637,7 +637,13 @@ export interface components {
        */
       total_bytes: number;
     };
-    /** @description `POST /api/services/{name}/disable` response body. */
+    /**
+     * @description `POST /api/services/{name}/disable` response body.
+     *
+     *     The `status` tag tells the caller the outcome of the disable request. All
+     *     variants are success states; a request that fails validation or targets a
+     *     missing service comes back as an error response instead.
+     */
     DisableResponse:
       | {
           /** @enum {string} */
@@ -659,7 +665,11 @@ export interface components {
       /** @description Model name (maps to an ananke service name). */
       model: string;
     };
-    /** @description `POST /api/services/{name}/enable` response body. */
+    /**
+     * @description `POST /api/services/{name}/enable` response body.
+     *
+     *     The `status` tag tells the caller the outcome of the enable request.
+     */
     EnableResponse:
       | {
           /** @enum {string} */
@@ -716,56 +726,94 @@ export interface components {
     };
     /**
      * @description One event delivered over `/api/events`. The `type` tag discriminates the
-     *     variant; `at_ms` is present on every variant except `overflow`.
+     *     variant; `at_ms` is present on every variant except `overflow`. The same
+     *     `Event` is used as a broadcast bus message internally, so it must stay
+     *     serializable and stable — anything published here is part of the wire
+     *     contract the frontend and other clients read.
      */
     Event:
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description When the transition happened, in unix milliseconds.
+           */
           at_ms: number;
+          /** @description The state it left, e.g. `"starting"` or `"running"`. */
           from: string;
+          /** @description The service that changed state. */
           service: string;
+          /** @description The state it entered. */
           to: string;
           /** @enum {string} */
           type: "state_changed";
         }
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description When the allocation changed, in unix milliseconds.
+           */
           at_ms: number;
+          /**
+           * @description The per-device reserved byte counts after the change. Keys are
+           *     device ids (`"cpu"` or `"gpu:N"`).
+           */
           reservations: {
             [key: string]: number;
           };
+          /** @description The service whose allocation changed. */
           service: string;
           /** @enum {string} */
           type: "allocation_changed";
         }
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description When the reload happened, in unix milliseconds.
+           */
           at_ms: number;
+          /** @description The services whose effective config changed as a result. */
           changed_services: string[];
           /** @enum {string} */
           type: "config_reloaded";
         }
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description When the drift was recorded, in unix milliseconds.
+           */
           at_ms: number;
+          /** @description The memory pool: `"vram"` or `"host"`. */
           class: string;
-          /** Format: float */
+          /**
+           * Format: float
+           * @description The new rolling-mean correction factor.
+           */
           rolling_mean: number;
+          /** @description The service whose correction drifted. */
           service: string;
           /** @enum {string} */
           type: "estimator_drift";
         }
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description When the restart was recorded, in unix milliseconds.
+           */
           at_ms: number;
+          /** @description A human-readable reason for the restart. */
           detail: string;
+          /** @description The service that was restarted. */
           service: string;
+          /** @description The auto-restart trigger that fired. */
           trigger: string;
           /** @enum {string} */
           type: "auto_restarted";
         }
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description How many events were dropped for the slow subscriber.
+           */
           dropped: number;
           /** @enum {string} */
           type: "overflow";
@@ -1578,14 +1626,21 @@ export interface components {
        */
       ubatch_size?: number | null;
     };
-    /** @description `POST /api/services/{name}/start` response body. */
+    /**
+     * @description `POST /api/services/{name}/start` response body.
+     *
+     *     The `status` tag tells the caller the outcome of the start request.
+     */
     StartResponse:
       | {
           /** @enum {string} */
           status: "already_running";
         }
       | {
-          /** Format: int64 */
+          /**
+           * Format: int64
+           * @description The id of the run that was spawned.
+           */
           run_id: number;
           /** @enum {string} */
           status: "started";
@@ -1595,11 +1650,19 @@ export interface components {
           status: "queue_full";
         }
       | {
+          /**
+           * @description The typed error the supervisor produced, matching what a 503
+           *     `ApiError` response would carry.
+           */
           error: components["schemas"]["ApiErrorBody"];
           /** @enum {string} */
           status: "unavailable";
         };
-    /** @description `POST /api/services/{name}/stop` response body. */
+    /**
+     * @description `POST /api/services/{name}/stop` response body.
+     *
+     *     The `status` tag tells the caller the outcome of the stop request.
+     */
     StopResponse:
       | {
           /** @enum {string} */
@@ -1609,20 +1672,206 @@ export interface components {
           /** @enum {string} */
           status: "drained";
         };
-    /** @description One validation error from the config parser. */
+    /** @description Structured context for rendering and machine consumers. */
+    ValidationContext:
+      | {
+          /** @description Service identity and optional field context. */
+          data: {
+            /** @description Field path. */
+            field?: string | null;
+            /** @description Original source index. */
+            index?: number | null;
+            /** @description Service name. */
+            service?: string | null;
+          };
+          /** @enum {string} */
+          kind: "Service";
+        }
+      | {
+          /** @description Field context with optional values. */
+          data: {
+            /** @description Expected value. */
+            expected?: string | null;
+            /** @description Field path. */
+            field: string;
+            /** @description Offending value. */
+            offending?: string | null;
+          };
+          /** @enum {string} */
+          kind: "Field";
+        }
+      | {
+          /** @description A concrete invalid value. */
+          data: {
+            /** @description Expected value. */
+            expected?: string | null;
+            /** @description Field path. */
+            field: string;
+            /** @description Offending value. */
+            offending: string;
+          };
+          /** @enum {string} */
+          kind: "Value";
+        }
+      | {
+          /** @description A count mismatch. */
+          data: {
+            /** @description Expected count. */
+            expected: number;
+            /** @description Field path. */
+            field: string;
+            /** @description Actual count. */
+            got: number;
+          };
+          /** @enum {string} */
+          kind: "Count";
+        }
+      | {
+          /** @description An invalid indexed value. */
+          data: {
+            /** @description Expected value. */
+            expected?: string | null;
+            /** @description Field path. */
+            field: string;
+            /** @description Index into the collection. */
+            index: number;
+            /** @description Offending value. */
+            value: string;
+          };
+          /** @enum {string} */
+          kind: "Index";
+        }
+      | {
+          /** @description A multi-field constraint. */
+          data: {
+            /** @description Field paths. */
+            fields: string[];
+            /** @description Constraint reason. */
+            reason: string;
+          };
+          /** @enum {string} */
+          kind: "Fields";
+        }
+      | {
+          /** @description Placeholder substitution context. */
+          data: {
+            /** @description Argument text. */
+            argument?: string | null;
+            /** @description Argument index. */
+            argv_index?: number | null;
+            /** @description Substitution category. */
+            category: string;
+            /** @description Field path. */
+            field: string;
+            /** @description Service name. */
+            service?: string | null;
+          };
+          /** @enum {string} */
+          kind: "Placeholder";
+        }
+      | {
+          /** @description Merge or inheritance context. */
+          data: {
+            /** @description Original source index. */
+            index?: number | null;
+            /** @description Parent service. */
+            parent?: string | null;
+            /** @description Merge reason. */
+            reason: string;
+            /** @description Service name. */
+            service?: string | null;
+          };
+          /** @enum {string} */
+          kind: "Merge";
+        }
+      | {
+          /** @description Parser context. */
+          data: {
+            /** @description Original parser message. */
+            parser_message: string;
+          };
+          /** @enum {string} */
+          kind: "Parse";
+        }
+      | {
+          /** @description Forward-compatible context payload. */
+          data: {
+            /** @description Opaque future payload. */
+            data: unknown;
+          };
+          /** @enum {string} */
+          kind: "Other";
+        };
+    /** @description One structured config validation diagnostic. */
     ValidationError: {
+      /** @description Stable machine-readable code. */
+      code: components["schemas"]["ValidationErrorCode"];
       /**
        * Format: int32
-       * @description 1-based column number in the TOML source.
+       * @description Backwards-compatible one-based column, duplicated from `location`.
+       */
+      column?: number | null;
+      /** @description Typed diagnostic context. */
+      context: components["schemas"]["ValidationContext"];
+      /**
+       * Format: int32
+       * @description Backwards-compatible one-based line, duplicated from `location`.
+       */
+      line?: number | null;
+      location?: null | components["schemas"]["ValidationLocation"];
+      /** @description Centrally rendered human message. */
+      message: string;
+      /** @description Field path, when available. */
+      path?: string | null;
+    };
+    /**
+     * @description Stable machine-readable validation code.
+     * @enum {string}
+     */
+    ValidationErrorCode:
+      | "parse"
+      | "merge_constraint"
+      | "gpu_allow_duplicate"
+      | "gpu_allow_unsorted"
+      | "tensor_split_weights_count"
+      | "tensor_split_weight_invalid"
+      | "field_missing"
+      | "field_unknown"
+      | "value_invalid"
+      | "field_required"
+      | "fields_incompatible"
+      | "service_name_duplicate"
+      | "service_port_duplicate"
+      | "service_port_management_collision"
+      | "duration_invalid"
+      | "placeholder_invalid"
+      | "allocation_invalid"
+      | "private_port_range_invalid"
+      | "private_port_exhausted"
+      | "metadata_invalid"
+      | "runtime_constraint"
+      | "auto_restart_constraint"
+      | "tracking_constraint"
+      | "placement_constraint"
+      | "command_constraint"
+      | "template_constraint"
+      | "other";
+    /** @description Source range and human position for a parser diagnostic. */
+    ValidationLocation: {
+      /**
+       * Format: int32
+       * @description One-based source column.
        */
       column: number;
+      /** @description Exclusive zero-based byte offset at the end of the span. */
+      end: number;
       /**
        * Format: int32
-       * @description 1-based line number in the TOML source.
+       * @description One-based source line.
        */
       line: number;
-      /** @description Human-readable message. */
-      message: string;
+      /** @description Zero-based byte offset at the start of the span. */
+      start: number;
     };
   };
   responses: never;
