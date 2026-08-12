@@ -44,11 +44,76 @@ pub async fn validate(
         println!("ok: config is valid");
     } else {
         println!("error: config is invalid");
-        for err in &resp.errors {
-            println!("  line {}:{} {}", err.line, err.column, err.message);
-        }
+        print!("{}", format_validation_errors(&resp));
     }
     Ok(())
+}
+
+/// Format validation diagnostics for human CLI output.
+pub fn format_validation_errors(response: &ConfigValidateResponse) -> String {
+    response
+        .errors
+        .iter()
+        .map(|error| {
+            let location = error
+                .location
+                .as_ref()
+                .map_or_else(String::new, |location| {
+                    format!(" at {}:{}", location.line, location.column)
+                });
+            let path = error
+                .path
+                .as_deref()
+                .map_or_else(String::new, |path| format!(" ({path})"));
+            format!(
+                "  [{}]{}{} context={:?} {}\n",
+                error.code_label(),
+                path,
+                location,
+                error.context,
+                error.message
+            )
+        })
+        .collect()
+}
+
+trait ValidationErrorLabel {
+    fn code_label(&self) -> &'static str;
+}
+
+impl ValidationErrorLabel for ananke_api::config::validate::ValidationError {
+    fn code_label(&self) -> &'static str {
+        use ananke_api::config::validate::ValidationErrorCode::*;
+        match self.code {
+            Parse => "parse",
+            MergeConstraint => "merge_constraint",
+            GpuAllowDuplicate => "gpu_allow_duplicate",
+            GpuAllowUnsorted => "gpu_allow_unsorted",
+            TensorSplitWeightsCount => "tensor_split_weights_count",
+            TensorSplitWeightInvalid => "tensor_split_weight_invalid",
+            FieldMissing => "field_missing",
+            FieldUnknown => "field_unknown",
+            ValueInvalid => "value_invalid",
+            FieldRequired => "field_required",
+            FieldsIncompatible => "fields_incompatible",
+            ServiceNameDuplicate => "service_name_duplicate",
+            ServicePortDuplicate => "service_port_duplicate",
+            ServicePortManagementCollision => "service_port_management_collision",
+            DurationInvalid => "duration_invalid",
+            PlaceholderInvalid => "placeholder_invalid",
+            AllocationInvalid => "allocation_invalid",
+            PrivatePortRangeInvalid => "private_port_range_invalid",
+            PrivatePortExhausted => "private_port_exhausted",
+            MetadataInvalid => "metadata_invalid",
+            RuntimeConstraint => "runtime_constraint",
+            AutoRestartConstraint => "auto_restart_constraint",
+            TrackingConstraint => "tracking_constraint",
+            PlacementConstraint => "placement_constraint",
+            CommandConstraint => "command_constraint",
+            TemplateConstraint => "template_constraint",
+            Other => "other",
+        }
+    }
 }
 
 pub async fn reload(client: &ApiClient, _json: bool) -> Result<(), ApiClientError> {
@@ -61,4 +126,74 @@ pub async fn reload(client: &ApiClient, _json: bool) -> Result<(), ApiClientErro
         .await?;
     println!("ok: config reload requested");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use ananke_api::config::validate::{
+        ValidationContext, ValidationError, ValidationErrorCode, ValidationLocation,
+    };
+
+    use super::*;
+
+    fn error(code: ValidationErrorCode, location: Option<ValidationLocation>) -> ValidationError {
+        ValidationError {
+            code,
+            message: "invalid config".into(),
+            path: Some("service.port".into()),
+            context: ValidationContext::Value {
+                field: "service.port".into(),
+                offending: "0".into(),
+                expected: Some("a non-zero port".into()),
+            },
+            line: location.as_ref().map(|location| location.line),
+            column: location.as_ref().map(|location| location.column),
+            location,
+        }
+    }
+
+    #[test]
+    fn format_validation_errors_located() {
+        let response = ConfigValidateResponse {
+            valid: false,
+            errors: vec![error(
+                ValidationErrorCode::ValueInvalid,
+                Some(ValidationLocation {
+                    start: 4,
+                    end: 8,
+                    line: 2,
+                    column: 5,
+                }),
+            )],
+        };
+        let formatted = format_validation_errors(&response);
+        assert!(formatted.contains("[value_invalid] (service.port) at 2:5"));
+        assert!(formatted.contains("invalid config"));
+    }
+
+    #[test]
+    fn format_validation_errors_unlocated() {
+        let response = ConfigValidateResponse {
+            valid: false,
+            errors: vec![error(ValidationErrorCode::FieldMissing, None)],
+        };
+        let formatted = format_validation_errors(&response);
+        assert!(formatted.contains("[field_missing] (service.port)"));
+        assert!(formatted.contains("context="));
+        assert!(formatted.contains("invalid config"));
+        assert!(!formatted.contains("0:0"));
+    }
+
+    #[test]
+    fn format_validation_errors_multiple() {
+        let response = ConfigValidateResponse {
+            valid: false,
+            errors: vec![
+                error(ValidationErrorCode::Parse, None),
+                error(ValidationErrorCode::MergeConstraint, None),
+            ],
+        };
+        let formatted = format_validation_errors(&response);
+        assert!(formatted.find("[parse]").unwrap() < formatted.find("[merge_constraint]").unwrap());
+    }
 }
