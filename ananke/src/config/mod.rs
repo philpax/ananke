@@ -61,8 +61,9 @@ pub fn load_config_with_fs(
         source,
         origin,
         &crate::config::validate::DaemonPlaceholderChecker,
-    )?;
-    preflight_ggufs(&effective, fs)?;
+    )
+    .map_err(|error| error.into_expected_error(origin.to_path_buf()))?;
+    preflight_ggufs(origin, &effective, fs)?;
     Ok((effective, migrations))
 }
 
@@ -75,4 +76,5 @@ pub fn load_config_from_str(
         origin,
         &crate::config::validate::DaemonPlaceholderChecker,
     )
+    .map_err(|error| error.into_expected_error(origin.to_path_buf()))
 }

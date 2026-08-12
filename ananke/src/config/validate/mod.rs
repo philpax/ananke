@@ -23,8 +23,8 @@ pub use ananke_config::{
         GenerationStallTrigger, HealthSettings, IkSettings, Lifecycle, LlamaCppConfig,
         NumaStrategy, OffloadMode, PeriodicMode, PeriodicTrigger, PlaceholderChecker,
         PlacementPolicy, Runtime, RuntimeConfig, ServiceConfig, SpecCollapseTrigger, SplitMode,
-        Template, TemplateConfig, TrackingSettings, TtftStallTrigger, fail, parse_duration_ms,
-        validate, validate_with_checks,
+        Template, TemplateConfig, TrackingSettings, TtftStallTrigger, parse_duration_ms, validate,
+        validate_with_checks,
     },
 };
 pub use placeholders::DaemonPlaceholderChecker;

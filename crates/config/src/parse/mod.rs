@@ -14,7 +14,6 @@ mod llama_cpp;
 mod service;
 mod top_level;
 
-use ananke_errors::ExpectedError;
 pub use auto_restart::{
     RawAutoRestart, RawErrorRateSettings, RawGenerationStallSettings, RawPeriodicSettings,
     RawSpecCollapseSettings, RawTtftStallSettings, Toggle,
@@ -34,6 +33,7 @@ pub use top_level::{
 /// Default concurrency cap on pending start requests waiting for the same
 /// supervisor to finish starting before they are rejected with `QueueFull`.
 pub use crate::docs::DEFAULT_START_QUEUE_DEPTH;
+use crate::validate::{ConfigDiagnostic, DiagnosticLocation};
 
 /// Parse a TOML string into a raw config tree, rejecting unknown fields.
 ///
@@ -42,9 +42,21 @@ pub use crate::docs::DEFAULT_START_QUEUE_DEPTH;
 /// is a deliberate choice over collecting unknowns via `serde_ignored`: the
 /// report-and-continue model would both duplicate these errors and let bad
 /// config through with only a warning.
-pub fn parse_toml(source: &str, origin_path: &std::path::Path) -> Result<RawConfig, ExpectedError> {
+pub fn parse_toml(
+    source: &str,
+    _origin_path: &std::path::Path,
+) -> Result<RawConfig, ConfigDiagnostic> {
     toml_edit::de::from_str::<RawConfig>(source)
-        .map_err(|e| ExpectedError::config_unparseable(origin_path.to_path_buf(), e.to_string()))
+        .map(|mut config| {
+            config.service_source_indices = (0..config.services.len()).collect();
+            config
+        })
+        .map_err(|e| {
+            let location = e
+                .span()
+                .map(|span| DiagnosticLocation::from_range(source, span));
+            ConfigDiagnostic::parse(e.to_string(), location)
+        })
 }
 
 #[cfg(test)]

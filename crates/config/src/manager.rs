@@ -4,7 +4,7 @@
 
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 
-use ananke_api::{config::validate::ValidationError, events::Event};
+use ananke_api::events::Event;
 use ananke_errors::ExpectedError;
 use ananke_events::EventBus;
 use arc_swap::ArcSwap;
@@ -13,7 +13,7 @@ use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-use crate::{EffectiveConfig, Migration, load_config_with_fs};
+use crate::{EffectiveConfig, Migration};
 
 /// Base64-encoded SHA-256 of the raw TOML bytes. Callers treat it as opaque.
 pub type ConfigHash = String;
@@ -27,6 +27,7 @@ pub struct ConfigManager {
     _watcher: RwLock<Option<notify::RecommendedWatcher>>,
     boot_migrations: Mutex<Option<Vec<Migration>>>,
     fs: Arc<dyn ananke_fs::Fs>,
+    placeholder_checker: Arc<dyn crate::validate::PlaceholderChecker>,
 }
 
 /// Failure modes from `ConfigManager::apply`.
@@ -38,7 +39,7 @@ pub enum ApplyError {
         server_hash: ConfigHash,
     },
     /// The new TOML failed validation.
-    Invalid(Vec<ValidationError>),
+    Invalid(crate::validate::ConfigDiagnosticReport),
     /// Writing the file to disk failed.
     PersistFailed(io::Error),
 }
@@ -73,6 +74,21 @@ impl ConfigManager {
         Self::open_with_fs(path, events, Arc::new(ananke_fs::LocalFs)).await
     }
 
+    /// Variant of [`Self::open`] with a daemon-owned placeholder checker.
+    pub async fn open_with_checker(
+        path: PathBuf,
+        events: EventBus,
+        placeholder_checker: Arc<dyn crate::validate::PlaceholderChecker>,
+    ) -> Result<Arc<Self>, ExpectedError> {
+        Self::open_with_fs_and_checker(
+            path,
+            events,
+            Arc::new(ananke_fs::LocalFs),
+            placeholder_checker,
+        )
+        .await
+    }
+
     /// Variant of [`Self::open`] that uses an explicit filesystem. Production
     /// passes `LocalFs`; tests can pass an `InMemoryFs`.
     pub async fn open_with_fs(
@@ -80,10 +96,29 @@ impl ConfigManager {
         events: EventBus,
         fs: Arc<dyn ananke_fs::Fs>,
     ) -> Result<Arc<Self>, ExpectedError> {
+        Self::open_with_fs_and_checker(
+            path,
+            events,
+            fs,
+            Arc::new(crate::validate::NoopPlaceholderChecker),
+        )
+        .await
+    }
+
+    /// Variant of [`Self::open_with_fs`] with a daemon-owned placeholder checker.
+    pub async fn open_with_fs_and_checker(
+        path: PathBuf,
+        events: EventBus,
+        fs: Arc<dyn ananke_fs::Fs>,
+        placeholder_checker: Arc<dyn crate::validate::PlaceholderChecker>,
+    ) -> Result<Arc<Self>, ExpectedError> {
         let raw = fs
             .read_to_string(&path)
             .map_err(|e| ExpectedError::config_unparseable(path.clone(), e.to_string()))?;
-        let (effective, migrations) = load_config_with_fs(&path, fs.as_ref(), &raw)?;
+        let (effective, migrations) =
+            crate::load_config_from_str_with_checks(&raw, &path, placeholder_checker.as_ref())
+                .map_err(|error| error.into_expected_error(path.clone()))?;
+        crate::preflight_ggufs(&path, &effective, fs.as_ref())?;
         let this = Arc::new(Self {
             raw: RwLock::new(raw),
             effective: ArcSwap::from_pointee(effective),
@@ -92,6 +127,7 @@ impl ConfigManager {
             _watcher: RwLock::new(None),
             boot_migrations: Mutex::new(Some(migrations)),
             fs,
+            placeholder_checker,
         });
         this.spawn_watcher();
         Ok(this)
@@ -109,6 +145,7 @@ impl ConfigManager {
             _watcher: RwLock::new(None),
             boot_migrations: Mutex::new(Some(Vec::new())),
             fs: Arc::new(ananke_fs::InMemoryFs::new()),
+            placeholder_checker: Arc::new(crate::validate::NoopPlaceholderChecker),
         })
     }
 
@@ -150,8 +187,10 @@ impl ConfigManager {
     }
 
     /// Validate the given TOML without touching disk or the in-memory cache.
-    pub fn validate(&self, toml: &str) -> Result<(), Vec<ValidationError>> {
-        validate_toml(self.fs.as_ref(), &self.path, toml)
+    pub fn validate(&self, toml: &str) -> Result<(), crate::validate::ConfigDiagnosticReport> {
+        crate::load_config_from_str_with_checks(toml, &self.path, self.placeholder_checker.as_ref())
+            .map(|_| ())
+            .map_err(|error| error.into_report())
     }
 
     /// Take the migrations that were produced at boot. Returns them exactly
@@ -181,10 +220,21 @@ impl ConfigManager {
             }
         }
 
-        validate_toml(self.fs.as_ref(), &self.path, &new_toml).map_err(ApplyError::Invalid)?;
+        let (effective, _migrations) = crate::load_config_from_str_with_checks(
+            &new_toml,
+            &self.path,
+            self.placeholder_checker.as_ref(),
+        )
+        .map_err(|error| ApplyError::Invalid(error.into_report()))?;
         persist_atomically(self.fs.as_ref(), &self.path, &new_toml)
             .map_err(ApplyError::PersistFailed)?;
-        self.reload_from_disk();
+        let changed = diff_services(&self.effective.load(), &effective);
+        *self.raw.write() = new_toml;
+        self.effective.store(Arc::new(effective));
+        self.events.publish(Event::ConfigReloaded {
+            at_ms: ananke_time::now_unix_ms(),
+            changed_services: changed,
+        });
         Ok(())
     }
 
@@ -203,10 +253,20 @@ impl ConfigManager {
                 return;
             }
         }
-        let (effective, _migs) = match load_config_with_fs(&self.path, self.fs.as_ref(), &raw) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, "config reload: validate failed; keeping live config");
+        let (effective, _migs) = match crate::load_config_from_str_with_checks(
+            &raw,
+            &self.path,
+            self.placeholder_checker.as_ref(),
+        ) {
+            Ok((effective, migrations)) => {
+                if let Err(e) = crate::preflight_ggufs(&self.path, &effective, self.fs.as_ref()) {
+                    warn!(error = %e, "config reload: preflight failed; keeping live config");
+                    return;
+                }
+                (effective, migrations)
+            }
+            Err(report) => {
+                warn!(error = %report, "config reload: validate failed; keeping live config");
                 return;
             }
         };
@@ -294,24 +354,6 @@ fn persist_atomically(
             let _ = fs.remove_file(&tmp);
             Err(e)
         }
-    }
-}
-
-fn validate_toml(
-    fs: &dyn ananke_fs::Fs,
-    path: &std::path::Path,
-    content: &str,
-) -> Result<(), Vec<ValidationError>> {
-    // Parse + validate + preflight against the current filesystem without
-    // touching `path` itself. `load_config_with_fs` takes the raw TOML
-    // directly so we don't need a sibling tempfile.
-    match load_config_with_fs(path, fs, content) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(vec![ValidationError {
-            line: 0,
-            column: 0,
-            message: e.to_string(),
-        }]),
     }
 }
 

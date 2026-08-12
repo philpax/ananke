@@ -18,7 +18,7 @@ use tokio::{net::TcpListener, sync::watch};
 use tracing::{info, warn};
 
 use crate::{
-    config::{Migration, manager::ConfigManager},
+    config::{Migration, manager::ConfigManager, validate::DaemonPlaceholderChecker},
     daemon::{
         app_state::AppState,
         signals::{ShutdownKind, await_shutdown},
@@ -35,7 +35,12 @@ pub async fn run() -> Result<(), ExpectedError> {
     info!(config_path = %config_path.display(), "resolved config path");
 
     let events = ananke_events::EventBus::new();
-    let config = ConfigManager::open(config_path.clone(), events.clone()).await?;
+    let config = ConfigManager::open_with_checker(
+        config_path.clone(),
+        events.clone(),
+        Arc::new(DaemonPlaceholderChecker),
+    )
+    .await?;
     let migrations = config.take_boot_migrations();
     let effective = config.effective().clone();
     let db = Database::open(&effective.daemon.data_dir.join("ananke.sqlite")).await?;

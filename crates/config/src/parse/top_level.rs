@@ -51,6 +51,9 @@ pub struct RawConfig {
     /// The `[[service]]` list.
     #[serde(default, rename = "service")]
     pub services: Vec<RawService>,
+    /// Original zero-based source indexes retained through merge resolution.
+    #[serde(skip)]
+    pub(crate) service_source_indices: Vec<usize>,
 }
 
 /// The `[daemon]` block: management endpoint, data dir, and process policy.

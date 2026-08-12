@@ -1,17 +1,17 @@
 //! Dry-run every `{placeholder}` a service's argv can contain at validate
 //! time, so a typo fails `config validate` rather than a runtime spawn.
 
-use ananke_errors::ExpectedError;
+use ananke_config::validate::{ConfigDiagnostic, PlaceholderError};
 use smol_str::SmolStr;
 
-use crate::config::validate::{PlaceholderChecker, fail};
+use crate::config::validate::PlaceholderChecker;
 
 /// The daemon's placeholder dry-run checker: validates `command`,
 /// `shutdown_command`, and llama-cpp `launcher` argv at config time.
 pub struct DaemonPlaceholderChecker;
 
 impl PlaceholderChecker for DaemonPlaceholderChecker {
-    fn check(&self, name: &SmolStr, field: &str, argv: &[String]) -> Result<(), ExpectedError> {
+    fn check(&self, name: &SmolStr, field: &str, argv: &[String]) -> Result<(), ConfigDiagnostic> {
         match field {
             "launcher" => check_launcher_placeholders(name, argv),
             _ => check_placeholders(name, field, argv),
@@ -28,7 +28,7 @@ pub(crate) fn check_placeholders(
     name: &SmolStr,
     field: &str,
     argv: &[String],
-) -> Result<(), ExpectedError> {
+) -> Result<(), ConfigDiagnostic> {
     use ananke_placement::devices::{Allocation, DeviceId};
     use ananke_templates::{PlaceholderContext, substitute};
     let mut alloc_bytes = std::collections::BTreeMap::new();
@@ -46,10 +46,32 @@ pub(crate) fn check_placeholders(
         static_reserve_mb: None,
     };
     for (i, arg) in argv.iter().enumerate() {
-        substitute(arg, &ctx)
-            .map_err(|e| fail(format!("service {name}: {field}[{i}] {arg:?}: {e}")))?;
+        substitute(arg, &ctx).map_err(|e| {
+            ConfigDiagnostic::placeholder(
+                Some(name.to_string()),
+                field,
+                Some(i),
+                Some(arg.clone()),
+                placeholder_error(e),
+            )
+        })?;
     }
     Ok(())
+}
+
+fn placeholder_error(error: ananke_templates::SubstituteError) -> PlaceholderError {
+    match error {
+        ananke_templates::SubstituteError::ReserveMbOnDynamic => {
+            PlaceholderError::ReserveMbOnDynamic
+        }
+        ananke_templates::SubstituteError::ReserveMbMultiDevice => {
+            PlaceholderError::ReserveMbMultiDevice
+        }
+        ananke_templates::SubstituteError::UnknownPlaceholder(name) => {
+            PlaceholderError::UnknownPlaceholder(name)
+        }
+        ananke_templates::SubstituteError::SplatInsideArg => PlaceholderError::SplatInsideArg,
+    }
 }
 
 /// Dry-run a llama-cpp `launcher` argv at validate time. Identical
@@ -60,7 +82,7 @@ pub(crate) fn check_placeholders(
 pub(crate) fn check_launcher_placeholders(
     name: &SmolStr,
     argv: &[String],
-) -> Result<(), ExpectedError> {
+) -> Result<(), ConfigDiagnostic> {
     use ananke_placement::devices::{Allocation, DeviceId};
     use ananke_templates::{PlaceholderContext, substitute_launcher_argv};
     let mut alloc_bytes = std::collections::BTreeMap::new();
@@ -73,8 +95,15 @@ pub(crate) fn check_launcher_placeholders(
         allocation: &alloc,
         static_reserve_mb: None,
     };
-    substitute_launcher_argv(argv, &[], &ctx)
-        .map_err(|e| fail(format!("service {name}: launcher: {e}")))?;
+    substitute_launcher_argv(argv, &[], &ctx).map_err(|e| {
+        ConfigDiagnostic::placeholder(
+            Some(name.to_string()),
+            "launcher",
+            None,
+            None,
+            placeholder_error(e),
+        )
+    })?;
     Ok(())
 }
 
@@ -88,6 +117,7 @@ mod tests {
         cfg: &ananke_config::parse::RawConfig,
     ) -> Result<ananke_config::validate::EffectiveConfig, ananke_errors::ExpectedError> {
         validate_with_checks(cfg, &DaemonPlaceholderChecker)
+            .map_err(|report| report.into_expected_error(std::path::PathBuf::from("<config>")))
     }
 
     #[test]
