@@ -5,7 +5,6 @@
 
 use std::{
     convert::Infallible,
-    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -48,16 +47,17 @@ pub struct EchoState {
 
 type EchoBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
-/// Serves HTTP requests on `addr` with the given `state`.
+/// Serves HTTP requests on an already-bound `listener` with the given `state`.
 ///
-/// Increments `state.spawn_counter` on entry. On `/v1/chat/completions`,
+/// The caller binds, so the port cannot be claimed by another test binary in
+/// the gap between choosing it and serving on it. Increments
+/// `state.spawn_counter` on entry. On `/v1/chat/completions`,
 /// `/v1/completions`, and `/v1/embeddings`, records the request body into
 /// `state.sink`. `/health` and `/v1/models` responses include the
 /// `x-echo-spawn-count` header. `/sse` streams 5 events 50ms apart.
 /// Anything else returns "hello".
-pub async fn serve(addr: SocketAddr, state: EchoState, mut shutdown: watch::Receiver<bool>) {
+pub async fn serve(listener: TcpListener, state: EchoState, mut shutdown: watch::Receiver<bool>) {
     state.spawn_counter.fetch_add(1, Ordering::Relaxed);
-    let listener = TcpListener::bind(addr).await.expect("echo bind");
     loop {
         tokio::select! {
             _ = shutdown.changed() => {

@@ -9,12 +9,29 @@ use std::net::TcpListener;
 
 /// Binds an ephemeral port and returns it, releasing the listener before returning.
 ///
-/// There is a small TOCTOU window between releasing the listener and the test
-/// code binding the same port; in practice this is harmless in CI because the
-/// port is chosen by the OS from the ephemeral range and is not reused immediately.
+/// Only for a server this module does not own — the proxy under test binds its
+/// own address from a `SocketAddr`. There is a TOCTOU window between releasing
+/// the listener and the caller rebinding the port, which a concurrently running
+/// test binary can lose. Prefer [`bind_ephemeral`], which never releases the
+/// port, for anything that can accept a listener.
 pub fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     listener.local_addr().expect("local_addr").port()
+}
+
+/// Bind an ephemeral port, returning the live listener alongside its port.
+///
+/// The listener is never released, so no other process can claim the port
+/// between the bind and its first accept. This is what keeps concurrent test
+/// binaries from colliding on the ephemeral range.
+pub fn bind_ephemeral() -> (tokio::net::TcpListener, u16) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    listener
+        .set_nonblocking(true)
+        .expect("set listener nonblocking");
+    let listener = tokio::net::TcpListener::from_std(listener).expect("adopt listener into tokio");
+    (listener, port)
 }
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -42,7 +59,7 @@ use smol_str::SmolStr;
 pub struct TestHarness {
     pub state: AppState,
     pub echo_state: echo_server::EchoState,
-    pub echo_addr: std::net::SocketAddr,
+    pub echo_port: u16,
     pub echo_shutdown: tokio::sync::watch::Sender<bool>,
     pub supervisors: Vec<Arc<SupervisorHandle>>,
     /// Concrete handle to the in-memory filesystem shared by the supervisors
@@ -75,10 +92,13 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let fake_spawner = fakes.process_spawner;
 
     let echo_state = echo_server::EchoState::default();
-    let echo_port = free_port();
-    let echo_addr: std::net::SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let (echo_listener, echo_port) = bind_ephemeral();
     let (echo_shutdown, echo_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(echo_server::serve(echo_addr, echo_state.clone(), echo_rx));
+    tokio::spawn(echo_server::serve(
+        echo_listener,
+        echo_state.clone(),
+        echo_rx,
+    ));
 
     // Rewrite private_port on each service to point at the echo server.
     let services_rewritten: Vec<ServiceConfig> = services
@@ -201,7 +221,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     TestHarness {
         state,
         echo_state,
-        echo_addr,
+        echo_port,
         echo_shutdown,
         supervisors,
         fs: fs_concrete,

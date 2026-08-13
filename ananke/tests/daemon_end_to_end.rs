@@ -10,12 +10,11 @@ use tokio::sync::watch;
 #[tokio::test]
 async fn proxy_forwards_plain_request() {
     // Bind echo server on an ephemeral port.
-    let echo_port = common::free_port();
-    let echo_addr: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let (echo_listener, echo_port) = common::bind_ephemeral();
     let (echo_shutdown_tx, echo_shutdown_rx) = watch::channel(false);
     let _echo_state = common::echo_server::EchoState::default();
     tokio::spawn(common::echo_server::serve(
-        echo_addr,
+        echo_listener,
         _echo_state,
         echo_shutdown_rx,
     ));
