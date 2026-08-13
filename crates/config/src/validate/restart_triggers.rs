@@ -4,14 +4,14 @@
 use smol_str::SmolStr;
 
 use crate::{
+    fields,
     parse::{
         RawErrorRateSettings, RawGenerationStallSettings, RawSpecCollapseSettings,
         RawTtftStallSettings,
     },
     validate::{
-        AutoRestartReason, ConfigDiagnostic, ConstraintReason, ErrorRateTrigger, ErrorStatusClass,
-        GenerationStallTrigger, SpecCollapseTrigger, TtftStallTrigger, ValidationErrorCode,
-        parse_duration_ms,
+        ConfigDiagnostic, ErrorRateTrigger, ErrorStatusClass, GenerationStallTrigger,
+        SpecCollapseTrigger, TtftStallTrigger, ValidationErrorCode, parse_duration_ms,
     },
 };
 
@@ -25,8 +25,8 @@ pub(crate) fn validate_spec_collapse(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec![format!("auto_restart.spec_collapse.{field}")],
-                ConstraintReason::DurationParse(error),
+                &[&format!("auto_restart.spec_collapse.{field}")],
+                error.to_string(),
             )
         })
     };
@@ -47,24 +47,24 @@ pub(crate) fn validate_spec_collapse(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["auto_restart.spec_collapse.window".into()],
-            ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapseWindowZero),
+            &[fields::auto_restart::SPEC_COLLAPSE_WINDOW],
+            "auto_restart.spec_collapse.window must be greater than zero".to_string(),
         ));
     }
     if min_draft_tokens == 0 {
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["auto_restart.spec_collapse.min_draft_tokens".into()],
-            ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapseMinDraftTokensZero),
+            &[fields::auto_restart::SPEC_COLLAPSE_MIN_DRAFT_TOKENS],
+            "auto_restart.spec_collapse.min_draft_tokens must be greater than zero".to_string(),
         ));
     }
     if poll_interval_ms == 0 {
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["auto_restart.spec_collapse.poll_interval".into()],
-            ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapsePollIntervalZero),
+            &[fields::auto_restart::SPEC_COLLAPSE_POLL_INTERVAL],
+            "auto_restart.spec_collapse.poll_interval must be greater than zero".to_string(),
         ));
     }
     Ok(SpecCollapseTrigger {
@@ -84,8 +84,8 @@ pub(crate) fn validate_generation_stall(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec![format!("auto_restart.generation_stall.{field}")],
-                ConstraintReason::DurationParse(error),
+                &[&format!("auto_restart.generation_stall.{field}")],
+                error.to_string(),
             )
         })
     };
@@ -105,16 +105,16 @@ pub(crate) fn validate_generation_stall(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["auto_restart.generation_stall.timeout".into()],
-            ConstraintReason::AutoRestart(AutoRestartReason::GenerationStallTimeoutZero),
+            &[fields::auto_restart::GENERATION_STALL_TIMEOUT],
+            "auto_restart.generation_stall.timeout must be greater than zero".to_string(),
         ));
     }
     if poll_interval_ms == 0 {
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["auto_restart.generation_stall.poll_interval".into()],
-            ConstraintReason::AutoRestart(AutoRestartReason::GenerationStallPollIntervalZero),
+            &[fields::auto_restart::GENERATION_STALL_POLL_INTERVAL],
+            "auto_restart.generation_stall.poll_interval must be greater than zero".to_string(),
         ));
     }
     Ok(GenerationStallTrigger {
@@ -136,8 +136,8 @@ pub(crate) fn validate_ttft_stall(
                 ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["auto_restart.ttft_stall.timeout".into()],
-                    ConstraintReason::DurationParse(error),
+                    &[fields::auto_restart::TTFT_STALL_TIMEOUT],
+                    error.to_string(),
                 )
             })
         })
@@ -147,8 +147,8 @@ pub(crate) fn validate_ttft_stall(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["auto_restart.ttft_stall.timeout".into()],
-            ConstraintReason::AutoRestart(AutoRestartReason::TtftStallTimeoutZero),
+            &[fields::auto_restart::TTFT_STALL_TIMEOUT],
+            "auto_restart.ttft_stall.timeout must be greater than zero".to_string(),
         ));
     }
     Ok(TtftStallTrigger { timeout_ms })
@@ -167,8 +167,8 @@ pub(crate) fn validate_error_rate(
                 ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["auto_restart.error_rate.window".into()],
-                    ConstraintReason::DurationParse(error),
+                    &[fields::auto_restart::ERROR_RATE_WINDOW],
+                    error.to_string(),
                 )
             })
         })
@@ -181,10 +181,11 @@ pub(crate) fn validate_error_rate(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["auto_restart.error_rate.max_error_rate".into()],
-                ConstraintReason::AutoRestart(AutoRestartReason::ErrorRateOutOfRange {
-                    value: r.to_string(),
-                }),
+                &[fields::auto_restart::ERROR_RATE_MAX_ERROR_RATE],
+                format!(
+                    "auto_restart.error_rate.max_error_rate must be in (0.0, 1.0], got {value}",
+                    value = r
+                ),
             ));
         }
     };
@@ -196,8 +197,8 @@ pub(crate) fn validate_error_rate(
                 ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["auto_restart.error_rate.poll_interval".into()],
-                    ConstraintReason::DurationParse(error),
+                    &[fields::auto_restart::ERROR_RATE_POLL_INTERVAL],
+                    error.to_string(),
                 )
             })
         })
@@ -211,10 +212,11 @@ pub(crate) fn validate_error_rate(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["auto_restart.error_rate.error_statuses".into()],
-                ConstraintReason::AutoRestart(AutoRestartReason::ErrorStatusClassInvalid {
-                    value: other.into(),
-                }),
+                &[fields::auto_restart::ERROR_RATE_ERROR_STATUSES],
+                format!(
+                    "auto_restart.error_rate.error_statuses must be `5xx` or `4xx+5xx`, got `{value}`",
+                    value = other
+                ),
             ));
         }
     };
@@ -240,8 +242,9 @@ mod tests {
             DEFAULT_AUTO_RESTART_SPEC_COLLAPSE_POLL_MS,
             DEFAULT_AUTO_RESTART_SPEC_COLLAPSE_WINDOW_MS,
         },
+        fields,
         validate::{
-            ConfigDiagnosticKind, ServiceConfig,
+            ServiceConfig,
             test_fixtures::{
                 parse_and_merge, svc_with_auto_restart, svc_with_auto_restart_diagnostics,
             },
@@ -409,15 +412,12 @@ devices.placement = "cpu-only"
         // draft counts is a configuration error, not a silent no-op.
         let err = svc_with_auto_restart_diagnostics("auto_restart = { spec_collapse = true }")
             .unwrap_err();
-        assert!(matches!(
-            &*err.as_slice()[0].kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::AutoRestart(
-                    AutoRestartReason::SpecCollapseRequiresSpecType
-                ),
-                ..
-            }
-        ));
+        let diag = &err.as_slice()[0];
+        assert_eq!(diag.fields(), [fields::auto_restart::SPEC_COLLAPSE]);
+        assert!(
+            diag.to_string()
+                .contains("auto_restart.spec_collapse requires spec_type")
+        );
         assert!(command_svc_with_auto_restart("auto_restart = { spec_collapse = true }").is_err());
         // An explicit disable is always fine.
         assert!(svc_with_auto_restart("auto_restart = { spec_collapse = false }").is_ok());

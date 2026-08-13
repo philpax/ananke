@@ -17,14 +17,14 @@ use crate::{
         DEFAULT_HEALTH_PROBE_INTERVAL_MS, DEFAULT_HEALTH_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS,
         DEFAULT_MAX_REQUEST_DURATION_MS, DEFAULT_MIN_BORROWER_RUNTIME_MS, DEFAULT_SERVICE_PRIORITY,
     },
+    fields,
     parse::RawService,
     validate::{
-        AllocationMode, ConfigDiagnostic, ConstraintReason, DaemonValidationCtx, DeviceSlot,
-        Filters, HealthSettings, Lifecycle, PlacementPolicy, ServiceConfig, ServiceReason,
-        ServiceValidationState, SplitMode, Template, TemplateConfig, ValidationErrorCode,
-        build_ananke_metadata, command_uses_port_placeholder, parse_duration_ms,
-        toml_value_to_json, validate_auto_restart, validate_command, validate_llama_cpp,
-        validate_tracking,
+        AllocationMode, ConfigDiagnostic, DaemonValidationCtx, DeviceSlot, Filters, HealthSettings,
+        Lifecycle, PlacementPolicy, ServiceConfig, ServiceValidationState, SplitMode, Template,
+        TemplateConfig, ValidationErrorCode, build_ananke_metadata, command_uses_port_placeholder,
+        parse_duration_ms, toml_value_to_json, validate_auto_restart, validate_command,
+        validate_llama_cpp, validate_tracking,
     },
 };
 
@@ -98,7 +98,7 @@ pub(crate) fn validate_service(
                 ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["allocation.mode".into()],
+                    &[fields::allocation::MODE],
                     e,
                 )
             })?;
@@ -115,8 +115,8 @@ pub(crate) fn validate_service(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        vec!["allocation.min_borrower_runtime".into()],
-                        ConstraintReason::DurationParse(e),
+                        &[fields::allocation::MIN_BORROWER_RUNTIME],
+                        e.to_string(),
                     )
                 })?
                 .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
@@ -132,7 +132,7 @@ pub(crate) fn validate_service(
                 ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["allocation.mode".into()],
+                    &[fields::allocation::MODE],
                     e,
                 )
             })?;
@@ -152,18 +152,16 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.lifecycle".into()],
-                ConstraintReason::Service(ServiceReason::LifecycleOneshotInvalid),
+                &[fields::service::LIFECYCLE],
+                "lifecycle `oneshot` is invalid in a [[service]] block (API-only)".to_string(),
             ));
         }
         other => {
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.lifecycle".into()],
-                ConstraintReason::Service(ServiceReason::LifecycleUnknown {
-                    value: other.into(),
-                }),
+                &[fields::service::LIFECYCLE],
+                format!("unknown lifecycle `{value}`", value = other),
             ));
         }
     };
@@ -172,11 +170,8 @@ pub(crate) fn validate_service(
         ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["service.metadata".into()],
-            ConstraintReason::MetadataInvalid {
-                field: "service.metadata".into(),
-                error: e.to_string(),
-            },
+            &[fields::service::METADATA],
+            format!("{field}: {error}", field = "service.metadata", error = e),
         )
     })?;
     let modality = match common.modality.as_deref() {
@@ -186,10 +181,11 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.modality".into()],
-                ConstraintReason::Service(ServiceReason::ModalityUnknown {
-                    value: other.into(),
-                }),
+                &[fields::service::MODALITY],
+                format!(
+                    "unknown modality `{value}` (valid: `chat`, `embedding`)",
+                    value = other
+                ),
             ));
         }
     };
@@ -217,10 +213,11 @@ pub(crate) fn validate_service(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["devices.placement".into(), "llama_cpp.n_gpu_layers".into()],
-                    ConstraintReason::Service(ServiceReason::CpuOnlyWithGpuLayers {
-                        n_gpu_layers: n,
-                    }),
+                    &[fields::devices::PLACEMENT, fields::llama_cpp::N_GPU_LAYERS],
+                    format!(
+                        "devices.placement=cpu-only with n_gpu_layers={n_gpu_layers} is invalid",
+                        n_gpu_layers = n
+                    ),
                 ));
             }
             PlacementPolicy::CpuOnly
@@ -230,10 +227,8 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["devices.placement".into()],
-                ConstraintReason::Service(ServiceReason::PlacementUnknown {
-                    value: other.into(),
-                }),
+                &[fields::devices::PLACEMENT],
+                format!("unknown placement `{value}`", value = other),
             ));
         }
     };
@@ -252,8 +247,8 @@ pub(crate) fn validate_service(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["devices.placement_override".into()],
-            ConstraintReason::Service(ServiceReason::PlacementOverrideEmpty),
+            &[fields::devices::PLACEMENT_OVERRIDE],
+            "devices.placement_override is empty".to_string(),
         ));
     }
     let mut placement_override = BTreeMap::new();
@@ -265,10 +260,8 @@ pub(crate) fn validate_service(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        vec!["devices.placement_override".into()],
-                        ConstraintReason::Service(ServiceReason::PlacementOverrideKeyInvalid {
-                            key: s.into(),
-                        }),
+                        &[fields::devices::PLACEMENT_OVERRIDE],
+                        format!("invalid placement_override key `{key}`", key = s),
                     )
                 })?;
                 DeviceSlot::Gpu(n)
@@ -277,10 +270,8 @@ pub(crate) fn validate_service(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["devices.placement_override".into()],
-                    ConstraintReason::Service(ServiceReason::PlacementOverrideKeyInvalid {
-                        key: other.into(),
-                    }),
+                    &[fields::devices::PLACEMENT_OVERRIDE],
+                    format!("invalid placement_override key `{key}`", key = other),
                 ));
             }
         };
@@ -288,8 +279,8 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["devices.placement_override".into()],
-                ConstraintReason::Service(ServiceReason::PlacementOverrideZero { key: k.clone() }),
+                &[fields::devices::PLACEMENT_OVERRIDE],
+                format!("placement_override for {key} is zero", key = k.clone()),
             ));
         }
         placement_override.insert(slot, v);
@@ -301,8 +292,8 @@ pub(crate) fn validate_service(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["devices.placement_override".into()],
-            ConstraintReason::Service(ServiceReason::GpuOnlyWithCpuOverride),
+            &[fields::devices::PLACEMENT_OVERRIDE],
+            "placement=gpu-only but placement_override includes cpu".to_string(),
         ));
     }
 
@@ -315,11 +306,12 @@ pub(crate) fn validate_service(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["devices.split".into()],
-                ConstraintReason::Service(ServiceReason::SplitUnknown {
-                    value: s.into(),
-                    expected: SplitMode::valid_values(),
-                }),
+                &[fields::devices::SPLIT],
+                format!(
+                    "unknown devices.split `{value}` (expected {expected})",
+                    value = s,
+                    expected = SplitMode::valid_values()
+                ),
             )
         })?,
     };
@@ -336,21 +328,23 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["llama_cpp.expert_offload".into(), "devices.split".into()],
-                ConstraintReason::Service(ServiceReason::ExpertOffloadConflictsShardedSplit {
-                    split: split_mode.as_flag().into(),
-                }),
+                &[fields::llama_cpp::EXPERT_OFFLOAD, fields::devices::SPLIT],
+                format!(
+                    "expert_offload cannot be combined with devices.split=`{split}` (sharded split is GPU-only; expert offload targets the CPU)",
+                    split = split_mode.as_flag()
+                ),
             ));
         }
         if placement_policy != PlacementPolicy::Hybrid {
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec![
-                    "llama_cpp.expert_offload".into(),
-                    "devices.placement".into(),
+                &[
+                    fields::llama_cpp::EXPERT_OFFLOAD,
+                    fields::devices::PLACEMENT,
                 ],
-                ConstraintReason::Service(ServiceReason::ExpertOffloadRequiresHybridPlacement),
+                "expert_offload requires placement=hybrid (expert tensors offload to CPU)"
+                    .to_string(),
             ));
         }
     }
@@ -361,10 +355,11 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["devices.split".into()],
-                ConstraintReason::Service(ServiceReason::ShardedSplitRequiresGpuOnly {
-                    split: split_mode.as_flag().into(),
-                }),
+                &[fields::devices::SPLIT],
+                format!(
+                    "devices.split=`{split}` requires placement=gpu-only (tensor/row split cannot spill to CPU)",
+                    split = split_mode.as_flag()
+                ),
             ));
         }
         match &template_config {
@@ -372,20 +367,22 @@ pub(crate) fn validate_service(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["devices.split".into()],
-                    ConstraintReason::Service(ServiceReason::ShardedSplitLlamaCppOnly {
-                        split: split_mode.as_flag().into(),
-                    }),
+                    &[fields::devices::SPLIT],
+                    format!(
+                        "devices.split=`{split}` is only valid for llama-cpp services",
+                        split = split_mode.as_flag()
+                    ),
                 ));
             }
             TemplateConfig::LlamaCpp(lc) if !lc.override_tensor.is_empty() => {
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["devices.split".into()],
-                    ConstraintReason::Service(ServiceReason::ShardedSplitConflictsOverrideTensor {
-                        split: split_mode.as_flag().into(),
-                    }),
+                    &[fields::devices::SPLIT],
+                    format!(
+                        "devices.split=`{split}` cannot be combined with override_tensor",
+                        split = split_mode.as_flag()
+                    ),
                 ));
             }
             TemplateConfig::LlamaCpp(_) => {}
@@ -398,8 +395,8 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["devices.split".into()],
-                ConstraintReason::Service(ServiceReason::TensorSplitWeightsRequiresSharded),
+                &[fields::devices::SPLIT],
+                "devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)".to_string(),
             ));
         }
         // When gpu_allow is set, validate it is sorted ascending and free of
@@ -483,8 +480,8 @@ pub(crate) fn validate_service(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        vec!["health.timeout".into()],
-                        ConstraintReason::DurationParse(e),
+                        &[fields::health::TIMEOUT],
+                        e.to_string(),
                     )
                 })
             })
@@ -497,8 +494,8 @@ pub(crate) fn validate_service(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        vec!["health.probe_interval".into()],
-                        ConstraintReason::DurationParse(e),
+                        &[fields::health::PROBE_INTERVAL],
+                        e.to_string(),
                     )
                 })
             })
@@ -520,8 +517,8 @@ pub(crate) fn validate_service(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.idle_timeout".into()],
-                ConstraintReason::DurationParse(e),
+                &[fields::service::IDLE_TIMEOUT],
+                e.to_string(),
             )
         })?
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
@@ -534,8 +531,8 @@ pub(crate) fn validate_service(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.drain_timeout".into()],
-                ConstraintReason::DurationParse(e),
+                &[fields::service::DRAIN_TIMEOUT],
+                e.to_string(),
             )
         })?
         .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
@@ -548,8 +545,8 @@ pub(crate) fn validate_service(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.extended_stream_drain".into()],
-                ConstraintReason::DurationParse(e),
+                &[fields::service::EXTENDED_STREAM_DRAIN],
+                e.to_string(),
             )
         })?
         .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
@@ -562,8 +559,8 @@ pub(crate) fn validate_service(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["service.max_request_duration".into()],
-                ConstraintReason::DurationParse(e),
+                &[fields::service::MAX_REQUEST_DURATION],
+                e.to_string(),
             )
         })?
         .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);
@@ -579,11 +576,12 @@ pub(crate) fn validate_service(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        vec![format!("filters.set_params[{k}]")],
-                        ConstraintReason::FilterSetParamsInvalid {
-                            key: k.clone(),
-                            error: e.to_string(),
-                        },
+                        &[&format!("filters.set_params[{k}]")],
+                        format!(
+                            "filters.set_params[{key}]: {error}",
+                            key = k.clone(),
+                            error = e
+                        ),
                     )
                 })?;
                 filters.set_params.insert(k.clone(), json_val);

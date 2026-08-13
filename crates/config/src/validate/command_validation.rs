@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use smol_str::SmolStr;
 
 use crate::{
+    fields,
     parse::RawCommandService,
     validate::{
-        CommandConfig, CommandReason, ConfigDiagnostic, ConstraintReason, OpenAiProxyConfig,
-        PlaceholderChecker, ValidationErrorCode,
+        CommandConfig, ConfigDiagnostic, OpenAiProxyConfig, PlaceholderChecker, ValidationErrorCode,
     },
 };
 
@@ -22,16 +22,16 @@ pub(crate) fn validate_command(
         ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["command.command".into()],
-            ConstraintReason::Command(CommandReason::MissingCommand),
+            &[fields::command::COMMAND],
+            "command template requires `command`".to_string(),
         )
     })?;
     if command.is_empty() {
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["command.command".into()],
-            ConstraintReason::Command(CommandReason::EmptyCommand),
+            &[fields::command::COMMAND],
+            "command is empty".to_string(),
         ));
     }
     if let Some(sd) = &cmd.shutdown_command
@@ -40,8 +40,8 @@ pub(crate) fn validate_command(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["command.shutdown_command".into()],
-            ConstraintReason::Command(CommandReason::EmptyShutdownCommand),
+            &[fields::command::SHUTDOWN_COMMAND],
+            "shutdown_command is present but empty".to_string(),
         ));
     }
     // Dry-run the placeholder substitution so typos surface now rather
@@ -63,8 +63,8 @@ pub(crate) fn validate_command(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        vec!["command.openai_proxy.upstream_model".into()],
-                        ConstraintReason::Command(CommandReason::UpstreamModelEmpty),
+                        &[fields::command::OPENAI_PROXY_UPSTREAM_MODEL],
+                        "openai_proxy.upstream_model must be a non-empty string".to_string(),
                     )
                 })?
                 .clone();
@@ -96,9 +96,9 @@ pub(crate) fn command_uses_port_placeholder(
 
 #[cfg(test)]
 mod tests {
-    use crate::validate::{
-        CommandReason, ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
-        test_fixtures::parse_and_merge, validate,
+    use crate::{
+        fields,
+        validate::{ValidationErrorCode, test_fixtures::parse_and_merge, validate},
     };
 
     #[test]
@@ -116,13 +116,11 @@ allocation.reserve_gb = 6
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Command(CommandReason::MissingCommand),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::command::COMMAND]);
+        assert!(
+            diag.to_string()
+                .contains("command template requires `command`")
+        );
     }
     #[test]
     fn non_loopback_without_flag_is_rejected() {
@@ -143,13 +141,17 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::ValueInvalid);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::DaemonNonLoopbackWithoutFlag,
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [
+                fields::daemon::MANAGEMENT_LISTEN,
+                fields::daemon::ALLOW_EXTERNAL_MANAGEMENT
+            ]
+        );
+        assert!(
+            diag.to_string()
+                .contains("daemon.management_listen is non-loopback")
+        );
     }
     #[test]
     fn non_loopback_with_flag_is_accepted() {
@@ -207,13 +209,11 @@ allocation.reserve_gb = 1
         let err = validate(&cfg).expect_err("empty shutdown_command is rejected");
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Command(CommandReason::EmptyShutdownCommand),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::command::SHUTDOWN_COMMAND]);
+        assert!(
+            diag.to_string()
+                .contains("shutdown_command is present but empty")
+        );
     }
     #[test]
     fn command_service_with_openai_proxy_is_listed() {
@@ -256,13 +256,14 @@ upstream_model = ""
         let err = validate(&cfg).expect_err("empty upstream_model is rejected");
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Command(CommandReason::UpstreamModelEmpty),
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [fields::command::OPENAI_PROXY_UPSTREAM_MODEL]
+        );
+        assert!(
+            diag.to_string()
+                .contains("openai_proxy.upstream_model must be a non-empty string")
+        );
     }
 
     #[test]
@@ -282,13 +283,14 @@ allocation.reserve_gb = 1
         let err = validate(&cfg).expect_err("missing upstream_model is rejected");
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Command(CommandReason::UpstreamModelEmpty),
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [fields::command::OPENAI_PROXY_UPSTREAM_MODEL]
+        );
+        assert!(
+            diag.to_string()
+                .contains("openai_proxy.upstream_model must be a non-empty string")
+        );
     }
 
     #[test]

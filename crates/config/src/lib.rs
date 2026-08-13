@@ -12,6 +12,7 @@
 
 pub mod defaults;
 pub mod docs;
+pub mod fields;
 pub mod file;
 pub mod flags;
 pub mod manager;

@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use smol_str::SmolStr;
 
 use crate::{
-    flags,
+    fields, flags,
     parse::{RawExpertOffload, RawLlamaCppService, RawRuntime},
     validate::{
-        ConfigDiagnostic, ConstraintReason, IkSettings, LlamaCppConfig, LlamaCppReason,
-        NumaStrategy, OffloadMode, PlaceholderChecker, Runtime, RuntimeConfig, ValidationErrorCode,
+        ConfigDiagnostic, IkSettings, LlamaCppConfig, NumaStrategy, OffloadMode,
+        PlaceholderChecker, Runtime, RuntimeConfig, ValidationErrorCode,
     },
 };
 
@@ -24,8 +24,8 @@ pub(crate) fn validate_llama_cpp(
         ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["model".into()],
-            ConstraintReason::LlamaCpp(LlamaCppReason::ModelMissing),
+            &[fields::service::MODEL],
+            "template llama-cpp requires `model`".to_string(),
         )
     })?;
     let runtime = match &lc.runtime {
@@ -38,11 +38,12 @@ pub(crate) fn validate_llama_cpp(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["spec_type".into()],
-                    ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect {
-                        spec_type: st.to_string(),
-                        expected: "\"draft-mtp\" (or set runtime = { kind = \"ik-llama\" })",
-                    }),
+                    &[fields::service::SPEC_TYPE],
+                    format!(
+                        "spec_type `{spec_type}` uses the wrong dialect (expected {expected})",
+                        spec_type = st,
+                        expected = "\"draft-mtp\" (or set runtime = { kind = \"ik-llama\" })"
+                    ),
                 ));
             }
             RuntimeConfig::Mainline
@@ -54,8 +55,11 @@ pub(crate) fn validate_llama_cpp(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["runtime.mla".into()],
-                    ConstraintReason::LlamaCpp(LlamaCppReason::MlaOutOfRange { value: m }),
+                    &[fields::runtime::MLA],
+                    format!(
+                        "runtime.mla={value} is invalid (ik_llama accepts 0-3)",
+                        value = m
+                    ),
                 ));
             }
             if let Some(st) = lc.spec_type.as_deref()
@@ -64,11 +68,10 @@ pub(crate) fn validate_llama_cpp(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["spec_type".into()],
-                    ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect {
-                        spec_type: st.to_string(),
-                        expected: "\"mtp:n_max=4,p_min=0.5\"",
-                    }),
+                    &[fields::service::SPEC_TYPE],
+                    format!(
+                        "spec_type `{st}` uses the wrong dialect (expected \"mtp:n_max=4,p_min=0.5\")"
+                    ),
                 ));
             }
             if ik.dsa == Some(true) {
@@ -82,11 +85,12 @@ pub(crate) fn validate_llama_cpp(
                         return Err(ConfigDiagnostic::constraint(
                             ValidationErrorCode::TemplateConstraint,
                             Some(name.to_string()),
-                            vec![key.into()],
-                            ConstraintReason::LlamaCpp(LlamaCppReason::DsaRequiresF16Kv {
-                                key,
-                                value: v.to_string(),
-                            }),
+                            &[key],
+                            format!(
+                                "runtime.dsa=true requires f16 KV, but {key}={value}",
+                                key = key,
+                                value = v
+                            ),
                         ));
                     }
                 }
@@ -106,8 +110,8 @@ pub(crate) fn validate_llama_cpp(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["runtime.attn_max_batch".into()],
-            ConstraintReason::LlamaCpp(LlamaCppReason::AttnMaxBatchZero),
+            &[fields::runtime::ATTN_MAX_BATCH],
+            "runtime.attn_max_batch must be > 0".to_string(),
         ));
     }
 
@@ -127,11 +131,12 @@ pub(crate) fn validate_llama_cpp(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec![key.into()],
-                    ConstraintReason::LlamaCpp(LlamaCppReason::QuantizedKvRequiresFlashAttn {
-                        key,
-                        value: v.to_string(),
-                    }),
+                    &[key],
+                    format!(
+                        "{key}={value} requires flash_attn=true (llama.cpp requires FA for quantised KV)",
+                        key = key,
+                        value = v
+                    ),
                 ));
             }
         }
@@ -141,8 +146,8 @@ pub(crate) fn validate_llama_cpp(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            vec!["draft_model".into(), "spec_type".into()],
-            ConstraintReason::LlamaCpp(LlamaCppReason::DraftModelRequiresSpecType),
+            &[fields::service::DRAFT_MODEL, fields::service::SPEC_TYPE],
+            "draft_model requires spec_type to be set".to_string(),
         ));
     }
 
@@ -153,8 +158,8 @@ pub(crate) fn validate_llama_cpp(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["launcher".into()],
-                    ConstraintReason::LlamaCpp(LlamaCppReason::LauncherEmpty),
+                    &[fields::service::LAUNCHER],
+                    "launcher is present but empty".to_string(),
                 ));
             }
             checker.check(name, "launcher", argv)?;
@@ -177,11 +182,12 @@ pub(crate) fn validate_llama_cpp(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["expert_offload".into()],
-                    ConstraintReason::LlamaCpp(LlamaCppReason::ExpertOffloadInvalid {
-                        value: other.to_string(),
-                        expected: flags::quoted_list(flags::expert_offload::ALL),
-                    }),
+                    &[fields::service::EXPERT_OFFLOAD],
+                    format!(
+                        "expert_offload `{value}` is invalid (expected {expected}, or an integer layer count)",
+                        value = other,
+                        expected = flags::quoted_list(flags::expert_offload::ALL)
+                    ),
                 ));
             }
         },
@@ -193,11 +199,12 @@ pub(crate) fn validate_llama_cpp(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["numa".into()],
-                ConstraintReason::LlamaCpp(LlamaCppReason::NumaInvalid {
-                    value: s.to_string(),
-                    expected: NumaStrategy::valid_values(),
-                }),
+                &[fields::service::NUMA],
+                format!(
+                    "numa `{value}` is invalid (expected {expected})",
+                    value = s,
+                    expected = NumaStrategy::valid_values()
+                ),
             )
         })?),
     };
@@ -243,11 +250,9 @@ mod tests {
 
     use super::*;
     use crate::{
+        fields,
         parse::parse_toml,
-        validate::{
-            ConfigDiagnosticKind, ConstraintReason, LlamaCppReason, ServiceReason,
-            ValidationErrorCode, test_fixtures::parse_and_merge, validate,
-        },
+        validate::{ValidationErrorCode, test_fixtures::parse_and_merge, validate},
     };
 
     const GOOD: &str = r#"
@@ -282,13 +287,14 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::DraftModelRequiresSpecType),
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [fields::service::DRAFT_MODEL, fields::service::SPEC_TYPE]
+        );
+        assert!(
+            diag.to_string()
+                .contains("draft_model requires spec_type to be set")
+        );
     }
 
     #[test]
@@ -309,13 +315,7 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::NumaInvalid { .. }),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::service::NUMA]);
         assert!(diag.to_string().contains(&NumaStrategy::valid_values()));
 
         let cfg = parse_and_merge(
@@ -332,13 +332,11 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::ExpertOffloadInvalid { .. }),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::service::EXPERT_OFFLOAD]);
+        assert!(
+            diag.to_string()
+                .contains(&flags::quoted_list(flags::expert_offload::ALL))
+        );
         assert!(
             diag.to_string()
                 .contains(&flags::quoted_list(flags::expert_offload::ALL))
@@ -429,15 +427,7 @@ devices.placement_override = { "gpu:0" = 1000 }
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(
-                    LlamaCppReason::QuantizedKvRequiresFlashAttn { .. }
-                ),
-                ..
-            }
-        ));
+        assert!(diag.to_string().contains("requires flash_attn=true"));
     }
 
     #[test]
@@ -458,13 +448,14 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(ServiceReason::CpuOnlyWithGpuLayers { .. }),
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [fields::devices::PLACEMENT, fields::llama_cpp::N_GPU_LAYERS]
+        );
+        assert!(
+            diag.to_string()
+                .contains("devices.placement=cpu-only with n_gpu_layers")
+        );
     }
     #[test]
     fn llama_server_defaults_to_path_lookup() {

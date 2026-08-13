@@ -11,11 +11,12 @@ use smol_str::SmolStr;
 
 use crate::{
     docs::DEFAULT_OPENAI_MAX_BODY_MB,
+    fields,
     parse::RawConfig,
     validate::{
-        ConfigDiagnostic, ConfigDiagnosticReport, ConstraintReason, DaemonSettings, DeviceReserves,
-        EffectiveConfig, NoopPlaceholderChecker, PlaceholderChecker, PrivatePortAllocator,
-        PrivatePortRange, ValidationErrorCode, parse_duration_ms, validate_service,
+        ConfigDiagnostic, ConfigDiagnosticReport, DaemonSettings, DeviceReserves, EffectiveConfig,
+        NoopPlaceholderChecker, PlaceholderChecker, PrivatePortAllocator, PrivatePortRange,
+        ValidationErrorCode, parse_duration_ms, validate_service,
     },
 };
 
@@ -86,11 +87,8 @@ pub fn validate_with_checks(
         report.push(ConfigDiagnostic::constraint(
             ValidationErrorCode::ValueInvalid,
             None,
-            vec![
-                "daemon.management_listen".into(),
-                "daemon.allow_external_management".into(),
-            ],
-            ConstraintReason::DaemonNonLoopbackWithoutFlag,
+            &[fields::daemon::MANAGEMENT_LISTEN, fields::daemon::ALLOW_EXTERNAL_MANAGEMENT],
+            "daemon.management_listen is non-loopback but daemon.allow_external_management is false; the management API has no authentication".to_string(),
         ));
     }
     let management_port = mgmt_socket_addr.map(|address| address.port());
@@ -385,3 +383,4 @@ env_inherit = false
         assert!(!svc.env_inherit, "env_inherit should be false");
     }
 }
+

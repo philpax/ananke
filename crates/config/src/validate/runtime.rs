@@ -100,9 +100,9 @@ pub struct IkSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::{
-        ConfigDiagnosticKind, ConstraintReason, LlamaCppReason, ServiceReason, ValidationErrorCode,
-        test_fixtures::parse_and_merge, validate,
+    use crate::{
+        fields,
+        validate::{ValidationErrorCode, test_fixtures::parse_and_merge, validate},
     };
 
     #[test]
@@ -235,13 +235,8 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect { .. }),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::service::SPEC_TYPE]);
+        assert!(diag.to_string().contains("uses the wrong dialect"));
 
         // ik service with mainline-dialect spec_type.
         let cfg = parse_and_merge(
@@ -259,13 +254,8 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect { .. }),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::service::SPEC_TYPE]);
+        assert!(diag.to_string().contains("uses the wrong dialect"));
     }
 
     #[test]
@@ -286,13 +276,10 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::DsaRequiresF16Kv { .. }),
-                ..
-            }
-        ));
+        assert!(
+            diag.to_string()
+                .contains("runtime.dsa=true requires f16 KV")
+        );
     }
 
     #[test]
@@ -311,13 +298,11 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::AttnMaxBatchZero),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::runtime::ATTN_MAX_BATCH]);
+        assert!(
+            diag.to_string()
+                .contains("runtime.attn_max_batch must be > 0")
+        );
     }
     #[test]
     fn expert_offload_requires_hybrid_placement() {
@@ -337,15 +322,17 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(
-                    ServiceReason::ExpertOffloadRequiresHybridPlacement
-                ),
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [
+                fields::llama_cpp::EXPERT_OFFLOAD,
+                fields::devices::PLACEMENT
+            ]
+        );
+        assert!(
+            diag.to_string()
+                .contains("expert_offload requires placement=hybrid")
+        );
     }
 
     #[test]
@@ -370,14 +357,13 @@ lifecycle = "persistent"
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(
-                    ServiceReason::ExpertOffloadConflictsShardedSplit { .. }
-                ),
-                ..
-            }
-        ));
+        assert_eq!(
+            diag.fields(),
+            [fields::llama_cpp::EXPERT_OFFLOAD, fields::devices::SPLIT]
+        );
+        assert!(
+            diag.to_string()
+                .contains("expert_offload cannot be combined with devices.split")
+        );
     }
 }

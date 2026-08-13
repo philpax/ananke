@@ -20,9 +20,9 @@ pub use crate::placement::SplitMode;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::{
-        ConfigDiagnosticKind, ConstraintReason, ServiceReason, ValidationErrorCode,
-        test_fixtures::parse_and_merge, validate,
+    use crate::{
+        fields,
+        validate::{ValidationErrorCode, test_fixtures::parse_and_merge, validate},
     };
 
     #[test]
@@ -76,13 +76,8 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(ServiceReason::SplitUnknown { .. }),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::devices::SPLIT]);
+        assert!(diag.to_string().contains("unknown devices.split"));
         assert!(diag.to_string().contains(&SplitMode::valid_values()));
     }
 
@@ -103,15 +98,8 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(
-                    ServiceReason::ShardedSplitRequiresGpuOnly { .. }
-                ),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::devices::SPLIT]);
+        assert!(diag.to_string().contains("requires placement=gpu-only"));
     }
 
     #[test]
@@ -132,13 +120,11 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(ServiceReason::ShardedSplitLlamaCppOnly { .. }),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::devices::SPLIT]);
+        assert!(
+            diag.to_string()
+                .contains("is only valid for llama-cpp services")
+        );
     }
 
     #[test]
@@ -227,13 +213,11 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(ServiceReason::TensorSplitWeightsRequiresSharded),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::devices::SPLIT]);
+        assert!(
+            diag.to_string()
+                .contains("devices.tensor_split_weights is only valid")
+        );
     }
 
     #[test]
@@ -257,15 +241,8 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::Service(
-                    ServiceReason::ShardedSplitRequiresGpuOnly { .. }
-                ),
-                ..
-            }
-        ));
+        assert_eq!(diag.fields(), [fields::devices::SPLIT]);
+        assert!(diag.to_string().contains("requires placement=gpu-only"));
     }
 
     #[test]

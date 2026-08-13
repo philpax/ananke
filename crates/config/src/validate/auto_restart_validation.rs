@@ -8,12 +8,13 @@ use crate::{
         DEFAULT_AUTO_RESTART_FLAP_WINDOW_MS, DEFAULT_AUTO_RESTART_MAX_RESTARTS,
         DEFAULT_AUTO_RESTART_MIN_UPTIME_MS,
     },
+    fields,
     parse::{RawAutoRestart, RawPeriodicSettings, Toggle},
     validate::{
-        AutoRestartReason, AutoRestartSettings, ConfigDiagnostic, ConstraintReason,
-        DEFAULT_AUTO_RESTART_PERIODIC_MODE, ErrorRateTrigger, GenerationStallTrigger, PeriodicMode,
-        PeriodicTrigger, SpecCollapseTrigger, Template, TtftStallTrigger, ValidationErrorCode,
-        parse_duration_ms, validate_error_rate, validate_generation_stall, validate_spec_collapse,
+        AutoRestartSettings, ConfigDiagnostic, DEFAULT_AUTO_RESTART_PERIODIC_MODE,
+        ErrorRateTrigger, GenerationStallTrigger, PeriodicMode, PeriodicTrigger,
+        SpecCollapseTrigger, Template, TtftStallTrigger, ValidationErrorCode, parse_duration_ms,
+        validate_error_rate, validate_generation_stall, validate_spec_collapse,
         validate_ttft_stall,
     },
 };
@@ -56,8 +57,8 @@ pub(crate) fn validate_auto_restart(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec![format!("auto_restart.{field}")],
-                ConstraintReason::DurationParse(error),
+                &[&format!("auto_restart.{field}")],
+                error.to_string(),
             )
         })
     };
@@ -77,8 +78,8 @@ pub(crate) fn validate_auto_restart(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["auto_restart.periodic".into()],
-                ConstraintReason::AutoRestart(AutoRestartReason::PeriodicNeedsInterval),
+                &[fields::auto_restart::PERIODIC],
+                "auto_restart.periodic = true needs an interval; write `periodic = { interval = \"6h\" }`".to_string(),
             ));
         }
         Some(Toggle::Settings(s)) => Some(validate_periodic(name, s)?),
@@ -112,8 +113,8 @@ pub(crate) fn validate_auto_restart(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    vec!["auto_restart.spec_collapse".into()],
-                    ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapseRequiresSpecType),
+                    &[fields::auto_restart::SPEC_COLLAPSE],
+                    "auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)".to_string(),
                 ));
             }
             None
@@ -159,16 +160,16 @@ pub(crate) fn validate_periodic(
             ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["auto_restart.periodic.interval".into()],
-                ConstraintReason::DurationParse(error),
+                &[fields::auto_restart::PERIODIC_INTERVAL],
+                error.to_string(),
             )
         })?,
         None => {
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["auto_restart.periodic".into()],
-                ConstraintReason::AutoRestart(AutoRestartReason::PeriodicMissingInterval),
+                &[fields::auto_restart::PERIODIC],
+                "auto_restart.periodic requires an `interval`".to_string(),
             ));
         }
     };
@@ -181,10 +182,11 @@ pub(crate) fn validate_periodic(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                vec!["auto_restart.periodic.mode".into()],
-                ConstraintReason::AutoRestart(AutoRestartReason::PeriodicModeInvalid {
-                    value: other.to_string(),
-                }),
+                &[fields::auto_restart::PERIODIC_MODE],
+                format!(
+                    "auto_restart.periodic.mode must be `immediate`, `on-idle`, or `on-request`, got `{value}`",
+                    value = other
+                ),
             ));
         }
     };

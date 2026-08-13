@@ -109,8 +109,9 @@ pub(crate) fn check_launcher_placeholders(
 
 #[cfg(test)]
 mod tests {
-    use ananke_config::validate::{
-        ConfigDiagnosticKind, ConfigDiagnosticReport, ConstraintReason, LlamaCppReason,
+    use ananke_config::{
+        fields,
+        validate::{ConfigDiagnosticKind, ConfigDiagnosticReport},
     };
 
     use super::PlaceholderError;
@@ -216,13 +217,10 @@ launcher = []
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        assert!(matches!(
-            first_diagnostic(&cfg),
-            ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCpp(LlamaCppReason::LauncherEmpty),
-                ..
-            }
-        ));
+        let report = validate(&cfg).unwrap_err();
+        let diag = &report.as_slice()[0];
+        assert_eq!(diag.fields(), [fields::service::LAUNCHER]);
+        assert!(diag.to_string().contains("launcher is present but empty"));
     }
 
     #[test]

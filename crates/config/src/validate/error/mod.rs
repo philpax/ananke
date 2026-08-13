@@ -6,7 +6,6 @@
 //! every fact a renderer or boundary adapter needs, so nothing downstream has
 //! to parse a rendered message.
 
-mod constraint;
 mod detail;
 mod location;
 mod report;
@@ -15,10 +14,6 @@ use std::fmt;
 
 use ananke_api::config::validate::{
     ValidationContext, ValidationError, ValidationErrorCode, ValidationLocation,
-};
-pub use constraint::{
-    AllocationReason, AutoRestartReason, CommandReason, ConstraintReason, LlamaCppReason,
-    ServiceReason,
 };
 pub use detail::{DurationParseError, MergeReason, PlaceholderError, ValueDiagnosticDetail};
 pub use location::{DiagnosticLocation, byte_offset_to_line_column};
@@ -78,7 +73,7 @@ pub enum ConfigDiagnosticKind {
         code: ValidationErrorCode,
         fields: Vec<String>,
         service: Option<String>,
-        reason: ConstraintReason,
+        message: String,
     },
     /// Placeholder substitution failed.
     Placeholder {
@@ -241,15 +236,15 @@ impl ConfigDiagnostic {
     pub fn constraint(
         code: ValidationErrorCode,
         service: Option<String>,
-        fields: Vec<String>,
-        reason: ConstraintReason,
+        fields: &[&str],
+        message: String,
     ) -> Self {
         Self::new(
             ConfigDiagnosticKind::Fields {
                 code,
-                fields,
+                fields: fields.iter().map(|field| (*field).to_string()).collect(),
                 service,
-                reason,
+                message,
             },
             None,
         )
@@ -353,12 +348,12 @@ impl ConfigDiagnostic {
             ConfigDiagnosticKind::Fields {
                 fields,
                 service,
-                reason,
+                message,
                 ..
             } => ValidationContext::Fields {
                 fields: fields.clone(),
                 service: service.clone(),
-                reason: reason.to_string(),
+                reason: message.clone(),
             },
             ConfigDiagnosticKind::Placeholder {
                 service,
@@ -399,6 +394,17 @@ impl ConfigDiagnostic {
             ConfigDiagnosticKind::Parse { .. }
             | ConfigDiagnosticKind::Merge { .. }
             | ConfigDiagnosticKind::Fields { .. } => None,
+        }
+    }
+
+    /// The field paths a constraint diagnostic names, empty for other kinds.
+    ///
+    /// This is the structural discriminator: a test asserts on the path the
+    /// rule rejected rather than on the sentence it rendered.
+    pub fn fields(&self) -> &[String] {
+        match &*self.kind {
+            ConfigDiagnosticKind::Fields { fields, .. } => fields,
+            _ => &[],
         }
     }
 
@@ -590,15 +596,12 @@ impl fmt::Display for ConfigDiagnostic {
                 Ok(())
             }
             ConfigDiagnosticKind::Fields {
-                fields,
-                service,
-                reason,
-                ..
+                service, message, ..
             } => {
                 if let Some(service) = service {
-                    write!(f, "service {service} ")?;
+                    write!(f, "service {service}: ")?;
                 }
-                write!(f, "{}: {reason}", fields.join(", "))
+                write!(f, "{message}")
             }
             ConfigDiagnosticKind::Placeholder {
                 service,
