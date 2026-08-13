@@ -21,7 +21,7 @@ pub use crate::placement::SplitMode;
 mod tests {
     use super::*;
     use crate::validate::{
-        ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
+        ConfigDiagnosticKind, ConstraintReason, ServiceReason, ValidationErrorCode,
         test_fixtures::parse_and_merge, validate,
     };
 
@@ -79,7 +79,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::SplitUnknown { .. },
+                reason: ConstraintReason::Service(ServiceReason::SplitUnknown { .. }),
                 ..
             }
         ));
@@ -106,7 +106,9 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::ShardedSplitRequiresGpuOnly { .. },
+                reason: ConstraintReason::Service(
+                    ServiceReason::ShardedSplitRequiresGpuOnly { .. }
+                ),
                 ..
             }
         ));
@@ -133,7 +135,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::ShardedSplitLlamaCppOnly { .. },
+                reason: ConstraintReason::Service(ServiceReason::ShardedSplitLlamaCppOnly { .. }),
                 ..
             }
         ));
@@ -228,7 +230,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::TensorSplitWeightsRequiresSharded,
+                reason: ConstraintReason::Service(ServiceReason::TensorSplitWeightsRequiresSharded),
                 ..
             }
         ));
@@ -258,7 +260,9 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::ShardedSplitRequiresGpuOnly { .. },
+                reason: ConstraintReason::Service(
+                    ServiceReason::ShardedSplitRequiresGpuOnly { .. }
+                ),
                 ..
             }
         ));

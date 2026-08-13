@@ -10,7 +10,7 @@ use crate::{
     },
     parse::{RawAutoRestart, RawPeriodicSettings, Toggle},
     validate::{
-        AutoRestartSettings, ConfigDiagnostic, ConstraintReason,
+        AutoRestartReason, AutoRestartSettings, ConfigDiagnostic, ConstraintReason,
         DEFAULT_AUTO_RESTART_PERIODIC_MODE, ErrorRateTrigger, GenerationStallTrigger, PeriodicMode,
         PeriodicTrigger, SpecCollapseTrigger, Template, TtftStallTrigger, ValidationErrorCode,
         parse_duration_ms, validate_error_rate, validate_generation_stall, validate_spec_collapse,
@@ -57,7 +57,7 @@ pub(crate) fn validate_auto_restart(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec![format!("auto_restart.{field}")],
-                ConstraintReason::DurationParseError { error },
+                ConstraintReason::DurationParse(error),
             )
         })
     };
@@ -78,7 +78,7 @@ pub(crate) fn validate_auto_restart(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["auto_restart.periodic".into()],
-                ConstraintReason::PeriodicNeedsInterval,
+                ConstraintReason::AutoRestart(AutoRestartReason::PeriodicNeedsInterval),
             ));
         }
         Some(Toggle::Settings(s)) => Some(validate_periodic(name, s)?),
@@ -113,7 +113,7 @@ pub(crate) fn validate_auto_restart(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["auto_restart.spec_collapse".into()],
-                    ConstraintReason::SpecCollapseRequiresSpecType,
+                    ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapseRequiresSpecType),
                 ));
             }
             None
@@ -160,7 +160,7 @@ pub(crate) fn validate_periodic(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["auto_restart.periodic.interval".into()],
-                ConstraintReason::DurationParseError { error },
+                ConstraintReason::DurationParse(error),
             )
         })?,
         None => {
@@ -168,7 +168,7 @@ pub(crate) fn validate_periodic(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["auto_restart.periodic".into()],
-                ConstraintReason::PeriodicMissingInterval,
+                ConstraintReason::AutoRestart(AutoRestartReason::PeriodicMissingInterval),
             ));
         }
     };
@@ -182,9 +182,9 @@ pub(crate) fn validate_periodic(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["auto_restart.periodic.mode".into()],
-                ConstraintReason::PeriodicModeInvalid {
+                ConstraintReason::AutoRestart(AutoRestartReason::PeriodicModeInvalid {
                     value: other.to_string(),
-                },
+                }),
             ));
         }
     };

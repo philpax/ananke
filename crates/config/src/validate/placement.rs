@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 pub use crate::placement::{DeviceReserves, DeviceSlot, PlacementPolicy};
-use crate::validate::gib_to_mib;
+use crate::validate::{AllocationReason, ConstraintReason, gib_to_mib};
 
 /// Which template a service uses: `llama-cpp` or `command`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,24 +61,27 @@ impl AllocationMode {
         min_reserve_gb: Option<f32>,
         max_reserve_gb: Option<f32>,
         min_borrower_runtime_ms: u64,
-    ) -> Result<AllocationMode, crate::validate::ConstraintReason> {
+    ) -> Result<AllocationMode, ConstraintReason> {
         match mode {
             Some("static") => {
-                let gb = reserve_gb
-                    .ok_or(crate::validate::ConstraintReason::AllocationStaticRequiresReserveGb)?;
+                let gb = reserve_gb.ok_or(ConstraintReason::Allocation(
+                    AllocationReason::StaticRequiresReserveGb,
+                ))?;
                 Ok(AllocationMode::Static {
                     reserve_mb: gib_to_mib(gb),
                 })
             }
             Some("dynamic") => {
-                let min = min_reserve_gb.ok_or(
-                    crate::validate::ConstraintReason::AllocationDynamicRequiresMinReserveGb,
-                )?;
-                let max = max_reserve_gb.ok_or(
-                    crate::validate::ConstraintReason::AllocationDynamicRequiresMaxReserveGb,
-                )?;
+                let min = min_reserve_gb.ok_or(ConstraintReason::Allocation(
+                    AllocationReason::DynamicRequiresMinReserveGb,
+                ))?;
+                let max = max_reserve_gb.ok_or(ConstraintReason::Allocation(
+                    AllocationReason::DynamicRequiresMaxReserveGb,
+                ))?;
                 if max <= min {
-                    return Err(crate::validate::ConstraintReason::AllocationMaxMustExceedMin);
+                    return Err(ConstraintReason::Allocation(
+                        AllocationReason::MaxMustExceedMin,
+                    ));
                 }
                 Ok(AllocationMode::Dynamic {
                     min_mb: gib_to_mib(min),
@@ -86,17 +89,19 @@ impl AllocationMode {
                     min_borrower_runtime_ms,
                 })
             }
-            Some(other) => Err(crate::validate::ConstraintReason::AllocationModeUnknown {
-                value: other.into(),
-            }),
+            Some(other) => Err(ConstraintReason::Allocation(
+                AllocationReason::ModeUnknown {
+                    value: other.into(),
+                },
+            )),
             // A llama-cpp service without one is estimated and packed, which
             // is the normal path. A command service cannot be: ananke does not
             // build its argv and so cannot know what it will allocate.
             None => match template {
                 Template::LlamaCpp => Ok(AllocationMode::None),
-                Template::Command => {
-                    Err(crate::validate::ConstraintReason::AllocationCommandRequiresMode)
-                }
+                Template::Command => Err(ConstraintReason::Allocation(
+                    AllocationReason::CommandRequiresMode,
+                )),
             },
         }
     }
@@ -152,7 +157,8 @@ mod tests {
     use crate::{
         parse::parse_toml,
         validate::{
-            ConfigDiagnosticKind, ConstraintReason, test_fixtures::parse_and_merge, validate,
+            ConfigDiagnosticKind, ConstraintReason, ServiceReason, test_fixtures::parse_and_merge,
+            validate,
         },
     };
 
@@ -174,7 +180,7 @@ devices.placement_override = { "gpu:0" = 1000 }
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LifecycleOneshotInvalid,
+                reason: ConstraintReason::Service(ServiceReason::LifecycleOneshotInvalid),
                 ..
             }
         ));
@@ -390,7 +396,7 @@ allocation.max_reserve_gb = 5
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::AllocationMaxMustExceedMin,
+                reason: ConstraintReason::Allocation(AllocationReason::MaxMustExceedMin),
                 ..
             }
         ));

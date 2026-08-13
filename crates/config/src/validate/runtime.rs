@@ -101,7 +101,7 @@ pub struct IkSettings {
 mod tests {
     use super::*;
     use crate::validate::{
-        ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
+        ConfigDiagnosticKind, ConstraintReason, LlamaCppReason, ServiceReason, ValidationErrorCode,
         test_fixtures::parse_and_merge, validate,
     };
 
@@ -239,7 +239,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppSpecTypeWrongDialect { .. },
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect { .. }),
                 ..
             }
         ));
@@ -263,7 +263,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppSpecTypeWrongDialect { .. },
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect { .. }),
                 ..
             }
         ));
@@ -290,7 +290,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppDsaRequiresF16Kv { .. },
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::DsaRequiresF16Kv { .. }),
                 ..
             }
         ));
@@ -315,7 +315,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppAttnMaxBatchZero,
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::AttnMaxBatchZero),
                 ..
             }
         ));
@@ -341,7 +341,9 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::ExpertOffloadRequiresHybridPlacement,
+                reason: ConstraintReason::Service(
+                    ServiceReason::ExpertOffloadRequiresHybridPlacement
+                ),
                 ..
             }
         ));
@@ -372,7 +374,9 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::ExpertOffloadConflictsShardedSplit { .. },
+                reason: ConstraintReason::Service(
+                    ServiceReason::ExpertOffloadConflictsShardedSplit { .. }
+                ),
                 ..
             }
         ));

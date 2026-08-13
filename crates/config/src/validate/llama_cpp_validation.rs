@@ -9,8 +9,8 @@ use crate::{
     flags,
     parse::{RawExpertOffload, RawLlamaCppService, RawRuntime},
     validate::{
-        ConfigDiagnostic, ConstraintReason, IkSettings, LlamaCppConfig, NumaStrategy, OffloadMode,
-        PlaceholderChecker, Runtime, RuntimeConfig, ValidationErrorCode,
+        ConfigDiagnostic, ConstraintReason, IkSettings, LlamaCppConfig, LlamaCppReason,
+        NumaStrategy, OffloadMode, PlaceholderChecker, Runtime, RuntimeConfig, ValidationErrorCode,
     },
 };
 
@@ -25,7 +25,7 @@ pub(crate) fn validate_llama_cpp(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["model".into()],
-            ConstraintReason::LlamaCppModelMissing,
+            ConstraintReason::LlamaCpp(LlamaCppReason::ModelMissing),
         )
     })?;
     let runtime = match &lc.runtime {
@@ -39,10 +39,10 @@ pub(crate) fn validate_llama_cpp(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["spec_type".into()],
-                    ConstraintReason::LlamaCppSpecTypeWrongDialect {
+                    ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect {
                         spec_type: st.to_string(),
                         expected: "\"draft-mtp\" (or set runtime = { kind = \"ik-llama\" })",
-                    },
+                    }),
                 ));
             }
             RuntimeConfig::Mainline
@@ -55,7 +55,7 @@ pub(crate) fn validate_llama_cpp(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["runtime.mla".into()],
-                    ConstraintReason::LlamaCppMlaOutOfRange { value: m },
+                    ConstraintReason::LlamaCpp(LlamaCppReason::MlaOutOfRange { value: m }),
                 ));
             }
             if let Some(st) = lc.spec_type.as_deref()
@@ -65,10 +65,10 @@ pub(crate) fn validate_llama_cpp(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["spec_type".into()],
-                    ConstraintReason::LlamaCppSpecTypeWrongDialect {
+                    ConstraintReason::LlamaCpp(LlamaCppReason::SpecTypeWrongDialect {
                         spec_type: st.to_string(),
                         expected: "\"mtp:n_max=4,p_min=0.5\"",
-                    },
+                    }),
                 ));
             }
             if ik.dsa == Some(true) {
@@ -83,10 +83,10 @@ pub(crate) fn validate_llama_cpp(
                             ValidationErrorCode::TemplateConstraint,
                             Some(name.to_string()),
                             vec![key.into()],
-                            ConstraintReason::LlamaCppDsaRequiresF16Kv {
+                            ConstraintReason::LlamaCpp(LlamaCppReason::DsaRequiresF16Kv {
                                 key,
                                 value: v.to_string(),
-                            },
+                            }),
                         ));
                     }
                 }
@@ -107,7 +107,7 @@ pub(crate) fn validate_llama_cpp(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["runtime.attn_max_batch".into()],
-            ConstraintReason::LlamaCppAttnMaxBatchZero,
+            ConstraintReason::LlamaCpp(LlamaCppReason::AttnMaxBatchZero),
         ));
     }
 
@@ -128,10 +128,10 @@ pub(crate) fn validate_llama_cpp(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec![key.into()],
-                    ConstraintReason::LlamaCppQuantizedKvRequiresFlashAttn {
+                    ConstraintReason::LlamaCpp(LlamaCppReason::QuantizedKvRequiresFlashAttn {
                         key,
                         value: v.to_string(),
-                    },
+                    }),
                 ));
             }
         }
@@ -142,7 +142,7 @@ pub(crate) fn validate_llama_cpp(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["draft_model".into(), "spec_type".into()],
-            ConstraintReason::LlamaCppDraftModelRequiresSpecType,
+            ConstraintReason::LlamaCpp(LlamaCppReason::DraftModelRequiresSpecType),
         ));
     }
 
@@ -154,7 +154,7 @@ pub(crate) fn validate_llama_cpp(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["launcher".into()],
-                    ConstraintReason::LlamaCppLauncherEmpty,
+                    ConstraintReason::LlamaCpp(LlamaCppReason::LauncherEmpty),
                 ));
             }
             checker.check(name, "launcher", argv)?;
@@ -178,10 +178,10 @@ pub(crate) fn validate_llama_cpp(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["expert_offload".into()],
-                    ConstraintReason::LlamaCppExpertOffloadInvalid {
+                    ConstraintReason::LlamaCpp(LlamaCppReason::ExpertOffloadInvalid {
                         value: other.to_string(),
                         expected: flags::quoted_list(flags::expert_offload::ALL),
-                    },
+                    }),
                 ));
             }
         },
@@ -194,10 +194,10 @@ pub(crate) fn validate_llama_cpp(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["numa".into()],
-                ConstraintReason::LlamaCppNumaInvalid {
+                ConstraintReason::LlamaCpp(LlamaCppReason::NumaInvalid {
                     value: s.to_string(),
                     expected: NumaStrategy::valid_values(),
-                },
+                }),
             )
         })?),
     };
@@ -246,8 +246,8 @@ mod tests {
     use crate::{
         parse::parse_toml,
         validate::{
-            ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
-            test_fixtures::parse_and_merge, validate,
+            ConfigDiagnosticKind, ConstraintReason, LlamaCppReason, ServiceReason,
+            ValidationErrorCode, test_fixtures::parse_and_merge, validate,
         },
     };
 
@@ -286,7 +286,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppDraftModelRequiresSpecType,
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::DraftModelRequiresSpecType),
                 ..
             }
         ));
@@ -313,7 +313,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppNumaInvalid { .. },
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::NumaInvalid { .. }),
                 ..
             }
         ));
@@ -336,7 +336,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppExpertOffloadInvalid { .. },
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::ExpertOffloadInvalid { .. }),
                 ..
             }
         ));
@@ -434,7 +434,9 @@ devices.placement_override = { "gpu:0" = 1000 }
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::LlamaCppQuantizedKvRequiresFlashAttn { .. },
+                reason: ConstraintReason::LlamaCpp(
+                    LlamaCppReason::QuantizedKvRequiresFlashAttn { .. }
+                ),
                 ..
             }
         ));
@@ -461,7 +463,7 @@ lifecycle = "persistent"
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::CpuOnlyWithGpuLayers { .. },
+                reason: ConstraintReason::Service(ServiceReason::CpuOnlyWithGpuLayers { .. }),
                 ..
             }
         ));

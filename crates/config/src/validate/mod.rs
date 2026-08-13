@@ -36,8 +36,9 @@ pub(crate) use auto_restart_validation::validate_auto_restart;
 pub(crate) use command_validation::{command_uses_port_placeholder, validate_command};
 pub use common::{flag_variant, gib_to_mib, parse_duration_ms, variant_flag};
 pub use error::{
-    ConfigDiagnostic, ConfigDiagnosticKind, ConfigDiagnosticReport, ConfigPipelineError,
-    ConstraintReason, DiagnosticLocation, DurationParseError, MergeReason, PlaceholderError,
+    AllocationReason, AutoRestartReason, CommandReason, ConfigDiagnostic, ConfigDiagnosticKind,
+    ConfigDiagnosticReport, ConfigPipelineError, ConstraintReason, DiagnosticLocation,
+    DurationParseError, LlamaCppReason, MergeReason, PlaceholderError, ServiceReason,
     ValueDiagnosticDetail, byte_offset_to_line_column,
 };
 pub(crate) use llama_cpp_validation::validate_llama_cpp;

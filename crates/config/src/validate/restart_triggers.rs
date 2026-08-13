@@ -9,7 +9,7 @@ use crate::{
         RawTtftStallSettings,
     },
     validate::{
-        ConfigDiagnostic, ConstraintReason, ErrorRateTrigger, ErrorStatusClass,
+        AutoRestartReason, ConfigDiagnostic, ConstraintReason, ErrorRateTrigger, ErrorStatusClass,
         GenerationStallTrigger, SpecCollapseTrigger, TtftStallTrigger, ValidationErrorCode,
         parse_duration_ms,
     },
@@ -26,7 +26,7 @@ pub(crate) fn validate_spec_collapse(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec![format!("auto_restart.spec_collapse.{field}")],
-                ConstraintReason::DurationParseError { error },
+                ConstraintReason::DurationParse(error),
             )
         })
     };
@@ -48,7 +48,7 @@ pub(crate) fn validate_spec_collapse(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["auto_restart.spec_collapse.window".into()],
-            ConstraintReason::SpecCollapseWindowZero,
+            ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapseWindowZero),
         ));
     }
     if min_draft_tokens == 0 {
@@ -56,7 +56,7 @@ pub(crate) fn validate_spec_collapse(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["auto_restart.spec_collapse.min_draft_tokens".into()],
-            ConstraintReason::SpecCollapseMinDraftTokensZero,
+            ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapseMinDraftTokensZero),
         ));
     }
     if poll_interval_ms == 0 {
@@ -64,7 +64,7 @@ pub(crate) fn validate_spec_collapse(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["auto_restart.spec_collapse.poll_interval".into()],
-            ConstraintReason::SpecCollapsePollIntervalZero,
+            ConstraintReason::AutoRestart(AutoRestartReason::SpecCollapsePollIntervalZero),
         ));
     }
     Ok(SpecCollapseTrigger {
@@ -85,7 +85,7 @@ pub(crate) fn validate_generation_stall(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec![format!("auto_restart.generation_stall.{field}")],
-                ConstraintReason::DurationParseError { error },
+                ConstraintReason::DurationParse(error),
             )
         })
     };
@@ -106,7 +106,7 @@ pub(crate) fn validate_generation_stall(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["auto_restart.generation_stall.timeout".into()],
-            ConstraintReason::GenerationStallTimeoutZero,
+            ConstraintReason::AutoRestart(AutoRestartReason::GenerationStallTimeoutZero),
         ));
     }
     if poll_interval_ms == 0 {
@@ -114,7 +114,7 @@ pub(crate) fn validate_generation_stall(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["auto_restart.generation_stall.poll_interval".into()],
-            ConstraintReason::GenerationStallPollIntervalZero,
+            ConstraintReason::AutoRestart(AutoRestartReason::GenerationStallPollIntervalZero),
         ));
     }
     Ok(GenerationStallTrigger {
@@ -137,7 +137,7 @@ pub(crate) fn validate_ttft_stall(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["auto_restart.ttft_stall.timeout".into()],
-                    ConstraintReason::DurationParseError { error },
+                    ConstraintReason::DurationParse(error),
                 )
             })
         })
@@ -148,7 +148,7 @@ pub(crate) fn validate_ttft_stall(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["auto_restart.ttft_stall.timeout".into()],
-            ConstraintReason::TtftStallTimeoutZero,
+            ConstraintReason::AutoRestart(AutoRestartReason::TtftStallTimeoutZero),
         ));
     }
     Ok(TtftStallTrigger { timeout_ms })
@@ -168,7 +168,7 @@ pub(crate) fn validate_error_rate(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["auto_restart.error_rate.window".into()],
-                    ConstraintReason::DurationParseError { error },
+                    ConstraintReason::DurationParse(error),
                 )
             })
         })
@@ -182,9 +182,9 @@ pub(crate) fn validate_error_rate(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["auto_restart.error_rate.max_error_rate".into()],
-                ConstraintReason::ErrorRateOutOfRange {
+                ConstraintReason::AutoRestart(AutoRestartReason::ErrorRateOutOfRange {
                     value: r.to_string(),
-                },
+                }),
             ));
         }
     };
@@ -197,7 +197,7 @@ pub(crate) fn validate_error_rate(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     vec!["auto_restart.error_rate.poll_interval".into()],
-                    ConstraintReason::DurationParseError { error },
+                    ConstraintReason::DurationParse(error),
                 )
             })
         })
@@ -212,9 +212,9 @@ pub(crate) fn validate_error_rate(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["auto_restart.error_rate.error_statuses".into()],
-                ConstraintReason::ErrorStatusClassInvalid {
+                ConstraintReason::AutoRestart(AutoRestartReason::ErrorStatusClassInvalid {
                     value: other.into(),
-                },
+                }),
             ));
         }
     };
@@ -412,7 +412,9 @@ devices.placement = "cpu-only"
         assert!(matches!(
             &*err.as_slice()[0].kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::SpecCollapseRequiresSpecType,
+                reason: ConstraintReason::AutoRestart(
+                    AutoRestartReason::SpecCollapseRequiresSpecType
+                ),
                 ..
             }
         ));

@@ -8,8 +8,8 @@ use smol_str::SmolStr;
 use crate::{
     parse::RawCommandService,
     validate::{
-        CommandConfig, ConfigDiagnostic, ConstraintReason, OpenAiProxyConfig, PlaceholderChecker,
-        ValidationErrorCode,
+        CommandConfig, CommandReason, ConfigDiagnostic, ConstraintReason, OpenAiProxyConfig,
+        PlaceholderChecker, ValidationErrorCode,
     },
 };
 
@@ -23,7 +23,7 @@ pub(crate) fn validate_command(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["command.command".into()],
-            ConstraintReason::CommandMissingCommand,
+            ConstraintReason::Command(CommandReason::MissingCommand),
         )
     })?;
     if command.is_empty() {
@@ -31,7 +31,7 @@ pub(crate) fn validate_command(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["command.command".into()],
-            ConstraintReason::CommandEmptyCommand,
+            ConstraintReason::Command(CommandReason::EmptyCommand),
         ));
     }
     if let Some(sd) = &cmd.shutdown_command
@@ -41,7 +41,7 @@ pub(crate) fn validate_command(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             vec!["command.shutdown_command".into()],
-            ConstraintReason::CommandEmptyShutdownCommand,
+            ConstraintReason::Command(CommandReason::EmptyShutdownCommand),
         ));
     }
     // Dry-run the placeholder substitution so typos surface now rather
@@ -64,7 +64,7 @@ pub(crate) fn validate_command(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
                         vec!["command.openai_proxy.upstream_model".into()],
-                        ConstraintReason::CommandUpstreamModelEmpty,
+                        ConstraintReason::Command(CommandReason::UpstreamModelEmpty),
                     )
                 })?
                 .clone();
@@ -97,7 +97,7 @@ pub(crate) fn command_uses_port_placeholder(
 #[cfg(test)]
 mod tests {
     use crate::validate::{
-        ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
+        CommandReason, ConfigDiagnosticKind, ConstraintReason, ValidationErrorCode,
         test_fixtures::parse_and_merge, validate,
     };
 
@@ -119,7 +119,7 @@ allocation.reserve_gb = 6
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::CommandMissingCommand,
+                reason: ConstraintReason::Command(CommandReason::MissingCommand),
                 ..
             }
         ));
@@ -210,7 +210,7 @@ allocation.reserve_gb = 1
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::CommandEmptyShutdownCommand,
+                reason: ConstraintReason::Command(CommandReason::EmptyShutdownCommand),
                 ..
             }
         ));
@@ -259,7 +259,7 @@ upstream_model = ""
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::CommandUpstreamModelEmpty,
+                reason: ConstraintReason::Command(CommandReason::UpstreamModelEmpty),
                 ..
             }
         ));
@@ -285,7 +285,7 @@ allocation.reserve_gb = 1
         assert!(matches!(
             &*diag.kind,
             ConfigDiagnosticKind::Fields {
-                reason: ConstraintReason::CommandUpstreamModelEmpty,
+                reason: ConstraintReason::Command(CommandReason::UpstreamModelEmpty),
                 ..
             }
         ));
