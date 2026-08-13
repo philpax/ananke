@@ -14,13 +14,13 @@ function diagnostic(overrides: Partial<ValidationError> = {}): ValidationError {
     code: "value_invalid",
     message: "invalid value",
     path: "service.port",
+    service: null,
+    service_index: null,
     context: {
       kind: "Value",
       data: { field: "service.port", offending: "x", expected: "a port" },
     },
     location: null,
-    line: null,
-    column: null,
     ...overrides,
   };
 }
@@ -36,8 +36,6 @@ describe("config validation diagnostics", () => {
         data: { parser_message: "expected a value" },
       },
       location: { start: 4, end: 9, line: 2, column: 5 },
-      line: 2,
-      column: 5,
     });
     render(<ValidationPanel errors={[error]} />);
     expect(screen.getByText(/L2:5 \[parse\]/)).toBeInTheDocument();

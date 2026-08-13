@@ -86,9 +86,33 @@ async fn post_validate_returns_parser_span() {
     let error = &parsed.errors[0];
     assert_eq!(error.code, ValidationErrorCode::Parse);
     assert!(error.location.is_some());
-    assert!(error.line.is_some());
-    assert!(error.column.is_some());
     assert!(matches!(error.context, ValidationContext::Parse { .. }));
+    h.cleanup().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn post_validate_attributes_service_scoped_diagnostics() {
+    let h = common::build_harness(vec![common::minimal_llama_service("demo", 0)]).await;
+    let app = router(h.state.clone());
+    let request = ConfigValidateRequest {
+        content: "[[service]]\nname = \"alpha\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 11435\n\n[[service]]\nname = \"beta\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\n".into(),
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/config/validate")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&request).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let parsed: ConfigValidateResponse = serde_json::from_slice(&bytes).unwrap();
+    assert!(!parsed.valid);
+    let error = &parsed.errors[0];
+    assert_eq!(error.code, ValidationErrorCode::FieldMissing);
+    assert_eq!(error.service.as_deref(), Some("beta"));
+    assert_eq!(error.service_index, Some(1));
+    assert!(error.message.contains("beta"));
     h.cleanup().await;
 }
 

@@ -3,7 +3,9 @@
 
 use std::{fmt, ops::Range, path::PathBuf};
 
-use ananke_api::config::validate::ValidationErrorCode;
+use ananke_api::config::validate::{
+    ValidationContext, ValidationError, ValidationErrorCode, ValidationLocation,
+};
 
 /// A source location in the original configuration text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -604,96 +606,6 @@ pub enum ConfigDiagnosticKind {
     },
 }
 
-/// Structured context derived from [`ConfigDiagnosticKind`] for API adapters.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiagnosticContext {
-    /// A service and optional field/index identify the affected item.
-    Service {
-        /// Service name, when it was available.
-        service: Option<String>,
-        /// Original source index, when it was available.
-        index: Option<usize>,
-        /// Field path, when it was available.
-        field: Option<String>,
-    },
-    /// A field with optional offending and expected values.
-    Field {
-        /// Field path.
-        field: String,
-        /// Offending value, if available.
-        offending: Option<String>,
-        /// Expected value, if available.
-        expected: Option<String>,
-    },
-    /// A required field and its invalid value.
-    Value {
-        /// Field path.
-        field: String,
-        /// Offending value.
-        offending: String,
-        /// Expected value, if available.
-        expected: Option<String>,
-    },
-    /// A collection count mismatch.
-    Count {
-        /// Field path.
-        field: String,
-        /// Actual count.
-        got: usize,
-        /// Expected count.
-        expected: usize,
-    },
-    /// An indexed collection value failure.
-    Index {
-        /// Field path.
-        field: String,
-        /// Element index.
-        index: usize,
-        /// Offending value.
-        value: String,
-        /// Expected value, if available.
-        expected: Option<String>,
-    },
-    /// Multiple fields participate in one constraint.
-    Fields {
-        /// Field paths.
-        fields: Vec<String>,
-        /// Service name, when available.
-        service: Option<String>,
-        /// Constraint reason rendering.
-        reason: String,
-    },
-    /// Placeholder substitution context.
-    Placeholder {
-        /// Service name, when available.
-        service: Option<String>,
-        /// Field containing the argument.
-        field: String,
-        /// Argument index, when available.
-        argv_index: Option<usize>,
-        /// Full argument text, when available.
-        argument: Option<String>,
-        /// Substitution error category.
-        category: String,
-    },
-    /// Merge/inheritance context.
-    Merge {
-        /// Service name, when available.
-        service: Option<String>,
-        /// Original source index, when available.
-        index: Option<usize>,
-        /// Parent service, when available.
-        parent: Option<String>,
-        /// Merge reason.
-        reason: String,
-    },
-    /// Parser-provided message.
-    Parse {
-        /// Original parser message.
-        parser_message: String,
-    },
-}
-
 /// One typed configuration diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigDiagnostic {
@@ -703,6 +615,12 @@ pub struct ConfigDiagnostic {
     pub location: Option<DiagnosticLocation>,
     /// Original zero-based service index, when the diagnostic belongs to a service.
     pub source_index: Option<usize>,
+    /// Owning service name, when the diagnostic belongs to a named service.
+    ///
+    /// Attached by the orchestrator rather than by the individual validators, so
+    /// that a diagnostic raised before the name is read — a missing `port`, say —
+    /// still reaches the operator attributed to the block it came from.
+    pub service: Option<String>,
 }
 
 impl ConfigDiagnostic {
@@ -712,12 +630,16 @@ impl ConfigDiagnostic {
             kind: Box::new(kind),
             location,
             source_index: None,
+            service: None,
         }
     }
 
-    /// Attach the original source index to a service diagnostic.
-    pub fn with_source_index(mut self, source_index: usize) -> Self {
+    /// Attach the owning `[[service]]` block's source index and name.
+    pub fn with_service_context(mut self, source_index: usize, service: Option<&str>) -> Self {
         self.source_index = Some(source_index);
+        if self.service.is_none() {
+            self.service = service.map(str::to_owned);
+        }
         self
     }
 
@@ -878,9 +800,9 @@ impl ConfigDiagnostic {
     }
 
     /// Derive the wire-shaped context for a boundary adapter.
-    pub fn context(&self) -> DiagnosticContext {
+    pub fn context(&self) -> ValidationContext {
         match &*self.kind {
-            ConfigDiagnosticKind::Parse { parser_message } => DiagnosticContext::Parse {
+            ConfigDiagnosticKind::Parse { parser_message } => ValidationContext::Parse {
                 parser_message: parser_message.clone(),
             },
             ConfigDiagnosticKind::Merge {
@@ -888,7 +810,7 @@ impl ConfigDiagnostic {
                 index,
                 parent,
                 reason,
-            } => DiagnosticContext::Merge {
+            } => ValidationContext::Merge {
                 service: service.clone(),
                 index: *index,
                 parent: parent.clone(),
@@ -899,7 +821,7 @@ impl ConfigDiagnostic {
                 offending,
                 expected,
                 ..
-            } => DiagnosticContext::Field {
+            } => ValidationContext::Field {
                 field: field.clone(),
                 offending: offending.clone(),
                 expected: expected.clone(),
@@ -909,7 +831,7 @@ impl ConfigDiagnostic {
                 offending,
                 expected,
                 ..
-            } => DiagnosticContext::Value {
+            } => ValidationContext::Value {
                 field: field.clone(),
                 offending: offending.clone(),
                 expected: expected.clone(),
@@ -919,7 +841,7 @@ impl ConfigDiagnostic {
                 got,
                 expected,
                 ..
-            } => DiagnosticContext::Count {
+            } => ValidationContext::Count {
                 field: field.clone(),
                 got: *got,
                 expected: *expected,
@@ -930,7 +852,7 @@ impl ConfigDiagnostic {
                 value,
                 expected,
                 ..
-            } => DiagnosticContext::Index {
+            } => ValidationContext::Index {
                 field: field.clone(),
                 index: *index,
                 value: value.clone(),
@@ -941,7 +863,7 @@ impl ConfigDiagnostic {
                 service,
                 reason,
                 ..
-            } => DiagnosticContext::Fields {
+            } => ValidationContext::Fields {
                 fields: fields.clone(),
                 service: service.clone(),
                 reason: reason.to_string(),
@@ -953,7 +875,7 @@ impl ConfigDiagnostic {
                 argument,
                 error,
                 ..
-            } => DiagnosticContext::Placeholder {
+            } => ValidationContext::Placeholder {
                 service: service.clone(),
                 field: field.clone(),
                 argv_index: *argv_index,
@@ -965,7 +887,7 @@ impl ConfigDiagnostic {
                 index,
                 field,
                 ..
-            } => DiagnosticContext::Service {
+            } => ValidationContext::Service {
                 service: service.clone(),
                 index: *index,
                 field: field.clone(),
@@ -987,10 +909,73 @@ impl ConfigDiagnostic {
             | ConfigDiagnosticKind::Fields { .. } => None,
         }
     }
+
+    /// Return the owning service name, preferring the one the payload carries.
+    pub fn service_name(&self) -> Option<&str> {
+        self.embedded_service().or(self.service.as_deref())
+    }
+
+    /// The service name the payload renders itself, if any.
+    ///
+    /// Kinds listed here already write `service {name}` in their own `Display`,
+    /// so the shared prefix must not repeat it.
+    fn embedded_service(&self) -> Option<&str> {
+        match &*self.kind {
+            ConfigDiagnosticKind::Merge { service, .. }
+            | ConfigDiagnosticKind::Fields { service, .. }
+            | ConfigDiagnosticKind::Placeholder { service, .. }
+            | ConfigDiagnosticKind::Service { service, .. } => service.as_deref(),
+            ConfigDiagnosticKind::Parse { .. }
+            | ConfigDiagnosticKind::Field { .. }
+            | ConfigDiagnosticKind::Value { .. }
+            | ConfigDiagnosticKind::Count { .. }
+            | ConfigDiagnosticKind::Index { .. } => None,
+        }
+    }
+
+    /// Whether the payload writes its own service identity in `Display`.
+    const fn renders_own_service(&self) -> bool {
+        matches!(
+            &*self.kind,
+            ConfigDiagnosticKind::Merge { .. }
+                | ConfigDiagnosticKind::Fields { .. }
+                | ConfigDiagnosticKind::Placeholder { .. }
+                | ConfigDiagnosticKind::Service { .. }
+        )
+    }
+}
+
+impl From<ConfigDiagnostic> for ValidationError {
+    fn from(diagnostic: ConfigDiagnostic) -> Self {
+        Self {
+            code: diagnostic.code(),
+            message: diagnostic.to_string(),
+            path: diagnostic.path().map(str::to_owned),
+            service: diagnostic.service_name().map(str::to_owned),
+            service_index: diagnostic.source_index,
+            context: diagnostic.context(),
+            location: diagnostic
+                .location
+                .as_ref()
+                .map(|location| ValidationLocation {
+                    start: location.start,
+                    end: location.end,
+                    line: location.line,
+                    column: location.column,
+                }),
+        }
+    }
 }
 
 impl fmt::Display for ConfigDiagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.renders_own_service() {
+            match (self.service.as_deref(), self.source_index) {
+                (Some(service), _) => write!(f, "service {service}: ")?,
+                (None, Some(index)) => write!(f, "service[{index}]: ")?,
+                (None, None) => {}
+            }
+        }
         match &*self.kind {
             ConfigDiagnosticKind::Parse { parser_message } => {
                 write!(f, "parse error: {parser_message}")

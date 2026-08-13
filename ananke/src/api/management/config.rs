@@ -4,14 +4,11 @@
 use ananke_api::{
     config::{
         get::ConfigResponse,
-        validate::{
-            ConfigValidateRequest, ConfigValidateResponse, ValidationContext, ValidationError,
-            ValidationLocation,
-        },
+        validate::{ConfigValidateRequest, ConfigValidateResponse, ValidationError},
     },
     shared::errors::ApiError,
 };
-use ananke_config::validate::{ConfigDiagnostic, ConfigDiagnosticReport, DiagnosticContext};
+use ananke_config::validate::ConfigDiagnosticReport;
 use axum::{
     Json,
     extract::State,
@@ -120,113 +117,5 @@ pub async fn post_validate(
 }
 
 fn project_report(report: ConfigDiagnosticReport) -> Vec<ValidationError> {
-    report.into_iter().map(project_diagnostic).collect()
-}
-
-fn project_diagnostic(diagnostic: ConfigDiagnostic) -> ValidationError {
-    let message = diagnostic.to_string();
-    let location = diagnostic
-        .location
-        .as_ref()
-        .map(|location| ValidationLocation {
-            start: location.start,
-            end: location.end,
-            line: location.line,
-            column: location.column,
-        });
-    let (line, column) = location.as_ref().map_or((None, None), |location| {
-        (Some(location.line), Some(location.column))
-    });
-    let path = diagnostic.path().map(str::to_owned);
-    let context = match diagnostic.context() {
-        DiagnosticContext::Service {
-            service,
-            index,
-            field,
-        } => ValidationContext::Service {
-            service,
-            index,
-            field,
-        },
-        DiagnosticContext::Field {
-            field,
-            offending,
-            expected,
-        } => ValidationContext::Field {
-            field,
-            offending,
-            expected,
-        },
-        DiagnosticContext::Value {
-            field,
-            offending,
-            expected,
-        } => ValidationContext::Value {
-            field,
-            offending,
-            expected,
-        },
-        DiagnosticContext::Count {
-            field,
-            got,
-            expected,
-        } => ValidationContext::Count {
-            field,
-            got,
-            expected,
-        },
-        DiagnosticContext::Index {
-            field,
-            index,
-            value,
-            expected,
-        } => ValidationContext::Index {
-            field,
-            index,
-            value,
-            expected,
-        },
-        DiagnosticContext::Fields { fields, reason, .. } => {
-            ValidationContext::Fields { fields, reason }
-        }
-        DiagnosticContext::Placeholder {
-            service,
-            field,
-            argv_index,
-            argument,
-            category,
-        } => ValidationContext::Placeholder {
-            service,
-            field,
-            argv_index,
-            argument,
-            category,
-        },
-        DiagnosticContext::Merge {
-            service,
-            index,
-            parent,
-            reason,
-        } => ValidationContext::Merge {
-            service,
-            index,
-            parent,
-            reason,
-        },
-        DiagnosticContext::Parse { parser_message } => ValidationContext::Parse { parser_message },
-    };
-    ValidationError {
-        code: diagnostic.code(),
-        message,
-        path,
-        context,
-        location,
-        line,
-        column,
-    }
-}
-
-#[cfg(test)]
-fn _force_link() {
-    let _: Vec<ananke_api::config::validate::ValidationError> = vec![];
+    report.into_iter().map(ValidationError::from).collect()
 }

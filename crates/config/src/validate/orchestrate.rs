@@ -152,14 +152,16 @@ pub fn validate_with_checks(
             ports: &mut candidate_ports,
             private_ports: &mut candidate_private_ports,
         };
-        match validate_service(source_index, raw, &daemon_ctx, &mut candidate_state) {
+        match validate_service(raw, &daemon_ctx, &mut candidate_state) {
             Ok(svc) => {
                 names = candidate_names;
                 ports = candidate_ports;
                 private_ports = candidate_private_ports;
                 out.push(svc);
             }
-            Err(error) => report.push(error.with_source_index(source_index)),
+            Err(error) => {
+                report.push(error.with_service_context(source_index, raw.common().name.as_deref()))
+            }
         }
     }
 

@@ -65,55 +65,9 @@ pub fn format_validation_errors(response: &ConfigValidateResponse) -> String {
                 .path
                 .as_deref()
                 .map_or_else(String::new, |path| format!(" ({path})"));
-            format!(
-                "  [{}]{}{} context={:?} {}\n",
-                error.code_label(),
-                path,
-                location,
-                error.context,
-                error.message
-            )
+            format!("  [{}]{}{} {}\n", error.code, path, location, error.message)
         })
         .collect()
-}
-
-trait ValidationErrorLabel {
-    fn code_label(&self) -> &'static str;
-}
-
-impl ValidationErrorLabel for ananke_api::config::validate::ValidationError {
-    fn code_label(&self) -> &'static str {
-        use ananke_api::config::validate::ValidationErrorCode::*;
-        match self.code {
-            Parse => "parse",
-            MergeConstraint => "merge_constraint",
-            GpuAllowDuplicate => "gpu_allow_duplicate",
-            GpuAllowUnsorted => "gpu_allow_unsorted",
-            TensorSplitWeightsCount => "tensor_split_weights_count",
-            TensorSplitWeightInvalid => "tensor_split_weight_invalid",
-            FieldMissing => "field_missing",
-            FieldUnknown => "field_unknown",
-            ValueInvalid => "value_invalid",
-            FieldRequired => "field_required",
-            FieldsIncompatible => "fields_incompatible",
-            ServiceNameDuplicate => "service_name_duplicate",
-            ServicePortDuplicate => "service_port_duplicate",
-            ServicePortManagementCollision => "service_port_management_collision",
-            DurationInvalid => "duration_invalid",
-            PlaceholderInvalid => "placeholder_invalid",
-            AllocationInvalid => "allocation_invalid",
-            PrivatePortRangeInvalid => "private_port_range_invalid",
-            PrivatePortExhausted => "private_port_exhausted",
-            MetadataInvalid => "metadata_invalid",
-            RuntimeConstraint => "runtime_constraint",
-            AutoRestartConstraint => "auto_restart_constraint",
-            TrackingConstraint => "tracking_constraint",
-            PlacementConstraint => "placement_constraint",
-            CommandConstraint => "command_constraint",
-            TemplateConstraint => "template_constraint",
-            Other => "other",
-        }
-    }
 }
 
 pub async fn reload(client: &ApiClient, _json: bool) -> Result<(), ApiClientError> {
@@ -146,8 +100,8 @@ mod tests {
                 offending: "0".into(),
                 expected: Some("a non-zero port".into()),
             },
-            line: location.as_ref().map(|location| location.line),
-            column: location.as_ref().map(|location| location.column),
+            service: Some("demo".into()),
+            service_index: Some(0),
             location,
         }
     }
@@ -179,7 +133,6 @@ mod tests {
         };
         let formatted = format_validation_errors(&response);
         assert!(formatted.contains("[field_missing] (service.port)"));
-        assert!(formatted.contains("context="));
         assert!(formatted.contains("invalid config"));
         assert!(!formatted.contains("0:0"));
     }

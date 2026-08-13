@@ -31,7 +31,9 @@ function formatContext(context: ValidationError["context"]): string {
     case "Index":
       return `${context.data.field}[${context.data.index}]=${context.data.value}`;
     case "Fields":
-      return context.data.fields.join(", ");
+      return context.data.service
+        ? `service=${context.data.service} ${context.data.fields.join(", ")}`
+        : context.data.fields.join(", ");
     case "Placeholder":
       return context.data.argument
         ? `${context.data.field}=${context.data.argument}`

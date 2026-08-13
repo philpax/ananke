@@ -13,7 +13,7 @@ export function ValidationPanel({ errors }: { errors: ValidationError[] }) {
       <ul className="space-y-0.5">
         {errors.map((error, index) => (
           <li
-            key={`${error.code}-${index}`}
+            key={`${error.code}-${error.service_index ?? "-"}-${index}`}
             className="font-mono text-xs text-danger"
           >
             {formatValidationError(error)}

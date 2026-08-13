@@ -28,11 +28,11 @@ pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
     AllocationMode, AutoRestartSettings, CommandConfig, ConfigDiagnostic, ConfigDiagnosticKind,
     ConfigDiagnosticReport, ConfigPipelineError, DaemonSettings, DeviceReserves, DeviceSlot,
-    DiagnosticContext, DiagnosticLocation, EffectiveConfig, ErrorRateTrigger, ErrorStatusClass,
-    Filters, GenerationStallTrigger, HealthSettings, IkSettings, Lifecycle, LlamaCppConfig,
-    NumaStrategy, OffloadMode, PeriodicMode, PeriodicTrigger, PlacementPolicy, Runtime,
-    RuntimeConfig, ServiceConfig, SpecCollapseTrigger, SplitMode, Template, TemplateConfig,
-    TrackingSettings, TtftStallTrigger, ValidationErrorCode, validate, validate_with_checks,
+    DiagnosticLocation, EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters,
+    GenerationStallTrigger, HealthSettings, IkSettings, Lifecycle, LlamaCppConfig, NumaStrategy,
+    OffloadMode, PeriodicMode, PeriodicTrigger, PlacementPolicy, Runtime, RuntimeConfig,
+    ServiceConfig, SpecCollapseTrigger, SplitMode, Template, TemplateConfig, TrackingSettings,
+    TtftStallTrigger, ValidationErrorCode, validate, validate_with_checks,
 };
 
 /// Load, parse, merge, validate, and preflight a config file from disk.

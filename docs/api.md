@@ -201,9 +201,9 @@ Each validation error contains:
 - `code`: a stable snake-case identifier for the actionable diagnostic category. Message wording may change without changing the code.
 - `message`: the centrally rendered human-readable diagnostic.
 - `path`: an optional configuration field path.
+- `service` and `service_index`: the owning `[[service]]` block, when the diagnostic belongs to one. `service_index` is the zero-based position of the block in the original TOML and is present even when the name is missing or duplicated, so a diagnostic can always be attributed back to the block that produced it.
 - `context`: a tagged structured payload with service, field, value, count, index, placeholder, merge, or parser data.
-- `location`: an optional source span with zero-based byte offsets and one-based line and column. Semantic diagnostics do not claim a source location.
-- `line` and `column`: nullable compatibility copies of `location.line` and `location.column`; they are null when no reliable location exists. Clients must not render `0:0` as a location.
+- `location`: an optional source span with zero-based byte offsets and one-based line and column. Semantic diagnostics do not claim a source location, so clients must not render `0:0` as a fallback.
 
 Diagnostics are ordered as parse, merge, global validation, and then services in original TOML source order. Within each service, the existing validation section order is preserved.
 
@@ -265,7 +265,6 @@ Validate TOML config without persisting
 {
   errors: {
     code: "parse" | "merge_constraint" | "gpu_allow_duplicate" | "gpu_allow_unsorted" | "tensor_split_weights_count" | "tensor_split_weight_invalid" | "field_missing" | "field_unknown" | "value_invalid" | "field_required" | "fields_incompatible" | "service_name_duplicate" | "service_port_duplicate" | "service_port_management_collision" | "duration_invalid" | "placeholder_invalid" | "allocation_invalid" | "private_port_range_invalid" | "private_port_exhausted" | "metadata_invalid" | "runtime_constraint" | "auto_restart_constraint" | "tracking_constraint" | "placement_constraint" | "command_constraint" | "template_constraint" | "other"
-    column?: number | null
     context:
       // Service
       | {
@@ -318,6 +317,7 @@ Validate TOML config without persisting
         data: {
           fields: string[]
           reason: string
+          service?: string | null
         }
         kind: "Fields"
       }
@@ -356,7 +356,6 @@ Validate TOML config without persisting
         }
         kind: "Other"
       }
-    line?: number | null
     location?: {
       column: number
       end: number
@@ -365,6 +364,8 @@ Validate TOML config without persisting
     } | null
     message: string
     path?: string | null
+    service?: string | null
+    service_index?: number | null
   }[]
   valid: boolean
 }

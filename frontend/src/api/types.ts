@@ -1748,6 +1748,8 @@ export interface components {
             fields: string[];
             /** @description Constraint reason. */
             reason: string;
+            /** @description Service name. */
+            service?: string | null;
           };
           /** @enum {string} */
           kind: "Fields";
@@ -1806,23 +1808,22 @@ export interface components {
     ValidationError: {
       /** @description Stable machine-readable code. */
       code: components["schemas"]["ValidationErrorCode"];
-      /**
-       * Format: int32
-       * @description Backwards-compatible one-based column, duplicated from `location`.
-       */
-      column?: number | null;
       /** @description Typed diagnostic context. */
       context: components["schemas"]["ValidationContext"];
-      /**
-       * Format: int32
-       * @description Backwards-compatible one-based line, duplicated from `location`.
-       */
-      line?: number | null;
       location?: null | components["schemas"]["ValidationLocation"];
       /** @description Centrally rendered human message. */
       message: string;
       /** @description Field path, when available. */
       path?: string | null;
+      /** @description Owning service name, when the diagnostic belongs to one. */
+      service?: string | null;
+      /**
+       * @description Zero-based index of the owning `[[service]]` block in the original source.
+       *
+       *     Present even when the name is missing or invalid, so a diagnostic can
+       *     always be attributed back to the block that produced it.
+       */
+      service_index?: number | null;
     };
     /**
      * @description Stable machine-readable validation code.

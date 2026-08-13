@@ -28,7 +28,6 @@ use crate::{
 };
 
 pub(crate) fn validate_service(
-    index: usize,
     raw: &RawService,
     daemon: &DaemonValidationCtx<'_>,
     state: &mut ServiceValidationState<'_>,
@@ -37,7 +36,7 @@ pub(crate) fn validate_service(
     let name = common.name.clone().ok_or_else(|| {
         ConfigDiagnostic::value(
             ValidationErrorCode::FieldMissing,
-            format!("service[{index}].name"),
+            "service.name",
             "<missing>",
             Some("a service name".into()),
         )

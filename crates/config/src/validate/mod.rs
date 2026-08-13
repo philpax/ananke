@@ -37,8 +37,8 @@ pub(crate) use command_validation::{command_uses_port_placeholder, validate_comm
 pub use common::{flag_variant, gib_to_mib, parse_duration_ms, variant_flag};
 pub use error::{
     ConfigDiagnostic, ConfigDiagnosticKind, ConfigDiagnosticReport, ConfigPipelineError,
-    ConstraintReason, DiagnosticContext, DiagnosticLocation, DurationParseError, MergeReason,
-    PlaceholderError, ValueDiagnosticDetail, byte_offset_to_line_column,
+    ConstraintReason, DiagnosticLocation, DurationParseError, MergeReason, PlaceholderError,
+    ValueDiagnosticDetail, byte_offset_to_line_column,
 };
 pub(crate) use llama_cpp_validation::validate_llama_cpp;
 pub(crate) use metadata::{build_ananke_metadata, toml_value_to_json};

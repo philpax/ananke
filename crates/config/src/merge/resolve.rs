@@ -41,11 +41,11 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
             report.push(
                 ConfigDiagnostic::value(
                     crate::validate::ValidationErrorCode::FieldMissing,
-                    format!("service[{source_index}].name"),
+                    "service.name",
                     "<missing>",
                     Some("a service name".into()),
                 )
-                .with_source_index(source_index),
+                .with_service_context(source_index, None),
             );
             skipped.push(IndexedService {
                 service,
@@ -61,7 +61,7 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
                     name.to_string(),
                     Some("a unique service name".into()),
                 )
-                .with_source_index(source_index),
+                .with_service_context(source_index, Some(name.as_str())),
             );
             skipped.push(IndexedService {
                 service,

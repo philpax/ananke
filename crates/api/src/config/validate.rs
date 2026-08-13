@@ -1,5 +1,7 @@
 //! `POST /api/config/validate` — validate TOML without persisting.
 
+use std::fmt;
+
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
 use utoipa::ToSchema;
 
@@ -80,6 +82,47 @@ pub enum ValidationErrorCode {
     Other,
 }
 
+impl ValidationErrorCode {
+    /// The stable wire spelling, identical to the serialized form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Parse => "parse",
+            Self::MergeConstraint => "merge_constraint",
+            Self::GpuAllowDuplicate => "gpu_allow_duplicate",
+            Self::GpuAllowUnsorted => "gpu_allow_unsorted",
+            Self::TensorSplitWeightsCount => "tensor_split_weights_count",
+            Self::TensorSplitWeightInvalid => "tensor_split_weight_invalid",
+            Self::FieldMissing => "field_missing",
+            Self::FieldUnknown => "field_unknown",
+            Self::ValueInvalid => "value_invalid",
+            Self::FieldRequired => "field_required",
+            Self::FieldsIncompatible => "fields_incompatible",
+            Self::ServiceNameDuplicate => "service_name_duplicate",
+            Self::ServicePortDuplicate => "service_port_duplicate",
+            Self::ServicePortManagementCollision => "service_port_management_collision",
+            Self::DurationInvalid => "duration_invalid",
+            Self::PlaceholderInvalid => "placeholder_invalid",
+            Self::AllocationInvalid => "allocation_invalid",
+            Self::PrivatePortRangeInvalid => "private_port_range_invalid",
+            Self::PrivatePortExhausted => "private_port_exhausted",
+            Self::MetadataInvalid => "metadata_invalid",
+            Self::RuntimeConstraint => "runtime_constraint",
+            Self::AutoRestartConstraint => "auto_restart_constraint",
+            Self::TrackingConstraint => "tracking_constraint",
+            Self::PlacementConstraint => "placement_constraint",
+            Self::CommandConstraint => "command_constraint",
+            Self::TemplateConstraint => "template_constraint",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl fmt::Display for ValidationErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Source range and human position for a parser diagnostic.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ValidationLocation {
@@ -148,6 +191,8 @@ pub enum ValidationContext {
     Fields {
         /// Field paths.
         fields: Vec<String>,
+        /// Service name.
+        service: Option<String>,
         /// Constraint reason.
         reason: String,
     },
@@ -218,6 +263,7 @@ enum KnownValidationContext {
     },
     Fields {
         fields: Vec<String>,
+        service: Option<String>,
         reason: String,
     },
     Placeholder {
@@ -299,9 +345,15 @@ impl<'de> Deserialize<'de> for ValidationContext {
                     value,
                     expected,
                 }),
-                KnownValidationContext::Fields { fields, reason } => {
-                    Ok(Self::Fields { fields, reason })
-                }
+                KnownValidationContext::Fields {
+                    fields,
+                    service,
+                    reason,
+                } => Ok(Self::Fields {
+                    fields,
+                    service,
+                    reason,
+                }),
                 KnownValidationContext::Placeholder {
                     service,
                     field,
@@ -346,14 +398,17 @@ pub struct ValidationError {
     pub message: String,
     /// Field path, when available.
     pub path: Option<String>,
+    /// Owning service name, when the diagnostic belongs to one.
+    pub service: Option<String>,
+    /// Zero-based index of the owning `[[service]]` block in the original source.
+    ///
+    /// Present even when the name is missing or invalid, so a diagnostic can
+    /// always be attributed back to the block that produced it.
+    pub service_index: Option<usize>,
     /// Typed diagnostic context.
     pub context: ValidationContext,
-    /// Authoritative parser source location, when available.
+    /// Parser source location, when available.
     pub location: Option<ValidationLocation>,
-    /// Backwards-compatible one-based line, duplicated from `location`.
-    pub line: Option<u32>,
-    /// Backwards-compatible one-based column, duplicated from `location`.
-    pub column: Option<u32>,
 }
 
 #[cfg(test)]
@@ -366,10 +421,10 @@ mod tests {
             "code": "future_code",
             "message": "future",
             "path": null,
+            "service": null,
+            "service_index": null,
             "context": { "kind": "Future", "data": { "x": 1 } },
-            "location": null,
-            "line": null,
-            "column": null
+            "location": null
         });
         let error: ValidationError = serde_json::from_value(value).unwrap();
         assert_eq!(error.code, ValidationErrorCode::Other);
