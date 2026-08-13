@@ -22,7 +22,7 @@ pub(crate) fn validate_command(
         ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            &[fields::command::COMMAND],
+            &[fields::service::COMMAND],
             "command template requires `command`".to_string(),
         )
     })?;
@@ -30,7 +30,7 @@ pub(crate) fn validate_command(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            &[fields::command::COMMAND],
+            &[fields::service::COMMAND],
             "command is empty".to_string(),
         ));
     }
@@ -40,7 +40,7 @@ pub(crate) fn validate_command(
         return Err(ConfigDiagnostic::constraint(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
-            &[fields::command::SHUTDOWN_COMMAND],
+            &[fields::service::SHUTDOWN_COMMAND],
             "shutdown_command is present but empty".to_string(),
         ));
     }
@@ -63,7 +63,7 @@ pub(crate) fn validate_command(
                     ConfigDiagnostic::constraint(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
-                        &[fields::command::OPENAI_PROXY_UPSTREAM_MODEL],
+                        &[fields::openai_proxy::UPSTREAM_MODEL],
                         "openai_proxy.upstream_model must be a non-empty string".to_string(),
                     )
                 })?
@@ -116,7 +116,7 @@ allocation.reserve_gb = 6
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert_eq!(diag.fields(), [fields::command::COMMAND]);
+        assert_eq!(diag.fields(), [fields::service::COMMAND]);
         assert!(
             diag.to_string()
                 .contains("command template requires `command`")
@@ -209,7 +209,7 @@ allocation.reserve_gb = 1
         let err = validate(&cfg).expect_err("empty shutdown_command is rejected");
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert_eq!(diag.fields(), [fields::command::SHUTDOWN_COMMAND]);
+        assert_eq!(diag.fields(), [fields::service::SHUTDOWN_COMMAND]);
         assert!(
             diag.to_string()
                 .contains("shutdown_command is present but empty")
@@ -256,10 +256,7 @@ upstream_model = ""
         let err = validate(&cfg).expect_err("empty upstream_model is rejected");
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert_eq!(
-            diag.fields(),
-            [fields::command::OPENAI_PROXY_UPSTREAM_MODEL]
-        );
+        assert_eq!(diag.fields(), [fields::openai_proxy::UPSTREAM_MODEL]);
         assert!(
             diag.to_string()
                 .contains("openai_proxy.upstream_model must be a non-empty string")
@@ -283,10 +280,7 @@ allocation.reserve_gb = 1
         let err = validate(&cfg).expect_err("missing upstream_model is rejected");
         let diag = &err.as_slice()[0];
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
-        assert_eq!(
-            diag.fields(),
-            [fields::command::OPENAI_PROXY_UPSTREAM_MODEL]
-        );
+        assert_eq!(diag.fields(), [fields::openai_proxy::UPSTREAM_MODEL]);
         assert!(
             diag.to_string()
                 .contains("openai_proxy.upstream_model must be a non-empty string")

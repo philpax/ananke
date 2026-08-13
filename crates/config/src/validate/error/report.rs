@@ -181,13 +181,13 @@ mod tests {
         let mut report = ConfigDiagnosticReport::new();
         report.push(ConfigDiagnostic::value(
             ValidationErrorCode::ValueInvalid,
-            "service.port",
+            "port",
             "x",
             Some("an integer".into()),
         ));
         report.push(ConfigDiagnostic::parse("bad TOML", None));
         assert_eq!(report.len(), 2);
-        assert!(report.to_string().contains("service.port"));
+        assert!(report.to_string().contains("port"));
         assert!(
             report
                 .into_expected_error(PathBuf::from("/tmp/config.toml"))

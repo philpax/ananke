@@ -213,7 +213,7 @@ lifecycle = "persistent"
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert_eq!(diag.fields(), [fields::devices::SPLIT]);
+        assert_eq!(diag.fields(), [fields::devices::TENSOR_SPLIT_WEIGHTS]);
         assert!(
             diag.to_string()
                 .contains("devices.tensor_split_weights is only valid")

@@ -3,9 +3,12 @@
 
 use smol_str::SmolStr;
 
-use crate::validate::{
-    ConfigDiagnostic, DEFAULT_PRIVATE_PORT_END, DEFAULT_PRIVATE_PORT_START, ValidationErrorCode,
-    ValueDiagnosticDetail,
+use crate::{
+    fields,
+    validate::{
+        ConfigDiagnostic, DEFAULT_PRIVATE_PORT_END, DEFAULT_PRIVATE_PORT_START,
+        ValidationErrorCode, ValueDiagnosticDetail,
+    },
 };
 
 // `DEFAULT_PRIVATE_PORT_START` / `DEFAULT_PRIVATE_PORT_END` are re-exported
@@ -35,7 +38,7 @@ impl PrivatePortRange {
             return Err(ConfigDiagnostic::value_with_detail(
                 ValidationErrorCode::PrivatePortRangeInvalid,
                 ValueDiagnosticDetail::PrivatePortRangeInvalid,
-                "daemon.private_port_range",
+                fields::daemon::PRIVATE_PORT_END,
                 format!("{start}..={end}"),
                 Some("private_port_end greater than private_port_start".into()),
             ));
@@ -67,7 +70,7 @@ impl PrivatePortAllocator {
         if self.next > self.range.end as u32 {
             return Err(ConfigDiagnostic::value(
                 ValidationErrorCode::PrivatePortExhausted,
-                "daemon.private_port_range",
+                fields::daemon::PRIVATE_PORT_END,
                 format!(
                     "service {svc_name}: private_port_range [{}, {}] exhausted ({} slots) — widen the range or reduce service count",
                     self.range.start,

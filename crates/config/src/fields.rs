@@ -4,8 +4,16 @@
 //! A diagnostic names the field it rejected, and a test asserts on that name
 //! rather than on the rendered sentence. The path is therefore part of the
 //! contract, not decoration, and belongs in one place.
+//!
+//! Every path is written the way the operator writes it, relative to the
+//! table that encloses it: a field of `[[service]]` is bare, a field of a
+//! sub-table is prefixed by that sub-table, and a field of a top-level table
+//! is prefixed by that table. `RawServiceCommon` and the per-template fields
+//! are `#[serde(flatten)]`ed into `[[service]]`, so they are bare regardless
+//! of which struct declares them — there is no `service.`, `llama_cpp.`, or
+//! `command.` prefix to write in TOML, and so none to report.
 
-/// Field paths under `[allocation]`.
+/// Field paths under `[service.allocation]`.
 pub mod allocation {
     /// `allocation.min_borrower_runtime`
     pub const MIN_BORROWER_RUNTIME: &str = "allocation.min_borrower_runtime";
@@ -13,7 +21,7 @@ pub mod allocation {
     pub const MODE: &str = "allocation.mode";
 }
 
-/// Field paths under `[auto_restart]`.
+/// Field paths under `[service.auto_restart]`.
 pub mod auto_restart {
     /// `auto_restart.error_rate.error_statuses`
     pub const ERROR_RATE_ERROR_STATUSES: &str = "auto_restart.error_rate.error_statuses";
@@ -45,25 +53,19 @@ pub mod auto_restart {
     pub const TTFT_STALL_TIMEOUT: &str = "auto_restart.ttft_stall.timeout";
 }
 
-/// Field paths under `[command]`.
-pub mod command {
-    /// `command.command`
-    pub const COMMAND: &str = "command.command";
-    /// `command.openai_proxy.upstream_model`
-    pub const OPENAI_PROXY_UPSTREAM_MODEL: &str = "command.openai_proxy.upstream_model";
-    /// `command.shutdown_command`
-    pub const SHUTDOWN_COMMAND: &str = "command.shutdown_command";
-}
-
 /// Field paths under `[daemon]`.
 pub mod daemon {
     /// `daemon.allow_external_management`
     pub const ALLOW_EXTERNAL_MANAGEMENT: &str = "daemon.allow_external_management";
     /// `daemon.management_listen`
     pub const MANAGEMENT_LISTEN: &str = "daemon.management_listen";
+    /// `daemon.private_port_end`
+    pub const PRIVATE_PORT_END: &str = "daemon.private_port_end";
+    /// `daemon.private_port_start`
+    pub const PRIVATE_PORT_START: &str = "daemon.private_port_start";
 }
 
-/// Field paths under `[devices]`.
+/// Field paths under `[service.devices]`.
 pub mod devices {
     /// `devices.placement`
     pub const PLACEMENT: &str = "devices.placement";
@@ -75,7 +77,7 @@ pub mod devices {
     pub const TENSOR_SPLIT_WEIGHTS: &str = "devices.tensor_split_weights";
 }
 
-/// Field paths under `[health]`.
+/// Field paths under `[service.health]`.
 pub mod health {
     /// `health.probe_interval`
     pub const PROBE_INTERVAL: &str = "health.probe_interval";
@@ -83,15 +85,13 @@ pub mod health {
     pub const TIMEOUT: &str = "health.timeout";
 }
 
-/// Field paths under `[llama_cpp]`.
-pub mod llama_cpp {
-    /// `llama_cpp.expert_offload`
-    pub const EXPERT_OFFLOAD: &str = "llama_cpp.expert_offload";
-    /// `llama_cpp.n_gpu_layers`
-    pub const N_GPU_LAYERS: &str = "llama_cpp.n_gpu_layers";
+/// Field paths under `[service.openai_proxy]`.
+pub mod openai_proxy {
+    /// `openai_proxy.upstream_model`
+    pub const UPSTREAM_MODEL: &str = "openai_proxy.upstream_model";
 }
 
-/// Field paths under `[runtime]`.
+/// Field paths under `[service.runtime]`.
 pub mod runtime {
     /// `runtime.attn_max_batch`
     pub const ATTN_MAX_BATCH: &str = "runtime.attn_max_batch";
@@ -99,32 +99,43 @@ pub mod runtime {
     pub const MLA: &str = "runtime.mla";
 }
 
-/// Service-level field paths.
+/// Field paths written at the top level of a `[[service]]` block: the
+/// flattened common fields and both templates' own fields.
 pub mod service {
+    /// `command`
+    pub const COMMAND: &str = "command";
     /// `draft_model`
     pub const DRAFT_MODEL: &str = "draft_model";
+    /// `drain_timeout`
+    pub const DRAIN_TIMEOUT: &str = "drain_timeout";
     /// `expert_offload`
     pub const EXPERT_OFFLOAD: &str = "expert_offload";
+    /// `extended_stream_drain`
+    pub const EXTENDED_STREAM_DRAIN: &str = "extended_stream_drain";
+    /// `idle_timeout`
+    pub const IDLE_TIMEOUT: &str = "idle_timeout";
     /// `launcher`
     pub const LAUNCHER: &str = "launcher";
+    /// `lifecycle`
+    pub const LIFECYCLE: &str = "lifecycle";
+    /// `max_request_duration`
+    pub const MAX_REQUEST_DURATION: &str = "max_request_duration";
+    /// `metadata`
+    pub const METADATA: &str = "metadata";
+    /// `modality`
+    pub const MODALITY: &str = "modality";
     /// `model`
     pub const MODEL: &str = "model";
+    /// `n_gpu_layers`
+    pub const N_GPU_LAYERS: &str = "n_gpu_layers";
+    /// `name`
+    pub const NAME: &str = "name";
     /// `numa`
     pub const NUMA: &str = "numa";
-    /// `service.drain_timeout`
-    pub const DRAIN_TIMEOUT: &str = "service.drain_timeout";
-    /// `service.extended_stream_drain`
-    pub const EXTENDED_STREAM_DRAIN: &str = "service.extended_stream_drain";
-    /// `service.idle_timeout`
-    pub const IDLE_TIMEOUT: &str = "service.idle_timeout";
-    /// `service.lifecycle`
-    pub const LIFECYCLE: &str = "service.lifecycle";
-    /// `service.max_request_duration`
-    pub const MAX_REQUEST_DURATION: &str = "service.max_request_duration";
-    /// `service.metadata`
-    pub const METADATA: &str = "service.metadata";
-    /// `service.modality`
-    pub const MODALITY: &str = "service.modality";
+    /// `port`
+    pub const PORT: &str = "port";
+    /// `shutdown_command`
+    pub const SHUTDOWN_COMMAND: &str = "shutdown_command";
     /// `spec_type`
     pub const SPEC_TYPE: &str = "spec_type";
 }

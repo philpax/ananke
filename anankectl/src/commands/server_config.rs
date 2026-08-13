@@ -94,9 +94,9 @@ mod tests {
         ValidationError {
             code,
             message: "invalid config".into(),
-            path: Some("service.port".into()),
+            path: Some("port".into()),
             context: ValidationContext::Value {
-                field: "service.port".into(),
+                field: "port".into(),
                 offending: "0".into(),
                 expected: Some("a non-zero port".into()),
             },
@@ -121,7 +121,7 @@ mod tests {
             )],
         };
         let formatted = format_validation_errors(&response);
-        assert!(formatted.contains("[value_invalid] (service.port) at 2:5"));
+        assert!(formatted.contains("[value_invalid] (port) at 2:5"));
         assert!(formatted.contains("invalid config"));
     }
 
@@ -132,7 +132,7 @@ mod tests {
             errors: vec![error(ValidationErrorCode::FieldMissing, None)],
         };
         let formatted = format_validation_errors(&response);
-        assert!(formatted.contains("[field_missing] (service.port)"));
+        assert!(formatted.contains("[field_missing] (port)"));
         assert!(formatted.contains("invalid config"));
         assert!(!formatted.contains("0:0"));
     }

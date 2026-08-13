@@ -13,12 +13,12 @@ function diagnostic(overrides: Partial<ValidationError> = {}): ValidationError {
   return {
     code: "value_invalid",
     message: "invalid value",
-    path: "service.port",
+    path: "port",
     service: null,
     service_index: null,
     context: {
       kind: "Value",
-      data: { field: "service.port", offending: "x", expected: "a port" },
+      data: { field: "port", offending: "x", expected: "a port" },
     },
     location: null,
     ...overrides,
@@ -44,9 +44,7 @@ describe("config validation diagnostics", () => {
 
   it("renders_unlocated_semantic_diagnostic", () => {
     render(<ValidationPanel errors={[diagnostic()]} />);
-    expect(
-      screen.getByText(/\[value_invalid\] service\.port/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/\[value_invalid\] port/)).toBeInTheDocument();
     expect(screen.queryByText(/L0:0/)).not.toBeInTheDocument();
   });
 

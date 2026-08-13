@@ -324,10 +324,7 @@ lifecycle = "persistent"
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
         assert_eq!(
             diag.fields(),
-            [
-                fields::llama_cpp::EXPERT_OFFLOAD,
-                fields::devices::PLACEMENT
-            ]
+            [fields::service::EXPERT_OFFLOAD, fields::devices::PLACEMENT]
         );
         assert!(
             diag.to_string()
@@ -359,7 +356,7 @@ lifecycle = "persistent"
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
         assert_eq!(
             diag.fields(),
-            [fields::llama_cpp::EXPERT_OFFLOAD, fields::devices::SPLIT]
+            [fields::service::EXPERT_OFFLOAD, fields::devices::SPLIT]
         );
         assert!(
             diag.to_string()

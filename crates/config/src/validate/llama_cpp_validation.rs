@@ -450,7 +450,7 @@ lifecycle = "persistent"
         assert_eq!(diag.code(), ValidationErrorCode::TemplateConstraint);
         assert_eq!(
             diag.fields(),
-            [fields::devices::PLACEMENT, fields::llama_cpp::N_GPU_LAYERS]
+            [fields::devices::PLACEMENT, fields::service::N_GPU_LAYERS]
         );
         assert!(
             diag.to_string()

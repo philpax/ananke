@@ -37,7 +37,7 @@ pub(crate) fn validate_service(
     let name = common.name.clone().ok_or_else(|| {
         ConfigDiagnostic::value(
             ValidationErrorCode::FieldMissing,
-            "service.name",
+            fields::service::NAME,
             "<missing>",
             Some("a service name".into()),
         )
@@ -45,7 +45,7 @@ pub(crate) fn validate_service(
     let port = common.port.ok_or_else(|| {
         ConfigDiagnostic::value(
             ValidationErrorCode::FieldMissing,
-            "service.port",
+            fields::service::PORT,
             "<missing>",
             Some("a public port".into()),
         )
@@ -54,7 +54,7 @@ pub(crate) fn validate_service(
     if !state.names.insert(name.clone()) {
         return Err(ConfigDiagnostic::value(
             ValidationErrorCode::ServiceNameDuplicate,
-            "service.name",
+            fields::service::NAME,
             name.to_string(),
             Some("a unique service name".into()),
         ));
@@ -62,7 +62,7 @@ pub(crate) fn validate_service(
     if !state.ports.insert(port) {
         return Err(ConfigDiagnostic::value(
             ValidationErrorCode::ServicePortDuplicate,
-            "service.port",
+            fields::service::PORT,
             port.to_string(),
             Some("a unique port".into()),
         ));
@@ -70,7 +70,7 @@ pub(crate) fn validate_service(
     if Some(port) == daemon.management_port {
         return Err(ConfigDiagnostic::value(
             ValidationErrorCode::ServicePortManagementCollision,
-            "service.port",
+            fields::service::PORT,
             port.to_string(),
             Some("a port different from daemon.management_listen".into()),
         ));
@@ -171,7 +171,7 @@ pub(crate) fn validate_service(
             ValidationErrorCode::TemplateConstraint,
             Some(name.to_string()),
             &[fields::service::METADATA],
-            format!("{field}: {error}", field = "service.metadata", error = e),
+            format!("{field}: {e}", field = fields::service::METADATA),
         )
     })?;
     let modality = match common.modality.as_deref() {
@@ -213,7 +213,7 @@ pub(crate) fn validate_service(
                 return Err(ConfigDiagnostic::constraint(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
-                    &[fields::devices::PLACEMENT, fields::llama_cpp::N_GPU_LAYERS],
+                    &[fields::devices::PLACEMENT, fields::service::N_GPU_LAYERS],
                     format!(
                         "devices.placement=cpu-only with n_gpu_layers={n_gpu_layers} is invalid",
                         n_gpu_layers = n
@@ -328,7 +328,7 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                &[fields::llama_cpp::EXPERT_OFFLOAD, fields::devices::SPLIT],
+                &[fields::service::EXPERT_OFFLOAD, fields::devices::SPLIT],
                 format!(
                     "expert_offload cannot be combined with devices.split=`{split}` (sharded split is GPU-only; expert offload targets the CPU)",
                     split = split_mode.as_flag()
@@ -339,10 +339,7 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                &[
-                    fields::llama_cpp::EXPERT_OFFLOAD,
-                    fields::devices::PLACEMENT,
-                ],
+                &[fields::service::EXPERT_OFFLOAD, fields::devices::PLACEMENT],
                 "expert_offload requires placement=hybrid (expert tensors offload to CPU)"
                     .to_string(),
             ));
@@ -395,7 +392,7 @@ pub(crate) fn validate_service(
             return Err(ConfigDiagnostic::constraint(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
-                &[fields::devices::SPLIT],
+                &[fields::devices::TENSOR_SPLIT_WEIGHTS],
                 "devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)".to_string(),
             ));
         }

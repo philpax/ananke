@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use smol_str::SmolStr;
 
 use crate::{
+    fields,
     merge::field_merge::{merge_command, merge_llama_cpp},
     parse::{RawConfig, RawService},
     validate::{ConfigDiagnostic, ConfigDiagnosticReport, MergeReason},
@@ -41,7 +42,7 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
             report.push(
                 ConfigDiagnostic::value(
                     crate::validate::ValidationErrorCode::FieldMissing,
-                    "service.name",
+                    fields::service::NAME,
                     "<missing>",
                     Some("a service name".into()),
                 )
@@ -57,7 +58,7 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
             report.push(
                 ConfigDiagnostic::value(
                     crate::validate::ValidationErrorCode::ServiceNameDuplicate,
-                    "service.name",
+                    fields::service::NAME,
                     name.to_string(),
                     Some("a unique service name".into()),
                 )
