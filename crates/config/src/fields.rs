@@ -63,10 +63,14 @@ pub mod daemon {
     pub const PRIVATE_PORT_END: &str = "daemon.private_port_end";
     /// `daemon.private_port_start`
     pub const PRIVATE_PORT_START: &str = "daemon.private_port_start";
+    /// `daemon.shutdown_timeout`
+    pub const SHUTDOWN_TIMEOUT: &str = "daemon.shutdown_timeout";
 }
 
 /// Field paths under `[service.devices]`.
 pub mod devices {
+    /// `devices.gpu_allow`
+    pub const GPU_ALLOW: &str = "devices.gpu_allow";
     /// `devices.placement`
     pub const PLACEMENT: &str = "devices.placement";
     /// `devices.placement_override`
@@ -75,6 +79,13 @@ pub mod devices {
     pub const SPLIT: &str = "devices.split";
     /// `devices.tensor_split_weights`
     pub const TENSOR_SPLIT_WEIGHTS: &str = "devices.tensor_split_weights";
+}
+
+/// Field paths under the global `[devices]` table (distinct from
+/// `[service.devices]`, see the `devices` module above).
+pub mod global_devices {
+    /// `devices.gpu_reserved_mb`
+    pub const GPU_RESERVED_MB: &str = "devices.gpu_reserved_mb";
 }
 
 /// Field paths under `[service.health]`.
@@ -138,4 +149,10 @@ pub mod service {
     pub const SHUTDOWN_COMMAND: &str = "shutdown_command";
     /// `spec_type`
     pub const SPEC_TYPE: &str = "spec_type";
+}
+
+/// Field paths under `[service.tracking]`.
+pub mod tracking {
+    /// `tracking.cgroup_parent`
+    pub const CGROUP_PARENT: &str = "tracking.cgroup_parent";
 }

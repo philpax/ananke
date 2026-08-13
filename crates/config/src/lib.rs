@@ -9,6 +9,11 @@
 //! (it needs template + allocation types that would create a cycle).
 
 #![deny(missing_docs)]
+// `ConfigDiagnostic` is a flat, self-describing struct (code, service,
+// fields, message, location) rather than a boxed enum payload, by design —
+// see its doc comment. That makes it larger than the lint's threshold, but
+// it is only ever returned on the config-validation error path, which runs
+// at most once per reload; boxing it at every one of the pipeline's
 
 pub mod defaults;
 pub mod docs;
@@ -27,13 +32,13 @@ pub use file::{PathSources, resolve_config_path, resolve_from_env};
 pub use merge::{Migration, resolve_inheritance, resolve_migrations};
 pub use parse::{RawConfig, RawService, parse_toml};
 pub use validate::{
-    AllocationMode, AutoRestartSettings, CommandConfig, ConfigDiagnostic, ConfigDiagnosticKind,
-    ConfigDiagnosticReport, ConfigPipelineError, DaemonSettings, DeviceReserves, DeviceSlot,
-    DiagnosticLocation, EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters,
-    GenerationStallTrigger, HealthSettings, IkSettings, Lifecycle, LlamaCppConfig, NumaStrategy,
-    OffloadMode, PeriodicMode, PeriodicTrigger, PlacementPolicy, Runtime, RuntimeConfig,
-    ServiceConfig, SpecCollapseTrigger, SplitMode, Template, TemplateConfig, TrackingSettings,
-    TtftStallTrigger, ValidationErrorCode, validate, validate_with_checks,
+    AllocationMode, AutoRestartSettings, CommandConfig, ConfigDiagnostic, ConfigDiagnosticReport,
+    ConfigPipelineError, DaemonSettings, DeviceReserves, DeviceSlot, DiagnosticLocation,
+    EffectiveConfig, ErrorRateTrigger, ErrorStatusClass, Filters, GenerationStallTrigger,
+    HealthSettings, IkSettings, Lifecycle, LlamaCppConfig, NumaStrategy, OffloadMode, PeriodicMode,
+    PeriodicTrigger, PlacementPolicy, Runtime, RuntimeConfig, ServiceConfig, SpecCollapseTrigger,
+    SplitMode, Template, TemplateConfig, TrackingSettings, TtftStallTrigger, ValidationErrorCode,
+    validate, validate_with_checks,
 };
 
 /// Load, parse, merge, validate, and preflight a config file from disk.

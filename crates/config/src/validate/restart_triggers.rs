@@ -26,7 +26,7 @@ pub(crate) fn validate_spec_collapse(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[&format!("auto_restart.spec_collapse.{field}")],
-                error.to_string(),
+                error,
             )
         })
     };
@@ -85,7 +85,7 @@ pub(crate) fn validate_generation_stall(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[&format!("auto_restart.generation_stall.{field}")],
-                error.to_string(),
+                error,
             )
         })
     };
@@ -137,7 +137,7 @@ pub(crate) fn validate_ttft_stall(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     &[fields::auto_restart::TTFT_STALL_TIMEOUT],
-                    error.to_string(),
+                    error,
                 )
             })
         })
@@ -168,7 +168,7 @@ pub(crate) fn validate_error_rate(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     &[fields::auto_restart::ERROR_RATE_WINDOW],
-                    error.to_string(),
+                    error,
                 )
             })
         })
@@ -198,7 +198,7 @@ pub(crate) fn validate_error_rate(
                     ValidationErrorCode::TemplateConstraint,
                     Some(name.to_string()),
                     &[fields::auto_restart::ERROR_RATE_POLL_INTERVAL],
-                    error.to_string(),
+                    error,
                 )
             })
         })

@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use smol_str::SmolStr;
 
 use crate::{
+    merge::merge_message,
     parse::{RawCommandService, RawLlamaCppService, RawServiceCommon},
-    validate::{ConfigDiagnostic, MergeReason},
+    validate::ConfigDiagnostic,
 };
 
 pub(crate) fn merge_llama_cpp(
@@ -122,12 +123,11 @@ fn merge_common(
     // Child must supply its own port; inheriting silently from a parent leads to
     // port conflicts that are hard to diagnose, so we make it an explicit error.
     if child.port.is_none() {
-        return Err(ConfigDiagnostic::merge(
-            Some(child_name.to_string()),
-            None,
-            parent.name.as_ref().map(ToString::to_string),
-            MergeReason::PortMustOverride,
-        ));
+        return Err(ConfigDiagnostic::merge(merge_message(
+            Some(child_name.as_str()),
+            parent.name.as_deref(),
+            "must override port from parent",
+        )));
     }
 
     let mut merged = parent.clone();
@@ -250,7 +250,7 @@ mod tests {
             resolve_inheritance,
             test_support::{find_llama, parse},
         },
-        validate::{ConfigDiagnosticKind, MergeReason},
+        validate::ValidationErrorCode,
     };
 
     #[test]
@@ -324,13 +324,8 @@ extends = "a"
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Merge {
-                reason: MergeReason::PortMustOverride,
-                ..
-            }
-        ));
+        assert_eq!(diag.code(), ValidationErrorCode::MergeConstraint);
+        assert!(diag.to_string().contains("must override port from parent"));
     }
     #[test]
     fn env_inherit_inherited_from_parent() {

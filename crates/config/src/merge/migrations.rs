@@ -6,8 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use smol_str::SmolStr;
 
 use crate::{
+    merge::merge_message,
     parse::{RawConfig, RawService},
-    validate::{ConfigDiagnostic, ConfigDiagnosticReport, MergeReason},
+    validate::{ConfigDiagnostic, ConfigDiagnosticReport},
 };
 
 /// One service rename produced by a `migrate_from` chain.
@@ -29,12 +30,11 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, ConfigD
     let mut by_name: BTreeMap<SmolStr, &RawService> = BTreeMap::new();
     for s in &cfg.services {
         let Some(name) = s.common().name.clone() else {
-            report.push(ConfigDiagnostic::merge(
+            report.push(ConfigDiagnostic::merge(merge_message(
                 None,
                 None,
-                None,
-                MergeReason::MissingNameDuringMigration,
-            ));
+                "service without a name during migrate_from resolution",
+            )));
             continue;
         };
         by_name.insert(name, s);
@@ -55,10 +55,7 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, ConfigD
         }
         if !visiting.insert(name.clone()) {
             return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
-                Some(name.to_string()),
-                None,
-                None,
-                MergeReason::MigrationCycle,
+                merge_message(Some(name.as_str()), None, "migrate_from cycle"),
             )));
         }
         if let Some(svc) = by_name.get(name)

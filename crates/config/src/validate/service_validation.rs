@@ -38,16 +38,20 @@ pub(crate) fn validate_service(
         ConfigDiagnostic::value(
             ValidationErrorCode::FieldMissing,
             fields::service::NAME,
-            "<missing>",
-            Some("a service name".into()),
+            format!(
+                "{field}: invalid value `<missing>` (expected a service name)",
+                field = fields::service::NAME
+            ),
         )
     })?;
     let port = common.port.ok_or_else(|| {
         ConfigDiagnostic::value(
             ValidationErrorCode::FieldMissing,
             fields::service::PORT,
-            "<missing>",
-            Some("a public port".into()),
+            format!(
+                "{field}: invalid value `<missing>` (expected a public port)",
+                field = fields::service::PORT
+            ),
         )
     })?;
 
@@ -55,24 +59,21 @@ pub(crate) fn validate_service(
         return Err(ConfigDiagnostic::value(
             ValidationErrorCode::ServiceNameDuplicate,
             fields::service::NAME,
-            name.to_string(),
-            Some("a unique service name".into()),
+            format!("duplicate service name `{name}`"),
         ));
     }
     if !state.ports.insert(port) {
         return Err(ConfigDiagnostic::value(
             ValidationErrorCode::ServicePortDuplicate,
             fields::service::PORT,
-            port.to_string(),
-            Some("a unique port".into()),
+            format!("duplicate service port {port}"),
         ));
     }
     if Some(port) == daemon.management_port {
         return Err(ConfigDiagnostic::value(
             ValidationErrorCode::ServicePortManagementCollision,
             fields::service::PORT,
-            port.to_string(),
-            Some("a port different from daemon.management_listen".into()),
+            format!("service port {port} collides with daemon.management_listen"),
         ));
     }
 
@@ -116,7 +117,7 @@ pub(crate) fn validate_service(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
                         &[fields::allocation::MIN_BORROWER_RUNTIME],
-                        e.to_string(),
+                        e,
                     )
                 })?
                 .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
@@ -413,17 +414,21 @@ pub(crate) fn validate_service(
             if unique.len() != gpu_allow.len() {
                 return Err(ConfigDiagnostic::value(
                     ValidationErrorCode::GpuAllowDuplicate,
-                    "devices.gpu_allow",
-                    format!("{gpu_allow:?}"),
-                    Some("unique GPU ids".into()),
+                    fields::devices::GPU_ALLOW,
+                    format!(
+                        "service: {field} must not contain duplicate GPU ids when tensor_split_weights is set",
+                        field = fields::devices::GPU_ALLOW
+                    ),
                 ));
             }
             if !gpu_allow.windows(2).all(|w| w[0] <= w[1]) {
                 return Err(ConfigDiagnostic::value(
                     ValidationErrorCode::GpuAllowUnsorted,
-                    "devices.gpu_allow",
-                    format!("{gpu_allow:?}"),
-                    Some("ascending GPU ids".into()),
+                    fields::devices::GPU_ALLOW,
+                    format!(
+                        "service: {field} must be in ascending GPU-id order when tensor_split_weights is set (got {gpu_allow:?})",
+                        field = fields::devices::GPU_ALLOW
+                    ),
                 ));
             }
         }
@@ -443,21 +448,25 @@ pub(crate) fn validate_service(
             weights.len()
         };
         if weights.len() != n_allowed {
-            return Err(ConfigDiagnostic::count(
+            return Err(ConfigDiagnostic::value(
                 ValidationErrorCode::TensorSplitWeightsCount,
-                "devices.tensor_split_weights",
-                weights.len(),
-                n_allowed,
+                fields::devices::TENSOR_SPLIT_WEIGHTS,
+                format!(
+                    "service: {field} has {got} entries but {n_allowed} allowed GPU(s) (set via gpu_allow or [devices].gpu_ids)",
+                    field = fields::devices::TENSOR_SPLIT_WEIGHTS,
+                    got = weights.len()
+                ),
             ));
         }
         for (i, &w) in weights.iter().enumerate() {
             if !w.is_finite() || w <= 0.0 {
-                return Err(ConfigDiagnostic::index(
+                return Err(ConfigDiagnostic::value(
                     ValidationErrorCode::TensorSplitWeightInvalid,
-                    "devices.tensor_split_weights",
-                    i,
-                    w.to_string(),
-                    Some("a positive finite number".into()),
+                    fields::devices::TENSOR_SPLIT_WEIGHTS,
+                    format!(
+                        "service: {field}[{i}] must be a positive finite number, got {w}",
+                        field = fields::devices::TENSOR_SPLIT_WEIGHTS
+                    ),
                 ));
             }
         }
@@ -478,7 +487,7 @@ pub(crate) fn validate_service(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
                         &[fields::health::TIMEOUT],
-                        e.to_string(),
+                        e,
                     )
                 })
             })
@@ -492,7 +501,7 @@ pub(crate) fn validate_service(
                         ValidationErrorCode::TemplateConstraint,
                         Some(name.to_string()),
                         &[fields::health::PROBE_INTERVAL],
-                        e.to_string(),
+                        e,
                     )
                 })
             })
@@ -515,7 +524,7 @@ pub(crate) fn validate_service(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[fields::service::IDLE_TIMEOUT],
-                e.to_string(),
+                e,
             )
         })?
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
@@ -529,7 +538,7 @@ pub(crate) fn validate_service(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[fields::service::DRAIN_TIMEOUT],
-                e.to_string(),
+                e,
             )
         })?
         .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
@@ -543,7 +552,7 @@ pub(crate) fn validate_service(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[fields::service::EXTENDED_STREAM_DRAIN],
-                e.to_string(),
+                e,
             )
         })?
         .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
@@ -557,7 +566,7 @@ pub(crate) fn validate_service(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[fields::service::MAX_REQUEST_DURATION],
-                e.to_string(),
+                e,
             )
         })?
         .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);

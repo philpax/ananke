@@ -6,8 +6,7 @@ use smol_str::SmolStr;
 use crate::{
     fields,
     validate::{
-        ConfigDiagnostic, DEFAULT_PRIVATE_PORT_END, DEFAULT_PRIVATE_PORT_START,
-        ValidationErrorCode, ValueDiagnosticDetail,
+        ConfigDiagnostic, DEFAULT_PRIVATE_PORT_END, DEFAULT_PRIVATE_PORT_START, ValidationErrorCode,
     },
 };
 
@@ -35,12 +34,12 @@ impl PrivatePortRange {
         let start = start.unwrap_or(DEFAULT_PRIVATE_PORT_START);
         let end = end.unwrap_or(DEFAULT_PRIVATE_PORT_END);
         if end <= start {
-            return Err(ConfigDiagnostic::value_with_detail(
+            return Err(ConfigDiagnostic::value(
                 ValidationErrorCode::PrivatePortRangeInvalid,
-                ValueDiagnosticDetail::PrivatePortRangeInvalid,
                 fields::daemon::PRIVATE_PORT_END,
-                format!("{start}..={end}"),
-                Some("private_port_end greater than private_port_start".into()),
+                format!(
+                    "daemon.private_port_end must exceed daemon.private_port_start (got {start}..={end})"
+                ),
             ));
         }
         Ok(Self { start, end })
@@ -77,7 +76,6 @@ impl PrivatePortAllocator {
                     self.range.end,
                     self.range.width()
                 ),
-                Some("an available private port".into()),
             ));
         }
         let port = self.next as u16;

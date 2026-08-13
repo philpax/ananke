@@ -182,8 +182,7 @@ mod tests {
         report.push(ConfigDiagnostic::value(
             ValidationErrorCode::ValueInvalid,
             "port",
-            "x",
-            Some("an integer".into()),
+            "port: invalid value `x` (expected an integer)",
         ));
         report.push(ConfigDiagnostic::parse("bad TOML", None));
         assert_eq!(report.len(), 2);

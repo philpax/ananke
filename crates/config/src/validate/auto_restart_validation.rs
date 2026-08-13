@@ -58,7 +58,7 @@ pub(crate) fn validate_auto_restart(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[&format!("auto_restart.{field}")],
-                error.to_string(),
+                error,
             )
         })
     };
@@ -161,7 +161,7 @@ pub(crate) fn validate_periodic(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 &[fields::auto_restart::PERIODIC_INTERVAL],
-                error.to_string(),
+                error,
             )
         })?,
         None => {

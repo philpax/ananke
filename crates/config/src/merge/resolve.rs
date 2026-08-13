@@ -8,9 +8,12 @@ use smol_str::SmolStr;
 
 use crate::{
     fields,
-    merge::field_merge::{merge_command, merge_llama_cpp},
+    merge::{
+        field_merge::{merge_command, merge_llama_cpp},
+        merge_message,
+    },
     parse::{RawConfig, RawService},
-    validate::{ConfigDiagnostic, ConfigDiagnosticReport, MergeReason},
+    validate::{ConfigDiagnostic, ConfigDiagnosticReport},
 };
 
 #[derive(Clone)]
@@ -43,8 +46,10 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
                 ConfigDiagnostic::value(
                     crate::validate::ValidationErrorCode::FieldMissing,
                     fields::service::NAME,
-                    "<missing>",
-                    Some("a service name".into()),
+                    format!(
+                        "{field}: invalid value `<missing>` (expected a service name)",
+                        field = fields::service::NAME
+                    ),
                 )
                 .with_service_context(source_index, None),
             );
@@ -59,8 +64,7 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
                 ConfigDiagnostic::value(
                     crate::validate::ValidationErrorCode::ServiceNameDuplicate,
                     fields::service::NAME,
-                    name.to_string(),
-                    Some("a unique service name".into()),
+                    format!("duplicate service name `{name}`"),
                 )
                 .with_service_context(source_index, Some(name.as_str())),
             );
@@ -119,19 +123,17 @@ fn resolve_one(
     }
     if !stack.insert(name.clone()) {
         return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
-            Some(name.to_string()),
-            source.get(name).map(|entry| entry.source_index),
-            None,
-            MergeReason::Cycle,
+            merge_message(Some(name.as_str()), None, "extends cycle"),
         )));
     }
 
     let Some(raw_entry) = source.get(name).cloned() else {
         return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
-            Some(name.to_string()),
-            None,
-            None,
-            MergeReason::ServiceNotFound,
+            merge_message(
+                Some(name.as_str()),
+                None,
+                "service not found during extends resolution",
+            ),
         )));
     };
     let raw = raw_entry.service.clone();
@@ -140,10 +142,11 @@ fn resolve_one(
         Some(parent_name) => {
             if !source.contains_key(&parent_name) {
                 return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
-                    Some(name.to_string()),
-                    Some(raw_entry.source_index),
-                    Some(parent_name.to_string()),
-                    MergeReason::ParentNotFound,
+                    merge_message(
+                        Some(name.as_str()),
+                        Some(parent_name.as_str()),
+                        "parent does not exist",
+                    ),
                 )));
             }
             resolve_one(&parent_name, source, resolved, stack)?;
@@ -152,10 +155,11 @@ fn resolve_one(
                 .map(|entry| entry.service.clone())
             else {
                 return Err(ConfigDiagnosticReport::from(ConfigDiagnostic::merge(
-                    Some(name.to_string()),
-                    Some(raw_entry.source_index),
-                    Some(parent_name.to_string()),
-                    MergeReason::ParentResolvedToNothing,
+                    merge_message(
+                        Some(name.as_str()),
+                        Some(parent_name.as_str()),
+                        "parent resolved to nothing",
+                    ),
                 )));
             };
             merge_service(&parent, &raw, name).map_err(ConfigDiagnosticReport::from)?
@@ -185,15 +189,15 @@ fn merge_service(
         (RawService::Command(p), RawService::Command(c)) => Ok(RawService::Command(Box::new(
             merge_command(p, c, child_name)?,
         ))),
-        _ => Err(ConfigDiagnostic::merge(
-            Some(child_name.to_string()),
-            None,
-            parent.common().name.as_ref().map(ToString::to_string),
-            MergeReason::TemplateMismatch {
-                child: child.template_label().to_string(),
-                parent: parent.template_label().to_string(),
-            },
-        )),
+        _ => Err(ConfigDiagnostic::merge(merge_message(
+            Some(child_name.as_str()),
+            parent.common().name.as_deref(),
+            &format!(
+                "template `{child_template}` does not match parent's template `{parent_template}`; cross-template extends is not allowed",
+                child_template = child.template_label(),
+                parent_template = parent.template_label()
+            ),
+        ))),
     }
 }
 
@@ -202,7 +206,7 @@ mod tests {
     use super::*;
     use crate::{
         merge::test_support::{find_llama, parse},
-        validate::{ConfigDiagnosticKind, MergeReason},
+        validate::ValidationErrorCode,
     };
 
     #[test]
@@ -256,13 +260,8 @@ extends = "a"
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Merge {
-                reason: MergeReason::Cycle,
-                ..
-            }
-        ));
+        assert_eq!(diag.code(), ValidationErrorCode::MergeConstraint);
+        assert!(diag.to_string().contains("extends cycle"));
     }
     #[test]
     fn missing_extends_target_is_error() {
@@ -278,13 +277,8 @@ extends = "does-not-exist"
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Merge {
-                reason: MergeReason::ParentNotFound,
-                ..
-            }
-        ));
+        assert_eq!(diag.code(), ValidationErrorCode::MergeConstraint);
+        assert!(diag.to_string().contains("parent does not exist"));
     }
     #[test]
     fn cross_template_extends_is_error() {
@@ -306,12 +300,10 @@ model = "/m/a.gguf"
         );
         let err = resolve_inheritance(&mut cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Merge {
-                reason: MergeReason::TemplateMismatch { .. },
-                ..
-            }
-        ));
+        assert_eq!(diag.code(), ValidationErrorCode::MergeConstraint);
+        assert!(
+            diag.to_string()
+                .contains("cross-template extends is not allowed")
+        );
     }
 }

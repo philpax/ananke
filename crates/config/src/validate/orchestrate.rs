@@ -55,9 +55,11 @@ pub fn validate_with_checks(
         Err(error) => {
             report.push(ConfigDiagnostic::value(
                 crate::validate::ValidationErrorCode::DurationInvalid,
-                "daemon.shutdown_timeout",
-                shutdown_timeout_str,
-                Some(error.to_string()),
+                fields::daemon::SHUTDOWN_TIMEOUT,
+                format!(
+                    "{field}: invalid value `{shutdown_timeout_str}` (expected {error})",
+                    field = fields::daemon::SHUTDOWN_TIMEOUT
+                ),
             ));
             120_000
         }
@@ -73,9 +75,11 @@ pub fn validate_with_checks(
         Err(error) => {
             report.push(ConfigDiagnostic::value(
                 crate::validate::ValidationErrorCode::ValueInvalid,
-                "daemon.management_listen",
-                management_addr.clone(),
-                Some(error.to_string()),
+                fields::daemon::MANAGEMENT_LISTEN,
+                format!(
+                    "{field}: invalid value `{management_addr}` (expected {error})",
+                    field = fields::daemon::MANAGEMENT_LISTEN
+                ),
             ));
             None
         }
@@ -198,9 +202,11 @@ fn resolve_device_reserves(
             }
             Err(_) => report.push(ConfigDiagnostic::value(
                 crate::validate::ValidationErrorCode::ValueInvalid,
-                "devices.gpu_reserved_mb",
-                key,
-                Some("a numeric GPU id such as `0`".into()),
+                fields::global_devices::GPU_RESERVED_MB,
+                format!(
+                    "{field}: invalid value `{key}` (expected a numeric GPU id such as `0`)",
+                    field = fields::global_devices::GPU_RESERVED_MB
+                ),
             )),
         }
     }
@@ -249,8 +255,7 @@ pub(crate) struct ServiceValidationState<'a> {
 mod tests {
     use super::*;
     use crate::validate::{
-        ConfigDiagnosticKind, DeviceSlot, TemplateConfig, ValidationErrorCode,
-        test_fixtures::parse_and_merge,
+        DeviceSlot, TemplateConfig, ValidationErrorCode, test_fixtures::parse_and_merge,
     };
 
     const GOOD: &str = r#"
@@ -337,13 +342,7 @@ devices.placement_override = { "gpu:0" = 1000 }
         );
         let err = validate(&cfg).unwrap_err();
         let diag = &err.as_slice()[0];
-        assert!(matches!(
-            &*diag.kind,
-            ConfigDiagnosticKind::Value {
-                code: ValidationErrorCode::ServicePortDuplicate,
-                ..
-            }
-        ));
+        assert_eq!(diag.code(), ValidationErrorCode::ServicePortDuplicate);
     }
 
     #[test]

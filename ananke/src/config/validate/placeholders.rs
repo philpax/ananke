@@ -24,6 +24,9 @@ impl PlaceholderChecker for DaemonPlaceholderChecker {
 /// the first [`SubstituteError`] as a config error with `field` + `name`
 /// context, so a typo like `{prot}` fails `config validate` rather than
 /// slipping through to a runtime `StartFailure`.
+// `ConfigDiagnostic` is intentionally a flat, self-describing struct rather
+// than a boxed enum payload; it's only ever returned on the config-validate
+// error path, so boxing it here would be pure ceremony for a cold path.
 pub(crate) fn check_placeholders(
     name: &SmolStr,
     field: &str,
@@ -111,10 +114,9 @@ pub(crate) fn check_launcher_placeholders(
 mod tests {
     use ananke_config::{
         fields,
-        validate::{ConfigDiagnosticKind, ConfigDiagnosticReport},
+        validate::{ConfigDiagnostic, ConfigDiagnosticReport},
     };
 
-    use super::PlaceholderError;
     use crate::config::validate::{
         DaemonPlaceholderChecker, test_fixtures::parse_and_merge, validate_with_checks,
     };
@@ -126,9 +128,9 @@ mod tests {
     }
 
     /// The first diagnostic a rejected config produced.
-    fn first_diagnostic(cfg: &ananke_config::parse::RawConfig) -> ConfigDiagnosticKind {
+    fn first_diagnostic(cfg: &ananke_config::parse::RawConfig) -> ConfigDiagnostic {
         let report = validate(cfg).unwrap_err();
-        *report.as_slice()[0].kind.clone()
+        report.as_slice()[0].clone()
     }
 
     #[test]
@@ -171,14 +173,9 @@ launcher = ["wrap.sh", "{model}", "{bogus}", "{args}"]
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        assert!(matches!(
-            first_diagnostic(&cfg),
-            ConfigDiagnosticKind::Placeholder {
-                error: PlaceholderError::UnknownPlaceholder(ref name),
-                ref field,
-                ..
-            } if name == "bogus" && field == "launcher"
-        ));
+        let diag = first_diagnostic(&cfg);
+        assert_eq!(diag.path(), Some("launcher"));
+        assert!(diag.message.contains("unknown placeholder {bogus}"));
     }
 
     #[test]
@@ -194,14 +191,9 @@ launcher = ["wrap.sh", "{model}", "--foo={args}"]
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        assert!(matches!(
-            first_diagnostic(&cfg),
-            ConfigDiagnosticKind::Placeholder {
-                error: PlaceholderError::SplatInsideArg,
-                ref field,
-                ..
-            } if field == "launcher"
-        ));
+        let diag = first_diagnostic(&cfg);
+        assert_eq!(diag.path(), Some("launcher"));
+        assert!(diag.message.contains("splat placeholder {args}"));
     }
 
     #[test]
@@ -236,15 +228,10 @@ allocation.mode = "static"
 allocation.reserve_gb = 1
 "#,
         );
-        assert!(matches!(
-            first_diagnostic(&cfg),
-            ConfigDiagnosticKind::Placeholder {
-                error: PlaceholderError::UnknownPlaceholder(ref name),
-                ref field,
-                argv_index: Some(1),
-                ..
-            } if name == "prot" && field == "command"
-        ));
+        let diag = first_diagnostic(&cfg);
+        assert_eq!(diag.path(), Some("command"));
+        assert!(diag.message.contains("command[1]"));
+        assert!(diag.message.contains("unknown placeholder {prot}"));
     }
 
     #[test]
@@ -261,14 +248,9 @@ allocation.mode = "static"
 allocation.reserve_gb = 1
 "#,
         );
-        assert!(matches!(
-            first_diagnostic(&cfg),
-            ConfigDiagnosticKind::Placeholder {
-                error: PlaceholderError::UnknownPlaceholder(ref name),
-                ref field,
-                argv_index: Some(1),
-                ..
-            } if name == "bogus" && field == "shutdown_command"
-        ));
+        let diag = first_diagnostic(&cfg);
+        assert_eq!(diag.path(), Some("shutdown_command"));
+        assert!(diag.message.contains("shutdown_command[1]"));
+        assert!(diag.message.contains("unknown placeholder {bogus}"));
     }
 }
