@@ -47,8 +47,8 @@ pub fn resolve_inheritance(cfg: &mut RawConfig) -> Result<(), ConfigDiagnosticRe
                     crate::validate::ValidationErrorCode::FieldMissing,
                     fields::service::NAME,
                     format!(
-                        "{field}: invalid value `<missing>` (expected a service name)",
-                        field = fields::service::NAME
+                        "{}: invalid value `<missing>` (expected a service name)",
+                        fields::service::NAME
                     ),
                 )
                 .with_service_context(source_index, None),
@@ -193,9 +193,9 @@ fn merge_service(
             Some(child_name.as_str()),
             parent.common().name.as_deref(),
             &format!(
-                "template `{child_template}` does not match parent's template `{parent_template}`; cross-template extends is not allowed",
-                child_template = child.template_label(),
-                parent_template = parent.template_label()
+                "template `{}` does not match parent's template `{}`; cross-template extends is not allowed",
+                child.template_label(),
+                parent.template_label()
             ),
         ))),
     }

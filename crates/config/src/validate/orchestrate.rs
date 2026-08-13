@@ -57,8 +57,8 @@ pub fn validate_with_checks(
                 crate::validate::ValidationErrorCode::DurationInvalid,
                 fields::daemon::SHUTDOWN_TIMEOUT,
                 format!(
-                    "{field}: invalid value `{shutdown_timeout_str}` (expected {error})",
-                    field = fields::daemon::SHUTDOWN_TIMEOUT
+                    "{}: invalid value `{shutdown_timeout_str}` (expected {error})",
+                    fields::daemon::SHUTDOWN_TIMEOUT
                 ),
             ));
             120_000
@@ -77,8 +77,8 @@ pub fn validate_with_checks(
                 crate::validate::ValidationErrorCode::ValueInvalid,
                 fields::daemon::MANAGEMENT_LISTEN,
                 format!(
-                    "{field}: invalid value `{management_addr}` (expected {error})",
-                    field = fields::daemon::MANAGEMENT_LISTEN
+                    "{}: invalid value `{management_addr}` (expected {error})",
+                    fields::daemon::MANAGEMENT_LISTEN
                 ),
             ));
             None
@@ -204,8 +204,8 @@ fn resolve_device_reserves(
                 crate::validate::ValidationErrorCode::ValueInvalid,
                 fields::global_devices::GPU_RESERVED_MB,
                 format!(
-                    "{field}: invalid value `{key}` (expected a numeric GPU id such as `0`)",
-                    field = fields::global_devices::GPU_RESERVED_MB
+                    "{}: invalid value `{key}` (expected a numeric GPU id such as `0`)",
+                    fields::global_devices::GPU_RESERVED_MB
                 ),
             )),
         }

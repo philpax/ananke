@@ -97,6 +97,21 @@ impl ConfigDiagnostic {
         diagnostic
     }
 
+    /// Construct a template-constraint diagnostic for a named service.
+    ///
+    /// The overwhelming majority of service rules carry
+    /// [`ValidationErrorCode::TemplateConstraint`]; spelling it at each of
+    /// them buried the rule in its own bookkeeping. Reach for
+    /// [`Self::constraint`] when the code differs.
+    pub fn service(name: impl AsRef<str>, fields: &[&str], message: String) -> Self {
+        Self::constraint(
+            ValidationErrorCode::TemplateConstraint,
+            Some(name.as_ref().to_string()),
+            fields,
+            message,
+        )
+    }
+
     /// Construct a placeholder diagnostic.
     pub fn placeholder(
         service: Option<String>,

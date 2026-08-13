@@ -11,7 +11,7 @@ use crate::{
     },
     validate::{
         ConfigDiagnostic, ErrorRateTrigger, ErrorStatusClass, GenerationStallTrigger,
-        SpecCollapseTrigger, TtftStallTrigger, ValidationErrorCode, parse_duration_ms,
+        SpecCollapseTrigger, TtftStallTrigger, parse_duration_ms,
     },
 };
 
@@ -22,9 +22,8 @@ pub(crate) fn validate_spec_collapse(
     let d = SpecCollapseTrigger::default();
     let field = |field: &str, x: &str| {
         parse_duration_ms(x).map_err(|error| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            ConfigDiagnostic::service(
+                name,
                 &[&format!("auto_restart.spec_collapse.{field}")],
                 error,
             )
@@ -44,25 +43,22 @@ pub(crate) fn validate_spec_collapse(
         .transpose()?
         .unwrap_or(d.poll_interval_ms);
     if window_ms == 0 {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::auto_restart::SPEC_COLLAPSE_WINDOW],
             "auto_restart.spec_collapse.window must be greater than zero".to_string(),
         ));
     }
     if min_draft_tokens == 0 {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::auto_restart::SPEC_COLLAPSE_MIN_DRAFT_TOKENS],
             "auto_restart.spec_collapse.min_draft_tokens must be greater than zero".to_string(),
         ));
     }
     if poll_interval_ms == 0 {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::auto_restart::SPEC_COLLAPSE_POLL_INTERVAL],
             "auto_restart.spec_collapse.poll_interval must be greater than zero".to_string(),
         ));
@@ -81,9 +77,8 @@ pub(crate) fn validate_generation_stall(
     let d = GenerationStallTrigger::default();
     let field = |field: &str, x: &str| {
         parse_duration_ms(x).map_err(|error| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            ConfigDiagnostic::service(
+                name,
                 &[&format!("auto_restart.generation_stall.{field}")],
                 error,
             )
@@ -102,17 +97,15 @@ pub(crate) fn validate_generation_stall(
         .transpose()?
         .unwrap_or(d.poll_interval_ms);
     if timeout_ms == 0 {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::auto_restart::GENERATION_STALL_TIMEOUT],
             "auto_restart.generation_stall.timeout must be greater than zero".to_string(),
         ));
     }
     if poll_interval_ms == 0 {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::auto_restart::GENERATION_STALL_POLL_INTERVAL],
             "auto_restart.generation_stall.poll_interval must be greater than zero".to_string(),
         ));
@@ -133,20 +126,14 @@ pub(crate) fn validate_ttft_stall(
         .as_deref()
         .map(|x| {
             parse_duration_ms(x).map_err(|error| {
-                ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
-                    &[fields::auto_restart::TTFT_STALL_TIMEOUT],
-                    error,
-                )
+                ConfigDiagnostic::service(name, &[fields::auto_restart::TTFT_STALL_TIMEOUT], error)
             })
         })
         .transpose()?
         .unwrap_or(d.timeout_ms);
     if timeout_ms == 0 {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::auto_restart::TTFT_STALL_TIMEOUT],
             "auto_restart.ttft_stall.timeout must be greater than zero".to_string(),
         ));
@@ -164,12 +151,7 @@ pub(crate) fn validate_error_rate(
         .as_deref()
         .map(|x| {
             parse_duration_ms(x).map_err(|error| {
-                ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
-                    &[fields::auto_restart::ERROR_RATE_WINDOW],
-                    error,
-                )
+                ConfigDiagnostic::service(name, &[fields::auto_restart::ERROR_RATE_WINDOW], error)
             })
         })
         .transpose()?
@@ -178,14 +160,10 @@ pub(crate) fn validate_error_rate(
         None => d.max_error_rate,
         Some(r) if r > 0.0 && r <= 1.0 => r,
         Some(r) => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                name,
                 &[fields::auto_restart::ERROR_RATE_MAX_ERROR_RATE],
-                format!(
-                    "auto_restart.error_rate.max_error_rate must be in (0.0, 1.0], got {value}",
-                    value = r
-                ),
+                format!("auto_restart.error_rate.max_error_rate must be in (0.0, 1.0], got {r}"),
             ));
         }
     };
@@ -194,9 +172,8 @@ pub(crate) fn validate_error_rate(
         .as_deref()
         .map(|x| {
             parse_duration_ms(x).map_err(|error| {
-                ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
+                ConfigDiagnostic::service(
+                    name,
                     &[fields::auto_restart::ERROR_RATE_POLL_INTERVAL],
                     error,
                 )
@@ -209,13 +186,11 @@ pub(crate) fn validate_error_rate(
         Some("5xx") => ErrorStatusClass::ServerOnly,
         Some("4xx+5xx") => ErrorStatusClass::ClientAndServer,
         Some(other) => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                name,
                 &[fields::auto_restart::ERROR_RATE_ERROR_STATUSES],
                 format!(
-                    "auto_restart.error_rate.error_statuses must be `5xx` or `4xx+5xx`, got `{value}`",
-                    value = other
+                    "auto_restart.error_rate.error_statuses must be `5xx` or `4xx+5xx`, got `{other}`"
                 ),
             ));
         }

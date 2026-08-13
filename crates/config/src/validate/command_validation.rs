@@ -8,9 +8,7 @@ use smol_str::SmolStr;
 use crate::{
     fields,
     parse::RawCommandService,
-    validate::{
-        CommandConfig, ConfigDiagnostic, OpenAiProxyConfig, PlaceholderChecker, ValidationErrorCode,
-    },
+    validate::{CommandConfig, ConfigDiagnostic, OpenAiProxyConfig, PlaceholderChecker},
 };
 
 pub(crate) fn validate_command(
@@ -19,17 +17,15 @@ pub(crate) fn validate_command(
     checker: &dyn PlaceholderChecker,
 ) -> Result<CommandConfig, crate::validate::ConfigDiagnostic> {
     let command = cmd.command.clone().ok_or_else(|| {
-        ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        ConfigDiagnostic::service(
+            name,
             &[fields::service::COMMAND],
             "command template requires `command`".to_string(),
         )
     })?;
     if command.is_empty() {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::service::COMMAND],
             "command is empty".to_string(),
         ));
@@ -37,9 +33,8 @@ pub(crate) fn validate_command(
     if let Some(sd) = &cmd.shutdown_command
         && sd.is_empty()
     {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            name,
             &[fields::service::SHUTDOWN_COMMAND],
             "shutdown_command is present but empty".to_string(),
         ));
@@ -60,9 +55,8 @@ pub(crate) fn validate_command(
                 .as_ref()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    ConfigDiagnostic::constraint(
-                        ValidationErrorCode::TemplateConstraint,
-                        Some(name.to_string()),
+                    ConfigDiagnostic::service(
+                        name,
                         &[fields::openai_proxy::UPSTREAM_MODEL],
                         "openai_proxy.upstream_model must be a non-empty string".to_string(),
                     )

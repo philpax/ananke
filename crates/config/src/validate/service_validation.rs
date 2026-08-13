@@ -39,8 +39,8 @@ pub(crate) fn validate_service(
             ValidationErrorCode::FieldMissing,
             fields::service::NAME,
             format!(
-                "{field}: invalid value `<missing>` (expected a service name)",
-                field = fields::service::NAME
+                "{}: invalid value `<missing>` (expected a service name)",
+                fields::service::NAME
             ),
         )
     })?;
@@ -49,8 +49,8 @@ pub(crate) fn validate_service(
             ValidationErrorCode::FieldMissing,
             fields::service::PORT,
             format!(
-                "{field}: invalid value `<missing>` (expected a public port)",
-                field = fields::service::PORT
+                "{}: invalid value `<missing>` (expected a public port)",
+                fields::service::PORT
             ),
         )
     })?;
@@ -95,14 +95,7 @@ pub(crate) fn validate_service(
                 None,
                 DEFAULT_MIN_BORROWER_RUNTIME_MS,
             )
-            .map_err(|e| {
-                ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
-                    &[fields::allocation::MODE],
-                    e,
-                )
-            })?;
+            .map_err(|e| ConfigDiagnostic::service(&name, &[fields::allocation::MODE], e))?;
             (alloc, TemplateConfig::LlamaCpp(Box::new(tc)))
         }
         RawService::Command(cmd) => {
@@ -113,12 +106,7 @@ pub(crate) fn validate_service(
                 .map(parse_duration_ms)
                 .transpose()
                 .map_err(|e| {
-                    ConfigDiagnostic::constraint(
-                        ValidationErrorCode::TemplateConstraint,
-                        Some(name.to_string()),
-                        &[fields::allocation::MIN_BORROWER_RUNTIME],
-                        e,
-                    )
+                    ConfigDiagnostic::service(&name, &[fields::allocation::MIN_BORROWER_RUNTIME], e)
                 })?
                 .unwrap_or(DEFAULT_MIN_BORROWER_RUNTIME_MS);
             let alloc = AllocationMode::from_parts(
@@ -129,14 +117,7 @@ pub(crate) fn validate_service(
                 raw_alloc.max_reserve_gb,
                 runtime_ms,
             )
-            .map_err(|e| {
-                ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
-                    &[fields::allocation::MODE],
-                    e,
-                )
-            })?;
+            .map_err(|e| ConfigDiagnostic::service(&name, &[fields::allocation::MODE], e))?;
             let tc = validate_command(&name, cmd, daemon.placeholder_checker)?;
             (alloc, TemplateConfig::Command(tc))
         }
@@ -150,43 +131,36 @@ pub(crate) fn validate_service(
         "persistent" => Lifecycle::Persistent,
         "on_demand" => Lifecycle::OnDemand,
         "oneshot" => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::service::LIFECYCLE],
                 "lifecycle `oneshot` is invalid in a [[service]] block (API-only)".to_string(),
             ));
         }
         other => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::service::LIFECYCLE],
-                format!("unknown lifecycle `{value}`", value = other),
+                format!("unknown lifecycle `{other}`"),
             ));
         }
     };
 
     let metadata = build_ananke_metadata(common.metadata.as_ref()).map_err(|e| {
-        ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        ConfigDiagnostic::service(
+            &name,
             &[fields::service::METADATA],
-            format!("{field}: {e}", field = fields::service::METADATA),
+            format!("{}: {e}", fields::service::METADATA),
         )
     })?;
     let modality = match common.modality.as_deref() {
         None | Some("chat") => Modality::Chat,
         Some("embedding") => Modality::Embedding,
         Some(other) => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::service::MODALITY],
-                format!(
-                    "unknown modality `{value}` (valid: `chat`, `embedding`)",
-                    value = other
-                ),
+                format!("unknown modality `{other}` (valid: `chat`, `embedding`)"),
             ));
         }
     };
@@ -211,25 +185,20 @@ pub(crate) fn validate_service(
             if let Some(n) = n_gpu_layers
                 && n != 0
             {
-                return Err(ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
+                return Err(ConfigDiagnostic::service(
+                    &name,
                     &[fields::devices::PLACEMENT, fields::service::N_GPU_LAYERS],
-                    format!(
-                        "devices.placement=cpu-only with n_gpu_layers={n_gpu_layers} is invalid",
-                        n_gpu_layers = n
-                    ),
+                    format!("devices.placement=cpu-only with n_gpu_layers={n} is invalid"),
                 ));
             }
             PlacementPolicy::CpuOnly
         }
         "hybrid" => PlacementPolicy::Hybrid,
         other => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::devices::PLACEMENT],
-                format!("unknown placement `{value}`", value = other),
+                format!("unknown placement `{other}`"),
             ));
         }
     };
@@ -245,9 +214,8 @@ pub(crate) fn validate_service(
 
     let raw_override = dev.placement_override.clone().unwrap_or_default();
     if dev.placement_override.is_some() && raw_override.is_empty() {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            &name,
             &[fields::devices::PLACEMENT_OVERRIDE],
             "devices.placement_override is empty".to_string(),
         ));
@@ -258,30 +226,27 @@ pub(crate) fn validate_service(
             "cpu" => DeviceSlot::Cpu,
             s if s.starts_with("gpu:") => {
                 let n: u32 = s[4..].parse().map_err(|_| {
-                    ConfigDiagnostic::constraint(
-                        ValidationErrorCode::TemplateConstraint,
-                        Some(name.to_string()),
+                    ConfigDiagnostic::service(
+                        &name,
                         &[fields::devices::PLACEMENT_OVERRIDE],
-                        format!("invalid placement_override key `{key}`", key = s),
+                        format!("invalid placement_override key `{s}`"),
                     )
                 })?;
                 DeviceSlot::Gpu(n)
             }
             other => {
-                return Err(ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
+                return Err(ConfigDiagnostic::service(
+                    &name,
                     &[fields::devices::PLACEMENT_OVERRIDE],
-                    format!("invalid placement_override key `{key}`", key = other),
+                    format!("invalid placement_override key `{other}`"),
                 ));
             }
         };
         if v == 0 {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::devices::PLACEMENT_OVERRIDE],
-                format!("placement_override for {key} is zero", key = k.clone()),
+                format!("placement_override for {k} is zero"),
             ));
         }
         placement_override.insert(slot, v);
@@ -290,9 +255,8 @@ pub(crate) fn validate_service(
     if placement_policy == PlacementPolicy::GpuOnly
         && placement_override.contains_key(&DeviceSlot::Cpu)
     {
-        return Err(ConfigDiagnostic::constraint(
-            ValidationErrorCode::TemplateConstraint,
-            Some(name.to_string()),
+        return Err(ConfigDiagnostic::service(
+            &name,
             &[fields::devices::PLACEMENT_OVERRIDE],
             "placement=gpu-only but placement_override includes cpu".to_string(),
         ));
@@ -304,14 +268,12 @@ pub(crate) fn validate_service(
     let split_mode = match dev.split.as_deref() {
         None => SplitMode::Layer,
         Some(s) => SplitMode::from_flag(s).ok_or_else(|| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            ConfigDiagnostic::service(
+                &name,
                 &[fields::devices::SPLIT],
                 format!(
-                    "unknown devices.split `{value}` (expected {expected})",
-                    value = s,
-                    expected = SplitMode::valid_values()
+                    "unknown devices.split `{s}` (expected {})",
+                    SplitMode::valid_values()
                 ),
             )
         })?,
@@ -326,20 +288,18 @@ pub(crate) fn validate_service(
         && lc.expert_offload.is_enabled()
     {
         if split_mode.is_sharded() {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::service::EXPERT_OFFLOAD, fields::devices::SPLIT],
                 format!(
-                    "expert_offload cannot be combined with devices.split=`{split}` (sharded split is GPU-only; expert offload targets the CPU)",
-                    split = split_mode.as_flag()
+                    "expert_offload cannot be combined with devices.split=`{}` (sharded split is GPU-only; expert offload targets the CPU)",
+                    split_mode.as_flag()
                 ),
             ));
         }
         if placement_policy != PlacementPolicy::Hybrid {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::service::EXPERT_OFFLOAD, fields::devices::PLACEMENT],
                 "expert_offload requires placement=hybrid (expert tensors offload to CPU)"
                     .to_string(),
@@ -350,36 +310,33 @@ pub(crate) fn validate_service(
         // Tensor/row split shards every layer across all spanned GPUs in
         // parallel; there is no CPU half and no per-tensor override to honour.
         if placement_policy != PlacementPolicy::GpuOnly {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                &name,
                 &[fields::devices::SPLIT],
                 format!(
-                    "devices.split=`{split}` requires placement=gpu-only (tensor/row split cannot spill to CPU)",
-                    split = split_mode.as_flag()
+                    "devices.split=`{}` requires placement=gpu-only (tensor/row split cannot spill to CPU)",
+                    split_mode.as_flag()
                 ),
             ));
         }
         match &template_config {
             TemplateConfig::Command(_) => {
-                return Err(ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
+                return Err(ConfigDiagnostic::service(
+                    &name,
                     &[fields::devices::SPLIT],
                     format!(
-                        "devices.split=`{split}` is only valid for llama-cpp services",
-                        split = split_mode.as_flag()
+                        "devices.split=`{}` is only valid for llama-cpp services",
+                        split_mode.as_flag()
                     ),
                 ));
             }
             TemplateConfig::LlamaCpp(lc) if !lc.override_tensor.is_empty() => {
-                return Err(ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
+                return Err(ConfigDiagnostic::service(
+                    &name,
                     &[fields::devices::SPLIT],
                     format!(
-                        "devices.split=`{split}` cannot be combined with override_tensor",
-                        split = split_mode.as_flag()
+                        "devices.split=`{}` cannot be combined with override_tensor",
+                        split_mode.as_flag()
                     ),
                 ));
             }
@@ -390,12 +347,7 @@ pub(crate) fn validate_service(
     let tensor_split_weights = dev.tensor_split_weights.clone();
     if let Some(ref weights) = tensor_split_weights {
         if !split_mode.is_sharded() {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::devices::TENSOR_SPLIT_WEIGHTS],
-                "devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)".to_string(),
-            ));
+            return Err(ConfigDiagnostic::service(&name, &[fields::devices::TENSOR_SPLIT_WEIGHTS], "devices.tensor_split_weights is only valid with a sharded split mode (`row` or `tensor`)".to_string()));
         }
         // When gpu_allow is set, validate it is sorted ascending and free of
         // duplicates. The packer sorts GPUs ascending before pairing weights
@@ -416,8 +368,8 @@ pub(crate) fn validate_service(
                     ValidationErrorCode::GpuAllowDuplicate,
                     fields::devices::GPU_ALLOW,
                     format!(
-                        "service: {field} must not contain duplicate GPU ids when tensor_split_weights is set",
-                        field = fields::devices::GPU_ALLOW
+                        "service: {} must not contain duplicate GPU ids when tensor_split_weights is set",
+                        fields::devices::GPU_ALLOW
                     ),
                 ));
             }
@@ -426,8 +378,8 @@ pub(crate) fn validate_service(
                     ValidationErrorCode::GpuAllowUnsorted,
                     fields::devices::GPU_ALLOW,
                     format!(
-                        "service: {field} must be in ascending GPU-id order when tensor_split_weights is set (got {gpu_allow:?})",
-                        field = fields::devices::GPU_ALLOW
+                        "service: {} must be in ascending GPU-id order when tensor_split_weights is set (got {gpu_allow:?})",
+                        fields::devices::GPU_ALLOW
                     ),
                 ));
             }
@@ -452,9 +404,9 @@ pub(crate) fn validate_service(
                 ValidationErrorCode::TensorSplitWeightsCount,
                 fields::devices::TENSOR_SPLIT_WEIGHTS,
                 format!(
-                    "service: {field} has {got} entries but {n_allowed} allowed GPU(s) (set via gpu_allow or [devices].gpu_ids)",
-                    field = fields::devices::TENSOR_SPLIT_WEIGHTS,
-                    got = weights.len()
+                    "service: {} has {} entries but {n_allowed} allowed GPU(s) (set via gpu_allow or [devices].gpu_ids)",
+                    fields::devices::TENSOR_SPLIT_WEIGHTS,
+                    weights.len()
                 ),
             ));
         }
@@ -464,8 +416,8 @@ pub(crate) fn validate_service(
                     ValidationErrorCode::TensorSplitWeightInvalid,
                     fields::devices::TENSOR_SPLIT_WEIGHTS,
                     format!(
-                        "service: {field}[{i}] must be a positive finite number, got {w}",
-                        field = fields::devices::TENSOR_SPLIT_WEIGHTS
+                        "service: {}[{i}] must be a positive finite number, got {w}",
+                        fields::devices::TENSOR_SPLIT_WEIGHTS
                     ),
                 ));
             }
@@ -482,14 +434,8 @@ pub(crate) fn validate_service(
         timeout_ms: health_raw
             .timeout
             .map(|s| {
-                parse_duration_ms(&s).map_err(|e| {
-                    ConfigDiagnostic::constraint(
-                        ValidationErrorCode::TemplateConstraint,
-                        Some(name.to_string()),
-                        &[fields::health::TIMEOUT],
-                        e,
-                    )
-                })
+                parse_duration_ms(&s)
+                    .map_err(|e| ConfigDiagnostic::service(&name, &[fields::health::TIMEOUT], e))
             })
             .transpose()?
             .unwrap_or(DEFAULT_HEALTH_TIMEOUT_MS),
@@ -497,12 +443,7 @@ pub(crate) fn validate_service(
             .probe_interval
             .map(|s| {
                 parse_duration_ms(&s).map_err(|e| {
-                    ConfigDiagnostic::constraint(
-                        ValidationErrorCode::TemplateConstraint,
-                        Some(name.to_string()),
-                        &[fields::health::PROBE_INTERVAL],
-                        e,
-                    )
+                    ConfigDiagnostic::service(&name, &[fields::health::PROBE_INTERVAL], e)
                 })
             })
             .transpose()?
@@ -519,28 +460,14 @@ pub(crate) fn validate_service(
         .or(daemon.defaults.idle_timeout.as_deref())
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::service::IDLE_TIMEOUT],
-                e,
-            )
-        })?
+        .map_err(|e| ConfigDiagnostic::service(&name, &[fields::service::IDLE_TIMEOUT], e))?
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MS);
     let drain_timeout_ms = common
         .drain_timeout
         .as_deref()
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::service::DRAIN_TIMEOUT],
-                e,
-            )
-        })?
+        .map_err(|e| ConfigDiagnostic::service(&name, &[fields::service::DRAIN_TIMEOUT], e))?
         .unwrap_or(DEFAULT_DRAIN_TIMEOUT_MS);
     let extended_stream_drain_ms = common
         .extended_stream_drain
@@ -548,12 +475,7 @@ pub(crate) fn validate_service(
         .map(parse_duration_ms)
         .transpose()
         .map_err(|e| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::service::EXTENDED_STREAM_DRAIN],
-                e,
-            )
+            ConfigDiagnostic::service(&name, &[fields::service::EXTENDED_STREAM_DRAIN], e)
         })?
         .unwrap_or(DEFAULT_EXTENDED_STREAM_DRAIN_MS);
     let max_request_duration_ms = common
@@ -561,14 +483,7 @@ pub(crate) fn validate_service(
         .as_deref()
         .map(parse_duration_ms)
         .transpose()
-        .map_err(|e| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::service::MAX_REQUEST_DURATION],
-                e,
-            )
-        })?
+        .map_err(|e| ConfigDiagnostic::service(&name, &[fields::service::MAX_REQUEST_DURATION], e))?
         .unwrap_or(DEFAULT_MAX_REQUEST_DURATION_MS);
 
     let mut filters = Filters::default();
@@ -579,15 +494,10 @@ pub(crate) fn validate_service(
         if let Some(set) = &raw_filters.set_params {
             for (k, v) in set {
                 let json_val = toml_value_to_json(v.clone()).map_err(|e| {
-                    ConfigDiagnostic::constraint(
-                        ValidationErrorCode::TemplateConstraint,
-                        Some(name.to_string()),
+                    ConfigDiagnostic::service(
+                        &name,
                         &[&format!("filters.set_params[{k}]")],
-                        format!(
-                            "filters.set_params[{key}]: {error}",
-                            key = k.clone(),
-                            error = e
-                        ),
+                        format!("filters.set_params[{}]: {e}", k.clone()),
                     )
                 })?;
                 filters.set_params.insert(k.clone(), json_val);

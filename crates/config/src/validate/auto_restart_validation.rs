@@ -13,9 +13,8 @@ use crate::{
     validate::{
         AutoRestartSettings, ConfigDiagnostic, DEFAULT_AUTO_RESTART_PERIODIC_MODE,
         ErrorRateTrigger, GenerationStallTrigger, PeriodicMode, PeriodicTrigger,
-        SpecCollapseTrigger, Template, TtftStallTrigger, ValidationErrorCode, parse_duration_ms,
-        validate_error_rate, validate_generation_stall, validate_spec_collapse,
-        validate_ttft_stall,
+        SpecCollapseTrigger, Template, TtftStallTrigger, parse_duration_ms, validate_error_rate,
+        validate_generation_stall, validate_spec_collapse, validate_ttft_stall,
     },
 };
 
@@ -54,12 +53,7 @@ pub(crate) fn validate_auto_restart(
 
     let dur = |field: &str, s: &str| {
         parse_duration_ms(s).map_err(|error| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[&format!("auto_restart.{field}")],
-                error,
-            )
+            ConfigDiagnostic::service(name, &[&format!("auto_restart.{field}")], error)
         })
     };
 
@@ -75,12 +69,7 @@ pub(crate) fn validate_auto_restart(
     let periodic = match &raw.periodic {
         None | Some(Toggle::Enabled(false)) => None,
         Some(Toggle::Enabled(true)) => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::auto_restart::PERIODIC],
-                "auto_restart.periodic = true needs an interval; write `periodic = { interval = \"6h\" }`".to_string(),
-            ));
+            return Err(ConfigDiagnostic::service(name, &[fields::auto_restart::PERIODIC], "auto_restart.periodic = true needs an interval; write `periodic = { interval = \"6h\" }`".to_string()));
         }
         Some(Toggle::Settings(s)) => Some(validate_periodic(name, s)?),
     };
@@ -110,12 +99,7 @@ pub(crate) fn validate_auto_restart(
         Some(Toggle::Enabled(false)) => None,
         Some(_) if !has_spec_type => {
             if from_service_block {
-                return Err(ConfigDiagnostic::constraint(
-                    ValidationErrorCode::TemplateConstraint,
-                    Some(name.to_string()),
-                    &[fields::auto_restart::SPEC_COLLAPSE],
-                    "auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)".to_string(),
-                ));
+                return Err(ConfigDiagnostic::service(name, &[fields::auto_restart::SPEC_COLLAPSE], "auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)".to_string()));
             }
             None
         }
@@ -157,17 +141,11 @@ pub(crate) fn validate_periodic(
 ) -> Result<PeriodicTrigger, crate::validate::ConfigDiagnostic> {
     let interval_ms = match s.interval.as_deref() {
         Some(x) => parse_duration_ms(x).map_err(|error| {
-            ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
-                &[fields::auto_restart::PERIODIC_INTERVAL],
-                error,
-            )
+            ConfigDiagnostic::service(name, &[fields::auto_restart::PERIODIC_INTERVAL], error)
         })?,
         None => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                name,
                 &[fields::auto_restart::PERIODIC],
                 "auto_restart.periodic requires an `interval`".to_string(),
             ));
@@ -179,13 +157,11 @@ pub(crate) fn validate_periodic(
         Some("on-idle") => PeriodicMode::OnIdle,
         Some("on-request") => PeriodicMode::OnRequest,
         Some(other) => {
-            return Err(ConfigDiagnostic::constraint(
-                ValidationErrorCode::TemplateConstraint,
-                Some(name.to_string()),
+            return Err(ConfigDiagnostic::service(
+                name,
                 &[fields::auto_restart::PERIODIC_MODE],
                 format!(
-                    "auto_restart.periodic.mode must be `immediate`, `on-idle`, or `on-request`, got `{value}`",
-                    value = other
+                    "auto_restart.periodic.mode must be `immediate`, `on-idle`, or `on-request`, got `{other}`"
                 ),
             ));
         }

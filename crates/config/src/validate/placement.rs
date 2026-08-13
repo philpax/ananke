@@ -84,7 +84,7 @@ impl AllocationMode {
                     min_borrower_runtime_ms,
                 })
             }
-            Some(other) => Err(format!("unknown allocation.mode `{value}`", value = other)),
+            Some(other) => Err(format!("unknown allocation.mode `{other}`")),
             // A llama-cpp service without one is estimated and packed, which
             // is the normal path. A command service cannot be: ananke does not
             // build its argv and so cannot know what it will allocate.
