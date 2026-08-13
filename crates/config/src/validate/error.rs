@@ -98,9 +98,11 @@ pub enum ConstraintReason {
     LlamaCppLauncherEmpty,
     LlamaCppExpertOffloadInvalid {
         value: String,
+        expected: String,
     },
     LlamaCppNumaInvalid {
         value: String,
+        expected: String,
     },
     // --- Command template ---
     CommandMissingCommand,
@@ -131,6 +133,7 @@ pub enum ConstraintReason {
     GpuOnlyWithCpuOverride,
     SplitUnknown {
         value: String,
+        expected: String,
     },
     ExpertOffloadConflictsShardedSplit {
         split: String,
@@ -228,10 +231,15 @@ impl fmt::Display for ConstraintReason {
                 write!(f, "draft_model requires spec_type to be set")
             }
             Self::LlamaCppLauncherEmpty => write!(f, "launcher is present but empty"),
-            Self::LlamaCppExpertOffloadInvalid { value } => {
-                write!(f, "expert_offload `{value}` is invalid")
+            Self::LlamaCppExpertOffloadInvalid { value, expected } => {
+                write!(
+                    f,
+                    "expert_offload `{value}` is invalid (expected {expected}, or an integer layer count)"
+                )
             }
-            Self::LlamaCppNumaInvalid { value } => write!(f, "numa `{value}` is invalid"),
+            Self::LlamaCppNumaInvalid { value, expected } => {
+                write!(f, "numa `{value}` is invalid (expected {expected})")
+            }
             Self::CommandMissingCommand => write!(f, "command template requires `command`"),
             Self::CommandEmptyCommand => write!(f, "command is empty"),
             Self::CommandEmptyShutdownCommand => {
@@ -269,8 +277,8 @@ impl fmt::Display for ConstraintReason {
             Self::GpuOnlyWithCpuOverride => {
                 write!(f, "placement=gpu-only but placement_override includes cpu")
             }
-            Self::SplitUnknown { value } => {
-                write!(f, "unknown devices.split `{value}`")
+            Self::SplitUnknown { value, expected } => {
+                write!(f, "unknown devices.split `{value}` (expected {expected})")
             }
             Self::ExpertOffloadConflictsShardedSplit { split } => {
                 write!(
@@ -318,7 +326,7 @@ impl fmt::Display for ConstraintReason {
             Self::SpecCollapseRequiresSpecType => {
                 write!(
                     f,
-                    "auto_restart.spec_collapse requires spec_type to be set (e.g. spec_type = \"draft-mtp\")"
+                    "auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)"
                 )
             }
             Self::PeriodicModeInvalid { value } => {
@@ -1037,8 +1045,11 @@ impl fmt::Display for ConfigDiagnostic {
                     f,
                     "tracking.cgroup_parent must not end with `/` (got `{offending}`)"
                 ),
-                ValueDiagnosticDetail::TrackingInvalidCharacters
-                | ValueDiagnosticDetail::Generic => match code {
+                ValueDiagnosticDetail::TrackingInvalidCharacters => write!(
+                    f,
+                    "tracking.cgroup_parent may only contain alphanumeric, `.`, `_`, `/`, and `-` characters (got `{offending}`)"
+                ),
+                ValueDiagnosticDetail::Generic => match code {
                     ValidationErrorCode::GpuAllowDuplicate => write!(
                         f,
                         "service: {field} must not contain duplicate GPU ids when tensor_split_weights is set"

@@ -18,10 +18,10 @@ use crate::{
     merge::resolve_inheritance,
     parse::{EstimationConfig, RawConfig, SamplingConfig, parse_toml},
     validate::{
-        AllocationMode, AutoRestartSettings, CommandConfig, DEFAULT_SERVICE_PRIORITY,
-        DeviceReserves, DeviceSlot, Filters, HealthSettings, Lifecycle, LlamaCppConfig,
-        OffloadMode, PlacementPolicy, ServiceConfig, SplitMode, Template, TemplateConfig,
-        TrackingSettings, validate,
+        AllocationMode, AutoRestartSettings, CommandConfig, ConfigDiagnosticReport,
+        DEFAULT_SERVICE_PRIORITY, DeviceReserves, DeviceSlot, Filters, HealthSettings, Lifecycle,
+        LlamaCppConfig, OffloadMode, PlacementPolicy, ServiceConfig, SplitMode, Template,
+        TemplateConfig, TrackingSettings, validate,
     },
 };
 
@@ -36,6 +36,15 @@ pub fn parse_and_merge(src: &str) -> RawConfig {
 /// Validate a single llama-cpp service carrying the given `[service]`-level
 /// TOML `block`, so an auto-restart test can state only the keys it exercises.
 pub fn svc_with_auto_restart(block: &str) -> Result<ServiceConfig, ExpectedError> {
+    svc_with_auto_restart_diagnostics(block)
+        .map_err(|report| report.into_expected_error(PathBuf::from("<config>")))
+}
+
+/// As [`svc_with_auto_restart`], but preserving the typed report so a test can
+/// match on the diagnostic that fired rather than on its rendered text.
+pub fn svc_with_auto_restart_diagnostics(
+    block: &str,
+) -> Result<ServiceConfig, ConfigDiagnosticReport> {
     let src = format!(
         r#"
 [[service]]
@@ -49,9 +58,7 @@ devices.placement = "cpu-only"
 "#
     );
     let cfg = parse_and_merge(&src);
-    validate(&cfg)
-        .map(|ec| ec.services.into_iter().next().unwrap())
-        .map_err(|report| report.into_expected_error(PathBuf::from("<config>")))
+    validate(&cfg).map(|ec| ec.services.into_iter().next().unwrap())
 }
 
 /// Build a minimal `ServiceConfig` with CPU-only placement, suitable for

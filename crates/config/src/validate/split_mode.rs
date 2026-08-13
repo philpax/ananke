@@ -83,6 +83,7 @@ lifecycle = "persistent"
                 ..
             }
         ));
+        assert!(diag.to_string().contains(&SplitMode::valid_values()));
     }
 
     #[test]

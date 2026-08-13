@@ -241,8 +241,10 @@ mod tests {
             DEFAULT_AUTO_RESTART_SPEC_COLLAPSE_WINDOW_MS,
         },
         validate::{
-            ServiceConfig,
-            test_fixtures::{parse_and_merge, svc_with_auto_restart},
+            ConfigDiagnosticKind, ServiceConfig,
+            test_fixtures::{
+                parse_and_merge, svc_with_auto_restart, svc_with_auto_restart_diagnostics,
+            },
             validate,
         },
     };
@@ -405,8 +407,15 @@ devices.placement = "cpu-only"
     fn auto_restart_spec_collapse_explicit_enable_requires_spec_type() {
         // An explicit per-service enable on a service that can never produce
         // draft counts is a configuration error, not a silent no-op.
-        let err = svc_with_auto_restart("auto_restart = { spec_collapse = true }").unwrap_err();
-        assert!(err.to_string().contains("spec_collapse requires spec_type"));
+        let err = svc_with_auto_restart_diagnostics("auto_restart = { spec_collapse = true }")
+            .unwrap_err();
+        assert!(matches!(
+            &*err.as_slice()[0].kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::SpecCollapseRequiresSpecType,
+                ..
+            }
+        ));
         assert!(command_svc_with_auto_restart("auto_restart = { spec_collapse = true }").is_err());
         // An explicit disable is always fine.
         assert!(svc_with_auto_restart("auto_restart = { spec_collapse = false }").is_ok());

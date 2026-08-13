@@ -151,4 +151,33 @@ tracking.cgroup_parent = "/system.slice/ananke-comfyui.slice/"
             }
         ));
     }
+
+    #[test]
+    fn tracking_rejects_unsupported_characters() {
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "comfy"
+template = "command"
+command = ["python"]
+port = 8188
+lifecycle = "on_demand"
+allocation.mode = "static"
+allocation.reserve_gb = 4
+tracking.cgroup_parent = "/system.slice/ananke comfyui!.slice"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Value {
+                detail: ValueDiagnosticDetail::TrackingInvalidCharacters,
+                ..
+            }
+        ));
+        // The dedicated detail must render its own message, not fall through to
+        // the generic "invalid value" arm.
+        assert!(diag.to_string().contains("may only contain alphanumeric"));
+    }
 }

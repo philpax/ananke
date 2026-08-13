@@ -310,7 +310,10 @@ pub(crate) fn validate_service(
                 ValidationErrorCode::TemplateConstraint,
                 Some(name.to_string()),
                 vec!["devices.split".into()],
-                ConstraintReason::SplitUnknown { value: s.into() },
+                ConstraintReason::SplitUnknown {
+                    value: s.into(),
+                    expected: SplitMode::valid_values(),
+                },
             )
         })?,
     };

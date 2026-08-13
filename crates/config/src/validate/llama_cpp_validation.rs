@@ -180,6 +180,7 @@ pub(crate) fn validate_llama_cpp(
                     vec!["expert_offload".into()],
                     ConstraintReason::LlamaCppExpertOffloadInvalid {
                         value: other.to_string(),
+                        expected: flags::quoted_list(flags::expert_offload::ALL),
                     },
                 ));
             }
@@ -195,6 +196,7 @@ pub(crate) fn validate_llama_cpp(
                 vec!["numa".into()],
                 ConstraintReason::LlamaCppNumaInvalid {
                     value: s.to_string(),
+                    expected: NumaStrategy::valid_values(),
                 },
             )
         })?),
@@ -288,6 +290,60 @@ lifecycle = "persistent"
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn invalid_enum_values_enumerate_the_accepted_ones() {
+        // The accepted values are the whole point of these diagnostics — an
+        // operator with a typo needs the list, not just a rejection.
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+numa = "sideways"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCppNumaInvalid { .. },
+                ..
+            }
+        ));
+        assert!(diag.to_string().contains(&NumaStrategy::valid_values()));
+
+        let cfg = parse_and_merge(
+            r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/m/x.gguf"
+port = 11435
+context = 4096
+expert_offload = "maybe"
+lifecycle = "persistent"
+"#,
+        );
+        let err = validate(&cfg).unwrap_err();
+        let diag = &err.as_slice()[0];
+        assert!(matches!(
+            &*diag.kind,
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCppExpertOffloadInvalid { .. },
+                ..
+            }
+        ));
+        assert!(
+            diag.to_string()
+                .contains(&flags::quoted_list(flags::expert_offload::ALL))
+        );
     }
 
     #[test]
