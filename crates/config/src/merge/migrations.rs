@@ -37,7 +37,7 @@ pub fn resolve_migrations(cfg: &mut RawConfig) -> Result<Vec<Migration>, ConfigD
             ));
             continue;
         };
-        by_name.entry(name).or_insert(s);
+        by_name.insert(name, s);
     }
 
     let mut visiting: BTreeSet<SmolStr> = BTreeSet::new();
