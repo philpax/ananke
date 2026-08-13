@@ -39,14 +39,8 @@ pub enum ValidationErrorCode {
     TensorSplitWeightInvalid,
     /// Missing field.
     FieldMissing,
-    /// Unknown field or value.
-    FieldUnknown,
     /// Invalid value.
     ValueInvalid,
-    /// Required-field dependency failure.
-    FieldRequired,
-    /// Incompatible fields.
-    FieldsIncompatible,
     /// Duplicate service name.
     ServiceNameDuplicate,
     /// Duplicate service port.
@@ -57,24 +51,12 @@ pub enum ValidationErrorCode {
     DurationInvalid,
     /// Invalid placeholder.
     PlaceholderInvalid,
-    /// Invalid allocation.
-    AllocationInvalid,
     /// Invalid private-port range.
     PrivatePortRangeInvalid,
     /// Exhausted private-port range.
     PrivatePortExhausted,
-    /// Invalid metadata.
-    MetadataInvalid,
-    /// Runtime constraint.
-    RuntimeConstraint,
-    /// Automatic-restart constraint.
-    AutoRestartConstraint,
     /// Tracking constraint.
     TrackingConstraint,
-    /// Placement constraint.
-    PlacementConstraint,
-    /// Command constraint.
-    CommandConstraint,
     /// Template constraint.
     TemplateConstraint,
     /// Forward-compatible code.
@@ -93,24 +75,15 @@ impl ValidationErrorCode {
             Self::TensorSplitWeightsCount => "tensor_split_weights_count",
             Self::TensorSplitWeightInvalid => "tensor_split_weight_invalid",
             Self::FieldMissing => "field_missing",
-            Self::FieldUnknown => "field_unknown",
             Self::ValueInvalid => "value_invalid",
-            Self::FieldRequired => "field_required",
-            Self::FieldsIncompatible => "fields_incompatible",
             Self::ServiceNameDuplicate => "service_name_duplicate",
             Self::ServicePortDuplicate => "service_port_duplicate",
             Self::ServicePortManagementCollision => "service_port_management_collision",
             Self::DurationInvalid => "duration_invalid",
             Self::PlaceholderInvalid => "placeholder_invalid",
-            Self::AllocationInvalid => "allocation_invalid",
             Self::PrivatePortRangeInvalid => "private_port_range_invalid",
             Self::PrivatePortExhausted => "private_port_exhausted",
-            Self::MetadataInvalid => "metadata_invalid",
-            Self::RuntimeConstraint => "runtime_constraint",
-            Self::AutoRestartConstraint => "auto_restart_constraint",
             Self::TrackingConstraint => "tracking_constraint",
-            Self::PlacementConstraint => "placement_constraint",
-            Self::CommandConstraint => "command_constraint",
             Self::TemplateConstraint => "template_constraint",
             Self::Other => "other",
         }

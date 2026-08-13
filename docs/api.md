@@ -264,7 +264,7 @@ Validate TOML config without persisting
 ```typescript
 {
   errors: {
-    code: "parse" | "merge_constraint" | "gpu_allow_duplicate" | "gpu_allow_unsorted" | "tensor_split_weights_count" | "tensor_split_weight_invalid" | "field_missing" | "field_unknown" | "value_invalid" | "field_required" | "fields_incompatible" | "service_name_duplicate" | "service_port_duplicate" | "service_port_management_collision" | "duration_invalid" | "placeholder_invalid" | "allocation_invalid" | "private_port_range_invalid" | "private_port_exhausted" | "metadata_invalid" | "runtime_constraint" | "auto_restart_constraint" | "tracking_constraint" | "placement_constraint" | "command_constraint" | "template_constraint" | "other"
+    code: "parse" | "merge_constraint" | "gpu_allow_duplicate" | "gpu_allow_unsorted" | "tensor_split_weights_count" | "tensor_split_weight_invalid" | "field_missing" | "value_invalid" | "service_name_duplicate" | "service_port_duplicate" | "service_port_management_collision" | "duration_invalid" | "placeholder_invalid" | "private_port_range_invalid" | "private_port_exhausted" | "tracking_constraint" | "template_constraint" | "other"
     location?: {
       column: number
       end: number
