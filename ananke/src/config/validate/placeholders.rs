@@ -109,15 +109,25 @@ pub(crate) fn check_launcher_placeholders(
 
 #[cfg(test)]
 mod tests {
+    use ananke_config::validate::{
+        ConfigDiagnosticKind, ConfigDiagnosticReport, ConstraintReason, LlamaCppReason,
+    };
+
+    use super::PlaceholderError;
     use crate::config::validate::{
         DaemonPlaceholderChecker, test_fixtures::parse_and_merge, validate_with_checks,
     };
 
     fn validate(
         cfg: &ananke_config::parse::RawConfig,
-    ) -> Result<ananke_config::validate::EffectiveConfig, ananke_errors::ExpectedError> {
+    ) -> Result<ananke_config::validate::EffectiveConfig, ConfigDiagnosticReport> {
         validate_with_checks(cfg, &DaemonPlaceholderChecker)
-            .map_err(|report| report.into_expected_error(std::path::PathBuf::from("<config>")))
+    }
+
+    /// The first diagnostic a rejected config produced.
+    fn first_diagnostic(cfg: &ananke_config::parse::RawConfig) -> ConfigDiagnosticKind {
+        let report = validate(cfg).unwrap_err();
+        *report.as_slice()[0].kind.clone()
     }
 
     #[test]
@@ -160,12 +170,14 @@ launcher = ["wrap.sh", "{model}", "{bogus}", "{args}"]
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("{bogus}") && msg.contains("launcher"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            first_diagnostic(&cfg),
+            ConfigDiagnosticKind::Placeholder {
+                error: PlaceholderError::UnknownPlaceholder(ref name),
+                ref field,
+                ..
+            } if name == "bogus" && field == "launcher"
+        ));
     }
 
     #[test]
@@ -181,8 +193,14 @@ launcher = ["wrap.sh", "{model}", "--foo={args}"]
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("{args}"));
+        assert!(matches!(
+            first_diagnostic(&cfg),
+            ConfigDiagnosticKind::Placeholder {
+                error: PlaceholderError::SplatInsideArg,
+                ref field,
+                ..
+            } if field == "launcher"
+        ));
     }
 
     #[test]
@@ -198,8 +216,13 @@ launcher = []
 devices.placement_override = { "gpu:0" = 1000 }
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("launcher"));
+        assert!(matches!(
+            first_diagnostic(&cfg),
+            ConfigDiagnosticKind::Fields {
+                reason: ConstraintReason::LlamaCpp(LlamaCppReason::LauncherEmpty),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -215,12 +238,15 @@ allocation.mode = "static"
 allocation.reserve_gb = 1
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("command[1]") && msg.contains("{prot}"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            first_diagnostic(&cfg),
+            ConfigDiagnosticKind::Placeholder {
+                error: PlaceholderError::UnknownPlaceholder(ref name),
+                ref field,
+                argv_index: Some(1),
+                ..
+            } if name == "prot" && field == "command"
+        ));
     }
 
     #[test]
@@ -237,11 +263,14 @@ allocation.mode = "static"
 allocation.reserve_gb = 1
 "#,
         );
-        let err = validate(&cfg).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("shutdown_command[1]") && msg.contains("{bogus}"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(
+            first_diagnostic(&cfg),
+            ConfigDiagnosticKind::Placeholder {
+                error: PlaceholderError::UnknownPlaceholder(ref name),
+                ref field,
+                argv_index: Some(1),
+                ..
+            } if name == "bogus" && field == "shutdown_command"
+        ));
     }
 }
