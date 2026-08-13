@@ -42,10 +42,7 @@ use crate::validate::{ConfigDiagnostic, DiagnosticLocation};
 /// is a deliberate choice over collecting unknowns via `serde_ignored`: the
 /// report-and-continue model would both duplicate these errors and let bad
 /// config through with only a warning.
-pub fn parse_toml(
-    source: &str,
-    _origin_path: &std::path::Path,
-) -> Result<RawConfig, ConfigDiagnostic> {
+pub fn parse_toml(source: &str) -> Result<RawConfig, ConfigDiagnostic> {
     toml_edit::de::from_str::<RawConfig>(source)
         .map(|mut config| {
             config.service_source_indices = (0..config.services.len()).collect();
@@ -61,7 +58,6 @@ pub fn parse_toml(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use super::*;
 
@@ -74,7 +70,7 @@ template = "llama-cpp"
 model = "/m/x.gguf"
 port = 11435
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         assert_eq!(cfg.services.len(), 1);
         let svc = &cfg.services[0];
         assert_eq!(svc.common().name.as_deref(), Some("demo"));
@@ -94,7 +90,7 @@ template = "command"
 port = 11500
 command = ["/bin/true"]
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let svc = &cfg.services[0];
         let RawService::Command(cmd) = svc else {
             panic!("expected Command variant");
@@ -114,7 +110,7 @@ sampling.temperature = 0.7
 devices.placement = "gpu-only"
 devices.placement_override = { "gpu:0" = 18944 }
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let RawService::LlamaCpp(lc) = &cfg.services[0] else {
             panic!("expected LlamaCpp");
         };
@@ -137,7 +133,7 @@ devices.placement_override = { "gpu:0" = 18944 }
     #[test]
     fn rejects_unparseable() {
         let toml = "this is not valid toml [[[";
-        let err = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap_err();
+        let err = parse_toml(toml).unwrap_err();
         assert!(format!("{err}").contains("parse"));
     }
 
@@ -153,7 +149,7 @@ port = 11500
 command = ["/bin/true"]
 model = "/m/x.gguf"
 "#;
-        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        let err = parse_toml(toml);
         assert!(
             err.is_err(),
             "expected parse error for llama-cpp field on command template, got {:?}",
@@ -169,7 +165,7 @@ name = "svc"
 template = "does-not-exist"
 port = 11500
 "#;
-        let err = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap_err();
+        let err = parse_toml(toml).unwrap_err();
         assert!(format!("{err}").contains("does-not-exist"));
     }
 
@@ -181,7 +177,7 @@ port = 11500
 name = "svc"
 port = 11500
 "#;
-        let err = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap_err();
+        let err = parse_toml(toml).unwrap_err();
         assert!(format!("{err}").contains("template"));
     }
 }

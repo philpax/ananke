@@ -240,7 +240,6 @@ pub(crate) fn validate_llama_cpp(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use super::*;
     use crate::{
@@ -390,7 +389,6 @@ model = "/m/x.gguf"
 port = 11435
 n_cpu_moe = 8
 "#,
-            Path::new("/t"),
         )
         .unwrap_err();
         // The parser rejects unknown fields; verify the error names the field.

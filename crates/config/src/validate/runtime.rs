@@ -210,7 +210,6 @@ model = "/m/x.gguf"
 port = 11435
 runtime = { kind = "ik-llama", mla = 1, n_cpu_moe = 4 }
 "#,
-            std::path::Path::new("/fake/ananke.toml"),
         )
         .unwrap_err();
         assert!(

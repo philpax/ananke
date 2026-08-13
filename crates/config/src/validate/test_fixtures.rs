@@ -4,11 +4,7 @@
 //! range over the full struct surface and have to be updated in lockstep
 //! every time a field is added.
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use ananke_api::shared::modality::Modality;
 use ananke_errors::ExpectedError;
@@ -28,7 +24,7 @@ use crate::{
 /// Parse a TOML fragment and resolve its `extends` inheritance, yielding the
 /// `RawConfig` that `validate` expects as its input.
 pub fn parse_and_merge(src: &str) -> RawConfig {
-    let mut cfg = parse_toml(src, Path::new("/t")).unwrap();
+    let mut cfg = parse_toml(src).unwrap();
     resolve_inheritance(&mut cfg).unwrap();
     cfg
 }

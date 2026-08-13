@@ -116,7 +116,7 @@ impl ConfigManager {
             .read_to_string(&path)
             .map_err(|e| ExpectedError::config_unparseable(path.clone(), e.to_string()))?;
         let (effective, migrations) =
-            crate::load_config_from_str_with_checks(&raw, &path, placeholder_checker.as_ref())
+            crate::load_config_from_str_with_checks(&raw, placeholder_checker.as_ref())
                 .map_err(|error| error.into_expected_error(path.clone()))?;
         crate::preflight_ggufs(&path, &effective, fs.as_ref())?;
         let this = Arc::new(Self {
@@ -188,7 +188,7 @@ impl ConfigManager {
 
     /// Validate the given TOML without touching disk or the in-memory cache.
     pub fn validate(&self, toml: &str) -> Result<(), crate::validate::ConfigDiagnosticReport> {
-        crate::load_config_from_str_with_checks(toml, &self.path, self.placeholder_checker.as_ref())
+        crate::load_config_from_str_with_checks(toml, self.placeholder_checker.as_ref())
             .map(|_| ())
             .map_err(|error| error.into_report())
     }
@@ -220,12 +220,9 @@ impl ConfigManager {
             }
         }
 
-        let (effective, _migrations) = crate::load_config_from_str_with_checks(
-            &new_toml,
-            &self.path,
-            self.placeholder_checker.as_ref(),
-        )
-        .map_err(|error| ApplyError::Invalid(error.into_report()))?;
+        let (effective, _migrations) =
+            crate::load_config_from_str_with_checks(&new_toml, self.placeholder_checker.as_ref())
+                .map_err(|error| ApplyError::Invalid(error.into_report()))?;
         persist_atomically(self.fs.as_ref(), &self.path, &new_toml)
             .map_err(ApplyError::PersistFailed)?;
         let changed = diff_services(&self.effective.load(), &effective);
@@ -255,7 +252,6 @@ impl ConfigManager {
         }
         let (effective, _migs) = match crate::load_config_from_str_with_checks(
             &raw,
-            &self.path,
             self.placeholder_checker.as_ref(),
         ) {
             Ok((effective, migrations)) => {

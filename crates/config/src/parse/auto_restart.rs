@@ -163,7 +163,6 @@ pub struct RawPeriodicSettings {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use super::*;
     use crate::parse::parse_toml;
@@ -184,7 +183,7 @@ flap_window = "1h"
 error_rate = { window = "2m", max_error_rate = 0.6, min_requests = 30, error_statuses = "4xx+5xx" }
 periodic = { interval = "6h", mode = "on-idle" }
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
         assert_eq!(ar.min_uptime.as_deref(), Some("10m"));
         assert_eq!(ar.max_restarts, Some(5));
@@ -212,7 +211,7 @@ port = 11435
 [service.auto_restart]
 error_rate = false
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
         assert!(matches!(ar.error_rate, Some(Toggle::Enabled(false))));
     }
@@ -228,7 +227,7 @@ port = 11435
 [service.auto_restart]
 ttft_stall = false
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
         assert!(matches!(ar.ttft_stall, Some(Toggle::Enabled(false))));
     }
@@ -244,7 +243,7 @@ port = 11435
 [service.auto_restart]
 ttft_stall = { timeuot = "90s" }
 "#;
-        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        let err = parse_toml(toml);
         assert!(
             err.is_err(),
             "expected parse error for typo'd ttft_stall field, got {:?}",
@@ -263,7 +262,7 @@ port = 11435
 [service.auto_restart]
 generation_stall = false
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
         assert!(matches!(ar.generation_stall, Some(Toggle::Enabled(false))));
     }
@@ -279,7 +278,7 @@ port = 11435
 [service.auto_restart]
 generation_stall = { timeout = "2m", poll_interval = "10s" }
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let ar = cfg.services[0].common().auto_restart.as_ref().unwrap();
         let Some(Toggle::Settings(gs)) = &ar.generation_stall else {
             panic!("expected generation_stall settings table");
@@ -299,7 +298,7 @@ port = 11435
 [service.auto_restart]
 generation_stall = { timeuot = "2m" }
 "#;
-        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        let err = parse_toml(toml);
         assert!(
             err.is_err(),
             "expected parse error for typo'd generation_stall field, got {:?}",
@@ -321,7 +320,7 @@ port = 11435
 [service.auto_restart]
 error_rate = { windwo = "2m" }
 "#;
-        let err = parse_toml(toml, Path::new("/tmp/c.toml"));
+        let err = parse_toml(toml);
         assert!(
             err.is_err(),
             "expected parse error for typo'd error_rate field, got {:?}",

@@ -151,7 +151,6 @@ pub struct HealthSettings {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use super::*;
     use crate::{
@@ -369,7 +368,6 @@ port = 11000
 allocation.mode = "static"
 allocation.reserve_gb = 4
 "#,
-            Path::new("/t"),
         );
         assert!(
             res.is_err(),

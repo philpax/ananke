@@ -15,7 +15,6 @@ allocation.min_reserve_gb = 4
 allocation.max_reserve_gb = 20
 allocation.min_borrower_runtime = "90s"
 "#,
-        std::path::Path::new("/t"),
     )
     .unwrap();
     resolve_inheritance(&mut cfg).unwrap();

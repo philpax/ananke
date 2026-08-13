@@ -56,7 +56,7 @@ pub fn load_config_with_fs(
     source: &str,
 ) -> Result<(EffectiveConfig, Vec<Migration>), ananke_errors::ExpectedError> {
     let (effective, migrations) =
-        load_config_from_str_with_checks(source, origin, &validate::NoopPlaceholderChecker)
+        load_config_from_str_with_checks(source, &validate::NoopPlaceholderChecker)
             .map_err(|error| error.into_expected_error(origin.to_path_buf()))?;
     preflight_ggufs(origin, &effective, fs)?;
     Ok((effective, migrations))
@@ -66,19 +66,17 @@ pub fn load_config_with_fs(
 /// preflight. The daemon's full load path is [`load_config_with_fs`].
 pub fn load_config_from_str(
     source: &str,
-    origin: &std::path::Path,
 ) -> Result<(EffectiveConfig, Vec<Migration>), validate::ConfigDiagnosticReport> {
-    load_config_from_str_with_checks(source, origin, &validate::NoopPlaceholderChecker)
+    load_config_from_str_with_checks(source, &validate::NoopPlaceholderChecker)
         .map_err(validate::ConfigPipelineError::into_report)
 }
 
 /// [`load_config_from_str`] with an injected placeholder dry-run checker.
 pub fn load_config_from_str_with_checks(
     source: &str,
-    origin: &std::path::Path,
     checker: &dyn validate::PlaceholderChecker,
 ) -> Result<(EffectiveConfig, Vec<Migration>), validate::ConfigPipelineError> {
-    let mut raw = parse_toml(source, origin).map_err(|diagnostic| {
+    let mut raw = parse_toml(source).map_err(|diagnostic| {
         validate::ConfigPipelineError::Parse(validate::ConfigDiagnosticReport::from(diagnostic))
     })?;
     let mut report = validate::ConfigDiagnosticReport::new();
@@ -144,15 +142,12 @@ pub fn preflight_ggufs(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     #[test]
     fn loader_preserves_pipeline_phase_for_parser_failures() {
         let error = load_config_from_str_with_checks(
             "this is not valid toml [[[",
-            Path::new("/tmp/config.toml"),
             &validate::NoopPlaceholderChecker,
         )
         .expect_err("malformed TOML must fail");
@@ -171,12 +166,8 @@ command = ["/bin/true"]
 allocation.mode = "static"
 allocation.reserve_gb = 1
 "#;
-        let error = load_config_from_str_with_checks(
-            source,
-            Path::new("/tmp/config.toml"),
-            &validate::NoopPlaceholderChecker,
-        )
-        .expect_err("missing parent must fail");
+        let error = load_config_from_str_with_checks(source, &validate::NoopPlaceholderChecker)
+            .expect_err("missing parent must fail");
         let ConfigPipelineError::Merge(report) = error else {
             panic!("expected a merge phase error");
         };
@@ -194,12 +185,8 @@ allocation.reserve_gb = 1
 [daemon]
 management_listen = "not-an-address"
 "#;
-        let error = load_config_from_str_with_checks(
-            source,
-            Path::new("/tmp/config.toml"),
-            &validate::NoopPlaceholderChecker,
-        )
-        .expect_err("invalid listen address must fail");
+        let error = load_config_from_str_with_checks(source, &validate::NoopPlaceholderChecker)
+            .expect_err("invalid listen address must fail");
         let ConfigPipelineError::Validation(report) = error else {
             panic!("expected a validation phase error");
         };
@@ -228,12 +215,9 @@ command = ["/bin/true"]
 allocation.mode = "static"
 allocation.reserve_gb = 1
 "#;
-        let (effective, _) = load_config_from_str_with_checks(
-            source,
-            Path::new("/tmp/config.toml"),
-            &validate::NoopPlaceholderChecker,
-        )
-        .expect("valid command services should load");
+        let (effective, _) =
+            load_config_from_str_with_checks(source, &validate::NoopPlaceholderChecker)
+                .expect("valid command services should load");
         assert_eq!(
             effective
                 .services

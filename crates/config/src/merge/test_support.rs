@@ -3,12 +3,10 @@
 //! Centralised so `field_merge`, `migrations`, and `resolve` don't each carry
 //! their own copy of the same parse-and-lookup helpers.
 
-use std::path::Path;
-
 use crate::parse::{RawConfig, RawService, parse_toml};
 
 pub fn parse(src: &str) -> RawConfig {
-    parse_toml(src, Path::new("/t")).unwrap()
+    parse_toml(src).unwrap()
 }
 
 pub fn find_llama<'a>(cfg: &'a RawConfig, name: &str) -> &'a crate::parse::RawLlamaCppService {

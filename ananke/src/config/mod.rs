@@ -59,7 +59,6 @@ pub fn load_config_with_fs(
 ) -> Result<(EffectiveConfig, Vec<Migration>), ExpectedError> {
     let (effective, migrations) = load_config_from_str_with_checks(
         source,
-        origin,
         &crate::config::validate::DaemonPlaceholderChecker,
     )
     .map_err(|error| error.into_expected_error(origin.to_path_buf()))?;
@@ -71,10 +70,6 @@ pub fn load_config_from_str(
     source: &str,
     origin: &Path,
 ) -> Result<(EffectiveConfig, Vec<Migration>), ExpectedError> {
-    load_config_from_str_with_checks(
-        source,
-        origin,
-        &crate::config::validate::DaemonPlaceholderChecker,
-    )
-    .map_err(|error| error.into_expected_error(origin.to_path_buf()))
+    load_config_from_str_with_checks(source, &crate::config::validate::DaemonPlaceholderChecker)
+        .map_err(|error| error.into_expected_error(origin.to_path_buf()))
 }

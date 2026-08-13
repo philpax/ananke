@@ -211,7 +211,6 @@ pub struct SamplingConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
     use crate::parse::{RawService, parse_toml};
 
@@ -232,7 +231,7 @@ cache_idle_slots = false
 metrics = true
 slots = true
 "#;
-        let cfg = parse_toml(toml, Path::new("/tmp/c.toml")).unwrap();
+        let cfg = parse_toml(toml).unwrap();
         let RawService::LlamaCpp(lc) = &cfg.services[0] else {
             panic!("expected LlamaCpp variant");
         };
