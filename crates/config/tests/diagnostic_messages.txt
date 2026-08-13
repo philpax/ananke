@@ -1,0 +1,36 @@
+000|field_missing|Some("port")|[]|service a: port: invalid value `<missing>` (expected a public port)
+001|field_missing|Some("name")|[]|service[0]: name: invalid value `<missing>` (expected a service name)
+001|merge_constraint|None|[]|service without a name during migrate_from resolution
+001|field_missing|Some("name")|[]|service[0]: name: invalid value `<missing>` (expected a service name)
+002|template_constraint|None|["model"]|service a: template llama-cpp requires `model`
+003|template_constraint|None|["numa"]|service a: numa `x` is invalid (expected "distribute", "isolate", "numactl")
+004|template_constraint|None|["expert_offload"]|service a: expert_offload `x` is invalid (expected "off", "auto", or an integer layer count)
+005|template_constraint|None|["devices.split"]|service a: unknown devices.split `x` (expected "layer", "row", "tensor")
+006|template_constraint|None|["lifecycle"]|service a: unknown lifecycle `x`
+007|template_constraint|None|["modality"]|service a: unknown modality `x` (valid: `chat`, `embedding`)
+008|template_constraint|None|["lifecycle"]|service a: lifecycle `oneshot` is invalid in a [[service]] block (API-only)
+009|template_constraint|None|["draft_model", "spec_type"]|service a: draft_model requires spec_type to be set
+010|template_constraint|None|["launcher"]|service a: launcher is present but empty
+011|template_constraint|None|["auto_restart.spec_collapse"]|service a: auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)
+012|template_constraint|None|["auto_restart.periodic"]|service a: auto_restart.periodic = true needs an interval; write `periodic = { interval = "6h" }`
+013|template_constraint|None|["idle_timeout"]|service a: unrecognised duration: zzz
+014|template_constraint|None|["command"]|service a: command is empty
+015|template_constraint|None|["allocation.mode"]|service a: command template requires allocation.mode (static|dynamic)
+016|template_constraint|None|["allocation.mode"]|service a: allocation.mode=dynamic requires min_reserve_gb
+017|template_constraint|None|["allocation.mode"]|service a: max_reserve_gb must be > min_reserve_gb
+018|template_constraint|None|["allocation.mode"]|service a: unknown allocation.mode `zzz`
+019|tracking_constraint|Some("tracking.cgroup_parent")|[]|service a: tracking.cgroup_parent must be an absolute cgroup v2 path starting with `/` (got `rel`)
+020|tracking_constraint|Some("tracking.cgroup_parent")|[]|service a: tracking.cgroup_parent may only contain alphanumeric, `.`, `_`, `/`, and `-` characters (got `/a b!`)
+021|service_name_duplicate|Some("name")|[]|service a: duplicate service name `a`
+021|service_name_duplicate|Some("name")|[]|service a: duplicate service name `a`
+022|service_port_duplicate|Some("port")|[]|service b: duplicate service port 1
+023|merge_constraint|None|[]|service a extends nope: parent does not exist
+024|private_port_range_invalid|Some("daemon.private_port_end")|[]|daemon.private_port_end must exceed daemon.private_port_start (got 60000..=50000)
+025|value_invalid|None|["daemon.management_listen", "daemon.allow_external_management"]|daemon.management_listen is non-loopback but daemon.allow_external_management is false; the management API has no authentication
+026|duration_invalid|Some("daemon.shutdown_timeout")|[]|daemon.shutdown_timeout: invalid value `zzz` (expected unrecognised duration: zzz)
+027|value_invalid|Some("daemon.management_listen")|[]|daemon.management_listen: invalid value `nope` (expected invalid socket address syntax)
+028|parse|None|[]|parse error: TOML parse error at line 1, column 6\n  |\n1 | this is not toml [[[\n  |      ^\nexpected `.`, `=`\n
+029|template_constraint|None|["devices.placement", "n_gpu_layers"]|service a: devices.placement=cpu-only with n_gpu_layers=40 is invalid
+030|template_constraint|None|["devices.placement"]|service a: unknown placement `zzz`
+031|template_constraint|None|["devices.placement_override"]|service a: devices.placement_override is empty
+032|template_constraint|None|["devices.split"]|service a: devices.split=`tensor` requires placement=gpu-only (tensor/row split cannot spill to CPU)
