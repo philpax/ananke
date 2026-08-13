@@ -6,9 +6,7 @@ mod common;
 use ananke::api::management::router;
 use ananke_api::config::{
     ConfigResponse,
-    validate::{
-        ConfigValidateRequest, ConfigValidateResponse, ValidationContext, ValidationErrorCode,
-    },
+    validate::{ConfigValidateRequest, ConfigValidateResponse, ValidationErrorCode},
 };
 use axum::{
     body::{Body, to_bytes},
@@ -86,7 +84,6 @@ async fn post_validate_returns_parser_span() {
     let error = &parsed.errors[0];
     assert_eq!(error.code, ValidationErrorCode::Parse);
     assert!(error.location.is_some());
-    assert!(matches!(error.context, ValidationContext::Parse { .. }));
     h.cleanup().await;
 }
 

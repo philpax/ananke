@@ -74,18 +74,6 @@ pub enum PlaceholderError {
     SplatInsideArg,
 }
 
-impl PlaceholderError {
-    /// Stable category used by the wire adapter.
-    pub fn category(&self) -> &'static str {
-        match self {
-            Self::ReserveMbOnDynamic => "reserve_mb_on_dynamic",
-            Self::ReserveMbMultiDevice => "reserve_mb_multi_device",
-            Self::UnknownPlaceholder(_) => "unknown_placeholder",
-            Self::SplatInsideArg => "splat_inside_arg",
-        }
-    }
-}
-
 impl fmt::Display for PlaceholderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

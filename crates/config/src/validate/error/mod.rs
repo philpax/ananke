@@ -12,9 +12,7 @@ mod report;
 
 use std::fmt;
 
-use ananke_api::config::validate::{
-    ValidationContext, ValidationError, ValidationErrorCode, ValidationLocation,
-};
+use ananke_api::config::validate::{ValidationError, ValidationErrorCode, ValidationLocation};
 pub use detail::{DurationParseError, MergeReason, PlaceholderError, ValueDiagnosticDetail};
 pub use location::{DiagnosticLocation, byte_offset_to_line_column};
 pub use report::{ConfigDiagnosticReport, ConfigPipelineError};
@@ -286,102 +284,6 @@ impl ConfigDiagnostic {
         }
     }
 
-    /// Derive the wire-shaped context for a boundary adapter.
-    pub fn context(&self) -> ValidationContext {
-        match &*self.kind {
-            ConfigDiagnosticKind::Parse { parser_message } => ValidationContext::Parse {
-                parser_message: parser_message.clone(),
-            },
-            ConfigDiagnosticKind::Merge {
-                service,
-                index,
-                parent,
-                reason,
-            } => ValidationContext::Merge {
-                service: service.clone(),
-                index: *index,
-                parent: parent.clone(),
-                reason: reason.to_string(),
-            },
-            ConfigDiagnosticKind::Field {
-                field,
-                offending,
-                expected,
-                ..
-            } => ValidationContext::Field {
-                field: field.clone(),
-                offending: offending.clone(),
-                expected: expected.clone(),
-            },
-            ConfigDiagnosticKind::Value {
-                field,
-                offending,
-                expected,
-                ..
-            } => ValidationContext::Value {
-                field: field.clone(),
-                offending: offending.clone(),
-                expected: expected.clone(),
-            },
-            ConfigDiagnosticKind::Count {
-                field,
-                got,
-                expected,
-                ..
-            } => ValidationContext::Count {
-                field: field.clone(),
-                got: *got,
-                expected: *expected,
-            },
-            ConfigDiagnosticKind::Index {
-                field,
-                index,
-                value,
-                expected,
-                ..
-            } => ValidationContext::Index {
-                field: field.clone(),
-                index: *index,
-                value: value.clone(),
-                expected: expected.clone(),
-            },
-            ConfigDiagnosticKind::Fields {
-                fields,
-                service,
-                message,
-                ..
-            } => ValidationContext::Fields {
-                fields: fields.clone(),
-                service: service.clone(),
-                reason: message.clone(),
-            },
-            ConfigDiagnosticKind::Placeholder {
-                service,
-                field,
-                argv_index,
-                argument,
-                error,
-                ..
-            } => ValidationContext::Placeholder {
-                service: service.clone(),
-                field: field.clone(),
-                argv_index: *argv_index,
-                argument: argument.clone(),
-                category: error.category().to_string(),
-            },
-            ConfigDiagnosticKind::Service {
-                service,
-                index,
-                field,
-                ..
-            } => ValidationContext::Service {
-                service: service.clone(),
-                index: *index,
-                field: field.clone(),
-            },
-        }
-    }
-
     /// Return the field path, when the diagnostic has one.
     pub fn path(&self) -> Option<&str> {
         match &*self.kind {
@@ -451,7 +353,6 @@ impl From<ConfigDiagnostic> for ValidationError {
             path: diagnostic.path().map(str::to_owned),
             service: diagnostic.service_name().map(str::to_owned),
             service_index: diagnostic.source_index,
-            context: diagnostic.context(),
             location: diagnostic
                 .location
                 .as_ref()

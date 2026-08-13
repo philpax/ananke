@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// `POST /api/config/validate` request body.
@@ -136,259 +136,6 @@ pub struct ValidationLocation {
     pub column: u32,
 }
 
-/// Structured context for rendering and machine consumers.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, ToSchema)]
-#[serde(tag = "kind", content = "data")]
-pub enum ValidationContext {
-    /// Service identity and optional field context.
-    Service {
-        /// Service name.
-        service: Option<String>,
-        /// Original source index.
-        index: Option<usize>,
-        /// Field path.
-        field: Option<String>,
-    },
-    /// Field context with optional values.
-    Field {
-        /// Field path.
-        field: String,
-        /// Offending value.
-        offending: Option<String>,
-        /// Expected value.
-        expected: Option<String>,
-    },
-    /// A concrete invalid value.
-    Value {
-        /// Field path.
-        field: String,
-        /// Offending value.
-        offending: String,
-        /// Expected value.
-        expected: Option<String>,
-    },
-    /// A count mismatch.
-    Count {
-        /// Field path.
-        field: String,
-        /// Actual count.
-        got: usize,
-        /// Expected count.
-        expected: usize,
-    },
-    /// An invalid indexed value.
-    Index {
-        /// Field path.
-        field: String,
-        /// Index into the collection.
-        index: usize,
-        /// Offending value.
-        value: String,
-        /// Expected value.
-        expected: Option<String>,
-    },
-    /// A multi-field constraint.
-    Fields {
-        /// Field paths.
-        fields: Vec<String>,
-        /// Service name.
-        service: Option<String>,
-        /// Constraint reason.
-        reason: String,
-    },
-    /// Placeholder substitution context.
-    Placeholder {
-        /// Service name.
-        service: Option<String>,
-        /// Field path.
-        field: String,
-        /// Argument index.
-        argv_index: Option<usize>,
-        /// Argument text.
-        argument: Option<String>,
-        /// Substitution category.
-        category: String,
-    },
-    /// Merge or inheritance context.
-    Merge {
-        /// Service name.
-        service: Option<String>,
-        /// Original source index.
-        index: Option<usize>,
-        /// Parent service.
-        parent: Option<String>,
-        /// Merge reason.
-        reason: String,
-    },
-    /// Parser context.
-    Parse {
-        /// Original parser message.
-        parser_message: String,
-    },
-    /// Forward-compatible context payload.
-    Other {
-        /// Opaque future payload.
-        data: serde_json::Value,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", content = "data")]
-enum KnownValidationContext {
-    Service {
-        service: Option<String>,
-        index: Option<usize>,
-        field: Option<String>,
-    },
-    Field {
-        field: String,
-        offending: Option<String>,
-        expected: Option<String>,
-    },
-    Value {
-        field: String,
-        offending: String,
-        expected: Option<String>,
-    },
-    Count {
-        field: String,
-        got: usize,
-        expected: usize,
-    },
-    Index {
-        field: String,
-        index: usize,
-        value: String,
-        expected: Option<String>,
-    },
-    Fields {
-        fields: Vec<String>,
-        service: Option<String>,
-        reason: String,
-    },
-    Placeholder {
-        service: Option<String>,
-        field: String,
-        argv_index: Option<usize>,
-        argument: Option<String>,
-        category: String,
-    },
-    Merge {
-        service: Option<String>,
-        index: Option<usize>,
-        parent: Option<String>,
-        reason: String,
-    },
-    Parse {
-        parser_message: String,
-    },
-    Other {
-        data: serde_json::Value,
-    },
-}
-
-impl<'de> Deserialize<'de> for ValidationContext {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let kind = value.get("kind").and_then(serde_json::Value::as_str);
-        match kind {
-            Some("Service") | Some("Field") | Some("Value") | Some("Count") | Some("Index")
-            | Some("Fields") | Some("Placeholder") | Some("Merge") | Some("Parse")
-            | Some("Other") => match serde_json::from_value(value).map_err(D::Error::custom)? {
-                KnownValidationContext::Service {
-                    service,
-                    index,
-                    field,
-                } => Ok(Self::Service {
-                    service,
-                    index,
-                    field,
-                }),
-                KnownValidationContext::Field {
-                    field,
-                    offending,
-                    expected,
-                } => Ok(Self::Field {
-                    field,
-                    offending,
-                    expected,
-                }),
-                KnownValidationContext::Value {
-                    field,
-                    offending,
-                    expected,
-                } => Ok(Self::Value {
-                    field,
-                    offending,
-                    expected,
-                }),
-                KnownValidationContext::Count {
-                    field,
-                    got,
-                    expected,
-                } => Ok(Self::Count {
-                    field,
-                    got,
-                    expected,
-                }),
-                KnownValidationContext::Index {
-                    field,
-                    index,
-                    value,
-                    expected,
-                } => Ok(Self::Index {
-                    field,
-                    index,
-                    value,
-                    expected,
-                }),
-                KnownValidationContext::Fields {
-                    fields,
-                    service,
-                    reason,
-                } => Ok(Self::Fields {
-                    fields,
-                    service,
-                    reason,
-                }),
-                KnownValidationContext::Placeholder {
-                    service,
-                    field,
-                    argv_index,
-                    argument,
-                    category,
-                } => Ok(Self::Placeholder {
-                    service,
-                    field,
-                    argv_index,
-                    argument,
-                    category,
-                }),
-                KnownValidationContext::Merge {
-                    service,
-                    index,
-                    parent,
-                    reason,
-                } => Ok(Self::Merge {
-                    service,
-                    index,
-                    parent,
-                    reason,
-                }),
-                KnownValidationContext::Parse { parser_message } => {
-                    Ok(Self::Parse { parser_message })
-                }
-                KnownValidationContext::Other { data } => Ok(Self::Other { data }),
-            },
-            Some(_) => Ok(Self::Other { data: value }),
-            None => Err(D::Error::custom("validation context is missing kind")),
-        }
-    }
-}
-
 /// One structured config validation diagnostic.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct ValidationError {
@@ -405,8 +152,6 @@ pub struct ValidationError {
     /// Present even when the name is missing or invalid, so a diagnostic can
     /// always be attributed back to the block that produced it.
     pub service_index: Option<usize>,
-    /// Typed diagnostic context.
-    pub context: ValidationContext,
     /// Parser source location, when available.
     pub location: Option<ValidationLocation>,
 }
@@ -416,18 +161,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_code_and_context_are_forward_compatible() {
+    fn unknown_code_is_forward_compatible() {
         let value = serde_json::json!({
             "code": "future_code",
             "message": "future",
             "path": null,
             "service": null,
             "service_index": null,
-            "context": { "kind": "Future", "data": { "x": 1 } },
             "location": null
         });
         let error: ValidationError = serde_json::from_value(value).unwrap();
         assert_eq!(error.code, ValidationErrorCode::Other);
-        assert!(matches!(error.context, ValidationContext::Other { .. }));
     }
 }

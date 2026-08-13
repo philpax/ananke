@@ -84,9 +84,7 @@ pub async fn reload(client: &ApiClient, _json: bool) -> Result<(), ApiClientErro
 
 #[cfg(test)]
 mod tests {
-    use ananke_api::config::validate::{
-        ValidationContext, ValidationError, ValidationErrorCode, ValidationLocation,
-    };
+    use ananke_api::config::validate::{ValidationError, ValidationErrorCode, ValidationLocation};
 
     use super::*;
 
@@ -95,11 +93,6 @@ mod tests {
             code,
             message: "invalid config".into(),
             path: Some("port".into()),
-            context: ValidationContext::Value {
-                field: "port".into(),
-                offending: "0".into(),
-                expected: Some("a non-zero port".into()),
-            },
             service: Some("demo".into()),
             service_index: Some(0),
             location,
