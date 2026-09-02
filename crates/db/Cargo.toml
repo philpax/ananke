@@ -13,6 +13,7 @@ ananke-api.workspace = true
 ananke-errors.workspace = true
 ananke-time.workspace = true
 parking_lot.workspace = true
+nix.workspace = true
 rusqlite.workspace = true
 tokio.workspace = true
 tracing.workspace = true

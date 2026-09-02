@@ -57,7 +57,7 @@ pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, ExpectedE
 }
 
 pub fn incremental_vacuum(db: &Database, pages: u64) -> rusqlite::Result<()> {
-    crate::pragma::incremental_vacuum(db.path(), pages)
+    db.with_connection(|conn| crate::pragma::incremental_vacuum_connection(conn, pages))
 }
 
 pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {

@@ -1,18 +1,38 @@
-//! Side-channel for the one pragma that doesn't belong in the migration
-//! blob: `incremental_vacuum(N)` is issued by the retention loop on a
-//! fresh connection so it doesn't contend with other writers.
+//! SQLite connection and file-level policy.
 //!
-//! The file-persistent pragmas (`auto_vacuum = INCREMENTAL`,
-//! `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`)
-//! live at the top of the migration chain and are
-//! applied on every `Database::open`.
+//! Connection-local settings (`foreign_keys`, `busy_timeout`, and
+//! `synchronous`) are applied to every connection. File initialization sets
+//! `auto_vacuum` before schema creation and negotiates persistent WAL.
 
-use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::Connection;
 
-pub fn incremental_vacuum(path: &Path, pages: u64) -> rusqlite::Result<()> {
-    let conn = Connection::open(path)?;
+/// Apply settings that are local to this SQLite connection.
+pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "foreign_keys", true)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(())
+}
+
+/// Configure persistent file settings before the schema is created.
+pub fn configure_file(conn: &Connection, is_new: bool) -> rusqlite::Result<()> {
+    if is_new {
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+        if mode != 2 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+    }
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
+}
+
+pub fn incremental_vacuum_connection(conn: &Connection, pages: u64) -> rusqlite::Result<()> {
     conn.execute_batch(&format!("PRAGMA incremental_vacuum({pages})"))?;
     Ok(())
 }
