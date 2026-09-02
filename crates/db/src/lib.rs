@@ -3,6 +3,11 @@
 //! returns. Schema is applied on open via the versioned migration chain
 //! in [`migrations`], so re-opening an already-provisioned file applies
 //! only pending migrations (empty set when up to date).
+//!
+//! New files use incremental auto-vacuum. Populated legacy files retain their
+//! existing auto-vacuum mode, so retention can reclaim deleted pages only when
+//! the legacy file already uses incremental auto-vacuum. Changing that mode
+//! requires an explicit SQLite rewrite; startup does not perform one implicitly.
 
 mod container;
 mod devices;

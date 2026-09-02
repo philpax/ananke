@@ -3,6 +3,11 @@
 //! Connection-local settings (`foreign_keys`, `busy_timeout`, and
 //! `synchronous`) are applied to every connection. File initialization sets
 //! `auto_vacuum` before schema creation and negotiates persistent WAL.
+//!
+//! New files use incremental auto-vacuum. Populated legacy files preserve
+//! their existing mode, so `incremental_vacuum` does not reclaim pages from a
+//! legacy file that uses `NONE`. Enabling incremental auto-vacuum on such a
+//! file requires an explicit SQLite rewrite and is not part of startup.
 
 use std::time::Duration;
 
@@ -20,7 +25,8 @@ pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// A populated legacy database keeps its existing auto-vacuum mode because
 /// changing it requires a full SQLite rewrite. Startup never performs that
-/// rewrite implicitly.
+/// rewrite implicitly, and incremental vacuum is effective only for files
+/// whose existing mode is already incremental.
 pub fn configure_file(conn: &Connection, is_new: bool) -> rusqlite::Result<()> {
     let auto_vacuum: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
     if is_new {
