@@ -16,6 +16,7 @@
 //!    recorded it as applied.
 
 use rusqlite::{Connection, params};
+use sha2::{Digest, Sha256};
 use tracing::info;
 
 /// One immutable schema change. Applied exactly once per database.
@@ -149,14 +150,14 @@ pub fn apply_pending_to(
         .collect::<rusqlite::Result<Vec<_>>>()?
         .iter()
         .any(|name| name == "digest");
-    if !has_digest {
-        conn.execute_batch("ALTER TABLE schema_version ADD COLUMN digest TEXT")?;
-    }
-
-    let history: Vec<(u32, String, String)> = {
+    let history: Vec<(u32, String, Option<String>)> = if has_digest {
         let mut stmt =
             conn.prepare("SELECT version, name, digest FROM schema_version ORDER BY version")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    } else {
+        let mut stmt = conn.prepare("SELECT version, name FROM schema_version ORDER BY version")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, None)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     for (index, (version, name, digest)) in history.iter().enumerate() {
@@ -166,13 +167,20 @@ pub fn apply_pending_to(
         if *version != migration.version || name != migration.name {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        if !digest.is_empty() && digest != migration.digest {
+        let expected_digest = format!("{:x}", Sha256::digest(migration.sql.as_bytes()));
+        if expected_digest != migration.digest {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if let Some(digest) = digest
+            && !digest.is_empty()
+            && digest != migration.digest
+        {
             return Err(rusqlite::Error::InvalidQuery);
         }
     }
 
     let applied: std::collections::HashMap<u32, ()> =
-        history.into_iter().map(|(v, _, _)| (v, ())).collect();
+        history.iter().map(|(v, _, _)| (*v, ())).collect();
     let mut applied_now = Vec::new();
     for migration in MIGRATIONS.iter().filter(|m| m.version <= target) {
         if applied.contains_key(&migration.version) {
@@ -180,6 +188,9 @@ pub fn apply_pending_to(
         }
         let tx = conn.transaction()?;
         tx.execute_batch(migration.sql)?;
+        if !has_digest && migration.version == 12 {
+            tx.execute_batch("ALTER TABLE schema_version ADD COLUMN digest TEXT")?;
+        }
         tx.execute(
             "INSERT INTO schema_version(version, name, applied_at, digest) VALUES (?1, ?2, ?3, ?4)",
             params![migration.version, migration.name, now_ms, migration.digest],
@@ -346,6 +357,7 @@ mod tests {
                 "service_id,timestamp_ms",
             ),
             ("request_metrics", "request_metrics_run", "run_id"),
+            ("device_samples", "device_samples_ts", "device,timestamp_ms"),
             (
                 "service_restarts",
                 "idx_service_restarts_service",

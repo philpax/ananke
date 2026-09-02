@@ -17,13 +17,20 @@ pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Configure persistent file settings before the schema is created.
+///
+/// A populated legacy database keeps its existing auto-vacuum mode because
+/// changing it requires a full SQLite rewrite. Startup never performs that
+/// rewrite implicitly.
 pub fn configure_file(conn: &Connection, is_new: bool) -> rusqlite::Result<()> {
+    let auto_vacuum: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
     if is_new {
         conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
-        let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
-        if mode != 2 {
+        let configured: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+        if configured != 2 {
             return Err(rusqlite::Error::InvalidQuery);
         }
+    } else if !(0..=2).contains(&auto_vacuum) {
+        return Err(rusqlite::Error::InvalidQuery);
     }
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
     if !mode.eq_ignore_ascii_case("wal") {

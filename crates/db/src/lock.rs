@@ -17,12 +17,13 @@ pub(crate) struct DatabaseLock {
 
 impl DatabaseLock {
     pub(crate) fn acquire(database: &Path) -> io::Result<Self> {
+        let lock_path = PathBuf::from(format!("{}.lock", database.display()));
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
-            .open(database)?;
+            .open(&lock_path)?;
         let file = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::WouldBlock,
