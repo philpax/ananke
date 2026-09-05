@@ -85,14 +85,10 @@ impl Database {
         .map_err(|e| self.db_err(e))
     }
 
-    /// All services without a `deleted_at`. Used by retention to iterate
-    /// live services and enforce the per-service log cap.
-    pub async fn list_live_services(&self) -> Result<Vec<Service>, ExpectedError> {
+    /// All services, including tombstones, for retention's per-service cap.
+    pub async fn list_services_for_retention(&self) -> Result<Vec<Service>, ExpectedError> {
         let conn = self.conn.lock();
-        let sql = format!(
-            "SELECT {} FROM services WHERE deleted_at IS NULL",
-            Service::COLUMNS
-        );
+        let sql = format!("SELECT {} FROM services", Service::COLUMNS);
         let mut stmt = conn.prepare(&sql).map_err(|e| self.db_err(e))?;
         let rows = stmt
             .query_map([], Service::from_row)
@@ -133,7 +129,11 @@ mod tests {
 
         let new_after = db.upsert_service("new-name", 3000).await.unwrap();
         assert_eq!(new_after, new_before);
-        let live = db.list_live_services().await.unwrap();
+        let live = db.list_services_for_retention().await.unwrap();
+        let live: Vec<_> = live
+            .into_iter()
+            .filter(|s| s.deleted_at.is_none())
+            .collect();
         let live_names: Vec<_> = live.iter().map(|s| s.name.as_str()).collect();
         assert!(live_names.contains(&"new-name"));
         assert!(!live_names.contains(&"old-name"));

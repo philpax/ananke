@@ -38,7 +38,7 @@ pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, ExpectedE
 
     // 2. Per-service row cap. For each live service, trim anything beyond
     //    the newest `MAX_ROWS_PER_SERVICE` rows.
-    let services = db.list_live_services().await?;
+    let services = db.list_services_for_retention().await?;
     for svc in services {
         deleted += db
             .trim_logs_to_cap(svc.service_id, MAX_ROWS_PER_SERVICE)
@@ -57,7 +57,7 @@ pub async fn trim_logs_once(db: &Database, now_ms: i64) -> Result<u64, ExpectedE
 }
 
 pub fn incremental_vacuum(db: &Database, pages: u64) -> rusqlite::Result<()> {
-    crate::pragma::incremental_vacuum(db.path(), pages)
+    db.with_connection(|conn| crate::pragma::incremental_vacuum_connection(conn, pages))
 }
 
 pub async fn run_loop(db: Database, mut shutdown: watch::Receiver<bool>) {

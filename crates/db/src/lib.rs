@@ -3,9 +3,16 @@
 //! returns. Schema is applied on open via the versioned migration chain
 //! in [`migrations`], so re-opening an already-provisioned file applies
 //! only pending migrations (empty set when up to date).
+//!
+//! New files use incremental auto-vacuum. Populated legacy files retain their
+//! existing auto-vacuum mode, so retention can reclaim deleted pages only when
+//! the legacy file already uses incremental auto-vacuum. Changing that mode
+//! requires an explicit SQLite rewrite; startup does not perform one implicitly.
 
 mod container;
 mod devices;
+#[cfg(target_os = "linux")]
+mod lock;
 mod metrics;
 mod metrics_query;
 mod oneshots;
@@ -39,6 +46,8 @@ use rusqlite::Connection;
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
     path: PathBuf,
+    #[cfg(target_os = "linux")]
+    _lock: Option<Arc<lock::DatabaseLock>>,
 }
 
 impl Database {
@@ -48,13 +57,37 @@ impl Database {
                 ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
             })?;
         }
-        let mut conn = Connection::open(path)
-            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
+        let normalized = {
+            #[cfg(target_os = "linux")]
+            {
+                lock::normalize_path(path, false).map_err(|e| {
+                    ExpectedError::database_open_failed(path.to_path_buf(), e.to_string())
+                })?
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                path.to_path_buf()
+            }
+        };
+        let is_new =
+            !normalized.exists() || normalized.metadata().map(|m| m.len() == 0).unwrap_or(true);
+        #[cfg(target_os = "linux")]
+        let lock =
+            Arc::new(lock::DatabaseLock::acquire(&normalized).map_err(|e| {
+                ExpectedError::database_open_failed(normalized.clone(), e.to_string())
+            })?);
+        let mut conn = Connection::open(&normalized)
+            .map_err(|e| ExpectedError::database_open_failed(normalized.clone(), e.to_string()))?;
+        pragma::configure_connection(&conn)
+            .and_then(|_| pragma::configure_file(&conn, is_new))
+            .map_err(|e| ExpectedError::database_open_failed(normalized.clone(), e.to_string()))?;
         migrations::apply_pending(&mut conn, ananke_time::now_unix_ms())
-            .map_err(|e| ExpectedError::database_open_failed(path.to_path_buf(), e.to_string()))?;
+            .map_err(|e| ExpectedError::database_open_failed(normalized.clone(), e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            path: path.to_path_buf(),
+            path: normalized,
+            #[cfg(target_os = "linux")]
+            _lock: Some(lock),
         })
     }
 
@@ -64,17 +97,30 @@ impl Database {
         let mut conn = Connection::open_in_memory().map_err(|e| {
             ExpectedError::database_open_failed(PathBuf::from(":memory:"), e.to_string())
         })?;
+        pragma::configure_connection(&conn).map_err(|e| {
+            ExpectedError::database_open_failed(PathBuf::from(":memory:"), e.to_string())
+        })?;
         migrations::apply_pending(&mut conn, ananke_time::now_unix_ms()).map_err(|e| {
             ExpectedError::database_open_failed(PathBuf::from(":memory:"), e.to_string())
         })?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: PathBuf::from(":memory:"),
+            #[cfg(target_os = "linux")]
+            _lock: None,
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn with_connection<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
+        let conn = self.conn.lock();
+        f(&conn)
     }
 
     fn db_err(&self, e: rusqlite::Error) -> ExpectedError {

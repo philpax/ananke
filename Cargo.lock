@@ -181,8 +181,10 @@ dependencies = [
  "ananke-api",
  "ananke-errors",
  "ananke-time",
+ "nix",
  "parking_lot",
  "rusqlite",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
@@ -423,6 +425,7 @@ version = "0.2.0"
 dependencies = [
  "ananke-api",
  "ananke-config",
+ "ananke-errors",
  "clap",
  "comfy-table",
  "crossterm 0.29.0",
