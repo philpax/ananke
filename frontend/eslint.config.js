@@ -1,23 +1,28 @@
 import js from "@eslint/js";
 import globals from "globals";
-import reactHooks from "eslint-plugin-react-hooks";
-import reactRefresh from "eslint-plugin-react-refresh";
+import hooks from "eslint-plugin-react-hooks";
+import tailwind from "eslint-plugin-better-tailwindcss";
 import tseslint from "typescript-eslint";
-import { defineConfig, globalIgnores } from "eslint/config";
 
-export default defineConfig([
-  globalIgnores(["dist"]),
+export default tseslint.config(
   {
-    files: ["**/*.{ts,tsx}"],
-    extends: [
-      js.configs.recommended,
-      tseslint.configs.recommended,
-      reactHooks.configs.flat.recommended,
-      reactRefresh.configs.vite,
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "test-results/**",
+      "playwright-report/**",
+      "src/api/types.ts",
     ],
-    languageOptions: {
-      ecmaVersion: 2020,
-      globals: globals.browser,
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+    plugins: { "react-hooks": hooks, "better-tailwindcss": tailwind },
+    settings: { "better-tailwindcss": { entryPoint: "src/index.css" } },
+    rules: {
+      ...hooks.configs.recommended.rules,
+      ...tailwind.configs.recommended.rules,
     },
   },
-]);
+);

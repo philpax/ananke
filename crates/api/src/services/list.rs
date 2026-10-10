@@ -30,6 +30,12 @@ pub struct ServiceSummary {
     pub priority: u8,
     /// Public port the proxy listens on.
     pub port: u16,
+    /// Whether the service supports the OpenAI multiplexer.
+    #[serde(default)]
+    pub openai_compat: bool,
+    /// Published service UI URL from `metadata.web_ui_url`, when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_ui_url: Option<String>,
     /// Active run id if currently running.
     pub run_id: Option<i64>,
     /// Child PID if currently running.

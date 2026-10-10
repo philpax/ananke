@@ -13,6 +13,7 @@ ananke-placement.workspace = true
 ananke-system.workspace = true
 parking_lot.workspace = true
 smol_str.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 ananke-system = { workspace = true, features = ["test-fakes"] }

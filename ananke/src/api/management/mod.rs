@@ -2,6 +2,7 @@
 //! and `/api/openapi.json`.
 
 pub mod config;
+pub mod dashboard;
 pub mod events_ws;
 pub mod handlers;
 pub mod info;
@@ -31,10 +32,15 @@ pub fn register(router: Router, state: AppState) -> Router {
         .route("/api/services/:name/disable", post(lifecycle::post_disable))
         .route("/api/services/:name/logs", get(logs::get_logs))
         .route("/api/services/:name/logs/stream", any(logs_ws::get_logs_ws))
+        .route("/api/dashboard", any(dashboard::upgrade))
         .route("/api/events", any(events_ws::get_events_ws))
         .route("/api/info", get(info::get_info))
         .with_state(state.clone());
     handlers::register(router, state.clone())
+        .merge(crate::api::openai::handlers::register(
+            Router::new(),
+            state.clone(),
+        ))
         .merge(metrics::register(Router::new(), state.clone()))
         .merge(crate::api::openapi::register(Router::new(), state.clone()))
         .merge(crate::api::prometheus::register(
@@ -48,5 +54,8 @@ pub fn register(router: Router, state: AppState) -> Router {
 pub fn router(state: AppState) -> Router {
     // Mount the embedded frontend as the last-resort fallback so `/api/*`,
     // `/v1/*`, and the WebSocket routes keep first dibs on every request.
-    crate::api::frontend::register(register(Router::new(), state))
+    let router = register(Router::new(), state);
+    #[cfg(feature = "frontend")]
+    let router = crate::api::frontend::register(router);
+    router
 }

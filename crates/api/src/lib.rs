@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 
 pub mod config;
+pub mod dashboard;
 pub mod devices;
 pub mod events;
 pub mod info;

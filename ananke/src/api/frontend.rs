@@ -1,11 +1,5 @@
-//! Embed the built dashboard (`frontend/dist/**`) into the daemon binary
-//! and serve it from the management router's fallback handler.
-//!
-//! Requests for `/api/*`, `/v1/*`, etc. hit their normal axum routes
-//! first; anything else goes through [`serve_asset`], which looks up the
-//! requested path in the embedded bundle and falls back to `index.html`
-//! so the frontend's client-side routing (if/when it grows any) still
-//! resolves.
+//! Builds the self-contained dashboard into the management listener.
+//! Native API and asset misses return 404; dashboard routes use the SPA entry.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use axum::{
@@ -31,10 +25,12 @@ async fn serve_asset(uri: Uri) -> Response {
     if let Some(file) = Assets::get(path) {
         return asset_response(path, file);
     }
-    // SPA fallback: unknown paths return index.html so the browser's
-    // address bar stays honest if/when the frontend grows client-side
-    // routing. Everything hit here is already-non-API (fallback runs
-    // after axum's routing), so we're not shadowing a real endpoint.
+    if ["api", "v1", "assets", "fonts"]
+        .iter()
+        .any(|prefix| raw == *prefix || raw.starts_with(&format!("{prefix}/")))
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     if let Some(file) = Assets::get("index.html") {
         return asset_response("index.html", file);
     }

@@ -4,7 +4,7 @@
 
 ananke is a GPU/CPU-aware model proxy daemon designed to manage multiple LLMs and other AI tools (like ComfyUI) efficiently. It provides an OpenAI-compatible API and a management CLI to orchestrate model loading, unloading, and resource allocation.
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
@@ -20,17 +20,29 @@ The easiest way to get ananke is to download a prebuilt binary from the [GitHub 
 
 ### Building from source
 
-If you'd rather build it yourself (requires `cargo` and `npm`):
+Build with stable Rust, Node.js 22.12 or newer, and npm. Both normal debug and release builds install the locked frontend dependencies, build the dashboard, and embed its assets into the daemon:
 
 ```bash
 git clone https://github.com/philpax/ananke.git
 cd ananke
-cargo build --release
+cargo build          # debug daemon with the dashboard
+cargo build --release # release daemon with the dashboard
 ```
 
-The binaries are `ananke` and `anankectl`, found in `target/release`.
+The binaries are `ananke` and `anankectl`, in `target/debug` or `target/release`. The installed daemon needs neither Node.js nor a frontend source tree at runtime. A missing JS toolchain or a failed dashboard build fails the enabled build.
 
-### Quick Start
+The `ananke` crate has a default-enabled `frontend` Cargo feature. A backend-only workspace build needs no JS tools or generated assets:
+
+```bash
+cargo build --workspace --no-default-features
+cargo build --workspace --no-default-features --features frontend # restore the UI
+```
+
+For frontend development, run `npm ci` and `npm run dev` in `frontend/`. The dev server proxies native `/api` and same-origin `/v1` requests to `http://127.0.0.1:7071`; set `ANANKE_ENDPOINT` to change that endpoint. Run `npm run lint`, `npm test -- --run`, and `npm run test:e2e` there. Install the test browser once with `npx playwright install chromium`.
+
+The dashboard is native Preact and strict TypeScript, with Tailwind CSS 4, locally bundled Work Sans and Iosevka Extended fonts, and Observable Plot 0.6.17. Generated OpenAPI types and runtime schemas share the backend contract; regenerate both with `npm run gen-types` after changing it. CI checks generated output and the browser interactions.
+
+### Quick start
 
 Create a minimal config at `~/.config/ananke/config.toml`:
 
@@ -86,9 +98,13 @@ The full configuration guide - daemon settings, device and service configuration
 
 There are two ways to manage an running daemon, both of which are layers over the management API, documented in [docs/api.md](docs/api.md).
 
-### Web Dashboard
+### Web dashboard
 
-A dashboard (pictured above) is served by the daemon at the management API's port (`http://<host>:7071`). It offers full access to ananke's state, with service monitoring, logs, metrics, and chat. This is the easiest way to see both what ananke is doing, and what it _has_ been doing.
+The dashboard is served at the management port (`http://<host>:7071`) by frontend-inclusive builds. Its five sections are Services, Chat, Events, Stats, and Config. Services starts with an explicit empty selection and shows placement, memory estimates, real history, lifecycle controls, and paginated live logs. All dashboard data, backfill, lifecycle controls, configuration edits, and streaming chat use one same-origin WebSocket with producer-pushed subscriptions and no polling. Config validates edits before saving and detects concurrent file changes.
+
+Events backfills the daemon's retained lifecycle capture and combines it with persisted automatic restarts; it labels the available capture window. General event capture retains the newest 1,024 events for the current daemon instance. See the [dashboard WebSocket protocol](docs/dashboard-websocket.md) for reconnect, history, and command semantics. Missing metrics and estimate components stay unavailable rather than becoming sample data. Temporary services remain available through the CLI and backend API.
+
+Open uses a service's HTTP proxy port. For a service published through HTTPS or another hostname, set `metadata.web_ui_url = "https://service.example/"` in its service block. Loopback-only proxy ports require a local browser or an SSH forward; use a published URL for remote dashboard access. The URL must use HTTP or HTTPS; the upstream determines whether it serves a web UI. Chat is enabled only for OpenAI-compatible chat services.
 
 ### `anankectl`
 

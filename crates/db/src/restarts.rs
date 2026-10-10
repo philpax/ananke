@@ -157,6 +157,7 @@ impl Database {
             params![row.service_id, SERVICE_RESTART_CAP],
         )
         .map_err(|e| self.db_err(e))?;
+        let _ = self.changed.send(crate::DatabaseChange::Restarts);
         Ok(())
     }
 

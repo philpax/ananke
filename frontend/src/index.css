@@ -1,207 +1,184 @@
 @import "tailwindcss";
 
-@source "./**/*.{ts,tsx}";
-
-/*
- * Design tokens for the ananke console.
- *
- * Identity: an instrument panel for an inference rig. Ananke is the
- * goddess of necessity and constraint — the daemon's whole job is
- * fitting models into a fixed VRAM budget — so the palette is a cool,
- * blue-shifted ink with a single iris accent for everything
- * interactive, and a warm brass reserved exclusively for the
- * signature allocation rail and the wordmark. Status hues stay
- * conventional (green/amber/red) so operators keep trusting them.
- *
- * Dark mode is the default (values in @theme). Light mode overrides
- * via a `.light` class on the <html> element.
- *
- * Token naming: `--color-{name}` so Tailwind generates utilities like
- * `bg-base`, `text-primary`, `border-default`, etc.
- */
-
-@theme {
-  /* Typeface roles: Plex Sans for UI prose, Plex Mono for all data. */
-  --font-sans:
-    "IBM Plex Sans Variable", ui-sans-serif, system-ui, -apple-system,
-    sans-serif;
-  --font-mono:
-    "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
-
-  /* Backgrounds — cool blue-shifted ink, not neutral zinc. */
-  --color-base: #0b0e14;
-  --color-surface: #111620;
-  --color-elevated: #1a212e;
-
-  /* Borders */
-  --color-border-default: #232b3a;
-  --color-border-strong: #333d4f;
-
-  /* Text */
-  --color-primary: #e7eaf0;
-  --color-secondary: #99a2b5;
-  --color-tertiary: #5b6477;
-
-  /* Brand + signature. `accent` is iris (interactive); `brass` is the
-   * instrument metal, reserved for the allocation rail and wordmark. */
-  --color-accent: #8b7cf8;
-  --color-brass: #c8a24a;
-
-  /* Status — kept conventional for at-a-glance trust. */
-  --color-success: #45c98a;
-  --color-warning: #e0a83c;
-  --color-danger: #ef5a5a;
-  --color-vision: #d96fb8; /* moved off purple so iris owns the brand */
-  --color-embedding: #38bdc4;
-
-  /* Shared header height for the sidebar header and every view header,
-   * so their bottom borders align on the same horizontal line. */
-  --header-height: 4rem;
-
-  /* Solid action-button fills. One perceptual family — uniform OKLCH
-   * lightness (0.48) so a row of action buttons reads as siblings under
-   * white ink, dark enough to clear 4.5:1 against it. Hues are spread
-   * around the wheel (skipping the yellow arc, which muddies and loses
-   * white-text contrast) so each button has its own identity rather
-   * than crowding the blue-purple range. Named by hue, not by meaning:
-   * pick whichever colour sits best in a given button group. Defined
-   * once rather than per-theme — a saturated fill with white ink sits
-   * the same on the dark and light page. `slate` is the deliberately
-   * neutral member, reserved for buttons with no meaning of their own. */
-  --color-action-slate: oklch(0.48 0.035 255);
-  --color-action-red: oklch(0.48 0.18 25);
-  --color-action-orange: oklch(0.48 0.13 55);
-  --color-action-green: oklch(0.48 0.15 150);
-  --color-action-cyan: oklch(0.48 0.1 205);
-  --color-action-blue: oklch(0.48 0.14 255);
-  --color-action-iris: oklch(0.48 0.15 295);
-  --color-action-magenta: oklch(0.48 0.16 335);
+@font-face {
+  font-family: "Work Sans";
+  src: url("/fonts/WorkSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Work Sans";
+  src: url("/fonts/WorkSans-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Work Sans";
+  src: url("/fonts/WorkSans-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Work Sans";
+  src: url("/fonts/WorkSans-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: Iosevka;
+  src: url("/fonts/Iosevka-Extended.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: Iosevka;
+  src: url("/fonts/Iosevka-ExtendedMedium.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: Iosevka;
+  src: url("/fonts/Iosevka-ExtendedSemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: Iosevka;
+  src: url("/fonts/Iosevka-ExtendedBold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
 }
 
-/* Light mode overrides. Applied when <html> has class="light". */
-.light {
-  --color-base: #fbfbfd;
-  --color-surface: #ffffff;
-  --color-elevated: #f1f3f7;
+:root {
+  --theme-h: 269;
+  --theme-s: 58%;
+  --tone-canvas: #101114;
+  --tone-nav: #17181c;
+  --tone-header: #17181c;
+  --tone-panel: #17181c;
+  --tone-surface: #17181c;
+  --tone-raised: #202126;
+  --tone-hover: #292a31;
+  --tone-selected: #322641;
+  --tone-selected-soft: #272230;
+  --line-subtle: #292a31;
+  --line: #35363e;
+  --line-strong: #454650;
+  --line-hover: hsl(var(--theme-h) 17% 40%);
+  --accent-strong: hsl(var(--theme-h) var(--theme-s) 48%);
+  --accent-data: hsl(var(--theme-h) 64% 63%);
+  --accent: hsl(var(--theme-h) 60% 70%);
+  --accent-hover: hsl(var(--theme-h) 61% 81%);
+  --accent-text: hsl(var(--theme-h) 55% 87%);
+  --text: hsl(var(--theme-h) 20% 96%);
+  --text-on-accent: hsl(var(--theme-h) 25% 99%);
+  --text-body: hsl(var(--theme-h) 13% 84%);
+  --text-soft: hsl(var(--theme-h) 13% 77%);
+  --text-muted: hsl(var(--theme-h) 11% 63%);
+  --text-faint: hsl(var(--theme-h) 10% 48%);
+  --role-user-surface: hsl(var(--theme-h) 29% 13%);
+  --role-user-line: hsl(var(--theme-h) 25% 36%);
+  --role-user-line-soft: hsl(var(--theme-h) 24% 29%);
+  --role-model-surface: hsl(calc(var(--theme-h) - 55) 30% 11%);
+  --role-model-raised: hsl(calc(var(--theme-h) - 55) 31% 15%);
+  --role-model-line: hsl(calc(var(--theme-h) - 55) 25% 27%);
+  --role-model-accent: hsl(calc(var(--theme-h) - 55) 38% 54%);
+  --status-ok: #7ee08c;
+  --status-ok-line: #2f6b3a;
+  --status-ok-bg: #12251a;
+  --status-danger: #ff9a8d;
+  --status-danger-line: #8a4038;
+  --status-danger-bg: #241512;
+  --status-warn: #f5c451;
+  --status-warn-line: #7a5a17;
+  --status-warn-bg: #241d0f;
+}
 
-  --color-border-default: #e3e7ef;
-  --color-border-strong: #cdd3df;
-
-  --color-primary: #161b26;
-  --color-secondary: #5b6477;
-  --color-tertiary: #99a2b5;
-
-  --color-accent: #6f5fe6;
-  --color-brass: #a9842f;
-
-  --color-success: #1f9d6b;
-  --color-warning: #c4881f;
-  --color-danger: #d6453f;
-  --color-vision: #c14a98;
-  --color-embedding: #1f9aa1;
+@theme inline {
+  --text-xs--line-height: normal;
+  --text-sm--line-height: normal;
+  --text-base--line-height: normal;
+  --text-xl--line-height: normal;
+  --font-sans: "Work Sans", system-ui, sans-serif;
+  --font-mono: Iosevka, monospace;
+  --color-canvas: var(--tone-canvas);
+  --color-surface: var(--tone-surface);
+  --color-raised: var(--tone-raised);
+  --color-hover: var(--tone-hover);
+  --color-selected: var(--tone-selected);
+  --color-selected-soft: var(--tone-selected-soft);
+  --color-line: var(--line);
+  --color-line-subtle: var(--line-subtle);
+  --color-line-strong: var(--line-strong);
+  --color-line-hover: var(--line-hover);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-data: var(--accent-data);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-ink: var(--text);
+  --color-body: var(--text-body);
+  --color-soft: var(--text-soft);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-ok: var(--status-ok);
+  --color-ok-line: var(--status-ok-line);
+  --color-ok-bg: var(--status-ok-bg);
+  --color-danger: var(--status-danger);
+  --color-danger-line: var(--status-danger-line);
+  --color-danger-bg: var(--status-danger-bg);
+  --color-warn: var(--status-warn);
+  --color-warn-line: var(--status-warn-line);
+  --color-warn-bg: var(--status-warn-bg);
+  --color-user: var(--role-user-surface);
+  --color-user-line: var(--role-user-line);
+  --color-user-line-soft: var(--role-user-line-soft);
+  --color-model: var(--role-model-surface);
+  --color-model-raised: var(--role-model-raised);
+  --color-model-line: var(--role-model-line);
+  --color-model-accent: var(--role-model-accent);
 }
 
 @layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: clip;
+  }
   body {
+    margin: 0;
+    background: var(--tone-canvas);
+    color: var(--text);
     font-family: var(--font-sans);
-    background-color: var(--color-base);
-    color: var(--color-primary);
-    /* Plex Sans benefits from a touch of optical weight on dark ink. */
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-    /* Mobile: disable double-tap-to-zoom and the 300ms click delay while
-     * still allowing pinch-zoom for accessibility. */
+    font-size: 14px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  button,
+  a {
     touch-action: manipulation;
-    /* Prevent scroll chaining from body to browser chrome (iOS bounce). */
-    overscroll-behavior: none;
-    /* Remove the gray tap highlight on iOS. */
-    -webkit-tap-highlight-color: transparent;
   }
-
-  /* iOS Safari auto-zooms inputs with font size below 16px. Force 16px on
-   * small screens only so every input (logs search, oneshots form, chat
-   * textarea, datetime pickers, etc.) is covered without per-input
-   * overrides. Desktop retains the Tailwind text-xs/text-sm sizes. */
-  @media (max-width: 767px) {
-    input[type="text"],
-    input[type="number"],
-    input[type="search"],
-    input[type="datetime-local"],
-    input[type="url"],
-    input[type="email"],
-    textarea,
-    select {
-      font-size: 16px;
-    }
-  }
-
-  /* Tabular figures everywhere mono is used: numbers in stat columns
-   * and bars line up vertically when digits don't reflow. */
-  .font-mono {
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: "zero" 1;
-  }
-
-  /* Visible keyboard focus, tuned to the iris accent. */
   :focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
-    border-radius: 2px;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
-
-  /* Respect reduced-motion: collapse transitions and the spinner. */
-  @media (prefers-reduced-motion: reduce) {
-    *,
-    ::before,
-    ::after {
-      animation-duration: 0.001ms !important;
-      animation-iteration-count: 1 !important;
-      transition-duration: 0.001ms !important;
-    }
+  a {
+    color: var(--accent);
   }
-}
-
-@layer components {
-  /*
-   * Eyebrow: the structural device. Tracked-out mono capitals mark
-   * every section and panel header, echoing an instrument's engraved
-   * labels. Expressible as utilities but centralised here because it
-   * recurs on every panel and view header.
-   */
-  .eyebrow {
-    font-family: var(--font-mono);
-    font-size: 0.6875rem;
-    line-height: 1rem;
-    font-weight: 500;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--color-tertiary);
+  button:not(:disabled),
+  summary {
+    cursor: pointer;
   }
-}
-
-/*
- * Scrollbar styling. Thin and unobtrusive, matching the surface so the
- * dense log/feed views don't sprout heavy chrome.
- */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-elevated) transparent;
-}
-
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background-color: var(--color-elevated);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-border-strong);
+  button:disabled {
+    cursor: not-allowed;
+  }
 }

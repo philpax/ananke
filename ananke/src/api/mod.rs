@@ -2,6 +2,7 @@
 //! schema endpoint, and the per-service reverse proxy.
 
 pub mod errors;
+#[cfg(feature = "frontend")]
 pub mod frontend;
 pub mod management;
 pub mod openai;

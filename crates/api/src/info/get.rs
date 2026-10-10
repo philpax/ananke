@@ -10,4 +10,10 @@ pub struct DaemonInfoResponse {
     pub openai_listen: String,
     /// The management API listen address (e.g. `"0.0.0.0:7071"`).
     pub management_listen: String,
+    /// Milliseconds since this daemon instance started.
+    #[serde(default)]
+    pub uptime_ms: u64,
+    /// Path of the active configuration file.
+    #[serde(default)]
+    pub config_path: String,
 }

@@ -21,10 +21,11 @@
 
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use utoipa::ToSchema;
 
 /// One `data:` chunk of a streamed completion, or a whole non-streamed
 /// response body.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct ChatCompletionChunk {
     /// Absent on chunks that carry only `usage`.
     #[serde(default, deserialize_with = "lenient")]
@@ -57,7 +58,7 @@ impl ChatCompletionChunk {
 
 /// One completion candidate. Streaming responses fill `delta`,
 /// non-streaming ones fill `message`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct Choice {
     /// Set on a streamed chunk.
     #[serde(default, deserialize_with = "lenient")]
@@ -68,7 +69,7 @@ pub struct Choice {
 }
 
 /// The text of a choice, whether incremental or complete.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct MessageBody {
     /// The answer text itself. `None` when the engine sent structured
     /// content parts rather than a plain string — ananke has no use for
@@ -101,7 +102,7 @@ impl MessageBody {
 /// Token counts. Emitted in the final chunk of a stream when the client
 /// asked for `stream_options.include_usage`, and always on a
 /// non-streamed body.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct Usage {
     /// Prompt tokens billed, cached prefix included.
     #[serde(default, deserialize_with = "lenient")]
@@ -113,7 +114,7 @@ pub struct Usage {
 
 /// llama.cpp's engine-reported phase timings, which sit next to `usage`.
 /// Absent for engines that do not emit them.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct Timings {
     /// Prefill duration, in floating-point milliseconds.
     #[serde(default, deserialize_with = "lenient")]

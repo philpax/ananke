@@ -39,6 +39,8 @@ pub struct EchoState {
     /// emits no token. Used to exercise the time-to-first-token stall
     /// watchdog.
     pub hang: Arc<AtomicBool>,
+    /// Optional fragmented chat stream, including byte splits within UTF-8 characters.
+    pub chat_stream: Arc<Mutex<Option<Vec<Bytes>>>>,
     /// When set, `/metrics` serves a llama.cpp-style Prometheus body whose
     /// progress counters read `metrics_counter`. Tests drive the counter to
     /// simulate an advancing (healthy) or flat (wedged) child for the
@@ -186,6 +188,18 @@ async fn handle(
                     Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
                 >())
                 .boxed();
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/event-stream")
+                    .body(body)
+                    .unwrap());
+            }
+            if let Some(chunks) = state.chat_stream.lock().clone() {
+                let body =
+                    StreamBody::new(futures::stream::iter(chunks.into_iter().map(|bytes| {
+                        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(Frame::data(bytes))
+                    })))
+                    .boxed();
                 return Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("content-type", "text/event-stream")

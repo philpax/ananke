@@ -106,10 +106,10 @@ fn dump_openapi(repo: &Path) -> Result<Value, Error> {
             manifest.to_str().unwrap(),
             "--package",
             "ananke",
+            "--no-default-features",
             "--example",
             "dump-openapi",
         ])
-        .env("ANANKE_SKIP_FRONTEND_BUILD", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

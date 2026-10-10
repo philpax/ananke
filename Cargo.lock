@@ -277,6 +277,7 @@ dependencies = [
  "ananke-system",
  "parking_lot",
  "smol_str",
+ "tokio",
 ]
 
 [[package]]

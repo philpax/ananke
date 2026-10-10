@@ -37,6 +37,7 @@ pub use metrics_query::MetricBucket;
 use parking_lot::Mutex;
 pub use restarts::SpecAcceptance;
 use rusqlite::Connection;
+use tokio::sync::broadcast;
 
 /// Cloneable database handle. All queries go through the shared
 /// `Connection` behind a `parking_lot::Mutex`. Lock durations stay in
@@ -44,10 +45,22 @@ use rusqlite::Connection;
 /// nothing holds the lock across `.await` points.
 #[derive(Clone)]
 pub struct Database {
+    changed: broadcast::Sender<DatabaseChange>,
     conn: Arc<Mutex<Connection>>,
     path: PathBuf,
     #[cfg(target_os = "linux")]
     _lock: Option<Arc<lock::DatabaseLock>>,
+}
+
+/// A committed change to a historical dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatabaseChange {
+    /// A request finished and its metrics were persisted.
+    Metrics,
+    /// The device sampler persisted a measurement.
+    Samples,
+    /// An automatic restart record was persisted.
+    Restarts,
 }
 
 impl Database {
@@ -85,6 +98,7 @@ impl Database {
             .map_err(|e| ExpectedError::database_open_failed(normalized.clone(), e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            changed: broadcast::channel(256).0,
             path: normalized,
             #[cfg(target_os = "linux")]
             _lock: Some(lock),
@@ -105,10 +119,16 @@ impl Database {
         })?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            changed: broadcast::channel(256).0,
             path: PathBuf::from(":memory:"),
             #[cfg(target_os = "linux")]
             _lock: None,
         })
+    }
+
+    /// Subscribe to successful writes that affect dashboard history.
+    pub fn subscribe(&self) -> broadcast::Receiver<DatabaseChange> {
+        self.changed.subscribe()
     }
 
     pub fn path(&self) -> &Path {

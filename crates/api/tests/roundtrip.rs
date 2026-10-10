@@ -37,6 +37,8 @@ fn service_summary_roundtrips() {
         lifecycle: "persistent".into(),
         priority: 50,
         port: 11435,
+        openai_compat: true,
+        web_ui_url: Some("https://models.example/demo/".into()),
         run_id: Some(1),
         pid: Some(1234),
         inflight_count: 0,

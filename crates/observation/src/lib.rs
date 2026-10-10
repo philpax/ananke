@@ -9,19 +9,72 @@
 
 mod observation;
 
-use std::sync::Arc;
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 pub use ananke_placement::devices::DeviceSnapshot;
 pub use observation::{ObservationTable, read_rss};
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::watch;
 
-/// Atomically-replaced snapshot of the current device state, shared with
-/// the allocator, the management API, and the device-sample db writer.
-/// Readers never block the sampler; the sampler replaces the whole
-/// snapshot in one write.
-pub type SharedSnapshot = Arc<RwLock<DeviceSnapshot>>;
+/// Atomically replaced device measurements with producer-driven change notifications.
+#[derive(Clone)]
+pub struct SharedSnapshot {
+    value: Arc<RwLock<DeviceSnapshot>>,
+    changed: watch::Sender<()>,
+}
 
-/// Build a fresh shared snapshot initialized to default (all-empty) state.
+impl SharedSnapshot {
+    /// Borrow the current measurements.
+    pub fn read(&self) -> RwLockReadGuard<'_, DeviceSnapshot> {
+        self.value.read()
+    }
+
+    /// Replace measurements; dropping the guard notifies subscribers.
+    pub fn write(&self) -> SnapshotWriteGuard<'_> {
+        SnapshotWriteGuard {
+            guard: self.value.write(),
+            changed: &self.changed,
+        }
+    }
+
+    /// Subscribe before reading to avoid losing changes during backfill.
+    pub fn subscribe(&self) -> watch::Receiver<()> {
+        self.changed.subscribe()
+    }
+}
+
+/// A write guard that publishes once the producer finishes a measurement.
+pub struct SnapshotWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, DeviceSnapshot>,
+    changed: &'a watch::Sender<()>,
+}
+
+impl Deref for SnapshotWriteGuard<'_> {
+    type Target = DeviceSnapshot;
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl DerefMut for SnapshotWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for SnapshotWriteGuard<'_> {
+    fn drop(&mut self) {
+        self.changed.send_replace(());
+    }
+}
+
+/// Build an empty device snapshot with a change feed.
 pub fn new_shared() -> SharedSnapshot {
-    Arc::new(RwLock::new(DeviceSnapshot::default()))
+    SharedSnapshot {
+        value: Arc::new(RwLock::new(DeviceSnapshot::default())),
+        changed: watch::channel(()).0,
+    }
 }

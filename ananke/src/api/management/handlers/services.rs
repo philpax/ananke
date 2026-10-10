@@ -73,6 +73,12 @@ pub async fn list_services(State(state): State<AppState>) -> Response {
             lifecycle: svc_cfg.lifecycle.as_str().to_string(),
             priority: svc_cfg.priority,
             port: svc_cfg.port,
+            openai_compat: svc_cfg.openai_compat,
+            web_ui_url: svc_cfg
+                .metadata
+                .get("web_ui_url")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
             run_id: peek.as_ref().and_then(|p| p.run_id),
             pid: peek.as_ref().and_then(|p| p.pid),
             inflight_count: state.inflight.current(&svc_cfg.name),

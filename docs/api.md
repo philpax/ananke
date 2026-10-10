@@ -36,6 +36,7 @@ The daemon binds to loopback by default. Do **not** expose the management API or
 | `GET` | `/api/config` | Get or update the daemon config |
 | `PUT` | `/api/config` | Get or update the daemon config |
 | `POST` | `/api/config/validate` | Validate TOML config without persisting |
+| `GET` | `/api/dashboard` |  |
 | `GET` | `/api/devices` | List devices and reservations |
 | `GET` | `/api/devices/samples` | Get device memory samples |
 | `GET` | `/api/info` | Get daemon listen addresses |
@@ -341,8 +342,10 @@ Get daemon listen addresses
 
 ```typescript
 {
+  config_path?: string
   management_listen: string
   openai_listen: string
+  uptime_ms?: number
 }
 ```
 
@@ -505,6 +508,13 @@ Get or delete a oneshot process
 
 ### Other
 
+#### GET /api/dashboard
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 101 | Multiplexed dashboard WebSocket. See DashboardRequest and DashboardMessage. | — |
+| 403 | The browser Origin does not match the Host. | — |
+
 #### GET /api/restarts
 
 Get auto-restart firings
@@ -581,11 +591,13 @@ List all services
     lifecycle: string
     modality?: "chat" | "embedding"
     name: string
+    openai_compat?: boolean
     pid?: number | null
     port: number
     priority: number
     run_id?: number | null
     state: string
+    web_ui_url?: string | null
   }[]
 }
 ```
@@ -1332,7 +1344,11 @@ The spec is produced by `utoipa`'s compile-time derive from the `#[utoipa::path]
 
 ## Embedded frontend
 
-The daemon embeds the frontend SPA as a fallback handler. Any request that doesn't match an `/api/*`, `/v1/*`, `/metrics`, or WebSocket route is served from the embedded `frontend/dist` directory.
+The default-enabled `frontend` Cargo feature builds and embeds the five-section dashboard into the daemon. Normal `cargo build` and `cargo build --release` install locked npm dependencies and compile the native Preact application; build-time requirements are Node.js 22.12 or newer and npm. The binary serves its bundled scripts, styles, fonts, and dashboard routes without a frontend source tree or JS runtime.
 
-The embedded assets are built at compile time via `rust-embed`. Set the `ANANKE_SKIP_FRONTEND_BUILD=1` environment variable during `cargo build` to skip the frontend build (useful for Rust-only dev loops).
+Use `cargo build --workspace --no-default-features` for a backend-only build that needs no JS toolchain or generated assets. `cargo build --workspace --no-default-features --features frontend` restores the dashboard. Native APIs remain available in either build. Unknown `/api`, `/v1`, `/assets`, and `/fonts` paths return 404 rather than the SPA entry.
+
+The management listener also exposes the native `/v1` routes for same-origin dashboard chat. Protect the complete management listener with your existing authentication perimeter. The separate OpenAI listener continues to serve inference clients.
+
+Services, Chat, Events, Stats, and Config use real API data. One same-origin `/api/dashboard` WebSocket carries initial reads, backfill, producer-driven updates, lifecycle commands, configuration edits, and streaming chat, without dashboard polling. The daemon captures its newest 1,024 lifecycle events for browser backfill and reconnect, alongside persisted automatic restart records. General event capture begins again on daemon restart. See [the dashboard protocol](dashboard-websocket.md) for the generated messages and reconnect semantics. The frontend does not expose temporary services. Open uses the service HTTP proxy port unless `metadata.web_ui_url` supplies a published HTTP or HTTPS URL.
 

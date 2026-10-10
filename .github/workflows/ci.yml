@@ -36,6 +36,13 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Format
         run: cargo +nightly fmt --all -- --check
 
@@ -74,34 +81,21 @@ jobs:
         run: cargo run -q -p ananke-calibrate --bin coverage -- --check
 
       - name: Docs check (configuration)
-        env:
-          ANANKE_SKIP_FRONTEND_BUILD: "1"
         run: cargo xtask gen-config-docs --check
 
       - name: Docs check (api)
-        env:
-          ANANKE_SKIP_FRONTEND_BUILD: "1"
         run: cargo xtask gen-api-docs --check
 
       # Regenerating the frontend's wire types needs both toolchains, and this
       # job is the one that already builds the daemon the spec is dumped from.
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Install frontend dependencies
-        run: npm ci --legacy-peer-deps
+        run: npm ci
         working-directory: frontend
 
       # A wire type can change in ananke-api and leave the generated TypeScript
       # behind. Nothing else notices until the UI reads a field that is no
       # longer there.
       - name: API types check
-        env:
-          ANANKE_SKIP_FRONTEND_BUILD: "1"
         run: cargo xtask gen-api-types --check
 
   frontend:
@@ -112,20 +106,32 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: npm ci
         working-directory: frontend
 
       - name: Lint
         run: npm run lint
         working-directory: frontend
 
+      - name: Build
+        run: npm run build
+        working-directory: frontend
+
       - name: Test
         run: npm test -- --run
+        working-directory: frontend
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Browser tests
+        run: npm run test:e2e
         working-directory: frontend
 
   build-targets:
@@ -156,15 +162,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci --legacy-peer-deps
-          npm run build
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

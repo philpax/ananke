@@ -37,6 +37,8 @@ pub type DynAsyncRead = Pin<Box<dyn AsyncRead + Send + Unpin + 'static>>;
 /// expected to be cheap to clone (everything is `Arc`-backed or unit-sized)
 /// and thread-safe — the daemon stores a single `Arc<dyn ProcessSpawner>`
 /// inside `SupervisorDeps` and every supervisor borrows it.
+// Clippy 1.99 double-counts `async_trait`'s boxed futures; older stable Clippy does not emit this lint.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ProcessSpawner: Send + Sync + 'static {
     async fn spawn(&self, cfg: &SpawnConfig) -> Result<Box<dyn ManagedChild>, ExpectedError>;
@@ -45,6 +47,8 @@ pub trait ProcessSpawner: Send + Sync + 'static {
 /// Handle to a running child process. Dropped handles are expected to
 /// release OS resources; [`LocalChild`] achieves this via
 /// `Command::kill_on_drop`.
+// Clippy 1.99 double-counts `async_trait`'s boxed futures; older stable Clippy does not emit this lint.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ManagedChild: Send + 'static {
     /// Process identifier — an OS pid for the real impl, a virtual counter

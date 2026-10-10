@@ -71,8 +71,8 @@ nix.workspace = true
 
 rusqlite.workspace = true
 
-rust-embed.workspace = true
-mime_guess.workspace = true
+rust-embed = { workspace = true, optional = true, features = ["debug-embed"] }
+mime_guess = { workspace = true, optional = true }
 
 [build-dependencies]
 serde_json.workspace = true
@@ -90,7 +90,8 @@ futures.workspace = true
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 
 [features]
-default = []
+default = ["frontend"]
+frontend = ["dep:rust-embed", "dep:mime_guess"]
 # Integration tests (separate crates) use fakes from several split crates;
 # `cfg(test)` can't gate them, so the daemon's test-fakes forwards to the
 # crates whose fakes those tests reach for. ananke-system + ananke-config

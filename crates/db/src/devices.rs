@@ -29,6 +29,7 @@ impl Database {
             ],
         )
         .map_err(|e| self.db_err(e))?;
+        let _ = self.changed.send(crate::DatabaseChange::Samples);
         Ok(())
     }
 

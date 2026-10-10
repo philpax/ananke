@@ -20,6 +20,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
+    pub started_at: tokio::time::Instant,
     pub config: Arc<ConfigManager>,
     pub registry: SupervisorRegistry,
     pub allocations: Arc<Mutex<AllocationTable>>,

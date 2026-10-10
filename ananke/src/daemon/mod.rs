@@ -117,6 +117,7 @@ pub async fn run() -> Result<(), ExpectedError> {
     // get registered into `app_state.registry` as `provision_service`
     // inserts them, so post-boot the state is complete.
     let app_state = AppState {
+        started_at: tokio::time::Instant::now(),
         config: config.clone(),
         registry: registry.clone(),
         allocations: allocations.clone(),

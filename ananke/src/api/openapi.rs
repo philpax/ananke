@@ -5,6 +5,10 @@ use ananke_api::{
         get::ConfigResponse,
         validate::{ConfigValidateRequest, ConfigValidateResponse, ValidationError},
     },
+    dashboard::{
+        DashboardAction, DashboardEvents, DashboardMessage, DashboardQuery, DashboardRange,
+        DashboardRequest,
+    },
     devices::{
         list::{DeviceReservation, DeviceSummary},
         samples::{DeviceSampleResponse, DeviceSamplesResponse},
@@ -23,7 +27,8 @@ use ananke_api::{
         get::OneshotStatus,
     },
     openai::{
-        ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing, ModelsResponse,
+        ChatCompletionEnvelope, CompletionEnvelope, EmbeddingEnvelope, ModelListing,
+        ModelsResponse, response::ChatCompletionChunk,
     },
     services::{
         command::{
@@ -78,6 +83,7 @@ use crate::{
         mgmt_handlers::service_command,
         mgmt_handlers::list_devices,
         mgmt_info::get_info,
+        crate::api::management::dashboard::upgrade,
         mgmt_lifecycle::post_start,
         mgmt_lifecycle::post_stop,
         mgmt_lifecycle::post_restart,
@@ -96,9 +102,11 @@ use crate::{
         oneshot_handlers::delete_oneshot,
     ),
     components(schemas(
+        DashboardRequest, DashboardQuery, DashboardRange, DashboardAction, DashboardMessage, DashboardEvents,
         ModelListing,
         ModelsResponse,
         ChatCompletionEnvelope,
+        ChatCompletionChunk,
         CompletionEnvelope,
         EmbeddingEnvelope,
         ananke_api::shared::errors::ApiError,

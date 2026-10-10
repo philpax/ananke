@@ -20,6 +20,7 @@ use clap::Args;
 
 /// Path of the generated module, relative to the repository root.
 const TYPES_PATH: &str = "frontend/src/api/types.ts";
+const SCHEMA_PATH: &str = "frontend/src/api/schema.json";
 
 #[derive(Args)]
 pub struct GenApiTypesArgs {
@@ -41,14 +42,20 @@ pub fn run(args: GenApiTypesArgs) -> Result<(), Error> {
     }
 
     let committed = read(&types_path)?;
+    let schema_path = repo.join(SCHEMA_PATH);
+    let committed_schema = read(&schema_path)?;
     run_gen_types(&frontend)?;
     let generated = read(&types_path)?;
-    if generated != committed {
+    let generated_schema = read(&schema_path)?;
+    if generated != committed || generated_schema != committed_schema {
         write(&types_path, &committed)?;
-        eprintln!("{TYPES_PATH} is stale; run `npm run gen-types` in frontend/ to regenerate");
+        write(&schema_path, &committed_schema)?;
+        eprintln!(
+            "{TYPES_PATH} or {SCHEMA_PATH} is stale; run `npm run gen-types` in frontend/ to regenerate"
+        );
         return Err(Error::Stale);
     }
-    println!("{TYPES_PATH} is up to date");
+    println!("{TYPES_PATH} and {SCHEMA_PATH} are up to date");
     Ok(())
 }
 
@@ -56,7 +63,6 @@ fn run_gen_types(frontend: &Path) -> Result<(), Error> {
     let status = Command::new("npm")
         .args(["run", "gen-types"])
         .current_dir(frontend)
-        .env("ANANKE_SKIP_FRONTEND_BUILD", "1")
         .status()
         .map_err(Error::NpmSpawn)?;
     if !status.success() {

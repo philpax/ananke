@@ -187,6 +187,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     }
 
     let state = AppState {
+        started_at: tokio::time::Instant::now(),
         config: config_manager,
         registry: registry.clone(),
         allocations,

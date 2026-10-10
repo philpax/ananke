@@ -1,0 +1,218 @@
+[
+  {
+    "name": "qwen3.6-27b",
+    "gib": 41.08,
+    "port": 8208,
+    "state": "running",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-31b-it-qat",
+    "gib": 41.71,
+    "port": 8214,
+    "state": "idle",
+    "vision": true,
+    "embedding": false
+  },
+  {
+    "name": "jina-embeddings-v5-text-small-retrieval-vllm",
+    "gib": 3.91,
+    "port": 8231,
+    "state": "idle",
+    "vision": false,
+    "embedding": true
+  },
+  {
+    "name": "comfyui",
+    "gib": 2.0,
+    "port": 8188,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-3n-e4b-it",
+    "gib": 6.84,
+    "port": 8212,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "qwen3.6-35b-a3b",
+    "gib": 44.3,
+    "port": 8207,
+    "state": "idle",
+    "vision": true,
+    "embedding": false
+  },
+  {
+    "name": "talkie-1930-13b-it",
+    "gib": 13.62,
+    "port": 8225,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-26b-a4b-it",
+    "gib": 27.7,
+    "port": 8215,
+    "state": "idle",
+    "vision": true,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-31b-it",
+    "gib": 41.7,
+    "port": 8213,
+    "state": "idle",
+    "vision": true,
+    "embedding": false
+  },
+  {
+    "name": "qwen3-4b-instruct",
+    "gib": 6.25,
+    "port": 8200,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-3-27b-it",
+    "gib": 20.94,
+    "port": 8209,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-3-27b-it-abliterated",
+    "gib": 20.7,
+    "port": 8210,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-3-glitter-27b",
+    "gib": 23.28,
+    "port": 8211,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-26b-a4b-it-vllm",
+    "gib": 44.92,
+    "port": 8228,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-31b-it-int8-vllm",
+    "gib": 43.95,
+    "port": 8230,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-31b-it-mtp-vllm",
+    "gib": 43.95,
+    "port": 8229,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gemma-4-e4b-it",
+    "gib": 15.01,
+    "port": 8216,
+    "state": "idle",
+    "vision": true,
+    "embedding": false
+  },
+  {
+    "name": "glm-4-32b-0414",
+    "gib": 20.8,
+    "port": 8217,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "glm-4-5-air",
+    "gib": 60.3,
+    "port": 8219,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "glm-z1-9b-0414",
+    "gib": 8.59,
+    "port": 8218,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "gpt-oss-20b",
+    "gib": 13.05,
+    "port": 8224,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "llama-3.3-70b-instruct-abliterated",
+    "gib": 23.94,
+    "port": 8220,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "llama-3.3-nemotron-super-49b-v1_5",
+    "gib": 32.75,
+    "port": 8221,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "magidonia-24b-v4.3",
+    "gib": 18.75,
+    "port": 8223,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "mistral-small-3.2-24b-instruct-2506",
+    "gib": 18.75,
+    "port": 8222,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "qwen3-235b-a22b-instruct",
+    "gib": 88.09,
+    "port": 8205,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  },
+  {
+    "name": "qwen3-30b-a3b-coder-2507",
+    "gib": 18.75,
+    "port": 8203,
+    "state": "idle",
+    "vision": false,
+    "embedding": false
+  }
+]

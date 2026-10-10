@@ -1,4 +1,5 @@
 /target
+/.playwright-cli
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
