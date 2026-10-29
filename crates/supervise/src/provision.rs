@@ -3,7 +3,7 @@
 //! daemon's boot loop and the reload reconciler so both paths use one
 //! code path and stay in sync.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use ananke_allocator::AllocationTable;
 use ananke_config::{AllocationMode, Lifecycle, ServiceConfig};
@@ -15,8 +15,12 @@ use ananke_proxy::{self as proxy, ApiErrorCode};
 use ananke_tracking::{activity::ActivityTable, inflight::InflightTable};
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
-use tokio::{sync::watch, task::JoinHandle};
-use tracing::{error, warn};
+use smol_str::SmolStr;
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
+use tracing::{error, info, warn};
 
 use crate::{
     ServiceIdentity, SupervisorDeps, SupervisorHandle, SupervisorInit, await_ensure,
@@ -38,12 +42,50 @@ pub struct ProvisioningDeps {
     /// the concrete recorder (OpenAI metrics + db handle); supervise only
     /// threads it into the per-service proxy.
     pub metrics_factory: ananke_proxy::RecorderFactory,
+    /// Every provisioned service's proxy listener, so a reload that removes
+    /// the service can close its port. Shared by clones: the boot loop and
+    /// the reconciler must use clones of one `ProvisioningDeps`.
+    pub proxies: ProxyListeners,
+}
+
+/// The open per-service proxy listeners, by service name.
+///
+/// A service removed by a reload must give its port back before a later
+/// reload adds it again. Otherwise the re-added service's proxy fails to bind
+/// ("Address already in use") and the old listener keeps answering for the
+/// dead supervisor ("supervisor unreachable") until the daemon restarts.
+#[derive(Clone, Default)]
+pub struct ProxyListeners(Arc<Mutex<BTreeMap<SmolStr, ProxyStop>>>);
+
+struct ProxyStop {
+    stop: oneshot::Sender<()>,
+    closed: oneshot::Receiver<()>,
+}
+
+impl ProxyListeners {
+    /// Close `name`'s listener and wait until its port is released.
+    /// Connections it already accepted run to completion. No-op for a
+    /// service without one.
+    pub async fn close(&self, name: &str) {
+        let Some(proxy) = self.0.lock().remove(name) else {
+            return;
+        };
+        let _ = proxy.stop.send(());
+        let _ = proxy.closed.await;
+    }
+
+    fn register(&self, name: SmolStr) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (stop, stop_rx) = oneshot::channel();
+        let (closed_tx, closed) = oneshot::channel();
+        self.0.lock().insert(name, ProxyStop { stop, closed });
+        (stop_rx, closed_tx)
+    }
 }
 
 /// Tasks owned by a provisioned service. The daemon keeps these in a pool
-/// and aborts them on shutdown; the reconciler, for now, fires-and-forgets
-/// (teardown on service-remove lives in `reconciler::handle_reload`, and
-/// the per-proxy shutdown channel is a follow-up).
+/// and aborts them on shutdown. A reload that removes the service drains
+/// its supervisor and closes its proxy through [`ProxyListeners::close`]
+/// (see `reconciler::handle_reload`).
 pub struct ProvisionedService {
     pub handle: Arc<SupervisorHandle>,
     pub proxy_task: JoinHandle<()>,
@@ -136,8 +178,9 @@ pub async fn provision_service(
             Arc::new(move || run_handle.peek().run_id),
         )
     };
+    let (stop_rx, closed_tx) = deps.proxies.register(svc.name.clone());
     let proxy_task = tokio::spawn(async move {
-        if let Err(e) = proxy::serve_with_activity(
+        let serve = proxy::serve_with_activity(
             listen,
             upstream,
             shutdown_rx,
@@ -145,11 +188,19 @@ pub async fn provision_service(
             inflight_counter,
             activity_ping,
             Some(metrics),
-        )
-        .await
-        {
-            error!(service = %name_for_error, error = %e, "proxy failed");
+        );
+        tokio::select! {
+            result = serve => {
+                if let Err(e) = result {
+                    error!(service = %name_for_error, error = %e, "proxy failed");
+                }
+            }
+            _ = stop_rx => {
+                info!(service = %name_for_error, "proxy closed: service removed");
+            }
         }
+        // The serve future, and with it the listener, is dropped by now.
+        drop(closed_tx);
     });
 
     let balloon_task = match svc.allocation_mode {

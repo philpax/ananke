@@ -51,6 +51,9 @@ pub struct EchoState {
     pub drop_connections: Arc<AtomicBool>,
     /// Add hop-by-hop and end-to-end headers to generic responses.
     pub hop_headers: Arc<AtomicBool>,
+    /// When set, `/health` answers 503, simulating a child that is still
+    /// loading, so its supervisor stays in Starting.
+    pub unhealthy: Arc<AtomicBool>,
 }
 
 /// One request the echo server received, recorded for proxy assertions.
@@ -124,6 +127,13 @@ async fn handle(
     let path = parts.uri.path();
 
     match path {
+        "/health" if state.unhealthy.load(Ordering::Relaxed) => {
+            let body = Full::new(Bytes::from("{}")).map_err(|n| match n {}).boxed();
+            Ok(Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .body(body)
+                .unwrap())
+        }
         "/health" | "/v1/models" => {
             let body = Full::new(Bytes::from("{}")).map_err(|n| match n {}).boxed();
             Ok(Response::builder()

@@ -73,7 +73,8 @@ impl AppState {
     /// Assemble a `ProvisioningDeps` from this state and the daemon-wide
     /// shutdown channel. Every field already lives on `AppState`; this
     /// constructor keeps the call sites in `daemon::run` and the test
-    /// harness from enumerating them by hand.
+    /// harness from enumerating them by hand. Each call starts an empty
+    /// proxy-listener set, so build it once and clone it.
     pub fn provisioning_deps(
         &self,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -102,6 +103,7 @@ impl AppState {
                     })
                 },
             ),
+            proxies: Default::default(),
         }
     }
 }

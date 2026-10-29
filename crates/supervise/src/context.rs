@@ -25,6 +25,11 @@ use crate::{
 /// forever. A timeout escalates to SIGKILL of the shutdown child.
 const SHUTDOWN_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long [`RunLoop::end_run`] waits for a device sample that no longer
+/// counts the reaped child. A sample takes milliseconds; the bound only
+/// matters if the sampler is stuck, and then the snapshot it has stands.
+const SNAPSHOT_REFRESH_TIMEOUT: Duration = Duration::from_secs(1);
+
 impl RunLoop {
     pub(crate) fn new(
         init: SupervisorInit,
@@ -132,13 +137,21 @@ impl RunLoop {
         self.deps.mirror_changed.notify();
     }
 
-    /// Combined teardown: delete the DB `running_services` row and clear the
-    /// mirror's `run_id` + `pid`. Every exit from the running/draining loops
-    /// needs both, and keeping them in one helper means neither can be
-    /// forgotten.
+    /// Combined teardown: delete the DB `running_services` row, clear the
+    /// mirror's `run_id` + `pid`, and re-sample the devices. Every exit from
+    /// the running/draining loops needs all three, and keeping them in one
+    /// helper means none can be forgotten.
+    ///
+    /// The re-sample is what lets a start that follows at once see the
+    /// memory this child freed. Placement takes the smaller of NVML's free
+    /// figure and the pledge book's, and the cadence sample can be up to two
+    /// seconds old: without it, stopping a service that fills most of a GPU
+    /// and starting it (or `restart`) failed with "weights do not fit" on an
+    /// empty card, with no peer to evict.
     pub(crate) async fn end_run(&mut self, run_id: i64) {
         delete_running_row(&self.deps.db, self.init.service_id, run_id).await;
         self.clear_running_ids();
+        self.deps.snapshot.refresh(SNAPSHOT_REFRESH_TIMEOUT).await;
     }
 
     /// Publish an `AllocationChanged` event reflecting the current state of

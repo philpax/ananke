@@ -155,6 +155,11 @@ impl RunLoop {
                 timeout: Duration::from_millis(current.health.timeout_ms),
             };
 
+            // The flag is per-run: a drain, fast-kill or disable that aborted
+            // an earlier start left it set, and a probe that starts out
+            // cancelled would end this run as `Cancelled` and exit the
+            // supervisor task, stranding every later Ensure.
+            self.cancel_tx.send_replace(false);
             let cancel_rx_h = self.cancel_rx.clone();
             let health_task = tokio::spawn(wait_healthy(health_cfg, cancel_rx_h));
             tokio::pin!(health_task);
@@ -328,15 +333,36 @@ impl RunLoop {
                 self.run_shutdown_command().await;
                 StartingOutcome::Break
             }
+            // Every command that cancels the probe ends the run itself, so
+            // the probe only lands here by panicking or by a cancel that
+            // outlived an earlier run. The run is over but the supervisor is
+            // not: fail the start and keep serving the handle. Exiting here
+            // used to drop the start bus ("start broadcast closed") and leave
+            // the service Starting with a dead pid, unreachable until the
+            // daemon restarted.
             Ok(HealthOutcome::Cancelled) | Err(_) => {
+                let detail = match &outcome {
+                    Err(e) => format!("health probe failed: {e}"),
+                    _ => "health probe cancelled".to_string(),
+                };
+                warn!(service = %self.init.identity.name, %detail, "start ended without a health verdict");
+                drain::sigterm_then_sigkill(workload, STARTING_SIGTERM_GRACE).await;
+                self.run_shutdown_command().await;
+                self.end_run(run_id).await;
                 self.deps
                     .allocations
                     .lock()
                     .remove(&self.init.identity.name);
+                self.deps.observation.clear(&self.init.identity.name);
                 self.emit_allocation_changed();
-                drain::sigterm_then_sigkill(workload, STARTING_SIGTERM_GRACE).await;
-                self.run_shutdown_command().await;
-                StartingOutcome::Exit
+                if let Some(bus) = self.start_bus_carry.take() {
+                    let _ = bus.send(StartOutcome::Err(StartFailure {
+                        kind: StartFailureKind::LaunchFailed,
+                        message: detail,
+                    }));
+                }
+                self.set_state(ServiceState::Failed { retry_count: 0 });
+                StartingOutcome::Break
             }
         }
     }

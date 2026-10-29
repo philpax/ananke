@@ -38,15 +38,24 @@ pub fn spawn<T: Send + Sync + 'static>(
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Besides the cadence, sample whenever a supervisor asks: one that
+        // has just reaped its child needs the freed memory visible before
+        // the next placement, not up to a tick later.
+        let sampler = snapshot.attach_sampler();
         loop {
             tokio::select! {
-                _ = shutdown.changed() => { if *shutdown.borrow() { return; } }
-                _ = interval.tick() => {
-                    let next = sample(&probe, proc.as_ref());
-                    *snapshot.write() = next;
-                    sample_observation(&probe, &observation, &registry, proc.as_ref());
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() { return; }
+                    continue;
                 }
+                _ = interval.tick() => {}
+                _ = sampler.requested() => {}
             }
+            let ticket = sampler.begin();
+            let next = sample(&probe, proc.as_ref());
+            *snapshot.write() = next;
+            sampler.served(ticket);
+            sample_observation(&probe, &observation, &registry, proc.as_ref());
         }
     })
 }

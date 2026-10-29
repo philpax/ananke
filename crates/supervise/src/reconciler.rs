@@ -4,13 +4,13 @@
 //! reconciler cross-references the change list with the new effective
 //! config:
 //!
-//! - Services **removed** from the config: the reconciler drains the
-//!   supervisor (via `shutdown()`, which SIGTERMs the child and cleans up
-//!   the allocation table) and evicts the handle from the registry. The
-//!   per-service HTTP proxy task is *not* torn down here — released
-//!   cleanly it needs a per-proxy shutdown channel that doesn't exist
-//!   yet (tracked as a follow-up). Requests to the removed service's
-//!   public port will return 502 until the daemon restarts.
+//! - Services **removed** from the config: the reconciler closes the
+//!   per-service HTTP proxy listener, so the public port is free for a
+//!   later reload that adds the service back, then drains the supervisor
+//!   (via `shutdown()`, which SIGTERMs the child and cleans up the
+//!   allocation table) and evicts the handle from the registry.
+//!   Connections the proxy had already accepted run to completion; new
+//!   ones to the removed service's port are refused.
 //! - Services **added** to the config: the reconciler calls
 //!   [`provision::provision_service`] to spawn a supervisor, bind the
 //!   proxy listener, spawn the balloon resolver if the service is
@@ -98,6 +98,9 @@ async fn handle_reload(
             (false, true) => {
                 if let Some(handle) = registry.remove(name) {
                     info!(%name, "draining service removed by config reload");
+                    if let Some(prov) = provisioning {
+                        prov.proxies.close(name).await;
+                    }
                     handle.shutdown().await;
                 }
             }
