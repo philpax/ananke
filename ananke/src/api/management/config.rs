@@ -86,6 +86,7 @@ pub async fn put_config(
             (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
         }
         Err(ApplyError::PersistFailed(io_err)) => ApiErrorCode::PersistFailed {
+            what: "config to disk",
             reason: io_err.to_string(),
         }
         .into_response(),

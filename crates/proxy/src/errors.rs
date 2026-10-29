@@ -48,8 +48,9 @@ pub enum ApiErrorCode {
     IfMatchRequired,
     /// Config PUT's `If-Match` didn't match the current on-disk hash.
     HashMismatch { server_hash: String },
-    /// Config write failed at the IO layer.
-    PersistFailed { reason: String },
+    /// A durable write failed: the config file or a local-store row.
+    /// `what` names the thing being written, for the message.
+    PersistFailed { what: &'static str, reason: String },
     /// A read against the daemon's local store failed.
     QueryFailed { reason: String },
     /// A launch-command preview could not be built. Distinct from
@@ -195,7 +196,7 @@ impl ApiErrorCode {
             Self::HashMismatch { server_hash } => {
                 format!("config was modified since last GET; current hash is {server_hash}")
             }
-            Self::PersistFailed { reason } => format!("writing config to disk failed: {reason}"),
+            Self::PersistFailed { what, reason } => format!("writing {what} failed: {reason}"),
             Self::QueryFailed { reason } => {
                 format!("reading from the local store failed: {reason}")
             }

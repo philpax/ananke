@@ -26,7 +26,9 @@ impl Database {
     /// Reparent a `service_id` from `old_name` to `new_name`.
     ///
     /// - If `old_name` has a live row and `new_name` does not: rename.
-    /// - If both exist: tombstone `old_name` (the new service keeps its own id).
+    /// - If both exist: tombstone `old_name` (the new service keeps its own id)
+    ///   and move `old_name`'s operator disable onto it, replacing any the new
+    ///   id had, since the renamed service is the old one.
     /// - If `old_name` doesn't exist: no-op (warning is issued upstream).
     pub async fn reparent(
         &self,
@@ -34,7 +36,7 @@ impl Database {
         new_name: &str,
         now_ms: i64,
     ) -> Result<(), ExpectedError> {
-        let conn = self.conn.lock();
+        let mut conn = self.conn.lock();
         let old_exists: Option<i64> = conn
             .query_row(
                 "SELECT service_id FROM services WHERE name = ?1",
@@ -59,12 +61,24 @@ impl Database {
                 )
                 .map_err(|e| self.db_err(e))?;
             }
-            (Some(_), Some(_)) => {
-                conn.execute(
+            (Some(old_id), Some(new_id)) => {
+                let tx = conn.transaction().map_err(|e| self.db_err(e))?;
+                tx.execute(
                     "UPDATE services SET deleted_at = ?1 WHERE name = ?2",
                     params![now_ms, old_name],
                 )
                 .map_err(|e| self.db_err(e))?;
+                tx.execute(
+                    "DELETE FROM disabled_services WHERE service_id = ?1",
+                    [new_id],
+                )
+                .map_err(|e| self.db_err(e))?;
+                tx.execute(
+                    "UPDATE disabled_services SET service_id = ?1 WHERE service_id = ?2",
+                    params![new_id, old_id],
+                )
+                .map_err(|e| self.db_err(e))?;
+                tx.commit().map_err(|e| self.db_err(e))?;
             }
             (None, _) => {}
         }

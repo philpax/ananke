@@ -333,6 +333,39 @@ async fn repeated_storms_trip_flap_cap_and_disable() {
         });
     assert_eq!(disabled_event, Some(Some(DisableReason::AutoRestartLoop)));
 
+    // An automatic disable is not stored, so a restart clears it.
+    assert_eq!(
+        h.state.db.service_disabled_at(service_id).await.unwrap(),
+        None
+    );
+    // The operator disabling it on top makes it theirs: stored, and the
+    // reason says so now, as it would after a restart.
+    let resp = management::router(h.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/services/alpha/disable")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        h.state
+            .db
+            .service_disabled_at(service_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        sup.peek_state(),
+        ServiceState::Disabled {
+            reason: ananke::supervise::state::DisableReason::UserDisabled
+        }
+    );
+
     h.cleanup().await;
 }
 

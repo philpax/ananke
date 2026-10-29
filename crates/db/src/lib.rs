@@ -11,6 +11,7 @@
 
 mod container;
 mod devices;
+mod disabled;
 #[cfg(target_os = "linux")]
 mod lock;
 mod metrics;

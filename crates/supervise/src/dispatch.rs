@@ -97,11 +97,18 @@ impl RunLoop {
                 RunningOutcome::Break
             }
             Some(SupervisorCommand::Enable { ack }) => {
-                // Already running; enable is a no-op.
-                let _ = ack.send(EnableResult::NotDisabled);
+                // Already running; enable only clears a stale stored mark.
+                let _ = ack.send(match self.persist_operator_disable(false).await {
+                    Ok(()) => EnableResult::NotDisabled,
+                    Err(reason) => EnableResult::PersistFailed(reason),
+                });
                 RunningOutcome::Continue
             }
             Some(SupervisorCommand::Disable { ack }) => {
+                if let Err(reason) = self.persist_operator_disable(true).await {
+                    let _ = ack.send(DisableResult::PersistFailed(reason));
+                    return RunningOutcome::Continue;
+                }
                 info!(service = %self.init.identity.name, "Disable received; draining then disabling");
                 self.drain_now(workload, run_id, drain::DrainReason::UserKilled)
                     .await;
@@ -239,13 +246,20 @@ impl RunLoop {
                 StartingOutcome::Break
             }
             Some(SupervisorCommand::Enable { ack }) => {
-                // Already starting; not disabled.
-                let _ = ack.send(EnableResult::NotDisabled);
+                // Already starting; enable only clears a stale stored mark.
+                let _ = ack.send(match self.persist_operator_disable(false).await {
+                    Ok(()) => EnableResult::NotDisabled,
+                    Err(reason) => EnableResult::PersistFailed(reason),
+                });
                 StartingOutcome::Continue
             }
             Some(SupervisorCommand::Disable { ack }) => {
                 // Disable during starting: drain the child, clean up, and
                 // transition to Disabled.
+                if let Err(reason) = self.persist_operator_disable(true).await {
+                    let _ = ack.send(DisableResult::PersistFailed(reason));
+                    return StartingOutcome::Continue;
+                }
                 let _ = self.cancel_tx.send(true);
                 drain::sigterm_then_sigkill(workload, STARTING_SIGTERM_GRACE).await;
                 self.run_shutdown_command().await;

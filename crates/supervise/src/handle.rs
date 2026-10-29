@@ -77,21 +77,25 @@ pub enum SupervisorCommand {
 }
 
 /// Result of a `SupervisorCommand::Enable`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnableResult {
     /// Was `Disabled`; now `Idle`.
     Enabled,
     /// Already in a non-disabled state (Idle, Running, etc.).
     NotDisabled,
+    /// Clearing the stored disable failed; the state is unchanged.
+    PersistFailed(String),
 }
 
 /// Result of a `SupervisorCommand::Disable`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisableResult {
     /// Transitioned to `Disabled`.
     Disabled,
     /// Was already `Disabled`; no change.
     AlreadyDisabled,
+    /// Storing the disable failed; the state is unchanged.
+    PersistFailed(String),
 }
 
 #[derive(Debug)]
@@ -159,6 +163,20 @@ pub(crate) struct MirroredState {
     pub(crate) state: ServiceState,
     pub(crate) run_id: Option<i64>,
     pub(crate) pid: Option<i32>,
+}
+
+impl MirroredState {
+    /// The state a new supervisor starts in: `Idle`, or `Disabled {
+    /// UserDisabled }` when restoring an operator disable.
+    pub(crate) fn initial(disabled: bool) -> Self {
+        let mut m = Self::default();
+        if disabled {
+            m.state = crate::state::ServiceState::Disabled {
+                reason: crate::state::DisableReason::UserDisabled,
+            };
+        }
+        m
+    }
 }
 
 pub struct SupervisorHandle {
@@ -288,13 +306,16 @@ impl SupervisorHandle {
     pub async fn enable(&self) -> EnableResult {
         let (ack, rx) = tokio::sync::oneshot::channel();
         let _ = self.tx.send(SupervisorCommand::Enable { ack }).await;
-        rx.await.unwrap_or(EnableResult::NotDisabled)
+        // A stopped supervisor wrote nothing; don't report success.
+        rx.await
+            .unwrap_or_else(|_| EnableResult::PersistFailed(SUPERVISOR_STOPPED.into()))
     }
 
     pub async fn disable(&self) -> DisableResult {
         let (ack, rx) = tokio::sync::oneshot::channel();
         let _ = self.tx.send(SupervisorCommand::Disable { ack }).await;
-        rx.await.unwrap_or(DisableResult::AlreadyDisabled)
+        rx.await
+            .unwrap_or_else(|_| DisableResult::PersistFailed(SUPERVISOR_STOPPED.into()))
     }
 }
 
@@ -376,6 +397,10 @@ pub struct SupervisorInit {
     pub service_id: i64,
     pub last_activity: ananke_tracking::activity::ActivityStamp,
     pub inflight: Arc<InflightCounter>,
+    /// Start in `Disabled { UserDisabled }` rather than `Idle`: the operator
+    /// disabled the service in an earlier run and the database still holds
+    /// the mark.
+    pub disabled: bool,
 }
 
 /// Spawn a supervisor task. `boot_svc` seeds the `current_svc()` fallback
@@ -393,7 +418,7 @@ pub fn spawn_supervisor(
     // every `SupervisorHandle::peek*` reads from it. No separate in-task
     // copy of the state lives alongside it — there is exactly one
     // `{state, run_id, pid}` tuple per supervisor.
-    let mirror = Arc::new(SyncMutex::new(MirroredState::default()));
+    let mirror = Arc::new(SyncMutex::new(MirroredState::initial(init.disabled)));
     let join = tokio::spawn(run(init, boot_svc, deps, rx, mirror.clone()));
     SupervisorHandle {
         name,
@@ -402,6 +427,10 @@ pub fn spawn_supervisor(
         mirror,
     }
 }
+
+/// `PersistFailed` reason when the supervisor task is gone before it acks an
+/// enable or disable.
+const SUPERVISOR_STOPPED: &str = "the service's supervisor has stopped";
 
 /// Mailbox depth for per-supervisor command channels.
 const SUPERVISOR_COMMAND_MAILBOX: usize = 32;

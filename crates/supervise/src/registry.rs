@@ -41,6 +41,7 @@ mod tests {
             service_id: 1,
             last_activity: Arc::new(parking_lot::Mutex::new(tokio::time::Instant::now())),
             inflight: ananke_proxy::InflightCounter::detached(),
+            disabled: false,
         };
         let deps = crate::SupervisorDeps {
             db: db.clone(),

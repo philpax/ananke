@@ -80,7 +80,7 @@ pub enum ApiErrorCodeSlug {
     IfMatchRequired,
     /// Config PUT's `If-Match` didn't match the current on-disk hash.
     HashMismatch,
-    /// Config write failed at the IO layer.
+    /// A durable write failed: the config file or a local-store row.
     PersistFailed,
     /// A read against the daemon's local store failed.
     QueryFailed,

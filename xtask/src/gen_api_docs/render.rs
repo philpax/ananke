@@ -357,7 +357,7 @@ fn render_error_code_table(out: &mut String, spec: &Value) {
             "invalid_cursor" => "Log-paging cursor failed to decode.",
             "if_match_required" => "Config PUT arrived without an If-Match header.",
             "hash_mismatch" => "Config PUT's If-Match didn't match the current hash.",
-            "persist_failed" => "Config write failed at the IO layer.",
+            "persist_failed" => "A durable write failed: the config file or a local-store row.",
             "query_failed" => {
                 "The daemon could not read the metrics, restart, or device history you asked for."
             }

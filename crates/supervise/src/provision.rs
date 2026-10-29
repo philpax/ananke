@@ -16,7 +16,7 @@ use ananke_tracking::{activity::ActivityTable, inflight::InflightTable};
 use futures::future::BoxFuture;
 use parking_lot::Mutex;
 use tokio::{sync::watch, task::JoinHandle};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     ServiceIdentity, SupervisorDeps, SupervisorHandle, SupervisorInit, await_ensure,
@@ -64,12 +64,21 @@ pub async fn provision_service(
         .db
         .upsert_service(&svc.name, ananke_tracking::now_unix_ms())
         .await?;
+    // Restore an operator disable from an earlier run. The supervisor starts
+    // in that state rather than being sent a disable, so no request,
+    // persistent ensure or watcher tick can start it first, and restoring
+    // needs no database write that could fail.
+    let disabled = deps.db.service_disabled_at(service_id).await?.is_some();
+    if disabled {
+        info!(service = %svc.name, "restoring operator disable from the database");
+    }
     let init = SupervisorInit {
         identity: ServiceIdentity::from_service(&svc),
         allocation: Allocation::from_override(&svc.placement_override),
         service_id,
         last_activity: deps.activity.get_or_init(&svc.name),
         inflight: deps.inflight.counter(&svc.name),
+        disabled,
     };
     let handle = Arc::new(spawn_supervisor(
         init,
@@ -80,7 +89,7 @@ pub async fn provision_service(
         .registry
         .insert(svc.name.clone(), handle.clone());
 
-    if matches!(svc.lifecycle, Lifecycle::Persistent) {
+    if !disabled && matches!(svc.lifecycle, Lifecycle::Persistent) {
         let h = handle.clone();
         tokio::spawn(async move {
             let _ = h.ensure(crate::EnsureSource::BackgroundWatcher).await;

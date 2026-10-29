@@ -124,7 +124,8 @@ pub async fn post_restart(State(state): State<AppState>, Path(name): Path<String
     params(("name" = String, Path, description = "Service name")),
     responses(
         (status = 200, body = EnableResponse),
-        (status = 404, body = ApiError, description = "service_not_found")
+        (status = 404, body = ApiError, description = "service_not_found"),
+        (status = 500, body = ApiError, description = "persist_failed")
     )
 )]
 pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>) -> Response {
@@ -136,6 +137,7 @@ pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>
     let body = match handle.enable().await {
         EnableResult::Enabled => EnableResponse::Enabled,
         EnableResult::NotDisabled => EnableResponse::AlreadyEnabled,
+        EnableResult::PersistFailed(reason) => return persist_failed(reason),
     };
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -147,7 +149,8 @@ pub async fn post_enable(State(state): State<AppState>, Path(name): Path<String>
     params(("name" = String, Path, description = "Service name")),
     responses(
         (status = 200, body = DisableResponse),
-        (status = 404, body = ApiError, description = "service_not_found")
+        (status = 404, body = ApiError, description = "service_not_found"),
+        (status = 500, body = ApiError, description = "persist_failed")
     )
 )]
 pub async fn post_disable(State(state): State<AppState>, Path(name): Path<String>) -> Response {
@@ -159,8 +162,19 @@ pub async fn post_disable(State(state): State<AppState>, Path(name): Path<String
     let body = match handle.disable().await {
         DisableResult::Disabled => DisableResponse::Disabled,
         DisableResult::AlreadyDisabled => DisableResponse::AlreadyDisabled,
+        DisableResult::PersistFailed(reason) => return persist_failed(reason),
     };
     (StatusCode::OK, Json(body)).into_response()
+}
+
+/// The supervisor could not store or clear the operator's disable, so it
+/// left the service as it was.
+fn persist_failed(reason: String) -> Response {
+    ApiErrorCode::PersistFailed {
+        what: "the service's enabled or disabled state to the local store",
+        reason,
+    }
+    .into_response()
 }
 
 fn resolve(

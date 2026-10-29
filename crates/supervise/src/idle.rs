@@ -108,10 +108,17 @@ impl RunLoop {
                             let _ = ack.send(());
                         }
                         Some(SupervisorCommand::Enable { ack }) => {
-                            // Idle is already enabled.
-                            let _ = ack.send(EnableResult::NotDisabled);
+                            // Idle is already enabled; only clear a stale stored mark.
+                            let _ = ack.send(match self.persist_operator_disable(false).await {
+                                Ok(()) => EnableResult::NotDisabled,
+                                Err(reason) => EnableResult::PersistFailed(reason),
+                            });
                         }
                         Some(SupervisorCommand::Disable { ack }) => {
+                            if let Err(reason) = self.persist_operator_disable(true).await {
+                                let _ = ack.send(DisableResult::PersistFailed(reason));
+                                continue;
+                            }
                             // Transition idle service directly to Disabled.
                             self.fail_queue(
                                 StartFailureKind::Disabled,

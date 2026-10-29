@@ -183,6 +183,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
             service_id,
             last_activity: activity.get_or_init(&svc.name),
             inflight: inflight.counter(&svc.name),
+            disabled: false,
         };
         let handle = Arc::new(spawn_supervisor(init, svc.clone(), deps.clone()));
         registry.insert(svc.name.clone(), handle.clone());

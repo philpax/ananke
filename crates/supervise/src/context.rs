@@ -33,9 +33,9 @@ impl RunLoop {
         rx: mpsc::Receiver<SupervisorCommand>,
         mirror: Arc<SyncMutex<MirroredState>>,
     ) -> Self {
-        // `MirroredState::default()` already seeds `Idle`; the explicit write
-        // here is defensive in case the caller reused a handle's mirror.
-        *mirror.lock() = MirroredState::default();
+        // `spawn_supervisor` already seeds the initial state; the explicit
+        // write here is defensive in case the caller reused a handle's mirror.
+        *mirror.lock() = MirroredState::initial(init.disabled);
         let (cancel_tx, cancel_rx) = watch::channel(false);
         Self {
             init,
@@ -130,6 +130,26 @@ impl RunLoop {
             m.pid = None;
         }
         self.deps.mirror_changed.notify();
+    }
+
+    /// Store or clear the operator's disable, so it outlives a daemon
+    /// restart. Written here, in command order, rather than by the caller:
+    /// a racing enable and disable then cannot leave the database
+    /// disagreeing with the state. Called before the transition, so a
+    /// failure leaves both unchanged.
+    pub(crate) async fn persist_operator_disable(&self, disabled: bool) -> Result<(), String> {
+        let db = &self.deps.db;
+        let id = self.init.service_id;
+        let result = if disabled {
+            db.mark_service_disabled(id, ananke_time::now_unix_ms())
+                .await
+        } else {
+            db.clear_service_disabled(id).await.map(|_| ())
+        };
+        result.map_err(|e| {
+            warn!(service = %self.init.identity.name, error = %e, disabled, "storing the operator disable failed");
+            e.to_string()
+        })
     }
 
     /// Combined teardown: delete the DB `running_services` row and clear the

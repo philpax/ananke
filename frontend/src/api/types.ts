@@ -2354,6 +2354,15 @@ export interface operations {
           "application/json": components["schemas"]["ApiError"];
         };
       };
+      /** @description persist_failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
     };
   };
   post_enable: {
@@ -2378,6 +2387,15 @@ export interface operations {
       };
       /** @description service_not_found */
       404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description persist_failed */
+      500: {
         headers: {
           [name: string]: unknown;
         };
