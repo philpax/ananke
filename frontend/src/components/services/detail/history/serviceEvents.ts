@@ -36,7 +36,10 @@ function concernsService(event: DaemonEvent, name: string): boolean {
       return event.service === name;
     case "config_reloaded":
       return event.changed_services.includes(name);
+    case "reservation_placed":
+      return event.evicted.includes(name);
     case "allocation_changed":
+    case "reservation_removed":
       return false;
     default: {
       const unreachable: never = event;

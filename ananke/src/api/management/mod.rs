@@ -10,6 +10,7 @@ pub mod live;
 pub mod logs;
 pub mod metrics;
 mod origin;
+pub mod reservations;
 
 use axum::{
     Router,
@@ -37,6 +38,14 @@ pub fn register(router: Router, state: AppState) -> Router {
         )
         .route("/api/live", get(live::get_live_ws))
         .route("/api/info", get(info::get_info))
+        .route(
+            "/api/reservations",
+            get(reservations::get_reservations).post(reservations::post_reservation),
+        )
+        .route(
+            "/api/reservations/:id",
+            axum::routing::delete(reservations::delete_reservation),
+        )
         .with_state(state.clone());
     handlers::register(router, state.clone())
         .merge(metrics::register(Router::new(), state.clone()))

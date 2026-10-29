@@ -121,6 +121,13 @@ pub const MIGRATIONS: &[Migration] = &[
         digest: "c03177ec2f5e418207df63c3849b7d71d2b633744547be225ef5c4d8fcd81c01",
         sql: include_str!("migrations/0013_drop_oneshots.sql"),
     },
+    Migration {
+        version: 14,
+        name: "manual_reservations",
+        source_path: "migrations/0014_manual_reservations.sql",
+        digest: "760ae04abefd1a537c988b8c52a58a87762f89e0d93f014cc2e75e9799511060",
+        sql: include_str!("migrations/0014_manual_reservations.sql"),
+    },
 ];
 
 fn validate_integrity(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -140,7 +147,7 @@ fn validate_integrity(conn: &Connection) -> Result<(), rusqlite::Error> {
 /// Migrations above the target are retained, never downgraded, and remain part
 /// of the validated history.
 pub fn apply_pending(conn: &mut Connection, now_ms: i64) -> Result<Vec<u32>, rusqlite::Error> {
-    apply_pending_to(conn, now_ms, 13)
+    apply_pending_to(conn, now_ms, 14)
 }
 
 pub fn apply_pending_to(

@@ -92,6 +92,10 @@ pub enum ApiErrorCodeSlug {
     DuplicateSubscriptionId,
     /// A `/api/live` connection reached its subscription limit.
     SubscriptionLimit,
+    /// Management caller referenced a manual reservation that doesn't exist.
+    ReservationNotFound,
+    /// A manual reservation could not be placed.
+    ReservationNoFit,
     /// Deserialization fallback for forward compatibility.
     #[serde(other)]
     Other,

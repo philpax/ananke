@@ -8,6 +8,15 @@ import type { DaemonEvent } from "../../api/client.ts";
 import { formatBytes } from "../../util.ts";
 import { reasonLabelKey, stateLabelKey } from "../ui/status/stateTone.ts";
 
+/// A manual reservation's display name: its label, else its id.
+export function reservationName(
+  id: number,
+  label: string | null | undefined,
+  t: TFunction,
+): string {
+  return label ? label : t("reservations.unnamed", { id });
+}
+
 export function summarizeEvent(event: DaemonEvent, t: TFunction): string {
   switch (event.type) {
     case "state_changed": {
@@ -54,6 +63,26 @@ export function summarizeEvent(event: DaemonEvent, t: TFunction): string {
             detail: event.detail,
           })
         : t("events.autoRestartedShort", { trigger: event.trigger });
+    case "reservation_placed": {
+      const held = Object.entries(event.devices)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([device, bytes]) =>
+          t("events.reservedOn", { bytes: formatBytes(bytes), device }),
+        )
+        .join(", ");
+      const name = reservationName(event.id, event.label, t);
+      return event.evicted.length === 0
+        ? t("events.reservationPlaced", { name, devices: held })
+        : t("events.reservationPlacedEvicting", {
+            name,
+            devices: held,
+            services: event.evicted.join(", "),
+          });
+    }
+    case "reservation_removed":
+      return t("events.reservationRemoved", {
+        name: reservationName(event.id, event.label, t),
+      });
     default: {
       const unreachable: never = event;
       return unreachable;

@@ -17,5 +17,6 @@ pub mod internal;
 pub mod live;
 pub mod metrics;
 pub mod openai;
+pub mod reservations;
 pub mod services;
 pub mod shared;

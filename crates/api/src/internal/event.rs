@@ -86,6 +86,31 @@ pub enum Event {
         /// When the restart was recorded, in unix milliseconds.
         at_ms: i64,
     },
+    /// An operator placed a manual reservation.
+    ReservationPlaced {
+        /// The reservation's id.
+        id: i64,
+        /// The reservation's label, if it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// Reserved bytes per device id (`"cpu"` or `"gpu:N"`).
+        devices: BTreeMap<String, u64>,
+        /// Services evicted to make room for it.
+        #[schema(value_type = Vec<String>)]
+        evicted: Vec<SmolStr>,
+        /// When it was placed, in unix milliseconds.
+        at_ms: i64,
+    },
+    /// An operator removed a manual reservation.
+    ReservationRemoved {
+        /// The reservation's id.
+        id: i64,
+        /// The reservation's label, if it had one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// When it was removed, in unix milliseconds.
+        at_ms: i64,
+    },
 }
 
 impl Event {
@@ -96,7 +121,9 @@ impl Event {
             | Self::AllocationChanged { at_ms, .. }
             | Self::ConfigReloaded { at_ms, .. }
             | Self::EstimatorDrift { at_ms, .. }
-            | Self::AutoRestarted { at_ms, .. } => *at_ms,
+            | Self::AutoRestarted { at_ms, .. }
+            | Self::ReservationPlaced { at_ms, .. }
+            | Self::ReservationRemoved { at_ms, .. } => *at_ms,
         }
     }
 }

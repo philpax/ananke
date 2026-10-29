@@ -15,6 +15,8 @@ export const EVENT_TYPES = [
   "config_reloaded",
   "estimator_drift",
   "auto_restarted",
+  "reservation_placed",
+  "reservation_removed",
 ] as const satisfies readonly EventType[];
 
 /// The live history plus every persisted restart it does not already hold.
@@ -87,6 +89,8 @@ export function eventTone(event: DaemonEvent): Tone {
       return "warn";
     case "allocation_changed":
     case "config_reloaded":
+    case "reservation_placed":
+    case "reservation_removed":
       return "neutral";
     default: {
       const unreachable: never = event;

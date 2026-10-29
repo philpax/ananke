@@ -10,6 +10,7 @@ import type {
   EventHistory,
   LiveData,
   LiveResource,
+  ReservationsResponse,
   ServiceDetail,
   ServicesResponse,
 } from "../client.ts";
@@ -47,6 +48,13 @@ export const infoQuery: LiveQueryDef<DaemonInfoResponse> = {
   resource: { kind: "info" },
   fetch: api.getInfo,
   extract: (data) => (data.resource === "info" ? data.body : undefined),
+};
+
+export const reservationsQuery: LiveQueryDef<ReservationsResponse> = {
+  queryKey: ["reservations"],
+  resource: { kind: "reservations" },
+  fetch: api.listReservations,
+  extract: (data) => (data.resource === "reservations" ? data.body : undefined),
 };
 
 // Cached per name so a definition keeps its identity across renders, which

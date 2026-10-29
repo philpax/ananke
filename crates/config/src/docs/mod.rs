@@ -59,6 +59,10 @@ pub const DEFAULT_MAX_REQUEST_DURATION_MS: u64 = 600_000;
 /// Default service scheduling priority (higher wins eviction contests).
 pub const DEFAULT_SERVICE_PRIORITY: u8 = 50;
 
+/// Prefix reserved for manual reservations' allocation-table keys
+/// (`reservation:<id>`); no service name may start with it.
+pub const RESERVED_SERVICE_NAME_PREFIX: &str = "reservation:";
+
 /// Default minimum runtime a borrower must accumulate before the balloon
 /// resolver may fast-kill it (1 minute).
 pub const DEFAULT_MIN_BORROWER_RUNTIME_MS: u64 = 60_000;

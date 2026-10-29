@@ -65,6 +65,7 @@ export function resourceKey(resource: LiveResource): string {
     case "devices":
     case "events":
     case "info":
+    case "reservations":
       return resource.kind;
     case "service":
       return `service:${resource.name}`;

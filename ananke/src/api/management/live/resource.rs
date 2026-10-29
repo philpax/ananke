@@ -21,6 +21,7 @@ use crate::{
         },
     },
     daemon::app_state::AppState,
+    reservations::reservations_snapshot,
 };
 
 /// The change sources a resource's body depends on.
@@ -56,6 +57,15 @@ pub(crate) fn triggers(resource: &LiveResource) -> Triggers {
             activity: false,
             mirror: false,
         },
+        // Rows show each service's state and in-flight count beside the
+        // allocation table.
+        LiveResource::Reservations => Triggers {
+            events: true,
+            device_snapshot: false,
+            inflight: true,
+            activity: false,
+            mirror: true,
+        },
         LiveResource::Events | LiveResource::Info => Triggers {
             events: true,
             device_snapshot: false,
@@ -70,9 +80,12 @@ pub(crate) fn triggers(resource: &LiveResource) -> Triggers {
 pub(crate) fn wants_event(resource: &LiveResource, event: &Event) -> bool {
     match resource {
         LiveResource::Services | LiveResource::Events => true,
-        LiveResource::Devices => matches!(
+        LiveResource::Devices | LiveResource::Reservations => matches!(
             event,
-            Event::AllocationChanged { .. } | Event::ConfigReloaded { .. }
+            Event::AllocationChanged { .. }
+                | Event::ConfigReloaded { .. }
+                | Event::ReservationPlaced { .. }
+                | Event::ReservationRemoved { .. }
         ),
         LiveResource::Info => matches!(event, Event::ConfigReloaded { .. }),
         LiveResource::Service { name } => match event {
@@ -80,7 +93,10 @@ pub(crate) fn wants_event(resource: &LiveResource, event: &Event) -> bool {
             | Event::AllocationChanged { service, .. }
             | Event::EstimatorDrift { service, .. }
             | Event::AutoRestarted { service, .. } => service.as_str() == name,
-            Event::ConfigReloaded { .. } => true,
+            // A placement preview reads every row of the allocation table.
+            Event::ConfigReloaded { .. }
+            | Event::ReservationPlaced { .. }
+            | Event::ReservationRemoved { .. } => true,
         },
     }
 }
@@ -95,6 +111,7 @@ pub(crate) async fn snapshot(
         LiveResource::Devices => LiveData::Devices(devices_snapshot(state)),
         LiveResource::Events => LiveData::Events(events_history(state)),
         LiveResource::Info => LiveData::Info(info_snapshot(state)),
+        LiveResource::Reservations => LiveData::Reservations(reservations_snapshot(state)),
         LiveResource::Service { name } => {
             LiveData::Service(Box::new(service_detail_snapshot(state, name).await?))
         }
@@ -165,5 +182,35 @@ mod tests {
                 at_ms: 0,
             }
         ));
+    }
+
+    #[test]
+    fn reservation_changes_wake_every_view_that_reads_the_table() {
+        let placed = Event::ReservationPlaced {
+            id: 1,
+            label: None,
+            devices: Default::default(),
+            evicted: vec![],
+            at_ms: 0,
+        };
+        let removed = Event::ReservationRemoved {
+            id: 1,
+            label: None,
+            at_ms: 0,
+        };
+        for resource in [
+            LiveResource::Reservations,
+            LiveResource::Devices,
+            LiveResource::Services,
+            LiveResource::Service {
+                name: "demo".into(),
+            },
+        ] {
+            assert!(wants_event(&resource, &placed), "{resource:?}");
+            assert!(wants_event(&resource, &removed), "{resource:?}");
+        }
+        assert!(!wants_event(&LiveResource::Info, &placed));
+        let t = triggers(&LiveResource::Reservations);
+        assert!(t.events && t.inflight && t.mirror);
     }
 }

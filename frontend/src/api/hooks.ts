@@ -16,6 +16,9 @@ import {
   api,
   type ConfigResponse,
   type ConfigSaveResult,
+  type CreateReservationRequest,
+  type CreateReservationResponse,
+  type ReservationsResponse,
   type DaemonInfoResponse,
   type DeviceSampleResponse,
   type DeviceSummary,
@@ -36,6 +39,7 @@ import {
   devicesQuery,
   eventsQuery,
   infoQuery,
+  reservationsQuery,
   serviceDetailQuery,
   servicesQuery,
 } from "./live/resources.ts";
@@ -61,6 +65,37 @@ export function useEventFeed(): UseQueryResult<EventHistory, Error> {
 
 export function useInfo(): UseQueryResult<DaemonInfoResponse, Error> {
   return useLive(infoQuery);
+}
+
+export function useReservations(): UseQueryResult<ReservationsResponse, Error> {
+  return useLive(reservationsQuery);
+}
+
+export function useCreateReservation(): UseMutationResult<
+  CreateReservationResponse,
+  Error,
+  CreateReservationRequest
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: CreateReservationRequest) => api.createReservation(req),
+    // The live socket pushes the outcome; this covers the socket being down.
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["reservations"] });
+      void qc.invalidateQueries({ queryKey: ["devices"] });
+    },
+  });
+}
+
+export function useRemoveReservation(): UseMutationResult<void, Error, number> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.removeReservation(id),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["reservations"] });
+      void qc.invalidateQueries({ queryKey: ["devices"] });
+    },
+  });
 }
 
 export function useServiceDetail(

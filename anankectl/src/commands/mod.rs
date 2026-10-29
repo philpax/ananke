@@ -4,6 +4,7 @@ pub mod devices;
 pub mod lifecycle;
 pub mod logs;
 pub mod picker;
+pub mod reservations;
 pub mod server_config;
 pub mod services;
 pub mod show;

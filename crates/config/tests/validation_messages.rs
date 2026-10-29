@@ -48,6 +48,7 @@ const CORPUS: &[&str] = &[
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\ndevices.placement = \"zzz\"\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\ndevices.placement_override = {}\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\ndevices.split = \"tensor\"\ndevices.placement = \"hybrid\"\n",
+    "[[service]]\nname = \"reservation:1\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\n",
 ];
 /// Path of the pinned rendering, relative to this test file.
 const EXPECTED: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/validation_messages.txt");

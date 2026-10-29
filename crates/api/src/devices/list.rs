@@ -21,8 +21,13 @@ pub struct DeviceSummary {
 /// One reservation held against a device.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct DeviceReservation {
-    /// Service holding the reservation.
+    /// Service holding the reservation. A manual reservation appears as
+    /// `reservation:<id>`, with `reservation` set.
     pub service: String,
+    /// The manual reservation's id when this row is one rather than a
+    /// service's pledge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation: Option<i64>,
     /// Bytes reserved.
     pub bytes: u64,
     /// Whether the reservation is elastic (dynamic service borrowing).

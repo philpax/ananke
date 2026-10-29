@@ -56,6 +56,11 @@ export type LiveMessage = Schemas["LiveMessage"];
 export type LiveData = Schemas["LiveData"];
 export type LiveFeed = Schemas["LiveFeed"];
 export type LogFeed = Schemas["LogFeed"];
+export type ReservationsResponse = Schemas["ReservationsResponse"];
+export type ManualReservation = Schemas["ManualReservation"];
+export type ServiceReservation = Schemas["ServiceReservation"];
+export type CreateReservationRequest = Schemas["CreateReservationRequest"];
+export type CreateReservationResponse = Schemas["CreateReservationResponse"];
 
 export type LogsQuery = {
   since?: number;
@@ -91,6 +96,11 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   if (!resp.ok && resp.status !== 202)
     throw new Error(await errorMessage(resp));
   return (await resp.json()) as T;
+}
+
+async function deleteRequest(path: string): Promise<void> {
+  const resp = await fetch(path, { method: "DELETE" });
+  if (!resp.ok) throw new Error(await errorMessage(resp));
 }
 
 async function errorMessage(resp: Response): Promise<string> {
@@ -217,6 +227,11 @@ export const api = {
     postJson<DisableResponse>(
       `/api/services/${encodeURIComponent(name)}/disable`,
     ),
+  listReservations: () => getJson<ReservationsResponse>("/api/reservations"),
+  createReservation: (req: CreateReservationRequest) =>
+    postJson<CreateReservationResponse>("/api/reservations", req),
+  removeReservation: (id: number) =>
+    deleteRequest(`/api/reservations/${String(id)}`),
   liveUrl: () => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/live`;

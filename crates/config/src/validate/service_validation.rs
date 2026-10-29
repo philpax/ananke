@@ -45,6 +45,12 @@ pub(crate) fn validate_service(
         .port
         .ok_or_else(|| fail(format!("service {name} missing port")))?;
 
+    if name.starts_with(super::RESERVED_SERVICE_NAME_PREFIX) {
+        return Err(fail(format!(
+            "service name `{name}` starts with `{}`, which is reserved for manual reservations",
+            super::RESERVED_SERVICE_NAME_PREFIX
+        )));
+    }
     if !state.names.insert(name.clone()) {
         return Err(fail(format!("duplicate service name `{name}`")));
     }

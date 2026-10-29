@@ -17,6 +17,7 @@ pub mod genstall;
 pub mod handle;
 pub mod health;
 pub mod logs;
+pub mod manual_reservation;
 pub mod orphans;
 pub mod persistent_watcher;
 pub mod preview;
@@ -55,6 +56,7 @@ use crate::handle::MirroredState;
 pub use crate::{
     context::slot_to_key,
     ensure::{EnsureFailure, EnsureOutcome, await_ensure},
+    eviction::eviction_candidates,
     handle::{
         DisableResult, EnableResult, EnsureResponse, EnsureSource, ServiceIdentity, StartFailure,
         StartFailureKind, StartOutcome, SupervisorCommand, SupervisorDeps, SupervisorHandle,

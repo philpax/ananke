@@ -90,6 +90,7 @@ export function Nav({ className }: { readonly className?: string }) {
 
 const SECTION_ICON: Readonly<Record<Section, IconName>> = {
   services: "services",
+  reservations: "lock",
   chat: "chat",
   events: "events",
   stats: "stats",
@@ -98,6 +99,7 @@ const SECTION_ICON: Readonly<Record<Section, IconName>> = {
 
 const SECTION_LABEL: Readonly<Record<Section, string>> = {
   services: "nav.services",
+  reservations: "nav.reservations",
   chat: "nav.chat",
   events: "nav.events",
   stats: "nav.stats",

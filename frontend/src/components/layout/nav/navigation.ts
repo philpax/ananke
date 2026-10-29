@@ -5,10 +5,17 @@
 import { isChatModel } from "../../../api/chatModels.ts";
 import type { ServiceSummary } from "../../../api/client.ts";
 
-export type Section = "services" | "chat" | "events" | "stats" | "config";
+export type Section =
+  | "services"
+  | "reservations"
+  | "chat"
+  | "events"
+  | "stats"
+  | "config";
 
 export const SECTIONS: readonly Section[] = [
   "services",
+  "reservations",
   "chat",
   "events",
   "stats",
@@ -66,6 +73,8 @@ export function sectionHref(
     case "events":
     case "stats":
       return `/${section}${range}`;
+    case "reservations":
+      return "/reservations";
     case "config":
       return "/config";
     default: {

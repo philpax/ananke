@@ -206,6 +206,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         estimate_cache,
         mirror_changed,
         started_at: tokio::time::Instant::now(),
+        reservations: ananke::reservations::ReservationStore::default(),
     };
 
     // Drain-on-remove + spawn-on-add reconciler. Matches what daemon::run

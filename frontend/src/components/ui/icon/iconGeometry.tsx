@@ -31,6 +31,7 @@ export type IconName =
   | "chevron"
   | "attach"
   | "close"
+  | "lock"
   | "empty"
   | "sun"
   | "moon";
@@ -209,6 +210,15 @@ export const ICON_GEOMETRY: Readonly<Record<IconName, IconGeometry>> = {
   plus: { strokeWidth: STROKE, shape: <path d="M12 5v14M5 12h14" /> },
   chevron: { strokeWidth: STROKE, shape: <path d="M6 9l6 6 6-6" /> },
   close: { strokeWidth: STROKE, shape: <path d="M6 6l12 12M18 6L6 18" /> },
+  lock: {
+    strokeWidth: STROKE,
+    shape: (
+      <>
+        <rect x="4" y="11" width="16" height="10" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4M12 15v2" />
+      </>
+    ),
+  },
   attach: {
     strokeWidth: STROKE,
     strokeLinecap: "round",

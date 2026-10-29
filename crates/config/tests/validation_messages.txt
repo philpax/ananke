@@ -30,3 +30,4 @@
 029|failed to parse config at <config>: service a: unknown placement `zzz`
 030|failed to parse config at <config>: service a: devices.placement_override is empty
 031|failed to parse config at <config>: service a: devices.split=`tensor` requires placement=gpu-only (tensor/row split cannot spill to CPU)
+032|failed to parse config at <config>: service name `reservation:1` starts with `reservation:`, which is reserved for manual reservations

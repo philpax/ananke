@@ -73,7 +73,8 @@
     "events": "Events",
     "stats": "Stats",
     "attentionServices_one": "{{count}} service needs attention",
-    "attentionServices_other": "{{count}} services need attention"
+    "attentionServices_other": "{{count}} services need attention",
+    "reservations": "Reservations"
   },
   "services": {
     "title": "Services",
@@ -237,14 +238,19 @@
       "allocation_changed": "Allocation changed",
       "config_reloaded": "Config reloaded",
       "estimator_drift": "Estimate drift",
-      "auto_restarted": "Auto-restarted"
+      "auto_restarted": "Auto-restarted",
+      "reservation_placed": "Reservation placed",
+      "reservation_removed": "Reservation removed"
     },
     "status": {
       "open": "Live",
       "connecting": "Connecting",
       "reconnecting": "Reconnecting, showing the last events received"
     },
-    "olderThanLive": "The live history starts at {{time}}; before that, only recorded restarts are shown."
+    "olderThanLive": "The live history starts at {{time}}; before that, only recorded restarts are shown.",
+    "reservationPlaced": "reservation {{name}} placed, holding {{devices}}",
+    "reservationPlacedEvicting": "reservation {{name}} placed, holding {{devices}}; evicted {{services}}",
+    "reservationRemoved": "reservation {{name}} removed"
   },
   "stats": {
     "title": "Stats",
@@ -434,5 +440,45 @@
     "runFilter": "Run",
     "selectedRange": "selected range",
     "jumpToEnd": "jump to end"
+  },
+  "reservations": {
+    "title": "Reservations",
+    "metaManual_one": "{{count}} manual",
+    "metaManual_other": "{{count}} manual",
+    "metaServices_one": "{{count}} service",
+    "metaServices_other": "{{count}} services",
+    "devices": "Devices",
+    "reserved": "{{bytes}} reserved",
+    "servicesBytes": "{{bytes}} services",
+    "freeOf": "{{free}} free of {{total}}",
+    "manual": "Manual reservations",
+    "services": "Services",
+    "noManual": "No manual reservations.",
+    "noServices": "No service holds memory.",
+    "unnamed": "#{{id}}",
+    "manualMeta": "#{{id}} · {{time}}",
+    "inflight_one": "{{count}} request in flight",
+    "inflight_other": "{{count}} requests in flight",
+    "remove": "Remove",
+    "removeNamed": "Remove reservation {{name}}",
+    "stop": "Stop",
+    "stopNamed": "Stop {{name}}",
+    "new": "New reservation",
+    "newTitle": "New reservation",
+    "label": "Label",
+    "labelPlaceholder": "Optional",
+    "amounts": "GiB per device",
+    "amountFor": "GiB to reserve on {{device}}",
+    "amountHint": "{{free}} free",
+    "evictionNote": "Services in the way are stopped.",
+    "place": "Reserve",
+    "placing": "Reserving…",
+    "placed": "Reserved {{name}}.",
+    "placedEvicting": "Reserved {{name}}; stopping {{services}}.",
+    "problem": {
+      "no_devices": "Enter an amount for at least one device.",
+      "bad_amount": "The amount for {{device}} must be a positive number of GiB.",
+      "too_large": "The amount for {{device}} is more than the device holds."
+    }
   }
 }

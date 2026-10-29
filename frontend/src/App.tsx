@@ -12,6 +12,7 @@ import { ChatView } from "./components/chat/ChatView.tsx";
 import { MetricsView } from "./components/metrics/MetricsView.tsx";
 import { ConfigEditorView } from "./components/config/ConfigEditorView.tsx";
 import { NotFound } from "./components/layout/NotFound.tsx";
+import { ReservationsView } from "./components/reservations/ReservationsView.tsx";
 
 export default function App() {
   // Live queries update themselves; this refreshes the few that are not
@@ -26,6 +27,7 @@ export default function App() {
               the list mounted while services are opened. */}
           <Route path="/" element={<ServicesView />} />
           <Route path="/services/:name" element={<ServicesView />} />
+          <Route path="/reservations" element={<ReservationsView />} />
           <Route path="/chat" element={<ChatView />} />
           <Route path="/config" element={<ConfigEditorView />} />
           <Route path="/events" element={<EventsView />} />

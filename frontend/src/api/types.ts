@@ -124,6 +124,44 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/reservations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List reservations */
+    get: operations["get_reservations"];
+    put?: never;
+    /**
+     * Place a manual reservation
+     * @description Reserve memory on one or more devices so ananke never places a service into it. A reservation outranks every service: any service in the way is evicted, busy and persistent ones included. By default the response is sent once they have stopped; with `wait: false` it is sent as soon as their evictions begin.
+     */
+    post: operations["post_reservation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/reservations/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** Remove a manual reservation */
+    delete: operations["delete_reservation"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/restarts": {
     parameters: {
       query?: never;
@@ -461,6 +499,8 @@ export interface components {
       | "invalid_live_request"
       | "duplicate_subscription_id"
       | "subscription_limit"
+      | "reservation_not_found"
+      | "reservation_no_fit"
       | "other";
     /**
      * @description OpenAI's error-type taxonomy. `InvalidRequestError` for anything the
@@ -556,6 +596,36 @@ export interface components {
       /** @description Container runtime (`docker` or `podman`). */
       runtime: string;
     };
+    /** @description Request body for `POST /api/reservations`. */
+    CreateReservationRequest: {
+      /**
+       * @description Bytes to reserve per device id (`"cpu"` or `"gpu:N"`). At least one
+       *     device; each amount is rounded up to a whole MiB.
+       */
+      devices: {
+        [key: string]: number;
+      };
+      /** @description Free-form label naming what the memory is for. */
+      label?: string | null;
+      /**
+       * @description Whether to answer only once evicted services have stopped and
+       *     released their memory, so a job started on the reply finds it free.
+       *     Defaults to `true`; with `false` the reply comes straight after the
+       *     evictions begin, and the reservation already holds its memory
+       *     against services either way.
+       */
+      wait?: boolean | null;
+    };
+    /** @description Response from `POST /api/reservations`. */
+    CreateReservationResponse: {
+      /**
+       * @description Services evicted to make room. With `wait`, they have stopped by
+       *     the time of the response; without it, they may still be stopping.
+       */
+      evicted: string[];
+      /** @description The reservation as stored. */
+      reservation: components["schemas"]["ManualReservation"];
+    };
     /** @description `GET /api/info` response body. */
     DaemonInfoResponse: {
       /** @description The management API listen address (e.g. `"0.0.0.0:7071"`). */
@@ -623,7 +693,16 @@ export interface components {
       bytes: number;
       /** @description Whether the reservation is elastic (dynamic service borrowing). */
       elastic: boolean;
-      /** @description Service holding the reservation. */
+      /**
+       * Format: int64
+       * @description The manual reservation's id when this row is one rather than a
+       *     service's pledge.
+       */
+      reservation?: number | null;
+      /**
+       * @description Service holding the reservation. A manual reservation appears as
+       *     `reservation:<id>`, with `reservation` set.
+       */
       service: string;
     };
     /** @description One device memory sample. */
@@ -882,6 +961,44 @@ export interface components {
           trigger: string;
           /** @enum {string} */
           type: "auto_restarted";
+        }
+      | {
+          /**
+           * Format: int64
+           * @description When it was placed, in unix milliseconds.
+           */
+          at_ms: number;
+          /** @description Reserved bytes per device id (`"cpu"` or `"gpu:N"`). */
+          devices: {
+            [key: string]: number;
+          };
+          /** @description Services evicted to make room for it. */
+          evicted: string[];
+          /**
+           * Format: int64
+           * @description The reservation's id.
+           */
+          id: number;
+          /** @description The reservation's label, if it has one. */
+          label?: string | null;
+          /** @enum {string} */
+          type: "reservation_placed";
+        }
+      | {
+          /**
+           * Format: int64
+           * @description When it was removed, in unix milliseconds.
+           */
+          at_ms: number;
+          /**
+           * Format: int64
+           * @description The reservation's id.
+           */
+          id: number;
+          /** @description The reservation's label, if it had one. */
+          label?: string | null;
+          /** @enum {string} */
+          type: "reservation_removed";
         };
     /** @description The daemon's bounded window of recent events, oldest first. */
     EventHistory: {
@@ -1074,6 +1191,12 @@ export interface components {
           body: components["schemas"]["ServiceDetail"];
           /** @enum {string} */
           resource: "service";
+        }
+      | {
+          /** @description A `reservations` snapshot. */
+          body: components["schemas"]["ReservationsResponse"];
+          /** @enum {string} */
+          resource: "reservations";
         };
     /** @description An append-only feed a client can follow on `/api/live`. */
     LiveFeed: components["schemas"]["LogFeed"] & {
@@ -1190,6 +1313,10 @@ export interface components {
           kind: "service";
           /** @description The service's name. */
           name: string;
+        }
+      | {
+          /** @enum {string} */
+          kind: "reservations";
         };
     /** @description Which log lines to follow, and from where. */
     LogFeed: {
@@ -1253,6 +1380,25 @@ export interface components {
       logs: components["schemas"]["LogLine"][];
       /** @description Opaque cursor for paging further back; `None` when exhausted. */
       next_cursor?: string | null;
+    };
+    /** @description A reservation an operator placed through the API or CLI. */
+    ManualReservation: {
+      /**
+       * Format: int64
+       * @description When it was placed, in unix milliseconds.
+       */
+      created_at_ms: number;
+      /** @description Reserved bytes per device id (`"cpu"` or `"gpu:N"`). */
+      devices: {
+        [key: string]: number;
+      };
+      /**
+       * Format: int64
+       * @description The reservation's id, used to remove it.
+       */
+      id: number;
+      /** @description Free-form label naming what the memory is for. */
+      label?: string | null;
     };
     /** @description One time bucket of aggregated request metrics, scoped to a single service. */
     MetricBucketResponse: {
@@ -1485,6 +1631,13 @@ export interface components {
       /** @description Whether the placement fits right now without eviction or reclaim. */
       verdict: components["schemas"]["FitVerdict"];
     };
+    /** @description Response from `GET /api/reservations`. */
+    ReservationsResponse: {
+      /** @description Operator-placed reservations, oldest first. */
+      manual: components["schemas"]["ManualReservation"][];
+      /** @description Pledges held by services ananke runs, by service name. */
+      services: components["schemas"]["ServiceReservation"][];
+    };
     /** @description One persisted auto-restart watchdog firing. */
     RestartEvent: {
       /**
@@ -1641,6 +1794,22 @@ export interface components {
       state: components["schemas"]["ServiceStateKind"];
       /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
       template: string;
+    };
+    /** @description The memory a service ananke runs has pledged. */
+    ServiceReservation: {
+      /** @description Pledged bytes per device id (`"cpu"` or `"gpu:N"`). */
+      devices: {
+        [key: string]: number;
+      };
+      /**
+       * Format: int64
+       * @description Requests in flight through the service's proxy.
+       */
+      inflight_count: number;
+      /** @description The service's name. */
+      service: string;
+      /** @description The service's current state. */
+      state: components["schemas"]["ServiceStateKind"];
     };
     /**
      * @description One auto-restart watchdog firing, with the service it belongs to.
@@ -2191,6 +2360,113 @@ export interface operations {
         };
       };
       /** @description query_failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  get_reservations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReservationsResponse"];
+        };
+      };
+    };
+  };
+  post_reservation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateReservationRequest"];
+      };
+    };
+    responses: {
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreateReservationResponse"];
+        };
+      };
+      /** @description invalid_request_error */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description reservation_no_fit */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description persist_failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+    };
+  };
+  delete_reservation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Reservation id */
+        id: number;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description reservation_not_found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApiError"];
+        };
+      };
+      /** @description persist_failed */
       500: {
         headers: {
           [name: string]: unknown;

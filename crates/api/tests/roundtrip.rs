@@ -175,13 +175,66 @@ fn device_summary_roundtrips() {
         name: "RTX 3090".into(),
         total_bytes: 1 << 34,
         free_bytes: 1 << 33,
-        reservations: vec![DeviceReservation {
-            service: "demo".into(),
-            bytes: 1 << 30,
-            elastic: false,
-        }],
+        reservations: vec![
+            DeviceReservation {
+                service: "demo".into(),
+                reservation: None,
+                bytes: 1 << 30,
+                elastic: false,
+            },
+            DeviceReservation {
+                service: "reservation:7".into(),
+                reservation: Some(7),
+                bytes: 1 << 32,
+                elastic: false,
+            },
+        ],
     };
     assert_eq!(v.clone(), roundtrip(v));
+}
+
+#[test]
+fn reservations_roundtrip() {
+    use std::collections::BTreeMap;
+
+    use ananke_api::{
+        reservations::{
+            CreateReservationRequest, CreateReservationResponse, ManualReservation,
+            ReservationsResponse, ServiceReservation,
+        },
+        shared::service_state::ServiceStateKind,
+    };
+
+    let manual = ManualReservation {
+        id: 7,
+        label: Some("train".into()),
+        created_at_ms: 1_000,
+        devices: BTreeMap::from([("gpu:0".into(), 18 << 30), ("gpu:1".into(), 2 << 30)]),
+    };
+    let list = ReservationsResponse {
+        manual: vec![manual.clone()],
+        services: vec![ServiceReservation {
+            service: "demo".into(),
+            state: ServiceStateKind::Running,
+            inflight_count: 1,
+            devices: BTreeMap::from([("gpu:1".into(), 4 << 30)]),
+        }],
+    };
+    assert_eq!(list.clone(), roundtrip(list));
+    let created = CreateReservationResponse {
+        reservation: manual,
+        evicted: vec!["demo".into()],
+    };
+    assert_eq!(created.clone(), roundtrip(created));
+
+    let req: CreateReservationRequest =
+        serde_json::from_str(r#"{"devices":{"gpu:0":1073741824}}"#).unwrap();
+    assert_eq!(req.label, None);
+    assert!(serde_json::from_str::<CreateReservationRequest>(r#"{"devices":{},"ttl":1}"#).is_err());
+    assert!(
+        serde_json::from_str::<CreateReservationRequest>(r#"{"devices":{},"priority":50}"#)
+            .is_err()
+    );
 }
 
 #[test]

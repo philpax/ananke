@@ -18,6 +18,7 @@ use crate::{
     events::EventHistory,
     info::get::DaemonInfoResponse,
     internal::log_line::{LogLine, LogPosition, LogStream},
+    reservations::ReservationsResponse,
     services::{detail::ServiceDetail, list::ServicesResponse},
     shared::errors::ApiError,
 };
@@ -96,6 +97,8 @@ pub enum LiveResource {
         /// The service's name.
         name: String,
     },
+    /// The body of `GET /api/reservations`.
+    Reservations,
 }
 
 /// A frame the daemon sends on `/api/live`.
@@ -171,4 +174,6 @@ pub enum LiveData {
     Info(DaemonInfoResponse),
     /// A `service` snapshot.
     Service(Box<ServiceDetail>),
+    /// A `reservations` snapshot.
+    Reservations(ReservationsResponse),
 }

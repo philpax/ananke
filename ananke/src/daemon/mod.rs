@@ -129,7 +129,11 @@ pub async fn run() -> Result<(), ExpectedError> {
         estimate_cache: crate::supervise::estimate_cache::EstimateCacheHandle::new(),
         mirror_changed: ananke_events::ChangeSignal::new(),
         started_at: tokio::time::Instant::now(),
+        reservations: crate::reservations::ReservationStore::default(),
     };
+    // Reservations go into the allocation table before any service starts,
+    // so persistent services are placed around them.
+    crate::reservations::load(&app_state).await?;
 
     let provisioning_deps = app_state.provisioning_deps(shutdown_rx.clone());
 

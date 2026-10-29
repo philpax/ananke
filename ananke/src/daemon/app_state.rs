@@ -46,6 +46,8 @@ pub struct AppState {
     /// When the daemon started, for the uptime `GET /api/info` reports. A
     /// `tokio` instant so tests on paused time see a deterministic uptime.
     pub started_at: Instant,
+    /// Operator-placed reservations, mirrored into `allocations`.
+    pub reservations: crate::reservations::ReservationStore,
 }
 
 impl AppState {

@@ -8,6 +8,7 @@
 use ananke_api::{
     devices::list::DeviceSummary,
     internal::log_line::LogLine,
+    reservations::ReservationsResponse,
     services::{detail::ServiceDetail, list::ServiceSummary},
     shared::{DisableReason, ServiceStateKind},
 };
@@ -46,6 +47,49 @@ pub fn print_devices_table(devices: &[DeviceSummary]) {
     }
 
     println!("{table}");
+}
+
+pub fn print_reservations(resp: &ReservationsResponse) {
+    let devices = |d: &std::collections::BTreeMap<String, u64>| {
+        d.iter()
+            .map(|(id, bytes)| format!("{id}: {}", format_bytes(*bytes)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut manual = base_table();
+    manual.set_header(header_row(["ID", "LABEL", "DEVICES", "PLACED"]));
+    for r in &resp.manual {
+        manual.add_row(vec![
+            Cell::new(r.id),
+            Cell::new(r.label.as_deref().unwrap_or("—")),
+            Cell::new(devices(&r.devices)),
+            Cell::new(format_restart_time(r.created_at_ms)),
+        ]);
+    }
+    println!("MANUAL");
+    if resp.manual.is_empty() {
+        println!("  (none)");
+    } else {
+        println!("{manual}");
+    }
+
+    let mut services = base_table();
+    services.set_header(header_row(["SERVICE", "STATE", "INFLIGHT", "DEVICES"]));
+    for r in &resp.services {
+        services.add_row(vec![
+            Cell::new(&r.service),
+            Cell::new(r.state.to_string()),
+            Cell::new(r.inflight_count).set_alignment(CellAlignment::Right),
+            Cell::new(devices(&r.devices)),
+        ]);
+    }
+    println!();
+    println!("SERVICES");
+    if resp.services.is_empty() {
+        println!("  (none)");
+    } else {
+        println!("{services}");
+    }
 }
 
 pub fn print_services_table(services: &[ServiceSummary], show_all: bool) {
@@ -141,7 +185,7 @@ pub fn print_service_detail(detail: &ServiceDetail, recent_logs: &[LogLine]) {
 /// a coarse relative age: `2026-07-24 15:41 (3h ago)`. The absolute time is
 /// what an operator correlates against other logs; the age is what they scan
 /// for at a glance.
-fn format_restart_time(at_ms: i64) -> String {
+pub fn format_restart_time(at_ms: i64) -> String {
     let age = {
         let now_ms = jiff::Timestamp::now().as_millisecond();
         let delta_s = (now_ms - at_ms).max(0) / 1000;

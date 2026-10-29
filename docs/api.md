@@ -41,6 +41,9 @@ The daemon binds to loopback by default. Do **not** expose the management API or
 | `GET` | `/api/events/history` | List recent events |
 | `GET` | `/api/info` | Get daemon listen addresses and uptime |
 | `GET` | `/api/metrics` | Get request metrics (time-bucketed) |
+| `GET` | `/api/reservations` | List reservations |
+| `POST` | `/api/reservations` | Place a manual reservation |
+| `DELETE` | `/api/reservations/{id}` | Remove a manual reservation |
 | `GET` | `/api/restarts` | Get auto-restart firings |
 | `GET` | `/api/services` | List all services |
 | `GET` | `/api/services/{name}` | Get service detail |
@@ -295,6 +298,7 @@ List devices and reservations
   reservations: {
     bytes: number
     elastic: boolean
+    reservation?: number | null
     service: string
   }[]
   total_bytes: number
@@ -441,10 +445,102 @@ List recent events
       service: string
       trigger: string
       type: "auto_restarted"
+    }
+    // reservation_placed
+    | {
+      at_ms: number
+      devices: Record<string, number>
+      evicted: string[]
+      id: number
+      label?: string | null
+      type: "reservation_placed"
+    }
+    // reservation_removed
+    | {
+      at_ms: number
+      id: number
+      label?: string | null
+      type: "reservation_removed"
     }[]
   since_ms: number
 }
 ```
+
+#### GET /api/reservations
+
+List reservations
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 200 |  | `ReservationsResponse` |
+
+**Response (200)**:
+
+```typescript
+{
+  manual: {
+    created_at_ms: number
+    devices: Record<string, number>
+    id: number
+    label?: string | null
+  }[]
+  services: {
+    devices: Record<string, number>
+    inflight_count: number
+    service: string
+    state: "idle" | "starting" | "running" | "draining" | "stopped" | "evicted" | "failed" | "disabled" | "unknown"
+  }[]
+}
+```
+
+#### POST /api/reservations
+
+Place a manual reservation
+
+**Request body**:
+
+```typescript
+{
+  devices: Record<string, number>
+  label?: string | null
+  wait?: boolean | null
+}
+```
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 201 |  | `CreateReservationResponse` |
+| 400 | invalid_request_error | `ApiError` |
+| 409 | reservation_no_fit | `ApiError` |
+| 500 | persist_failed | `ApiError` |
+
+**Response (201)**:
+
+```typescript
+{
+  evicted: string[]
+  reservation: {
+    created_at_ms: number
+    devices: Record<string, number>
+    id: number
+    label?: string | null
+  }
+}
+```
+
+#### DELETE /api/reservations/{id}
+
+Remove a manual reservation
+
+| Parameter | In | Required | Description |
+| --- | --- | --- | --- |
+| `id` | path | yes | Reservation id |
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 204 |  | — |
+| 404 | reservation_not_found | `ApiError` |
+| 500 | persist_failed | `ApiError` |
 
 #### GET /api/restarts
 
@@ -911,7 +1007,7 @@ Restart a service
   // unavailable
   | {
     error: {
-      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "invalid_live_request" | "duplicate_subscription_id" | "subscription_limit" | "other"
+      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "invalid_live_request" | "duplicate_subscription_id" | "subscription_limit" | "reservation_not_found" | "reservation_no_fit" | "other"
       message: string
       type: "invalid_request_error" | "server_error" | "other"
     }
@@ -952,7 +1048,7 @@ Start a service
   // unavailable
   | {
     error: {
-      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "invalid_live_request" | "duplicate_subscription_id" | "subscription_limit" | "other"
+      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "invalid_live_request" | "duplicate_subscription_id" | "subscription_limit" | "reservation_not_found" | "reservation_no_fit" | "other"
       message: string
       type: "invalid_request_error" | "server_error" | "other"
     }
@@ -1288,6 +1384,8 @@ The `POST /api/services/{name}/start` endpoint returns `202 Accepted` even when 
 | `invalid_live_request` | A `/api/live` frame could not be parsed as a request. |
 | `duplicate_subscription_id` | A `/api/live` subscribe reused an id already active on the connection. |
 | `subscription_limit` | A `/api/live` connection reached its subscription limit. |
+| `reservation_not_found` |  |
+| `reservation_no_fit` |  |
 | `other` | Forward-compatibility fallback for unknown codes. |
 
 ## Prometheus metrics

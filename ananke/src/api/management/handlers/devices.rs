@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::daemon::app_state::AppState;
+use crate::{daemon::app_state::AppState, supervise::manual_reservation::manual_reservation_id};
 
 #[utoipa::path(
     summary = "List devices and reservations",
@@ -34,6 +34,7 @@ pub(crate) fn devices_snapshot(state: &AppState) -> Vec<DeviceSummary> {
             .filter_map(|(svc, a)| {
                 a.get(&slot).map(|mb| DeviceReservation {
                     service: svc.to_string(),
+                    reservation: manual_reservation_id(svc),
                     bytes: mb * 1024 * 1024,
                     // Placeholder: elastic tracking is deferred to a later phase.
                     elastic: false,
@@ -56,6 +57,7 @@ pub(crate) fn devices_snapshot(state: &AppState) -> Vec<DeviceSummary> {
                 a.get(&crate::config::DeviceSlot::Cpu)
                     .map(|mb| DeviceReservation {
                         service: svc.to_string(),
+                        reservation: manual_reservation_id(svc),
                         bytes: mb * 1024 * 1024,
                         // Placeholder: elastic tracking is deferred to a later phase.
                         elastic: false,

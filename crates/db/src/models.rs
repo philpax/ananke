@@ -221,3 +221,13 @@ pub struct DeviceSample {
     pub free_bytes: i64,
     pub used_bytes: i64,
 }
+
+/// An operator-placed reservation with its per-device amounts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualReservation {
+    pub reservation_id: i64,
+    pub label: Option<String>,
+    pub created_at_ms: i64,
+    /// Reserved MiB per device key (`"cpu"` or `"gpu:N"`).
+    pub devices: std::collections::BTreeMap<String, i64>,
+}

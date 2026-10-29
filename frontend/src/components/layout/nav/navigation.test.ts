@@ -12,6 +12,7 @@ describe("sectionForPath", () => {
     ["/config/", "config"],
     ["/events", "events"],
     ["/stats", "stats"],
+    ["/reservations", "reservations"],
     ["/nope", undefined],
     ["/servicesx", undefined],
   ])("%s is %s", (path, section) => {

@@ -53,6 +53,7 @@ pub use crate::docs::{
     DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_MAX_REQUEST_DURATION_MS, DEFAULT_MIN_BORROWER_RUNTIME_MS,
     DEFAULT_OPENAI_MAX_BODY_BYTES, DEFAULT_OPENAI_MAX_BODY_MB, DEFAULT_PRIVATE_PORT_END,
     DEFAULT_PRIVATE_PORT_START, DEFAULT_SERVICE_PRIORITY, DEFAULT_STOP_GRACE_MS,
+    RESERVED_SERVICE_NAME_PREFIX,
 };
 // Placeholder dry-run checking cannot live in this crate: it needs the
 // template substitution + allocation types, which would create a
