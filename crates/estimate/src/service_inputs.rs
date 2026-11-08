@@ -24,6 +24,7 @@ use crate::{EstimatorInputs, Fork, Speculation};
 pub fn estimator_inputs(svc: &ServiceConfig) -> Option<EstimatorInputs<'_>> {
     let lc = svc.llama_cpp()?;
     Some(EstimatorInputs {
+        ik_assignment_options_supported: svc.extra_args.is_empty(),
         name: svc.name.as_str(),
         model: lc.model.as_path(),
         mmproj: lc.mmproj.as_deref(),
@@ -31,6 +32,11 @@ pub fn estimator_inputs(svc: &ServiceConfig) -> Option<EstimatorInputs<'_>> {
         ubatch: extra_arg_value(&svc.extra_args, &["-ub", "--ubatch-size", "--ubatch_size"])
             .and_then(|v| v.parse().ok())
             .or(lc.ubatch_size),
+        worst_graph_tokens: extra_arg_value(
+            &svc.extra_args,
+            &["-wgt", "--worst-graph-tokens", "--worst_graph_tokens"],
+        )
+        .and_then(|v| v.parse().ok()),
         // One device unless a caller that can see the machine says
         // otherwise: under-stating this under-reserves by ~20 MiB a card,
         // which the rolling correction can absorb, where over-stating it
@@ -169,5 +175,56 @@ fn flash_attn_from_extra_args(extra_args: &[String]) -> Option<bool> {
         "on" | "1" | "true" => Some(true),
         "off" | "0" | "false" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use ananke_config::load_config_from_str;
+
+    use super::*;
+
+    #[test]
+    fn runtime_overrides_disable_assignment_bounds_including_mixed_aliases() {
+        for args in [
+            r#"["--ctx-size", "8192"]"#,
+            r#"["--cache-type-k", "f32", "--cache-type-v", "f32"]"#,
+            r#"["--worst_graph-tokens", "999999"]"#,
+        ] {
+            let source = format!(
+                r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/fake.gguf"
+port = 11435
+extra_args = {args}
+"#
+            );
+            let (config, _) = load_config_from_str(&source, Path::new("/config.toml")).unwrap();
+            assert!(
+                !estimator_inputs(&config.services[0])
+                    .unwrap()
+                    .ik_assignment_options_supported
+            );
+        }
+    }
+
+    #[test]
+    fn worst_graph_tokens_uses_the_last_runtime_alias() {
+        let source = r#"
+[[service]]
+name = "demo"
+template = "llama-cpp"
+model = "/fake.gguf"
+port = 11435
+extra_args = ["-wgt", "16", "--worst-graph-tokens", "32", "--worst_graph_tokens", "2048"]
+"#;
+        let (config, _) = load_config_from_str(source, Path::new("/config.toml")).unwrap();
+        let inputs = estimator_inputs(&config.services[0]).unwrap();
+        assert_eq!(inputs.worst_graph_tokens, Some(2048));
+        assert!(!inputs.ik_assignment_options_supported);
     }
 }

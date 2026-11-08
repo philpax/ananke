@@ -3,20 +3,84 @@
 //! "yield to an active non-persistent peer" rule that keeps the persistent
 //! watcher from sniping a peer mid-load.
 
+use ananke_allocator::{
+    AllocationTable,
+    eviction::{EvictionCandidate, plan_eviction, plan_fixed_eviction, revalidate_eviction},
+};
 use ananke_config::validate::{DEFAULT_SERVICE_PRIORITY, Lifecycle};
+use smol_str::SmolStr;
 use tracing::{info, warn};
 
 use crate::{
-    RunLoop,
+    RunLoop, SupervisorDeps,
     ensure::{ReservationFailure, RetryPackFailure},
     handle::EnsureSource,
     state::ServiceState,
 };
 
+pub fn eviction_candidates(
+    exclude: &SmolStr,
+    deps: &SupervisorDeps,
+    table: &AllocationTable,
+) -> Vec<EvictionCandidate> {
+    let effective = deps.config.effective();
+    let now = tokio::time::Instant::now();
+    let mut candidates = Vec::new();
+    for (_, handle) in deps.registry.all() {
+        if &handle.name == exclude {
+            continue;
+        }
+        let bytes = table
+            .get(&handle.name)
+            .map(|row| {
+                row.values().fold(0u64, |sum, mb| {
+                    sum.saturating_add(mb.saturating_mul(1024 * 1024))
+                })
+            })
+            .unwrap_or(0);
+        if bytes == 0 {
+            continue;
+        }
+        let svc = effective
+            .services
+            .iter()
+            .find(|svc| svc.name == handle.name);
+        let priority = svc.map_or(DEFAULT_SERVICE_PRIORITY, |svc| svc.priority);
+        let lifecycle = svc.map_or(Lifecycle::OnDemand, |svc| svc.lifecycle);
+        // Dynamic services remain elastic despite long-lived UI connections.
+        let dynamic = svc.is_some_and(|svc| {
+            matches!(
+                svc.allocation_mode,
+                ananke_config::AllocationMode::Dynamic { .. }
+            )
+        });
+        let settled = matches!(
+            handle.peek_state(),
+            ServiceState::Idle | ServiceState::Running
+        );
+        candidates.push(EvictionCandidate {
+            name: handle.name.clone(),
+            priority,
+            lifecycle,
+            idle: settled && (dynamic || deps.inflight.current(&handle.name) == 0),
+            allocation_bytes: bytes,
+        });
+    }
+    candidates.sort_by_key(|candidate| {
+        std::cmp::Reverse(
+            deps.activity
+                .last(&candidate.name)
+                .map(|last| now.saturating_duration_since(last).as_millis())
+                .unwrap_or(u128::MAX),
+        )
+    });
+    candidates
+}
+
 impl RunLoop {
     /// Pack failed against the current allocation table. Walk evictable peers
     /// in least-recently-used order (oldest activity first), adding one at
-    /// a time to the victim set until the optimistic pack succeeds. The
+    /// a time until a strict pack succeeds with bounded reclaim credit. The
     /// minimum number of LRU-first peers we need to drain, no more — a busy
     /// service whose cold peers already cover the demand never gets touched.
     ///
@@ -47,27 +111,10 @@ impl RunLoop {
         let my_priority = self.current_svc().priority;
         let my_lifecycle = self.current_svc().lifecycle;
 
-        // LRU-first ordering over evictable peers. `collect_eviction_candidates`
-        // already excludes zero-allocation peers, so everything in `candidates`
-        // holds real VRAM. Services that have never been pinged sort as "most
-        // LRU" (effectively infinite age), so an idle peer is a first-class
-        // victim candidate — except for tied-priority persistent peers when
-        // the requester is on-demand, which `is_evictable_by` filters out.
-        let now = tokio::time::Instant::now();
-        let mut ranked: Vec<(&ananke_allocator::eviction::EvictionCandidate, u128)> = candidates
+        let ranked: Vec<_> = candidates
             .iter()
-            .filter(|c| c.is_evictable_by(my_priority, my_lifecycle))
-            .map(|c| {
-                let age_ms = self
-                    .deps
-                    .activity
-                    .last(&c.name)
-                    .map(|t| now.saturating_duration_since(t).as_millis())
-                    .unwrap_or(u128::MAX);
-                (c, age_ms)
-            })
+            .filter(|candidate| candidate.is_evictable_by(my_priority, my_lifecycle))
             .collect();
-        ranked.sort_by_key(|(_, age)| std::cmp::Reverse(*age));
 
         if ranked.is_empty() {
             // No peer is currently evictable. Distinguish two cases so the
@@ -107,46 +154,37 @@ impl RunLoop {
             return Err(RetryPackFailure::NotPossible(reason));
         }
 
-        // Greedy LRU-first fill: walk peers in LRU order, extending the
-        // victim set one at a time, and re-run the optimistic packer after
-        // every addition. Stop as soon as the pack succeeds — that's the
-        // minimum LRU-first victim set that covers the layout.
-        let mut victims: Vec<smol_str::SmolStr> = Vec::new();
-        let mut winning_want: Option<std::collections::BTreeMap<ananke_config::DeviceSlot, u64>> =
-            None;
-        for (cand, _) in &ranked {
-            victims.push(cand.name.clone());
-            let mut filtered = table.clone();
-            for v in &victims {
-                filtered.remove(v);
+        let svc = self.current_svc();
+        let plan = plan_eviction(
+            snap,
+            table,
+            &candidates,
+            &svc,
+            |post_snapshot, remaining| {
+                let want = self.compute_reservation_map(post_snapshot, remaining)?;
+                ananke_allocator::can_fit(&want, post_snapshot, remaining, Some(&svc.name))
+                    .map_err(|err| {
+                        ReservationFailure::PackFailed(
+                            ananke_allocator::placement::PackError::WeightsDoNotFit {
+                                shortfalls: vec![ananke_allocator::placement::DeviceShortfall {
+                                    device: ananke_devices::DeviceId::from_slot(&err.slot),
+                                    requested_bytes: err.needed_bytes,
+                                    available_bytes: err.available_bytes,
+                                }],
+                            },
+                        )
+                    })?;
+                Ok::<_, ReservationFailure>(want)
+            },
+        );
+        let (want, victims) = match plan {
+            Ok(plan) => plan,
+            Err(err) => {
+                let _ = self.packed_for_spawn.take();
+                let reason = err.message();
+                warn!(service = %svc.name, %reason, "eviction cannot provide enough capacity");
+                return Err(RetryPackFailure::NotPossible(reason));
             }
-            if let Ok(w) = self.compute_reservation_map_optimistic(snap, &filtered) {
-                winning_want = Some(w);
-                break;
-            }
-        }
-
-        let Some(want) = winning_want else {
-            // Even with every evictable peer treated as gone the packer
-            // still can't lay out the model. Report the last pack error
-            // so the operator sees the actual deficit (which GPU, what
-            // bytes), not a generic "no fit".
-            let mut filtered = table.clone();
-            for v in &victims {
-                filtered.remove(v);
-            }
-            let reason = self
-                .compute_reservation_map_optimistic(snap, &filtered)
-                .err()
-                .map(ReservationFailure::message)
-                .unwrap_or_else(|| "placement: unknown failure".into());
-            warn!(
-                service = %self.init.identity.name,
-                reason = %reason,
-                evictable_count = victims.len(),
-                "optimistic pack failed even with all evictable peers treated as gone"
-            );
-            return Err(RetryPackFailure::NotPossible(reason));
         };
 
         info!(
@@ -194,22 +232,21 @@ impl RunLoop {
         let candidates = self.collect_eviction_candidates().await;
 
         let reservations_now = self.deps.allocations.lock().clone();
-        // `nofit.available_bytes` is already reservation-adjusted
-        // (`min(snap.free, snap.total - sum_of_reservations)`), so pass
-        // it through verbatim. Using `snap.free_bytes` here would let
-        // running services' pledges hide behind the raw snapshot free
-        // and short-circuit eviction — exactly what happens in the
-        // fake-spawner harness where the snapshot doesn't move as
-        // services start up.
-        let to_evict = ananke_allocator::eviction::select_for_slot(
-            nofit.needed_bytes,
-            &nofit.slot,
-            self.current_svc().priority,
-            self.current_svc().lifecycle,
-            &candidates,
-            &reservations_now,
-            nofit.available_bytes,
-        );
+        let snapshot = self.deps.snapshot.read().clone();
+        let svc = self.current_svc();
+        let mut ranked = candidates.clone();
+        ranked.sort_by(|a, b| {
+            b.idle
+                .cmp(&a.idle)
+                .then(a.priority.cmp(&b.priority))
+                .then(a.allocation_bytes.cmp(&b.allocation_bytes))
+        });
+        let plan = plan_fixed_eviction(&snapshot, &reservations_now, &ranked, &svc, want);
+        let to_evict = match plan {
+            Ok(victims) if victims.is_empty() => return Ok(()),
+            Ok(victims) => victims,
+            Err(_) => Vec::new(),
+        };
 
         if to_evict.is_empty() {
             // Same distinction as `retry_pack_with_eviction`: is there a busy
@@ -257,21 +294,16 @@ impl RunLoop {
             }
         }
 
-        // Re-attempt feasibility after evictions. `begin_drain` is
-        // non-blocking — the victims' allocation rows aren't actually removed
-        // until each drain finishes (see `record_drain_complete`), so the raw
-        // allocation table still reflects them at this moment.
-        // `can_fit_after_eviction` treats the planned evictees as already
-        // freed; if the drains later fail or stall, the child spawn will see
-        // the real state and OOM-retry will handle it.
-        let snap2 = self.deps.snapshot.read().clone();
-        let table2 = self.deps.allocations.lock().clone();
-        if let Err(again) = ananke_allocator::can_fit_after_eviction(
-            want,
-            &snap2,
-            &table2,
-            Some(&self.init.identity.name),
+        // Drain acknowledgements can remove victim rows before the device snapshot refreshes.
+        // Keep credit tied to the original snapshot, but recheck competing pledges.
+        let current_table = self.deps.allocations.lock().clone();
+        if let Err(again) = revalidate_eviction(
+            &snapshot,
+            &reservations_now,
+            &current_table,
             &to_evict,
+            want,
+            Some(&self.init.identity.name),
         ) {
             let _ = self.packed_for_spawn.take();
             return Err(RetryPackFailure::NotPossible(format!(
@@ -287,84 +319,9 @@ impl RunLoop {
     /// — an empty slot in the registry has nothing to give up, so it isn't
     /// an eviction candidate, it's just a registered service that hasn't
     /// started yet.
-    pub(crate) async fn collect_eviction_candidates(
-        &self,
-    ) -> Vec<ananke_allocator::eviction::EvictionCandidate> {
-        let all_services = self.deps.registry.all();
-        // Materialise the priority + lifecycle + dynamic-mode flag from the
-        // live config before any `.await` below, so the arc-swap guard is
-        // released promptly. The dynamic-mode bit is what lets the planner
-        // treat balloon services as elastic — see the idle-computation
-        // comment below.
-        let svc_meta_by_name: std::collections::BTreeMap<_, _> = {
-            let eff = self.deps.config.effective();
-            eff.services
-                .iter()
-                .map(|s| {
-                    let is_dynamic = matches!(
-                        s.allocation_mode,
-                        ananke_config::AllocationMode::Dynamic { .. }
-                    );
-                    (s.name.clone(), (s.priority, s.lifecycle, is_dynamic))
-                })
-                .collect()
-        };
-        let mut out = Vec::new();
-        for (_name, handle) in all_services {
-            if handle.name.as_str() == self.init.identity.name.as_str() {
-                continue;
-            }
-            let alloc_mb = self
-                .deps
-                .allocations
-                .lock()
-                .get(&handle.name)
-                .cloned()
-                .unwrap_or_default();
-            let bytes = alloc_mb.values().sum::<u64>() * 1024 * 1024;
-            if bytes == 0 {
-                continue;
-            }
-            // `peek_state` reads the shared mirror under a parking_lot
-            // mutex — no mailbox hop, no circular wait. When this is
-            // called from inside `handle_idle_ensure` the peer supervisor
-            // may be mid-drain and unable to service commands; reading the
-            // mirror directly is the only safe path.
-            let state = handle.peek_state();
-            let (priority, lifecycle, is_dynamic) = svc_meta_by_name
-                .get(&handle.name)
-                .copied()
-                .unwrap_or((DEFAULT_SERVICE_PRIORITY, Lifecycle::OnDemand, false));
-            // "Idle" for eviction purposes means "no user-facing work
-            // in flight on a settled supervisor" — either literally
-            // Idle (not running) or Running with no in-flight requests.
-            // Starting is excluded: the child is spawned but not yet
-            // healthy and its start-bus still holds queued callers
-            // who'd all fail if we tore it down.
-            //
-            // Dynamic-allocation services are the explicit exception. By
-            // choosing `allocation.mode = "dynamic"` the operator has
-            // declared the service elastic — happy to be torn down when
-            // a peer needs VRAM. The most common case is ComfyUI: its
-            // web UI keeps a long-lived `/ws` open for live updates, so
-            // its inflight counter is rarely zero even when no image is
-            // actually generating. Treating that idle-with-open-UI as
-            // "busy" deadlocks tied-priority on-demand peers (chat hits
-            // 503 / silent queue) while ComfyUI's 7 GiB pledge sits
-            // unused. Funnelling dynamic services into the idle bucket
-            // restores the eviction path the operator opted into.
-            let in_flight = self.deps.inflight.current(&handle.name);
-            let settled = matches!(state, ServiceState::Idle | ServiceState::Running);
-            let idle = settled && (is_dynamic || in_flight == 0);
-            out.push(ananke_allocator::eviction::EvictionCandidate {
-                name: handle.name.clone(),
-                priority,
-                lifecycle,
-                idle,
-                allocation_bytes: bytes,
-            });
-        }
-        out
+    pub(crate) async fn collect_eviction_candidates(&self) -> Vec<EvictionCandidate> {
+        let table = self.deps.allocations.lock().clone();
+        eviction_candidates(&self.init.identity.name, &self.deps, &table)
     }
 
     /// The "persistent yields to active non-persistent" predicate: this

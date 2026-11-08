@@ -1035,6 +1035,14 @@ Each service is in exactly one state at any time. The state machine drives lifec
 | `disabled` | 7 | Administratively disabled; will not start until enabled. |
 | `unknown` | 8 | No supervisor handle exists (used in Prometheus only). |
 
+### Placement verdicts
+
+A service's placement preview reports `fits` when strict placement succeeds against observed free memory and the remaining reservations. A running service reports `fits` because its allocation is already held.
+
+`needs_eviction` means an eligible prefix of managed peers provides enough capacity for a strict placement after reclamation. Eligibility follows the supervisor's priority, lifecycle, startup, and dynamic-allocation rules. Each selected peer's per-device MiB pledge is added to observed free memory, capped at the device's total capacity, and only selected peers are removed from the reservation table. External pressure and protected peers remain constraints. Reclaim credit uses pledges rather than measured per-device residency, so an unmaterialized or oversized pledge can overstate physical reclamation.
+
+`does_not_fit` means no placement succeeds after all currently eligible peers are removed under that model. Its shortfalls report the remaining device deficits. Fitting on empty hardware alone does not imply `needs_eviction`.
+
 ### Disabled reasons
 
 A `disabled` service says why in `disabled_reason`, which the service list, the service detail, and the `state_changed` event carry exactly when the state is `disabled`:

@@ -116,30 +116,28 @@ fn placement_fits_in_free_vram() {
         &estimate_gib(20, 1),
         &gpus_with_free(24),
         &AllocationTable::new(),
-        false,
+        PreviewContext::default(),
         Corrections::NEUTRAL,
     );
     assert_eq!(out.verdict, FitVerdict::Fits);
     assert!(!out.devices.is_empty(), "a fitting placement names devices");
 }
 
-/// Same 20 GiB, but the cards are nearly full (1 GiB free each): it fits
-/// within total capacity, so the daemon would reclaim/evict — and the
-/// would-be shape is still reported.
+/// External pressure cannot be reclaimed by evicting managed services.
 #[test]
-fn placement_needs_eviction_when_free_is_low() {
+fn placement_external_pressure_does_not_fit() {
     let out = preview_placement(
         &llama_svc(),
         &estimate_gib(20, 1),
         &gpus_with_free(1),
         &AllocationTable::new(),
-        false,
+        PreviewContext::default(),
         Corrections::NEUTRAL,
     );
-    assert_eq!(out.verdict, FitVerdict::NeedsEviction);
+    assert!(matches!(out.verdict, FitVerdict::DoesNotFit { .. }));
     assert!(
         !out.devices.is_empty(),
-        "needs-eviction still shows where it would land"
+        "the hardware-only shape remains available for display"
     );
 }
 
@@ -151,7 +149,7 @@ fn placement_does_not_fit_when_too_large() {
         &estimate_gib(60, 1),
         &gpus_with_free(24),
         &AllocationTable::new(),
-        false,
+        PreviewContext::default(),
         Corrections::NEUTRAL,
     );
     let FitVerdict::DoesNotFit { shortfalls } = &out.verdict else {
@@ -199,7 +197,7 @@ fn placement_that_overruns_host_ram_names_the_cpu() {
         &estimate_gib(60, 1),
         &snap,
         &AllocationTable::new(),
-        false,
+        PreviewContext::default(),
         Corrections::NEUTRAL,
     );
     let FitVerdict::DoesNotFit { shortfalls } = &out.verdict else {
@@ -228,7 +226,10 @@ fn running_service_always_fits() {
         &estimate_gib(20, 1),
         &gpus_with_free(1),
         &AllocationTable::new(),
-        true,
+        PreviewContext {
+            running: true,
+            candidates: &[],
+        },
         Corrections::NEUTRAL,
     );
     assert_eq!(out.verdict, FitVerdict::Fits);
@@ -244,7 +245,8 @@ fn override_placement_uses_override_and_checks_fit() {
     svc.placement_override.insert(DeviceSlot::Gpu(1), 8000); // MB
     let table = AllocationTable::new();
 
-    let fits = preview_override_placement(&svc, &gpus_with_free(24), &table, false);
+    let fits =
+        preview_override_placement(&svc, &gpus_with_free(24), &table, PreviewContext::default());
     assert_eq!(fits.verdict, FitVerdict::Fits);
     assert_eq!(
         fits.devices.get(&DeviceId::Gpu(1)).copied(),
@@ -253,11 +255,20 @@ fn override_placement_uses_override_and_checks_fit() {
     );
 
     // Cards nearly full: fits the hardware but not currently-free VRAM.
-    let tight = preview_override_placement(&svc, &gpus_with_free(1), &table, false);
-    assert_eq!(tight.verdict, FitVerdict::NeedsEviction);
+    let tight =
+        preview_override_placement(&svc, &gpus_with_free(1), &table, PreviewContext::default());
+    assert!(matches!(tight.verdict, FitVerdict::DoesNotFit { .. }));
 
     // A running override service is always reported as fitting.
-    let live = preview_override_placement(&svc, &gpus_with_free(1), &table, true);
+    let live = preview_override_placement(
+        &svc,
+        &gpus_with_free(1),
+        &table,
+        PreviewContext {
+            running: true,
+            candidates: &[],
+        },
+    );
     assert_eq!(live.verdict, FitVerdict::Fits);
 }
 
@@ -277,8 +288,13 @@ fn command_placement_reserves_min_on_picked_gpu() {
     let mut snap = gpus_with_free(24);
     snap.gpus[0].free_bytes = 1 << 30;
 
-    let out = preview_command_placement(&svc, &snap, &AllocationTable::new(), false)
-        .expect("a reserving command service has a placement");
+    let out = preview_command_placement(
+        &svc,
+        &snap,
+        &AllocationTable::new(),
+        PreviewContext::default(),
+    )
+    .expect("a reserving command service has a placement");
     assert_eq!(out.verdict, FitVerdict::Fits);
     assert_eq!(
         out.devices.get(&DeviceId::Gpu(1)).copied(),
@@ -293,8 +309,241 @@ fn command_placement_reserves_min_on_picked_gpu() {
 fn command_placement_without_reservation_is_none() {
     let svc = minimal_command_service("ext", vec!["external".into()]);
     // The fixture's allocation_mode defaults to `None` (no reservation).
-    let out = preview_command_placement(&svc, &gpus_with_free(24), &AllocationTable::new(), false);
+    let out = preview_command_placement(
+        &svc,
+        &gpus_with_free(24),
+        &AllocationTable::new(),
+        PreviewContext::default(),
+    );
     assert!(out.is_none());
+}
+
+#[test]
+fn eviction_preview_matrix_covers_all_paths() {
+    let mut svc = llama_svc();
+    svc.gpu_allow = vec![0];
+    let mut command = minimal_command_service("command", vec!["run".into()]);
+    command.placement_override.clear();
+    command.placement_policy = PlacementPolicy::GpuOnly;
+    command.gpu_allow = vec![0];
+    command.priority = svc.priority;
+    command.lifecycle = svc.lifecycle;
+    command.allocation_mode = AllocationMode::Static { reserve_mb: 8192 };
+    let mut overridden = svc.clone();
+    overridden.placement_override = BTreeMap::from([(DeviceSlot::Gpu(0), 8192)]);
+
+    for (case, slot, pledge_mb, idle, lifecycle, priority, free_gib, expected) in [
+        (
+            "external only",
+            DeviceSlot::Gpu(0),
+            0,
+            true,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority,
+            1,
+            false,
+        ),
+        (
+            "wrong device",
+            DeviceSlot::Gpu(1),
+            16384,
+            true,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority,
+            1,
+            false,
+        ),
+        (
+            "busy or starting",
+            DeviceSlot::Gpu(0),
+            16384,
+            false,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority,
+            1,
+            false,
+        ),
+        (
+            "persistent protected",
+            DeviceSlot::Gpu(0),
+            16384,
+            true,
+            ananke_config::Lifecycle::Persistent,
+            svc.priority,
+            1,
+            false,
+        ),
+        (
+            "priority protected",
+            DeviceSlot::Gpu(0),
+            16384,
+            false,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority.saturating_add(1),
+            1,
+            false,
+        ),
+        (
+            "insufficient managed",
+            DeviceSlot::Gpu(0),
+            1024,
+            true,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority,
+            1,
+            false,
+        ),
+        (
+            "sufficient managed",
+            DeviceSlot::Gpu(0),
+            16384,
+            true,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority,
+            1,
+            true,
+        ),
+        (
+            "mixed external insufficient",
+            DeviceSlot::Gpu(0),
+            4096,
+            true,
+            ananke_config::Lifecycle::OnDemand,
+            svc.priority,
+            0,
+            false,
+        ),
+        (
+            "strict priority wins",
+            DeviceSlot::Gpu(0),
+            16384,
+            false,
+            ananke_config::Lifecycle::Persistent,
+            svc.priority.saturating_sub(1),
+            1,
+            true,
+        ),
+    ] {
+        let snapshot = gpus_with_free(free_gib);
+        let table = BTreeMap::from([(SmolStr::new("peer"), BTreeMap::from([(slot, pledge_mb)]))]);
+        let candidates = [EvictionCandidate {
+            name: "peer".into(),
+            priority,
+            lifecycle,
+            idle,
+            allocation_bytes: pledge_mb * 1024 * 1024,
+        }];
+        let outcomes = [
+            preview_placement(
+                &svc,
+                &estimate_gib(8, 1),
+                &snapshot,
+                &table,
+                PreviewContext {
+                    running: false,
+                    candidates: &candidates,
+                },
+                Corrections::NEUTRAL,
+            ),
+            preview_override_placement(
+                &overridden,
+                &snapshot,
+                &table,
+                PreviewContext {
+                    running: false,
+                    candidates: &candidates,
+                },
+            ),
+            preview_command_placement(
+                &command,
+                &snapshot,
+                &table,
+                PreviewContext {
+                    running: false,
+                    candidates: &candidates,
+                },
+            )
+            .unwrap(),
+        ];
+        for (path, outcome) in outcomes.into_iter().enumerate() {
+            assert_eq!(
+                matches!(outcome.verdict, FitVerdict::NeedsEviction),
+                expected,
+                "{case}, path {path}: {:?}",
+                outcome.verdict
+            );
+            if !expected {
+                assert!(
+                    matches!(outcome.verdict, FitVerdict::DoesNotFit { .. }),
+                    "{case}, path {path}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cpu_command_and_override_require_achievable_reclaim() {
+    let mut command = minimal_command_service("cpu-command", vec!["run".into()]);
+    command.placement_override.clear();
+    command.placement_policy = PlacementPolicy::CpuOnly;
+    command.allocation_mode = AllocationMode::Static { reserve_mb: 8192 };
+    let mut overridden = command.clone();
+    overridden.placement_override = BTreeMap::from([(DeviceSlot::Cpu, 8192)]);
+    let mut snapshot = gpus_with_free(24);
+    snapshot.cpu.as_mut().unwrap().available_bytes = 1 << 30;
+    let table = BTreeMap::from([(
+        SmolStr::new("peer"),
+        BTreeMap::from([(DeviceSlot::Cpu, 8192)]),
+    )]);
+    let candidates = [EvictionCandidate {
+        name: "peer".into(),
+        priority: command.priority,
+        lifecycle: ananke_config::Lifecycle::OnDemand,
+        idle: true,
+        allocation_bytes: 8 << 30,
+    }];
+    for peers in [&[][..], &candidates[..]] {
+        let command_out = preview_command_placement(
+            &command,
+            &snapshot,
+            &table,
+            PreviewContext {
+                running: false,
+                candidates: peers,
+            },
+        )
+        .unwrap();
+        let override_out = preview_override_placement(
+            &overridden,
+            &snapshot,
+            &table,
+            PreviewContext {
+                running: false,
+                candidates: peers,
+            },
+        );
+        for outcome in [command_out, override_out] {
+            if peers.is_empty() {
+                assert!(matches!(outcome.verdict, FitVerdict::DoesNotFit { .. }));
+            } else {
+                assert_eq!(outcome.verdict, FitVerdict::NeedsEviction);
+                assert_eq!(outcome.devices.get(&DeviceId::Cpu), Some(&(8 << 30)));
+            }
+        }
+    }
+    snapshot.cpu.as_mut().unwrap().available_bytes = 64 << 30;
+    assert_eq!(
+        preview_command_placement(
+            &command,
+            &snapshot,
+            &AllocationTable::new(),
+            PreviewContext::default()
+        )
+        .unwrap()
+        .verdict,
+        FitVerdict::Fits
+    );
 }
 
 /// An override larger than the card can't fit even on bare hardware.
@@ -303,7 +552,12 @@ fn override_placement_too_large_does_not_fit() {
     let mut svc = minimal_service("ov");
     svc.placement_override.clear();
     svc.placement_override.insert(DeviceSlot::Gpu(0), 30_000); // 30 GB > 24 GiB
-    let out = preview_override_placement(&svc, &gpus_with_free(24), &AllocationTable::new(), false);
+    let out = preview_override_placement(
+        &svc,
+        &gpus_with_free(24),
+        &AllocationTable::new(),
+        PreviewContext::default(),
+    );
     let FitVerdict::DoesNotFit { shortfalls } = &out.verdict else {
         panic!("expected DoesNotFit, got {:?}", out.verdict);
     };

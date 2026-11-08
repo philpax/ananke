@@ -41,11 +41,8 @@ impl std::error::Error for NoFit {}
 
 /// Check whether `want` fits after treating `evicting` as already freed.
 ///
-/// Unlike [`can_fit`], this uses the optimistic availability view
-/// (`total - reserved_filtered`) rather than `min(nvml_free, …)`. Callers
-/// that have issued `begin_drain` on a set of victims have committed to
-/// those evictions — nvml hasn't caught up yet (the drains are in-flight),
-/// so the pledge book is the right reference.
+/// Only the selected victims' pledges are credited to observed free memory.
+/// External pressure and remaining reservations still constrain admission.
 pub fn can_fit_after_eviction(
     want: &BTreeMap<DeviceSlot, u64>,
     snapshot: &DeviceSnapshot,
@@ -53,31 +50,8 @@ pub fn can_fit_after_eviction(
     exclude: Option<&SmolStr>,
     evicting: &[SmolStr],
 ) -> Result<(), NoFit> {
-    let mut filtered = reserved.clone();
-    for victim in evicting {
-        filtered.remove(victim);
-    }
-    for (slot, want_mb) in want {
-        let need = want_mb * 1024 * 1024;
-        let free = snapshot.free_bytes(slot).unwrap_or(0);
-        let total = snapshot.total_bytes(slot).unwrap_or(free);
-        let reserved_bytes: u64 = filtered
-            .iter()
-            .filter(|(k, _)| exclude.is_none_or(|x| *k != x))
-            .filter_map(|(_, alloc)| alloc.get(slot))
-            .sum::<u64>()
-            * 1024
-            * 1024;
-        let available = total.saturating_sub(reserved_bytes);
-        if available < need {
-            return Err(NoFit {
-                slot: slot.clone(),
-                needed_bytes: need,
-                available_bytes: available,
-            });
-        }
-    }
-    Ok(())
+    let (post_snapshot, remaining) = eviction::after_eviction(snapshot, reserved, evicting);
+    can_fit(want, &post_snapshot, &remaining, exclude)
 }
 
 /// Check whether `want` (per-slot MB from `placement_override`) fits in

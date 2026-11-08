@@ -1,7 +1,8 @@
-//! Phase B of the expert-aware path: deciding how many leading expert
-//! *layers* to offload to CPU as whole units via `--n-cpu-moe`, after
-//! [`crate::experts_nonexpert`] has pinned every
-//! layer's non-expert weight to a GPU.
+//! Whole-layer expert placement derived from the emitted command.
+//! Multi-GPU ik reservations bound possible contiguous ranges using runtime
+//! assignment metadata rather than calibrated compute-buffer estimates.
+
+mod plan;
 
 #[cfg(test)]
 mod tests;
@@ -14,34 +15,6 @@ use crate::{
     types::PackError,
 };
 
-/// Which end of the expert layers `-ncmoe` moves to the host, and what its
-/// argument counts. The two runtimes disagree on both, and each was pinned
-/// exactly against a load log.
-///
-/// **Mainline** moves the expert tensors of blocks `[0, N)` — the leading ones,
-/// with `N` bounding *blocks* rather than counting expert layers. Its log names
-/// every tensor it moves: for laguna at `--n-cpu-moe 39` they run `blk.1` to
-/// `blk.38` (block 0 being dense), summing to the 41496 MiB its host buffer
-/// reports.
-///
-/// **ik_llama** depends on the device count, which its own source spells out
-/// (`llama-load-tensors.cpp`): with `split_mode` attn or graph, or `ncmoe >=
-/// n_layer`, or **fewer than two devices**, it overrides the leading blocks like
-/// mainline. Only a layer split across two or more devices takes the other
-/// branch, where it distributes the count per device in proportion to each one's
-/// layer share and then walks *backwards* from the last block — "it is better to
-/// go backwards to avoid issues when there are layers without MoE tensors" — so
-/// the window is trailing.
-///
-/// The distinction is worth 1692 MiB on laguna, whose quant widens later blocks:
-/// its leading 38 and trailing 39 differ by exactly that, which is what a
-/// one-card cell falls short by if every ik service is modelled as trailing.
-///
-/// A trailing window also swallows the MTP head. ik overrides those blocks and
-/// then never loads them, so the slots are wasted: Qwen3.6-35B-A3B at `-ncmoe 40`
-/// on two cards logs 22734 MiB of overrides and puts 22172 in its host buffer,
-/// short by exactly block 40's 562 MiB. Verified to 0.00 MiB across five cells
-/// spanning one and two cards and `-ncmoe` 20, 30, and 40.
 pub(crate) enum Ncmoe {
     /// Mainline: offload blocks below this index.
     LeadingBlocksBelow(u32),
@@ -55,24 +28,16 @@ impl Ncmoe {
         placement.ik_llama
     }
 
-    /// The plan for an explicit `-ncmoe n` under this service's runtime and
-    /// placement.
-    ///
-    /// `gpus` is how many devices the model spans and `mtp_head_layers` how many
-    /// expert layers the MTP head accounted for — both of which change which
-    /// blocks ik picks. See the type's own documentation.
+    /// Global expert offload for the sharded path.
     pub(crate) fn for_runtime(
         placement: &PlacementInputs,
         n: u32,
         layers: &[u32],
-        gpus: usize,
-        mtp_head_layers: u32,
+        _gpus: usize,
+        _mtp_head_layers: u32,
     ) -> Self {
-        if Self::is_ik(placement) && gpus >= 2 && n < layers.len() as u32 + mtp_head_layers {
-            // The window is taken over the full block range, so the head blocks
-            // it reaches are overridden and then never loaded.
-            let real = n.saturating_sub(mtp_head_layers);
-            Self::TrailingLayers(real.min(layers.len() as u32))
+        if Self::is_ik(placement) {
+            Self::TrailingLayers(n.min(layers.len() as u32))
         } else {
             Self::LeadingBlocksBelow(n)
         }
@@ -117,149 +82,206 @@ impl Ncmoe {
 }
 
 impl<'a> Packer<'a> {
-    /// Phase B: offload the leading surplus expert *layers* to CPU as whole
-    /// units and record `--n-cpu-moe N`, letting the runtime split the
-    /// GPU-resident experts across cards itself.
-    ///
-    /// Whole layers rather than per-tensor `-ot` placement: scattering a
-    /// layer's gate/up/down across CUDA0/CUDA1/CPU defeats the runtime's fused
-    /// multi-threaded CPU MoE kernel (measured ~24× slower generation on
-    /// ik_llama — the CPU experts fall back to a ~2-core path) and can exceed
-    /// llama.cpp's `GGML_SCHED_MAX_SPLIT_INPUTS` graph-split limit, a hard
-    /// abort at load. `--n-cpu-moe` keeps whole layers together, avoiding both.
-    ///
-    /// `--n-cpu-moe N` offloads the expert tensors of blocks `[0, N)` — the
-    /// *leading* ones — so the retained set is a trailing suffix. The load log
-    /// names every tensor it moves, and they start at `blk.1` for laguna
-    /// (`--n-cpu-moe 39`, block 0 dense: blocks 1-38) and at `blk.0` for
-    /// Qwen3.6-35B-A3B (`--n-cpu-moe 40`: blocks 0-39). Note that `N` counts
-    /// *blocks*, not expert layers, so a model with leading dense blocks
-    /// offloads fewer expert layers than `N`.
-    ///
-    /// `Auto` picks the smallest `N` that lets the trailing expert layers fit
-    /// the combined GPU pool (what remains after non-expert weights + KV +
-    /// compute headroom were reserved); `Layers(n)` uses `n` directly and fails
-    /// with [`PackError::ManualExpertsDoNotFit`] if the retained experts still
-    /// overflow. Whole layers spilled in Phase A already carry their experts in
-    /// the CPU lump and are skipped here.
     pub(crate) fn distribute_experts_ncmoe(&mut self) -> Result<(), PackError> {
-        let mut layers: Vec<u32> = self
-            .expert_bytes_by_layer
-            .keys()
-            .copied()
-            .filter(|l| !self.spilled_layers.contains(l))
+        let mut gpus = self.allowed_gpus.clone();
+        gpus.sort_unstable();
+        if gpus.is_empty() {
+            if !matches!(self.mode, PackMode::Demand) {
+                return Err(PackError::LayerDoesNotFit {
+                    layer_index: 0,
+                    bytes: self.effective_layer_avg(),
+                    shortfalls: Vec::new(),
+                });
+            }
+            for (layer, bytes) in self.per_layer.clone().into_iter().enumerate() {
+                self.charge(DeviceSlot::Cpu, bytes, Charge::Weights);
+                self.spilled_layers.insert(layer as u32);
+                self.layers_on_cpu += 1;
+            }
+            return Ok(());
+        }
+        let output = self.estimate.layout.non_layer.output_head_bytes
+            + self.estimate.layout.non_layer.tied_head_bytes;
+        if let (Some(&first), Some(&last)) = (gpus.first(), gpus.last())
+            && first != last
+            && output > 0
+        {
+            let slot = DeviceSlot::Gpu(first);
+            let corrected = self.vram_cost(output);
+            if let Some(bytes) = self.per_device.get_mut(&slot) {
+                *bytes = bytes.saturating_sub(corrected);
+            }
+            if let Some(bytes) = self.raw_per_device.get_mut(&slot) {
+                *bytes = bytes.saturating_sub(output);
+            }
+            if let Some(bytes) = self.raw_weight_per_device.get_mut(&slot) {
+                *bytes = bytes.saturating_sub(output);
+            }
+            self.charge(DeviceSlot::Gpu(last), output, Charge::Weights);
+            self.initialise_gpu_remaining();
+        }
+        let n = self.per_layer.len();
+        let experts: Vec<u64> = (0..n)
+            .map(|l| {
+                self.expert_bytes_by_layer
+                    .get(&(l as u32))
+                    .copied()
+                    .unwrap_or(0)
+            })
             .collect();
-        layers.sort_unstable();
-
-        // Combined GPU budget for experts across all allowed cards; the runtime
-        // balances the layer split, so account against the pool, not per-card.
-        // This is a *corrected* budget (see `Packer::charge`), so every expert
-        // byte weighed against it below is corrected too.
-        let pool: u64 = self
-            .allowed_gpus
+        let budgets: Vec<u64> = gpus
             .iter()
             .map(|g| self.gpu_remaining.get(g).copied().unwrap_or(0))
-            .sum();
-
-        // Which end this runtime takes, and how it counts (see [`Ncmoe`]). The
-        // greedy `Auto` walk starts from whichever end stays on the GPU.
-        let gpu_count = self.allowed_gpus.len();
-        let head_layers = self.estimate.mtp.head_expert_layers;
-        let plan = match self.offload_mode {
-            OffloadMode::Layers(n) => {
-                Ncmoe::for_runtime(self.placement, n, &layers, gpu_count, head_layers)
-            }
-            OffloadMode::Auto => {
-                let mut used = 0u64;
-                let mut kept = 0u32;
-                let retained_from_the_top = !Ncmoe::is_ik(self.placement);
-                let walk: Vec<u32> = if retained_from_the_top {
-                    layers.iter().rev().copied().collect()
-                } else {
-                    layers.clone()
-                };
-                for &l in &walk {
-                    let cost = self.vram_cost(self.expert_bytes_by_layer[&l]);
-                    if used.saturating_add(cost) > pool {
-                        break;
-                    }
-                    used += cost;
-                    kept += 1;
-                }
-                Ncmoe::keeping(self.placement, kept, &layers)
-            }
-            OffloadMode::Off => {
-                Ncmoe::for_runtime(self.placement, 0, &layers, gpu_count, head_layers)
-            }
+            .collect();
+        let raw_budgets: Vec<u64> = budgets
+            .iter()
+            .map(|&b| (b as f64 / self.corrections.vram) as u64)
+            .collect();
+        let kv = self
+            .estimate
+            .kv_per_token
+            .saturating_mul(self.estimate.context as u64);
+        let mut n_cpu = match self.offload_mode {
+            OffloadMode::Layers(n) => n,
+            _ => 0,
         };
-
-        let mut gpu_expert_bytes = 0u64;
-        for &l in &layers {
-            let b = self.expert_bytes_by_layer[&l];
-            if plan.keeps(l, &layers) {
-                gpu_expert_bytes += b;
-            } else {
-                self.charge(DeviceSlot::Cpu, b, Charge::Weights);
-                self.expert_offload_cpu_bytes += b;
-                self.expert_offload_cpu_layers.insert(l);
+        let conservative_ik =
+            self.placement.ik_llama && gpus.len() > 1 && !matches!(self.mode, PackMode::Demand);
+        let mut expert_sizes = experts.clone();
+        expert_sizes.sort_unstable_by(|a, b| b.cmp(a));
+        let nonexpert_total: u64 = self
+            .per_layer
+            .iter()
+            .zip(&experts)
+            .map(|(&w, &e)| w.saturating_sub(e))
+            .sum();
+        let selected = loop {
+            let input = plan::Inputs {
+                weights: &self.per_layer,
+                experts: &experts,
+                budgets: &raw_budgets,
+                kv,
+                compute: self.estimate.buffers.compute_mb as u64 * 1024 * 1024,
+                output: self.estimate.layout.non_layer.output_head_bytes
+                    + self.estimate.layout.non_layer.tied_head_bytes,
+                ik: self.placement.ik_llama,
+                n_cpu,
+                assignment: self
+                    .estimate
+                    .layout
+                    .ik_assignment
+                    .as_ref()
+                    .filter(|_| n <= 4096 && gpus.len() <= 64),
+            };
+            let mut candidate = plan::plan(&input);
+            if conservative_ik && input.assignment.is_none() {
+                let retained_bound: u64 = expert_sizes
+                    .iter()
+                    .take(n.saturating_sub(n_cpu as usize))
+                    .sum();
+                candidate.costs.fill(
+                    nonexpert_total
+                        .saturating_add(kv)
+                        .saturating_add(retained_bound)
+                        .saturating_add(output),
+                );
             }
-        }
-        let n_cpu = self.expert_offload_cpu_layers.len() as u32;
-        let flag = plan.flag();
-        // Corrected, to match `pool` and the per-card charges below.
-        let gpu_expert_cost = self.vram_cost(gpu_expert_bytes);
-
-        // A manual `Layers(n)` too small to relieve the cards overflows the
-        // GPU pool; reject rather than silently over-committing (`Auto` chose
-        // `keep` to fit, so it never trips this).
-        // `Demand` is exempt for the same reason Phase A is: it asks what the
-        // model needs on an unbounded host and spawns nothing, so a manual
-        // offload count that overflows the *bounded* GPU pool must still
-        // produce a total rather than no figure at all.
-        if gpu_expert_cost > pool && !matches!(self.mode, PackMode::Demand) {
-            // The retained experts are distributed evenly across the allowed
-            // GPUs below, so the per-card ask is the even share — that is what
-            // each GPU's remaining capacity is measured against.
-            let per_gpu = gpu_expert_cost / self.allowed_gpus.len().max(1) as u64;
-            return Err(PackError::ManualExpertsDoNotFit {
-                needed: gpu_expert_cost,
-                available: pool,
-                shortfalls: self.gpu_shortfalls(per_gpu),
-            });
-        }
-
-        // Total retained (GPU-resident) expert bytes. The runtime piles these
-        // onto the last CUDA device, so `finish` biases `--tensor-split` to
-        // give that card fewer non-expert layers to compensate.
-        self.ncmoe_kept_expert_bytes = gpu_expert_bytes;
-
-        // Distribute the retained experts evenly across the GPUs for the
-        // reservation — the room-biased `--tensor-split` makes the runtime
-        // reproduce this balanced target. The sub-`n_gpus`-byte remainder
-        // rides on the first card.
-        let n_gpus = self.allowed_gpus.len() as u64;
-        if n_gpus > 0 && gpu_expert_bytes > 0 {
-            let share = gpu_expert_bytes / n_gpus;
-            let mut remainder = gpu_expert_bytes - share * n_gpus;
-            for gpu in self.allowed_gpus.clone() {
-                let add = share + std::mem::take(&mut remainder);
-                let charged = self.charge(DeviceSlot::Gpu(gpu), add, Charge::Weights);
-                let rem = self.gpu_remaining.entry(gpu).or_default();
-                *rem = rem.saturating_sub(charged);
+            let shortfalls: Vec<_> = candidate
+                .costs
+                .iter()
+                .zip(&budgets)
+                .zip(&gpus)
+                .filter_map(|((&cost, &available), &gpu)| {
+                    let requested = self.vram_cost(cost);
+                    (requested > available).then_some(crate::types::DeviceShortfall {
+                        device: crate::devices::DeviceId::Gpu(gpu),
+                        requested_bytes: requested,
+                        available_bytes: available,
+                    })
+                })
+                .collect();
+            if shortfalls.is_empty()
+                || matches!(self.mode, PackMode::Demand)
+                    && (n_cpu >= n as u32 || !matches!(self.offload_mode, OffloadMode::Auto))
+            {
+                break candidate;
             }
-        }
-
-        // When nothing is offloaded (the whole model fits), keep the plain
-        // layer-split shape — no `--n-cpu-moe 0`, and `ngl` stays the layer
-        // count — so a fully-resident MoE looks identical to a non-MoE fit.
+            if !matches!(self.offload_mode, OffloadMode::Auto) {
+                return Err(PackError::ManualExpertsDoNotFit {
+                    needed: shortfalls.iter().map(|s| s.requested_bytes).sum(),
+                    available: shortfalls.iter().map(|s| s.available_bytes).sum(),
+                    shortfalls,
+                });
+            }
+            if n_cpu >= n as u32 {
+                return Err(PackError::LayerDoesNotFit {
+                    layer_index: 0,
+                    bytes: self.effective_layer_avg(),
+                    shortfalls,
+                });
+            }
+            n_cpu += 1;
+        };
+        let conservative_costs = selected.costs.clone();
+        self.expert_tensor_split = Some(selected.split);
+        self.fallback_on_gpu = true;
         if n_cpu > 0 {
-            // Not the count of offloaded layers: mainline's argument bounds
-            // blocks, so the two differ on a model with leading dense blocks.
-            self.n_cpu_moe = Some(flag);
-            // `-ngl 999` puts all layers on GPU; `-ncmoe` then pulls the
-            // leading experts back to CPU and the runtime owns the cross-GPU
-            // split.
-            self.fallback_on_gpu = true;
+            self.n_cpu_moe = Some(n_cpu);
+        }
+        let before = self.per_device.clone();
+        let mut remaining = budgets;
+        for (layer, &home) in selected.homes.iter().enumerate() {
+            let gpu = gpus[home];
+            let offloaded = if selected.cpu.contains(&(layer as u32)) {
+                experts[layer]
+            } else {
+                0
+            };
+            let retained = self.per_layer[layer].saturating_sub(offloaded);
+            let cost =
+                self.vram_cost(retained.saturating_add(kv.checked_div(n as u64).unwrap_or(0)));
+            if matches!(self.mode, PackMode::Demand) && cost > remaining[home] {
+                self.charge(DeviceSlot::Cpu, retained, Charge::Weights);
+                self.layers_on_cpu += 1;
+                self.spilled_layers.insert(layer as u32);
+            } else {
+                self.charge(DeviceSlot::Gpu(gpu), retained, Charge::Weights);
+                remaining[home] = remaining[home].saturating_sub(cost);
+                *self.layers_per_gpu.entry(gpu).or_default() += 1;
+                self.layer_home.insert(layer as u32, gpu);
+            }
+            if offloaded > 0 {
+                self.charge(DeviceSlot::Cpu, offloaded, Charge::Weights);
+                self.expert_offload_cpu_bytes += offloaded;
+                self.expert_offload_cpu_layers.insert(layer as u32);
+            }
+        }
+        if conservative_ik {
+            for (&gpu, &bound) in gpus.iter().zip(&conservative_costs) {
+                let slot = DeviceSlot::Gpu(gpu);
+                let weight_charge = self
+                    .per_device
+                    .get(&slot)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_sub(before.get(&slot).copied().unwrap_or(0));
+                let kv_share = kv * u64::from(self.layers_per_gpu.get(&gpu).copied().unwrap_or(0))
+                    / n.max(1) as u64;
+                let reserved = self
+                    .vram_cost(bound)
+                    .saturating_sub(self.vram_cost(kv_share));
+                if reserved > weight_charge {
+                    // Add the corrected difference directly to avoid inverse-scaling
+                    // truncation. Range uncertainty is slop, not observed usage.
+                    *self.per_device.entry(slot).or_default() += reserved - weight_charge;
+                }
+            }
+            let cpu_bound: u64 = expert_sizes.iter().take(n_cpu as usize).sum();
+            self.charge(
+                DeviceSlot::Cpu,
+                cpu_bound.saturating_sub(self.expert_offload_cpu_bytes),
+                Charge::Slop,
+            );
         }
         Ok(())
     }

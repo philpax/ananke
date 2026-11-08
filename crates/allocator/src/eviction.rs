@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use ananke_config::{DeviceSlot, Lifecycle, ServiceConfig};
+use ananke_placement::{AllocationTable, devices::DeviceSnapshot};
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone)]
@@ -123,6 +124,134 @@ pub fn select_for_slot(
     Vec::new()
 }
 
+/// Test eligible victim prefixes in the supplied order, stopping at the first strict fit.
+pub fn plan_eviction<T, E>(
+    snapshot: &DeviceSnapshot,
+    table: &AllocationTable,
+    candidates: &[EvictionCandidate],
+    incoming: &ServiceConfig,
+    mut try_fit: impl FnMut(&DeviceSnapshot, &AllocationTable) -> Result<T, E>,
+) -> Result<(T, Vec<SmolStr>), E> {
+    let mut result = try_fit(snapshot, table);
+    if let Ok(value) = result {
+        return Ok((value, Vec::new()));
+    }
+    let mut victims = Vec::new();
+    for candidate in candidates {
+        if candidate.name == incoming.name
+            || !candidate.is_evictable_by(incoming.priority, incoming.lifecycle)
+            || !table
+                .get(&candidate.name)
+                .is_some_and(|row| row.values().any(|mb| *mb > 0))
+            || victims.contains(&candidate.name)
+        {
+            continue;
+        }
+        victims.push(candidate.name.clone());
+        let (post_snapshot, remaining) = after_eviction(snapshot, table, &victims);
+        result = try_fit(&post_snapshot, &remaining);
+        if let Ok(value) = result {
+            return Ok((value, victims));
+        }
+    }
+    result.map(|value| (value, victims))
+}
+
+/// Select only peers holding pledges on currently deficient slots.
+pub fn plan_fixed_eviction(
+    snapshot: &DeviceSnapshot,
+    table: &AllocationTable,
+    candidates: &[EvictionCandidate],
+    incoming: &ServiceConfig,
+    want: &BTreeMap<DeviceSlot, u64>,
+) -> Result<Vec<SmolStr>, crate::NoFit> {
+    let deficient: Vec<_> = want
+        .iter()
+        .filter_map(|(slot, mb)| {
+            crate::can_fit(
+                &BTreeMap::from([(slot.clone(), *mb)]),
+                snapshot,
+                table,
+                Some(&incoming.name),
+            )
+            .err()
+            .map(|_| slot)
+        })
+        .collect();
+    let contributing: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| {
+            table.get(&candidate.name).is_some_and(|row| {
+                deficient
+                    .iter()
+                    .any(|slot| row.get(slot).is_some_and(|mb| *mb > 0))
+            })
+        })
+        .cloned()
+        .collect();
+    plan_eviction(
+        snapshot,
+        table,
+        &contributing,
+        incoming,
+        |post_snapshot, remaining| {
+            crate::can_fit(want, post_snapshot, remaining, Some(&incoming.name))
+        },
+    )
+    .map(|(_, victims)| victims)
+}
+
+/// Retain planned reclaim credit while checking fresh competing reservations.
+pub fn revalidate_eviction(
+    snapshot: &DeviceSnapshot,
+    planned_table: &AllocationTable,
+    current_table: &AllocationTable,
+    victims: &[SmolStr],
+    want: &BTreeMap<DeviceSlot, u64>,
+    exclude: Option<&SmolStr>,
+) -> Result<(), crate::NoFit> {
+    let (post_snapshot, _) = after_eviction(snapshot, planned_table, victims);
+    let mut remaining = current_table.clone();
+    for victim in victims {
+        remaining.remove(victim);
+    }
+    crate::can_fit(want, &post_snapshot, &remaining, exclude)
+}
+
+/// Credit only selected victims' MiB pledges, capped at each device's total capacity.
+pub fn after_eviction(
+    snapshot: &DeviceSnapshot,
+    table: &AllocationTable,
+    victims: &[SmolStr],
+) -> (DeviceSnapshot, AllocationTable) {
+    let mut post_snapshot = snapshot.clone();
+    let mut remaining = table.clone();
+    for victim in victims {
+        let Some(row) = remaining.remove(victim) else {
+            continue;
+        };
+        for (slot, mb) in row {
+            let bytes = mb.saturating_mul(1024 * 1024);
+            match slot {
+                DeviceSlot::Cpu => {
+                    if let Some(cpu) = &mut post_snapshot.cpu {
+                        cpu.available_bytes = cpu
+                            .available_bytes
+                            .saturating_add(bytes)
+                            .min(cpu.total_bytes);
+                    }
+                }
+                DeviceSlot::Gpu(id) => {
+                    if let Some(gpu) = post_snapshot.gpus.iter_mut().find(|gpu| gpu.id == id) {
+                        gpu.free_bytes = gpu.free_bytes.saturating_add(bytes).min(gpu.total_bytes);
+                    }
+                }
+            }
+        }
+    }
+    (post_snapshot, remaining)
+}
+
 /// Summarise a running service into an `EvictionCandidate`. Used by the
 /// scheduler/allocator to construct the input list.
 pub fn summarise(svc: &ServiceConfig, idle: bool, allocation_bytes: u64) -> EvictionCandidate {
@@ -187,6 +316,101 @@ mod tests {
         assert!(!c.is_evictable_by(50, Lifecycle::OnDemand));
         assert!(c.is_evictable_by(51, Lifecycle::OnDemand));
         assert!(c.is_evictable_by(100, Lifecycle::OnDemand));
+    }
+
+    #[test]
+    fn bounded_plan_preserves_remaining_pledges_and_stops_at_first_prefix() {
+        let snapshot = DeviceSnapshot {
+            gpus: vec![ananke_placement::devices::GpuSnapshot {
+                id: 0,
+                name: "gpu".into(),
+                total_bytes: 24 << 30,
+                free_bytes: 1 << 30,
+            }],
+            ..DeviceSnapshot::default()
+        };
+        let table = res(&[("cold", 4096), ("warm", 4096), ("protected", 8192)]);
+        let candidates = [
+            cand("cold", 50, true, 4 << 30),
+            cand("warm", 50, true, 4 << 30),
+            cand("protected", 100, false, 8 << 30),
+        ];
+        let svc = ananke_config::validate::test_fixtures::minimal_service("incoming");
+        let want = BTreeMap::from([(DeviceSlot::Gpu(0), 8192)]);
+        let (_, victims) =
+            plan_eviction(&snapshot, &table, &candidates, &svc, |snap, remaining| {
+                crate::can_fit(&want, snap, remaining, None)
+            })
+            .unwrap();
+        assert_eq!(victims, vec![SmolStr::new("cold"), SmolStr::new("warm")]);
+        let (post, remaining) = after_eviction(&snapshot, &table, &victims);
+        assert_eq!(post.gpus[0].free_bytes, 9 << 30);
+        assert_eq!(remaining, res(&[("protected", 8192)]));
+        assert_eq!(table.len(), 3);
+        let (_, short_victims) =
+            plan_eviction(&snapshot, &table, &candidates, &svc, |snap, remaining| {
+                crate::can_fit(
+                    &BTreeMap::from([(DeviceSlot::Gpu(0), 4096)]),
+                    snap,
+                    remaining,
+                    None,
+                )
+            })
+            .unwrap();
+        assert_eq!(short_victims, vec![SmolStr::new("cold")]);
+        assert!(
+            plan_eviction(&snapshot, &table, &candidates, &svc, |snap, remaining| {
+                crate::can_fit(
+                    &BTreeMap::from([(DeviceSlot::Gpu(0), 12288)]),
+                    snap,
+                    remaining,
+                    None,
+                )
+            })
+            .is_err()
+        );
+        let (capped, _) = after_eviction(
+            &snapshot,
+            &res(&[("huge", u64::MAX)]),
+            &[SmolStr::new("huge")],
+        );
+        assert_eq!(capped.gpus[0].free_bytes, 24 << 30);
+    }
+
+    #[test]
+    fn fixed_plan_skips_wrong_device_and_retains_credit_after_drain_ack() {
+        let snapshot = DeviceSnapshot {
+            gpus: (0..2)
+                .map(|id| ananke_placement::devices::GpuSnapshot {
+                    id,
+                    name: "gpu".into(),
+                    total_bytes: 24 << 30,
+                    free_bytes: 1 << 30,
+                })
+                .collect(),
+            ..DeviceSnapshot::default()
+        };
+        let mut table = res(&[("needed", 8192)]);
+        table.insert(
+            "unrelated".into(),
+            BTreeMap::from([(DeviceSlot::Gpu(1), 8192)]),
+        );
+        let candidates = [
+            cand("unrelated", 50, true, 8 << 30),
+            cand("needed", 50, true, 8 << 30),
+        ];
+        let svc = ananke_config::validate::test_fixtures::minimal_service("incoming");
+        let want = BTreeMap::from([(DeviceSlot::Gpu(0), 8192)]);
+        let victims = plan_fixed_eviction(&snapshot, &table, &candidates, &svc, &want).unwrap();
+        assert_eq!(victims, vec![SmolStr::new("needed")]);
+        let mut current = table.clone();
+        current.remove("needed");
+        assert!(revalidate_eviction(&snapshot, &table, &current, &victims, &want, None).is_ok());
+        current.insert(
+            "competitor".into(),
+            BTreeMap::from([(DeviceSlot::Gpu(0), 20480)]),
+        );
+        assert!(revalidate_eviction(&snapshot, &table, &current, &victims, &want, None).is_err());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Public entry points: `pack` and `pack_optimistic` drive the packer
 //! through its steps in order and return the finished `Packed` result.
 
-use ananke_config::placement::PlacementInputs;
+use ananke_config::placement::{DeviceSlot, PlacementInputs};
 use ananke_estimate::Estimate;
 
 use crate::{
@@ -167,6 +167,10 @@ fn pack_inner(
         && !packer.per_layer.is_empty()
     {
         packer.distribute_sharded()?;
+        if mode != PackMode::Demand {
+            packer.check_gpu_capacity()?;
+            packer.check_cpu_capacity()?;
+        }
         return Ok(packer.finish());
     }
     packer.seed_non_layer();
@@ -177,8 +181,13 @@ fn pack_inner(
         // units via `--n-cpu-moe`. Whole-layer offload (rather than per-tensor
         // `-ot`) keeps the runtime's fused multi-threaded CPU MoE kernel
         // engaged and stays under llama.cpp's graph-split limit.
-        packer.place_nonexpert_layers()?;
+        packer.initialise_gpu_remaining();
         packer.distribute_experts_ncmoe()?;
+        if packer.expert_tensor_split.is_some() {
+            for gpu in &packer.allowed_gpus {
+                packer.per_device.entry(DeviceSlot::Gpu(*gpu)).or_default();
+            }
+        }
     } else {
         packer.walk_layers()?;
         packer.place_fallback_weights()?;
@@ -186,10 +195,9 @@ fn pack_inner(
     packer.add_kv_bytes();
     packer.add_compute_buffer();
     packer.add_one_layer_fudge();
-    // The host-RAM gate is the one check `Demand` skips: it is exactly the
-    // constraint being asked about ("how much would this need?"), so applying
-    // it would fail the pack for the models the figure exists to describe.
+    // Demand describes memory requirements rather than admitting a launch.
     if mode != PackMode::Demand {
+        packer.check_gpu_capacity()?;
         packer.check_cpu_capacity()?;
     }
     Ok(packer.finish())
@@ -197,13 +205,148 @@ fn pack_inner(
 
 #[cfg(test)]
 mod tests {
-    use ananke_config::placement::{OffloadMode, PlacementInputs, PlacementPolicy};
+    use ananke_config::placement::{
+        DeviceSlot, OffloadMode, PlacementInputs, PlacementPolicy, SplitMode,
+    };
 
     use super::*;
     use crate::{
-        devices::CpuSnapshot,
-        test_support::{GIB, cpu_bytes, moe_estimate, moe_svc, snapshot, trivial_estimate},
+        devices::{CpuSnapshot, DeviceId},
+        test_support::{GIB, MIB, cpu_bytes, moe_estimate, moe_svc, snapshot, trivial_estimate},
     };
+
+    #[test]
+    fn expert_split_retains_unused_first_and_middle_visible_devices() {
+        for unused in [0, 1] {
+            let estimate = moe_estimate(20, 100, 300);
+            let mut snap = snapshot(&[24, 24, 24]);
+            snap.gpus[unused].free_bytes = 600 * MIB;
+            let packed = pack(
+                &estimate,
+                &moe_svc(OffloadMode::Auto),
+                &snap,
+                &AllocationTable::new(),
+            )
+            .unwrap();
+            let split = packed.args.tensor_split.as_ref().unwrap();
+            assert_eq!(split[unused], 0, "the constrained GPU carries no layers");
+            assert_eq!(packed.allocation.gpu_ids(), vec![0, 1, 2]);
+            assert_eq!(split.len(), packed.allocation.gpu_ids().len());
+            assert_eq!(
+                packed.allocation.bytes[&DeviceId::Gpu(unused as u32)],
+                500 * MIB
+            );
+            for gpu in &snap.gpus {
+                assert!(packed.allocation.bytes[&DeviceId::Gpu(gpu.id)] <= gpu.free_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_head_cost_cannot_overflow_a_gpu_while_layers_fit_elsewhere() {
+        let mut estimate = trivial_estimate(4, 256);
+        estimate.layout.non_layer.output_head_bytes = 2 * GIB;
+        let placement = PlacementInputs::named("fixed-head");
+        let snap = snapshot(&[1, 24]);
+        let error = pack(&estimate, &placement, &snap, &AllocationTable::new()).unwrap_err();
+        let shortfalls = error.shortfalls();
+        assert_eq!(shortfalls.len(), 1);
+        assert_eq!(shortfalls[0].device, DeviceId::Gpu(0));
+        assert_eq!(shortfalls[0].available_bytes, GIB);
+        assert!(shortfalls[0].requested_bytes > 2 * GIB);
+        assert!(pack_optimistic(&estimate, &placement, &snap, &AllocationTable::new()).is_ok());
+    }
+
+    #[test]
+    fn runtime_costs_on_a_head_without_layers_are_capacity_checked() {
+        let mut estimate = trivial_estimate(4, 256);
+        estimate.layout.non_layer.output_head_bytes = 800 * MIB;
+        let placement = PlacementInputs::named("runtime");
+        let snap = snapshot(&[1, 24]);
+        let error = pack(&estimate, &placement, &snap, &AllocationTable::new()).unwrap_err();
+        assert!(matches!(
+            error,
+            PackError::GpuDoesNotFit { gpu_index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn final_gpu_gate_includes_headroom_reservations_and_corrections() {
+        let mut estimate = trivial_estimate(4, 256);
+        estimate.layout.non_layer.output_head_bytes = 700 * MIB;
+        let mut placement = PlacementInputs::named("headroom");
+        placement.gpu_headroom_mb = 512;
+        let snap = snapshot(&[24, 24]);
+        let mut reserved = AllocationTable::new();
+        reserved.insert("peer".into(), [(DeviceSlot::Gpu(0), 22 * 1024)].into());
+        assert!(pack(&estimate, &placement, &snap, &reserved).is_ok());
+        assert!(
+            pack_corrected(
+                &estimate,
+                &placement,
+                &snap,
+                &AllocationTable::new(),
+                Corrections {
+                    vram: 1.25,
+                    host: 1.0
+                },
+                false,
+            )
+            .is_ok()
+        );
+        let error = pack_corrected(
+            &estimate,
+            &placement,
+            &snap,
+            &reserved,
+            Corrections {
+                vram: 1.25,
+                host: 1.0,
+            },
+            false,
+        )
+        .unwrap_err();
+        let shortfalls = error.shortfalls();
+        assert_eq!(shortfalls[0].device, DeviceId::Gpu(0));
+        assert_eq!(shortfalls[0].available_bytes, 1536 * MIB);
+        assert!(shortfalls[0].requested_bytes > shortfalls[0].available_bytes);
+    }
+
+    #[test]
+    fn a_sharded_pack_checks_host_capacity_after_charging_embeddings() {
+        let mut estimate = trivial_estimate(4, 256);
+        estimate.layout.non_layer.token_embd_bytes = 3 * GIB;
+        let mut placement = PlacementInputs::named("sharded");
+        placement.split_mode = SplitMode::Tensor;
+        let mut snap = snapshot(&[24, 24]);
+        snap.cpu = Some(CpuSnapshot {
+            total_bytes: 2 * GIB,
+            available_bytes: 2 * GIB,
+        });
+        assert!(matches!(
+            pack(&estimate, &placement, &snap, &AllocationTable::new()),
+            Err(PackError::CpuDoesNotFit { .. })
+        ));
+        assert!(pack_demand(&estimate, &placement, &snap, Corrections::NEUTRAL).is_ok());
+    }
+
+    #[test]
+    fn a_vision_graph_reserves_head_capacity_before_the_layer_walk() {
+        let mut estimate = trivial_estimate(4, 256);
+        estimate.buffers.mmproj_graph_bytes = GIB;
+        let mut placement = PlacementInputs::named("vision");
+        placement.policy = PlacementPolicy::GpuOnly;
+        let mut snap = snapshot(&[2]);
+        snap.gpus[0].free_bytes = 2000 * MIB;
+        assert!(matches!(
+            pack(&estimate, &placement, &snap, &AllocationTable::new()),
+            Err(PackError::LayerDoesNotFit { .. })
+        ));
+        placement.policy = PlacementPolicy::Hybrid;
+        let packed = pack(&estimate, &placement, &snap, &AllocationTable::new()).unwrap();
+        assert!(cpu_bytes(&packed) > 0);
+        assert!(packed.allocation.bytes[&DeviceId::Gpu(0)] <= snap.gpus[0].free_bytes);
+    }
 
     fn total(p: &Packed) -> u64 {
         p.allocation.bytes.values().sum()

@@ -16,14 +16,13 @@ use utoipa::ToSchema;
 pub enum FitVerdict {
     /// Starts now in currently-free memory — no eviction needed.
     Fits,
-    /// Fits within the hardware, but currently-free memory is insufficient, so
-    /// the daemon would reclaim or evict lower-priority peers to make room.
+    /// Fits after evicting an eligible prefix of managed peers in eviction order.
+    /// Reclaim credit uses their per-device pledges; external pressure remains.
+    /// Pledges can overstate reclaim when a peer has not materialized its reservation.
     NeedsEviction,
-    /// No placement is possible under current conditions, even with every other
-    /// service gone. `shortfalls` names the devices that came up short and by
-    /// how much. Empty when there is no device to point at: a configuration
-    /// error that no amount of freed memory would fix, or a host with no
-    /// eligible device for this service at all.
+    /// No placement fits after all currently eligible peers are removed.
+    /// External pressure and protected peers remain. `shortfalls` reports the
+    /// remaining deficits, or is empty for a configuration or device-selection error.
     DoesNotFit {
         /// The devices that came up short, and by how much.
         shortfalls: Vec<DeviceShortfall>,

@@ -59,6 +59,15 @@ pub(crate) fn placement_preview(
 ) -> Option<PlacementPreview> {
     let snapshot = state.snapshot.read().clone();
     let table = state.allocations.lock().clone();
+    let candidates = crate::supervise::preview::eviction_candidates(
+        &svc_cfg.name,
+        &state.supervisor_deps(),
+        &table,
+    );
+    let context = crate::supervise::preview::PreviewContext {
+        running,
+        candidates: &candidates,
+    };
 
     // An active service holds a real pledge — show that, not a re-computed
     // what-if (which could even differ from where it actually landed).
@@ -87,16 +96,16 @@ pub(crate) fn placement_preview(
             expert_offload_layers: 0,
         }
     } else if !svc_cfg.placement_override.is_empty() {
-        crate::supervise::preview_override_placement(svc_cfg, &snapshot, &table, running)
+        crate::supervise::preview_override_placement(svc_cfg, &snapshot, &table, context)
     } else if matches!(svc_cfg.template(), crate::config::Template::Command) {
         // Command-template service picking a GPU dynamically (e.g. ComfyUI):
         // `None` means it reserves nothing, so there is nothing to show.
-        crate::supervise::preview_command_placement(svc_cfg, &snapshot, &table, running)?
+        crate::supervise::preview_command_placement(svc_cfg, &snapshot, &table, context)?
     } else {
         let est = estimate?;
         // Match the supervisor: pack with the service's learned corrections.
         let corrections = state.rolling.get(&svc_cfg.name).corrections();
-        crate::supervise::preview_placement(svc_cfg, est, &snapshot, &table, running, corrections)
+        crate::supervise::preview_placement(svc_cfg, est, &snapshot, &table, context, corrections)
     };
 
     // A dynamic command service can grow past its reserved floor up to its

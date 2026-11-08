@@ -78,6 +78,8 @@ pub fn estimator_inputs<'a>(record: &'a Record, model: &'a std::path::Path) -> E
         mmproj: f.mmproj.as_deref().map(std::path::Path::new),
         context: f.ctx,
         ubatch: Some(f.ubatch),
+        worst_graph_tokens: None,
+        ik_assignment_options_supported: true,
         visible_devices: cards,
         host_resident_experts: f.n_cpu_moe.is_some(),
         split_mode: f.split_or_layer(),
