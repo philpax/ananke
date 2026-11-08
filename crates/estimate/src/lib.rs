@@ -4,6 +4,7 @@ pub mod compute_buffer;
 pub mod compute_model;
 pub mod host_buffer;
 pub mod hybrid;
+mod ik_assignment;
 pub mod kv;
 pub mod llama;
 pub mod mamba;
@@ -20,8 +21,8 @@ use ananke_fs::Fs;
 use ananke_gguf::{self, Architecture, GgufSummary};
 use tracing::{info, warn};
 pub use types::{
-    Buffers, Estimate, EstimatorInputs, ExpertKind, ExpertTensor, Fork, HostBytes, Layout, Mtp,
-    NonLayer, Speculation,
+    Buffers, Estimate, EstimatorInputs, ExpertKind, ExpertTensor, Fork, HostBytes, IkAssignment,
+    Layout, Mtp, NonLayer, Speculation,
 };
 
 /// One per-architecture family, paired with the `general.architecture`
@@ -286,7 +287,10 @@ pub fn dispatch(
 ) -> Result<Estimate, EstimatorError> {
     for fam in FAMILIES {
         if fam.arches.contains(&summary.architecture) {
-            return Ok((fam.estimate)(summary, inputs));
+            let mut estimate = (fam.estimate)(summary, inputs);
+            estimate.layout.ik_assignment =
+                ik_assignment::assignment(summary, inputs, &estimate.layout);
+            return Ok(estimate);
         }
     }
     Err(EstimatorError::UnknownArchitecture {

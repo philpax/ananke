@@ -430,6 +430,8 @@ impl Case {
             split_mode: self.split,
             context: self.context,
             ubatch: Some(self.ubatch),
+            worst_graph_tokens: None,
+            ik_assignment_options_supported: true,
             cache_type_k: GgufType::from_name(self.kv_type.name()),
             cache_type_v: GgufType::from_name(self.kv_type.name()),
             override_tensor: &[],

@@ -30,6 +30,10 @@ pub struct EstimatorInputs<'a> {
     /// every other architecture's compute buffer is ~ubatch-independent, so
     /// the estimator ignores this outside that arch.
     pub ubatch: Option<u32>,
+    /// IK's explicit worst-case logits token count; zero or absent uses ubatch.
+    pub worst_graph_tokens: Option<u32>,
+    /// Whether all runtime options affecting assignment are represented here.
+    pub ik_assignment_options_supported: bool,
     /// How many CUDA devices the child will have visible.
     ///
     /// Each one costs host memory for its context — measured at ~20 MiB per
@@ -102,6 +106,8 @@ impl<'a> EstimatorInputs<'a> {
             mmproj: None,
             context: 0,
             ubatch: None,
+            worst_graph_tokens: None,
+            ik_assignment_options_supported: true,
             visible_devices: 1,
             host_resident_experts: false,
             split_mode: ananke_config::placement::SplitMode::Layer,
@@ -156,6 +162,8 @@ impl<'a> EstimatorInputs<'a> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.context.hash(&mut hasher);
         self.ubatch.hash(&mut hasher);
+        self.worst_graph_tokens.hash(&mut hasher);
+        self.ik_assignment_options_supported.hash(&mut hasher);
         self.cache_type_k.hash(&mut hasher);
         self.cache_type_v.hash(&mut hasher);
         self.override_tensor.hash(&mut hasher);
@@ -328,6 +336,27 @@ pub struct Layout {
     /// Zero for an architecture that ships none, which is every dense model
     /// measured. See [`crate::replicated`].
     pub tensor_split_replicated_bytes: u64,
+    /// Runtime assignment inputs, when the IK accounting is supported.
+    pub ik_assignment: Option<IkAssignment>,
+}
+
+/// Bounds for IK's `get_layer_sizes`, independent of calibrated reservations.
+/// All layer vectors use the same indices as `Layout::per_layer_bytes`.
+/// Unmodelled runtime flags that change tensor or cache accounting invalidate these bounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IkAssignment {
+    /// Runtime layer weights, before expert offload or cache costs.
+    pub layer_weights: Vec<u64>,
+    /// Inclusive lower bounds on each layer's runtime cache cost.
+    pub cache_lower: Vec<u64>,
+    /// Inclusive upper bounds on each layer's runtime cache cost.
+    pub cache_upper: Vec<u64>,
+    /// Runtime output weights, including the tied-embedding fallback.
+    pub output_weights: u64,
+    /// Upper bound on the raw f32 logits, before subtracting runtime scratch.
+    pub logits_bytes: u64,
+    /// Upper bound on IK's assignment scratch maximum, not a VRAM reservation.
+    pub scratch_upper: u64,
 }
 
 /// Device-side allocations that are neither weights nor KV cache.
@@ -462,6 +491,16 @@ mod tests {
     use ananke_config::placement::SplitMode;
 
     use super::EstimatorInputs;
+
+    #[test]
+    fn fingerprint_distinguishes_worst_graph_tokens() {
+        let a = baseline();
+        let b = EstimatorInputs {
+            worst_graph_tokens: Some(2048),
+            ..a.clone()
+        };
+        assert_ne!(a.config_fingerprint(), b.config_fingerprint());
+    }
 
     /// A baseline `EstimatorInputs` with every field populated. Tests clone
     /// this and flip a single field to prove the fingerprint is sensitive to

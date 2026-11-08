@@ -160,6 +160,8 @@ impl ModelConfig {
             mmproj,
             context: self.context,
             ubatch: self.ubatch,
+            worst_graph_tokens: None,
+            ik_assignment_options_supported: true,
             visible_devices: self.cards(),
             host_resident_experts: self.offload().is_enabled(),
             split_mode: self.split(),

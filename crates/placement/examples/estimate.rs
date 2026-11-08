@@ -161,6 +161,8 @@ fn main() {
         mmproj: args.mmproj.as_deref(),
         context: args.context,
         ubatch: args.ubatch,
+        worst_graph_tokens: None,
+        ik_assignment_options_supported: true,
         visible_devices: args.visible_devices(),
         host_resident_experts: args.expert_offload().is_enabled(),
         split_mode: args.split_mode,
