@@ -17,11 +17,85 @@ use std::{
 };
 
 use ananke::config::{PlacementPolicy, ServiceConfig, TemplateConfig};
-use ananke_placement::devices::{CpuSnapshot, DeviceSnapshot};
+use ananke_placement::devices::{CpuSnapshot, DeviceSnapshot, GpuSnapshot};
 use ananke_system::Fs;
 use axum::{body::to_bytes, http::StatusCode};
 use common::{build_harness_with_snapshot, synth_gguf};
 use tower::util::ServiceExt;
+
+#[tokio::test(flavor = "current_thread")]
+async fn external_gpu_pressure_is_not_reported_as_achievable_eviction() {
+    let gib = 1024 * 1024 * 1024;
+    let model_path = Path::new("/fake/external-pressure.gguf");
+    let gguf_bytes = synth_gguf::Builder::new()
+        .kv_string("general.architecture", "qwen3")
+        .kv_u32("qwen3.block_count", 2)
+        .kv_u32("qwen3.attention.head_count_kv", 4)
+        .kv_u32("qwen3.attention.key_length", 128)
+        .kv_u32("qwen3.attention.value_length", 128)
+        .tensor_f16("blk.0.attn_q.weight", 128 * 1024 * 1024)
+        .tensor_f16("blk.1.attn_q.weight", 128 * 1024 * 1024)
+        .tensor_f16("output.weight", gib)
+        .tensor_f16("token_embd.weight", 1024)
+        .build();
+    let mut service = oversized_service(model_path.to_path_buf());
+    service.placement_policy = PlacementPolicy::GpuOnly;
+    let snapshot = DeviceSnapshot {
+        gpus: vec![
+            GpuSnapshot {
+                id: 0,
+                name: "GPU 0".into(),
+                total_bytes: 24 * gib,
+                free_bytes: gib,
+            },
+            GpuSnapshot {
+                id: 1,
+                name: "GPU 1".into(),
+                total_bytes: 24 * gib,
+                free_bytes: 24 * gib,
+            },
+        ],
+        cpu: Some(CpuSnapshot {
+            total_bytes: 128 * gib,
+            available_bytes: 64 * gib,
+        }),
+        taken_at_ms: 0,
+    };
+    let h = build_harness_with_snapshot(vec![service], snapshot).await;
+    h.fs.write(model_path, &gguf_bytes).unwrap();
+    for uri in ["/api/services", "/api/services/too-big"] {
+        let app = ananke::api::management::router(h.state.clone());
+        let request = axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let service = if uri == "/api/services" {
+            &parsed["services"][0]
+        } else {
+            &parsed
+        };
+        let verdict = if uri == "/api/services" {
+            &service["fit_verdict"]
+        } else {
+            &service["placement_preview"]["verdict"]
+        };
+        assert_eq!(verdict["kind"], "does_not_fit", "{uri}: {service}");
+        let shortfalls = verdict["shortfalls"].as_array().unwrap();
+        assert!(
+            shortfalls.iter().any(|shortfall| {
+                shortfall["device"] == "gpu:0"
+                    && shortfall["requested_bytes"].as_u64().unwrap()
+                        > shortfall["available_bytes"].as_u64().unwrap()
+            }),
+            "{uri}: {shortfalls:?}"
+        );
+    }
+    h.cleanup().await;
+}
 
 fn oversized_service(model_path: PathBuf) -> ServiceConfig {
     let mut svc = common::minimal_llama_service("too-big", 0);

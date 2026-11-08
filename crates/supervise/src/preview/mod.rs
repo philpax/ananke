@@ -26,8 +26,11 @@ use ananke_placement::service_inputs::placement_inputs;
 use ananke_system::Fs;
 use ananke_templates::SubstituteError;
 use ananke_tracking::rolling::Corrections;
-pub use verdict::{preview_command_placement, preview_override_placement, preview_placement};
+pub use verdict::{
+    PreviewContext, preview_command_placement, preview_override_placement, preview_placement,
+};
 
+pub use crate::eviction::eviction_candidates;
 use crate::spawn::{SpawnConfig, container::render_container_spec, render_argv};
 
 /// Why a launch-command preview could not be produced.

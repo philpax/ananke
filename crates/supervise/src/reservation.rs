@@ -21,29 +21,6 @@ impl RunLoop {
         table: &ananke_allocator::AllocationTable,
     ) -> Result<std::collections::BTreeMap<ananke_config::DeviceSlot, u64>, ReservationFailure>
     {
-        self.compute_reservation_map_inner(snap, table, false)
-    }
-
-    /// Variant of [`compute_reservation_map`] that uses the optimistic
-    /// planner (`pack_optimistic`). Used by the retry-after-eviction path,
-    /// where `table` has had victims filtered out and nvml still shows their
-    /// realized usage.
-    pub(crate) fn compute_reservation_map_optimistic(
-        &mut self,
-        snap: &ananke_devices::DeviceSnapshot,
-        table: &ananke_allocator::AllocationTable,
-    ) -> Result<std::collections::BTreeMap<ananke_config::DeviceSlot, u64>, ReservationFailure>
-    {
-        self.compute_reservation_map_inner(snap, table, true)
-    }
-
-    fn compute_reservation_map_inner(
-        &mut self,
-        snap: &ananke_devices::DeviceSnapshot,
-        table: &ananke_allocator::AllocationTable,
-        optimistic: bool,
-    ) -> Result<std::collections::BTreeMap<ananke_config::DeviceSlot, u64>, ReservationFailure>
-    {
         let current = self.current_svc();
         let svc = &current;
         // An explicit allocation mode replaces the estimator outright: the
@@ -53,7 +30,7 @@ impl RunLoop {
         // architecture is one the estimator refuses, which leaves the operator
         // nothing else to place it with.
         if !matches!(svc.allocation_mode, ananke_config::AllocationMode::None) {
-            return self.compute_command_reservation(svc, snap, table, optimistic);
+            return self.compute_command_reservation(svc, snap, table);
         }
         if !svc.placement_override.is_empty() {
             self.packed_for_spawn = None;
@@ -105,7 +82,7 @@ impl RunLoop {
             snap,
             table,
             corrections,
-            optimistic,
+            false,
         )
         .map_err(pack_err_to_reservation_failure)?;
         // Convert Allocation bytes (per-DeviceId, in bytes) to the
@@ -143,7 +120,6 @@ impl RunLoop {
         svc: &ananke_config::ServiceConfig,
         snap: &ananke_devices::DeviceSnapshot,
         table: &ananke_allocator::AllocationTable,
-        optimistic: bool,
     ) -> Result<std::collections::BTreeMap<ananke_config::DeviceSlot, u64>, ReservationFailure>
     {
         self.packed_for_spawn = None;
@@ -177,7 +153,7 @@ impl RunLoop {
                 &placement_inputs(svc),
                 snap,
                 table,
-                optimistic,
+                false,
             )
             .map_err(ReservationFailure::PackFailed)?;
             map = svc.placement_override.clone();
@@ -206,7 +182,7 @@ impl RunLoop {
                 table,
                 min_mb,
                 prefer_mb,
-                optimistic,
+                false,
             ) {
                 Some(id) => ananke_config::DeviceSlot::Gpu(id),
                 None if snap.gpus.is_empty() => {
@@ -223,7 +199,7 @@ impl RunLoop {
                                 snap,
                                 table,
                                 min_mb,
-                                optimistic,
+                                false,
                             ),
                         },
                     ));
