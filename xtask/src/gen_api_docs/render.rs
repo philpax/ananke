@@ -50,17 +50,13 @@ pub fn render_markdown(spec: &Value, prose: &ProseFragments) -> String {
     writeln!(&mut out, "## Service states\n").unwrap();
     write_prose(&mut out, prose.service_states);
 
-    // Events WebSocket.
-    writeln!(&mut out, "## WebSocket: /api/events\n").unwrap();
-    write_prose(&mut out, prose.events_ws);
+    // Event variants.
+    writeln!(&mut out, "## Events\n").unwrap();
+    write_prose(&mut out, prose.events);
 
-    // Logs WebSocket.
-    writeln!(
-        &mut out,
-        "## WebSocket: /api/services/{{name}}/logs/stream\n"
-    )
-    .unwrap();
-    write_prose(&mut out, prose.logs_ws);
+    // Live subscriptions WebSocket.
+    writeln!(&mut out, "## WebSocket: /api/live\n").unwrap();
+    write_prose(&mut out, prose.live_ws);
 
     // Errors.
     writeln!(&mut out, "## Error codes\n").unwrap();
@@ -100,8 +96,8 @@ pub struct ProseFragments {
     pub management_api: &'static str,
     pub per_service_proxy: &'static str,
     pub service_states: &'static str,
-    pub events_ws: &'static str,
-    pub logs_ws: &'static str,
+    pub events: &'static str,
+    pub live_ws: &'static str,
     pub errors: &'static str,
     pub prometheus: &'static str,
     pub openapi_spec: &'static str,
@@ -168,8 +164,6 @@ fn render_management_groups(out: &mut String, spec: &Value) {
             "Devices"
         } else if path.starts_with("/api/metrics") {
             "Metrics"
-        } else if path.starts_with("/api/oneshot") {
-            "Oneshot"
         } else if path.starts_with("/api/info") {
             "Info"
         } else {
@@ -368,6 +362,11 @@ fn render_error_code_table(out: &mut String, spec: &Value) {
                 "The daemon could not read the metrics, restart, or device history you asked for."
             }
             "preview_failed" => "The launch command for this service could not be built.",
+            "invalid_live_request" => "A `/api/live` frame could not be parsed as a request.",
+            "duplicate_subscription_id" => {
+                "A `/api/live` subscribe reused an id already active on the connection."
+            }
+            "subscription_limit" => "A `/api/live` connection reached its subscription limit.",
             "other" => "Forward-compatibility fallback for unknown codes.",
             _ => "",
         };

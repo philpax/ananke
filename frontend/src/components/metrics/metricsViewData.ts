@@ -1,4 +1,6 @@
-// Pure data-shaping helpers for MetricsView charts.
+// Pure data shaping for the Stats charts: uPlot's column layout from the
+// aggregated buckets, per-device memory, and the per-service rankings.
+// Timestamps are unix seconds, as uPlot wants them.
 
 import type { DeviceSampleResponse } from "../../api/client.ts";
 import type {
@@ -6,27 +8,44 @@ import type {
   PerServiceSeries,
 } from "../../api/metrics-aggregate.ts";
 
-type MemorySeries = {
-  device: string;
-  data: { ts: number; usedBytes: number }[];
+export type ChartData = (number | null)[][];
+
+export type MemorySeries = {
+  readonly device: string;
+  readonly data: readonly { readonly ts: number; readonly usedBytes: number }[];
 };
 
+/// Samples grouped per device, each in time order, devices sorted by id.
 export function groupDeviceSamples(
-  samples: DeviceSampleResponse[],
+  samples: readonly DeviceSampleResponse[],
 ): MemorySeries[] {
   const byDevice = new Map<string, { ts: number; usedBytes: number }[]>();
   for (const s of samples) {
-    const arr = byDevice.get(s.device) ?? [];
-    arr.push({
+    const points = byDevice.get(s.device) ?? [];
+    points.push({
       ts: Math.floor(s.timestamp_ms / 1000),
       usedBytes: s.used_bytes,
     });
-    byDevice.set(s.device, arr);
+    byDevice.set(s.device, points);
   }
-  return Array.from(byDevice.entries()).map(([device, data]) => ({
-    device,
-    data: data.sort((a, b) => a.ts - b.ts),
-  }));
+  return Array.from(byDevice.entries())
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([device, data]) => ({
+      device,
+      data: data.sort((a, b) => a.ts - b.ts),
+    }));
+}
+
+/// GPUs and host memory apart: host RAM is usually several times a GPU's
+/// VRAM, so on one axis it would flatten every GPU line.
+export function splitMemorySeries(series: readonly MemorySeries[]): {
+  readonly gpus: readonly MemorySeries[];
+  readonly host: readonly MemorySeries[];
+} {
+  return {
+    gpus: series.filter((s) => s.device !== "cpu"),
+    host: series.filter((s) => s.device === "cpu"),
+  };
 }
 
 export type ChartField =
@@ -39,77 +58,139 @@ export type ChartField =
   | "inputTps"
   | "effectiveTps";
 
+/// A bucket's value for `field`. Latency and rates are request-weighted
+/// means, `null` where no request carried them, never a misleading zero.
 export function resolveField(
   b: AggregatedBucket,
   field: ChartField,
 ): number | null {
   switch (field) {
     case "totalDurationMs":
-      return b.timedRequests > 0 ? b.totalDurationMs / b.timedRequests : null;
+      return mean(b.totalDurationMs, b.timedRequests);
     case "outputTps":
-      return b.outputTpsRequests > 0
-        ? b.totalWeightedOutputTps / b.outputTpsRequests
-        : null;
+      return mean(b.totalWeightedOutputTps, b.outputTpsRequests);
     case "inputTps":
-      return b.inputTpsRequests > 0
-        ? b.totalWeightedInputTps / b.inputTpsRequests
-        : null;
+      return mean(b.totalWeightedInputTps, b.inputTpsRequests);
     case "effectiveTps":
-      return b.effectiveTpsRequests > 0
-        ? b.totalWeightedEffectiveTps / b.effectiveTpsRequests
-        : null;
-    default:
-      return b[field] as number;
+      return mean(b.totalWeightedEffectiveTps, b.effectiveTpsRequests);
+    case "requestCount":
+    case "promptTokens":
+    case "completionTokens":
+    case "errorCount":
+      return b[field];
+    default: {
+      const unreachable: never = field;
+      return unreachable;
+    }
   }
 }
 
-// Whether any bucket in the window carries an input/output split. When
-// none do (all non-streaming with no engine timings), the token-rate
-// panel falls back to the effective line instead of showing two zeros.
-export function hasSplitTps(buckets: AggregatedBucket[]): boolean {
+/// Whether any bucket in the window carries an input/output split. When
+/// none do (all non-streaming with no engine timings), the token-rate
+/// chart falls back to the effective line instead of showing two zeros.
+export function hasSplitTps(buckets: readonly AggregatedBucket[]): boolean {
   return buckets.some((b) => b.outputTpsRequests > 0 || b.inputTpsRequests > 0);
 }
 
-export function toLineData(
-  buckets: AggregatedBucket[],
-  field: ChartField,
-): (number | null)[][] {
-  return [buckets.map((b) => b.ts), buckets.map((b) => resolveField(b, field))];
+/// One column of timestamps and one per field.
+export function toFieldsData(
+  buckets: readonly AggregatedBucket[],
+  fields: readonly ChartField[],
+): ChartData {
+  return [
+    buckets.map((b) => b.ts),
+    ...fields.map((field) => buckets.map((b) => resolveField(b, field))),
+  ];
 }
 
+/// One column per service over the union of their timestamps; a service
+/// with no bucket at a time is `null` there.
 export function toMultiSeriesData(
-  seriesList: PerServiceSeries[],
+  seriesList: readonly PerServiceSeries[],
   field: ChartField,
-): (number | null)[][] {
-  const allTs = new Set<number>();
-  for (const s of seriesList) {
-    for (const b of s.buckets) allTs.add(b.ts);
-  }
-  const ts = Array.from(allTs).sort((a, b) => a - b);
-  const result: (number | null)[][] = [ts];
-  for (const s of seriesList) {
-    const map = new Map(s.buckets.map((b) => [b.ts, b]));
-    const values = ts.map((t) => {
-      const b = map.get(t);
-      if (!b) return null;
-      return resolveField(b, field);
-    });
-    result.push(values);
-  }
-  return result;
+): ChartData {
+  const ts = unionTimestamps(seriesList.map((s) => s.buckets));
+  return [
+    ts,
+    ...seriesList.map((s) => {
+      const byTs = new Map(s.buckets.map((b) => [b.ts, b]));
+      return ts.map((t) => {
+        const b = byTs.get(t);
+        return b === undefined ? null : resolveField(b, field);
+      });
+    }),
+  ];
 }
 
-export function toMemoryData(series: MemorySeries[]): (number | null)[][] {
-  if (series.length === 0) return [[]];
-  const allTs = new Set<number>();
-  for (const s of series) {
-    for (const d of s.data) allTs.add(d.ts);
+/// Used memory per device in GB over the union of their timestamps.
+export function toMemoryData(series: readonly MemorySeries[]): ChartData {
+  const ts = unionTimestamps(series.map((s) => s.data));
+  return [
+    ts,
+    ...series.map((s) => {
+      const byTs = new Map(s.data.map((d) => [d.ts, d.usedBytes / 1e9]));
+      return ts.map((t) => byTs.get(t) ?? null);
+    }),
+  ];
+}
+
+/// Whether a chart has anything to draw: some value column holds a
+/// value. The timestamp column alone is not a sample.
+export function hasSamples(data: ChartData): boolean {
+  return data.slice(1).some((column) => column.some((v) => v !== null));
+}
+
+export type ServiceSpeed = {
+  readonly service: string;
+  readonly tokensPerSecond: number;
+  /// The rate is the end-to-end effective one: the service reported no
+  /// decode rate in the range.
+  readonly effective: boolean;
+};
+
+/// Each service's mean output rate over the range, fastest first. A
+/// service with no decode rate falls back to its effective rate; one with
+/// neither is left out, since it generated nothing to rank.
+export function serviceSpeeds(
+  seriesList: readonly PerServiceSeries[],
+): ServiceSpeed[] {
+  const speeds: ServiceSpeed[] = [];
+  for (const { serviceName, buckets } of seriesList) {
+    const sum = (f: (b: AggregatedBucket) => number) =>
+      buckets.reduce((s, b) => s + f(b), 0);
+    const output = mean(
+      sum((b) => b.totalWeightedOutputTps),
+      sum((b) => b.outputTpsRequests),
+    );
+    const effective = mean(
+      sum((b) => b.totalWeightedEffectiveTps),
+      sum((b) => b.effectiveTpsRequests),
+    );
+    if (output !== null) {
+      speeds.push({
+        service: serviceName,
+        tokensPerSecond: output,
+        effective: false,
+      });
+    } else if (effective !== null) {
+      speeds.push({
+        service: serviceName,
+        tokensPerSecond: effective,
+        effective: true,
+      });
+    }
   }
-  const ts = Array.from(allTs).sort((a, b) => a - b);
-  const result: (number | null)[][] = [ts];
-  for (const s of series) {
-    const map = new Map(s.data.map((d) => [d.ts, d.usedBytes / 1e9]));
-    result.push(ts.map((t) => map.get(t) ?? null));
-  }
-  return result;
+  return speeds.sort((a, b) => b.tokensPerSecond - a.tokensPerSecond);
+}
+
+function mean(total: number, count: number): number | null {
+  return count > 0 ? total / count : null;
+}
+
+function unionTimestamps(
+  columns: readonly (readonly { readonly ts: number }[])[],
+): number[] {
+  const all = new Set<number>();
+  for (const column of columns) for (const p of column) all.add(p.ts);
+  return Array.from(all).sort((a, b) => a - b);
 }

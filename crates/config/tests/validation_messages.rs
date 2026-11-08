@@ -24,7 +24,6 @@ const CORPUS: &[&str] = &[
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\ndevices.split = \"x\"\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\nlifecycle = \"x\"\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\nmodality = \"x\"\n",
-    "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\nlifecycle = \"oneshot\"\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\ndraft_model = \"/d.gguf\"\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\nlauncher = []\n",
     "[[service]]\nname = \"a\"\ntemplate = \"llama-cpp\"\nmodel = \"/m/x.gguf\"\nport = 1\nauto_restart = { spec_collapse = true }\n",

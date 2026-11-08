@@ -8,11 +8,7 @@
 //! exit status have been collected.
 #![cfg(feature = "test-fakes")]
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, atomic::AtomicU64},
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use ananke::supervise::{
     drain::{DrainConfig, DrainReason, drain_pipeline},
@@ -25,6 +21,7 @@ use ananke_config::validate::{
 };
 use ananke_db::Database;
 use ananke_devices::Allocation;
+use ananke_proxy::InflightCounter;
 use ananke_system::{
     SystemDeps,
     container::{ContainerEngine, FakeContainerEngine, FakeContainerState},
@@ -278,7 +275,7 @@ async fn container_drain_escalates_to_kill() {
     drain_pipeline(
         &mut workload,
         &cfg,
-        Arc::new(AtomicU64::new(0)),
+        InflightCounter::detached(),
         DrainReason::Shutdown,
     )
     .await;
@@ -357,7 +354,7 @@ async fn container_drain_removes_after_graceful_exit() {
     drain_pipeline(
         &mut workload,
         &cfg,
-        Arc::new(AtomicU64::new(0)),
+        InflightCounter::detached(),
         DrainReason::IdleTimeout,
     )
     .await;

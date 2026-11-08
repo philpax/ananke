@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ananke-api.workspace = true
+ananke-time.workspace = true
 parking_lot.workspace = true
 smol_str.workspace = true
 tokio.workspace = true

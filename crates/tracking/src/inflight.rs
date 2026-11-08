@@ -1,24 +1,23 @@
-//! Per-service in-flight request counter used by the drain pipeline.
+//! Per-service in-flight request counters used by the drain pipeline and
+//! the management API.
 //!
-//! Proxies increment before forwarding and decrement on response
-//! completion (including error and connection close). The supervisor's
-//! drain state waits for the counter to reach zero, bounded by
-//! `max_request_duration`.
+//! Proxies hold an [`InflightGuard`](ananke_proxy::InflightGuard) per
+//! request. Every counter the table mints shares one table-wide
+//! [`ChangeSignal`], so a reader that renders all services can wait on a
+//! single receiver.
 
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::BTreeMap, sync::Arc};
 
+use ananke_events::ChangeSignal;
+use ananke_proxy::inflight::InflightCounter;
 use parking_lot::RwLock;
 use smol_str::SmolStr;
+use tokio::sync::watch;
 
 #[derive(Clone, Default)]
 pub struct InflightTable {
-    inner: Arc<RwLock<BTreeMap<SmolStr, Arc<AtomicU64>>>>,
+    inner: Arc<RwLock<BTreeMap<SmolStr, Arc<InflightCounter>>>>,
+    changed: ChangeSignal,
 }
 
 impl InflightTable {
@@ -27,7 +26,7 @@ impl InflightTable {
     }
 
     /// Return (or lazily create) the counter for the given service.
-    pub fn counter(&self, service: &SmolStr) -> Arc<AtomicU64> {
+    pub fn counter(&self, service: &SmolStr) -> Arc<InflightCounter> {
         {
             let guard = self.inner.read();
             if let Some(c) = guard.get(service) {
@@ -37,7 +36,7 @@ impl InflightTable {
         let mut guard = self.inner.write();
         guard
             .entry(service.clone())
-            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .or_insert_with(|| Arc::new(InflightCounter::new(self.changed.clone())))
             .clone()
     }
 
@@ -46,31 +45,20 @@ impl InflightTable {
         self.inner
             .read()
             .get(service)
-            .map(|c| c.load(Ordering::Relaxed))
+            .map(|c| c.current())
             .unwrap_or(0)
     }
-}
 
-/// RAII guard that increments the counter on construction and decrements on drop.
-pub struct InflightGuard {
-    counter: Arc<AtomicU64>,
-}
-
-impl InflightGuard {
-    pub fn new(counter: Arc<AtomicU64>) -> Self {
-        counter.fetch_add(1, Ordering::Relaxed);
-        Self { counter }
-    }
-}
-
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
-        self.counter.fetch_sub(1, Ordering::Relaxed);
+    /// Wakes whenever any service's count changes.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ananke_proxy::InflightGuard;
+
     use super::*;
 
     #[test]
@@ -87,13 +75,18 @@ mod tests {
     }
 
     #[test]
-    fn multiple_guards_stack() {
+    fn every_counter_notifies_the_table_signal() {
         let t = InflightTable::new();
-        let svc = SmolStr::new("demo");
-        let c = t.counter(&svc);
-        let _g1 = InflightGuard::new(c.clone());
-        let _g2 = InflightGuard::new(c.clone());
-        let _g3 = InflightGuard::new(c.clone());
-        assert_eq!(t.current(&svc), 3);
+        let mut rx = t.changes();
+        let alpha = InflightGuard::new(t.counter(&SmolStr::new("alpha")));
+        assert!(rx.has_changed().unwrap());
+        rx.borrow_and_update();
+
+        let _beta = InflightGuard::new(t.counter(&SmolStr::new("beta")));
+        assert!(rx.has_changed().unwrap());
+        rx.borrow_and_update();
+
+        drop(alpha);
+        assert!(rx.has_changed().unwrap());
     }
 }

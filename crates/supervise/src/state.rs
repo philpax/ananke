@@ -1,6 +1,9 @@
 //! Service state machine.
 
-use smol_str::SmolStr;
+// The wire enum is the internal one: every reason the supervisor records is
+// one a client can see, so there is nothing to map and nothing to drift.
+pub use ananke_api::shared::DisableReason;
+use ananke_api::shared::ServiceStateKind;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ServiceState {
@@ -19,49 +22,30 @@ pub enum ServiceState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DisableReason {
-    ConfigError(SmolStr),
-    LaunchFailed,
-    HealthTimeout,
-    Oom,
-    CrashLoop,
-    NoFit,
-    UserDisabled,
-    /// Auto-restart fired more times than its flap cap allowed within the
-    /// flap window — the service is presumed unrecoverable and is disabled
-    /// rather than restarted again. Distinct from [`Self::CrashLoop`], which
-    /// is a child that never launched; here the child launched fine but kept
-    /// degrading in service.
-    AutoRestartLoop,
-}
-
 impl ServiceState {
     pub fn name(&self) -> &'static str {
+        self.kind().as_str()
+    }
+
+    /// The state as the management API reports it.
+    pub fn kind(&self) -> ServiceStateKind {
         match self {
-            ServiceState::Idle => "idle",
-            ServiceState::Starting => "starting",
-            ServiceState::Running => "running",
-            ServiceState::Draining => "draining",
-            ServiceState::Stopped => "stopped",
-            ServiceState::Evicted => "evicted",
-            ServiceState::Failed { .. } => "failed",
-            ServiceState::Disabled { .. } => "disabled",
+            ServiceState::Idle => ServiceStateKind::Idle,
+            ServiceState::Starting => ServiceStateKind::Starting,
+            ServiceState::Running => ServiceStateKind::Running,
+            ServiceState::Draining => ServiceStateKind::Draining,
+            ServiceState::Stopped => ServiceStateKind::Stopped,
+            ServiceState::Evicted => ServiceStateKind::Evicted,
+            ServiceState::Failed { .. } => ServiceStateKind::Failed,
+            ServiceState::Disabled { .. } => ServiceStateKind::Disabled,
         }
     }
-}
 
-impl DisableReason {
-    pub fn as_str(&self) -> &str {
+    /// Why the service is disabled, when it is.
+    pub fn disabled_reason(&self) -> Option<DisableReason> {
         match self {
-            DisableReason::ConfigError(_) => "config_error",
-            DisableReason::LaunchFailed => "launch_failed",
-            DisableReason::HealthTimeout => "health_timeout",
-            DisableReason::Oom => "oom",
-            DisableReason::CrashLoop => "crash_loop",
-            DisableReason::NoFit => "no_fit",
-            DisableReason::UserDisabled => "user_disabled",
-            DisableReason::AutoRestartLoop => "auto_restart_loop",
+            ServiceState::Disabled { reason } => Some(*reason),
+            _ => None,
         }
     }
 }
@@ -75,7 +59,6 @@ pub enum Event {
     Stopped,
     LaunchFailed,
     HealthTimedOut,
-    CrashLoop,
     UserEnable,
     UserDisable,
     RetryAfterBackoff,
@@ -127,9 +110,6 @@ pub fn try_transition(from: &ServiceState, event: Event) -> Option<ServiceState>
         }
         (Starting, Event::HealthTimedOut) => Some(Disabled {
             reason: DisableReason::HealthTimeout,
-        }),
-        (Running, Event::CrashLoop) => Some(Disabled {
-            reason: DisableReason::CrashLoop,
         }),
         (Running, Event::AutoRestartLoop) => Some(Disabled {
             reason: DisableReason::AutoRestartLoop,
@@ -207,6 +187,35 @@ mod tests {
                 reason: DisableReason::AutoRestartLoop,
             },
         );
+    }
+
+    #[test]
+    fn wire_state_carries_the_reason_only_when_disabled() {
+        let cases = [
+            (ServiceState::Idle, ServiceStateKind::Idle, None),
+            (ServiceState::Starting, ServiceStateKind::Starting, None),
+            (ServiceState::Running, ServiceStateKind::Running, None),
+            (ServiceState::Draining, ServiceStateKind::Draining, None),
+            (ServiceState::Stopped, ServiceStateKind::Stopped, None),
+            (ServiceState::Evicted, ServiceStateKind::Evicted, None),
+            (
+                ServiceState::Failed { retry_count: 1 },
+                ServiceStateKind::Failed,
+                None,
+            ),
+            (
+                ServiceState::Disabled {
+                    reason: DisableReason::Oom,
+                },
+                ServiceStateKind::Disabled,
+                Some(DisableReason::Oom),
+            ),
+        ];
+        for (state, kind, reason) in cases {
+            assert_eq!(state.kind(), kind, "{state:?}");
+            assert_eq!(state.disabled_reason(), reason, "{state:?}");
+            assert_eq!(state.name(), kind.as_str(), "{state:?}");
+        }
     }
 
     #[test]

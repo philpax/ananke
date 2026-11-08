@@ -15,7 +15,6 @@ mod devices;
 mod lock;
 mod metrics;
 mod metrics_query;
-mod oneshots;
 mod restarts;
 mod running;
 mod service_logs;
@@ -37,6 +36,7 @@ pub use metrics_query::MetricBucket;
 use parking_lot::Mutex;
 pub use restarts::SpecAcceptance;
 use rusqlite::Connection;
+pub use service_logs::{LogFilter, LogsAfter};
 
 /// Cloneable database handle. All queries go through the shared
 /// `Connection` behind a `parking_lot::Mutex`. Lock durations stay in

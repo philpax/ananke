@@ -114,6 +114,13 @@ pub const MIGRATIONS: &[Migration] = &[
         digest: "9f663d483b3e2d33a6c6037857fe53ff73484ec501a60d81615668a7274c6bef",
         sql: include_str!("migrations/0012_strict_tables.sql"),
     },
+    Migration {
+        version: 13,
+        name: "drop_oneshots",
+        source_path: "migrations/0013_drop_oneshots.sql",
+        digest: "c03177ec2f5e418207df63c3849b7d71d2b633744547be225ef5c4d8fcd81c01",
+        sql: include_str!("migrations/0013_drop_oneshots.sql"),
+    },
 ];
 
 fn validate_integrity(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -133,7 +140,7 @@ fn validate_integrity(conn: &Connection) -> Result<(), rusqlite::Error> {
 /// Migrations above the target are retained, never downgraded, and remain part
 /// of the validated history.
 pub fn apply_pending(conn: &mut Connection, now_ms: i64) -> Result<Vec<u32>, rusqlite::Error> {
-    apply_pending_to(conn, now_ms, 12)
+    apply_pending_to(conn, now_ms, 13)
 }
 
 pub fn apply_pending_to(
@@ -544,6 +551,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(temporary_objects, 0);
+    }
+
+    #[test]
+    fn drop_oneshots_migration_removes_table_and_keeps_services() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_migrations_through(&mut conn, 11);
+        seed_v11_database(&conn);
+        apply_pending_to(&mut conn, 2_000, 12).unwrap();
+
+        let applied = apply_pending_to(&mut conn, 3_000, 13).unwrap();
+        assert_eq!(applied, vec![13]);
+
+        let leftovers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('oneshots', 'oneshots_service')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftovers, 0);
+        let services: i64 = conn
+            .query_row("SELECT COUNT(*) FROM services", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(services, 1);
+        let fk_violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(fk_violations, 0);
     }
 
     fn apply_migrations_through(conn: &mut Connection, version: u32) {

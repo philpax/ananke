@@ -11,8 +11,8 @@ The daemon listens on two HTTP sockets:
 - **OpenAI-compatible API** (`127.0.0.1:7070` by default): `/v1/models`,
   `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`.
 - **Management API** (`127.0.0.1:7071` by default): `/api/services`,
-  `/api/config`, `/api/devices`, `/api/metrics`, `/api/oneshot`, `/api/events`,
-  `/api/info`, and `/api/openapi.json`.
+  `/api/config`, `/api/devices`, `/api/metrics`, `/api/events/history`,
+  `/api/info`, `/api/live`, and `/api/openapi.json`.
 
 Both addresses are configurable via `[daemon]` in the TOML config.
 
@@ -38,12 +38,9 @@ The daemon binds to loopback by default. Do **not** expose the management API or
 | `POST` | `/api/config/validate` | Validate TOML config without persisting |
 | `GET` | `/api/devices` | List devices and reservations |
 | `GET` | `/api/devices/samples` | Get device memory samples |
-| `GET` | `/api/info` | Get daemon listen addresses |
+| `GET` | `/api/events/history` | List recent events |
+| `GET` | `/api/info` | Get daemon listen addresses and uptime |
 | `GET` | `/api/metrics` | Get request metrics (time-bucketed) |
-| `GET` | `/api/oneshot` | Create or list oneshot processes |
-| `POST` | `/api/oneshot` | Create or list oneshot processes |
-| `GET` | `/api/oneshot/{id}` | Get or delete a oneshot process |
-| `DELETE` | `/api/oneshot/{id}` | Get or delete a oneshot process |
 | `GET` | `/api/restarts` | Get auto-restart firings |
 | `GET` | `/api/services` | List all services |
 | `GET` | `/api/services/{name}` | Get service detail |
@@ -203,9 +200,14 @@ The management API (`/api/*`) provides read-only inspection and control of the d
 - **Devices**: list with reservations, memory samples.
 - **Config**: get/put/validate the TOML config.
 - **Metrics**: request metrics buckets, device samples.
-- **Oneshot**: create/list/get/delete ephemeral processes.
-- **Events**: WebSocket stream of state changes, allocation changes, etc.
+- **Events**: the recent event history; live through `/api/live`.
 - **Info**: daemon listen addresses.
+
+### Log history
+
+`GET /api/services/{name}/logs` pages a service's captured lines newest first. Filters are `since`, `until`, `run`, and `stream`, and `limit` caps a page at 1000 lines (200 by default). To page further back, pass a response's `next_cursor` as `before` on the next request, until `next_cursor` is `null`. The cursor is opaque. Pages are ordered by position, run id then `seq`, so paging neither skips nor repeats a line.
+
+A page requested without `before` or `until` also carries `follow_after`, the newest position in the service's whole log when it was read. Following from it on `/api/live` continues the page without a gap; see the feeds section of the `/api/live` reference.
 
 ### Error responses
 
@@ -227,6 +229,7 @@ Get or update the daemon config
 {
   content: string
   hash: string
+  path: string
   writable: boolean
 }
 ```
@@ -331,7 +334,7 @@ Get device memory samples
 
 #### GET /api/info
 
-Get daemon listen addresses
+Get daemon listen addresses and uptime
 
 | Status | Description | Body |
 | --- | --- | --- |
@@ -343,6 +346,7 @@ Get daemon listen addresses
 {
   management_listen: string
   openai_listen: string
+  uptime_ms: number
 }
 ```
 
@@ -385,125 +389,62 @@ Get request metrics (time-bucketed)
 }
 ```
 
-### Oneshot
-
-#### GET /api/oneshot
-
-Create or list oneshot processes
-
-| Status | Description | Body |
-| --- | --- | --- |
-| 200 |  | `OneshotStatus[]` |
-
-**Response (200)**:
-
-```typescript
-{
-  ended_at_ms?: number | null
-  exit_code?: number | null
-  id: string
-  logs_url: string
-  name: string
-  port: number
-  started_at_ms?: number | null
-  state: string
-  submitted_at_ms: number
-}[]
-```
-
-#### POST /api/oneshot
-
-Create or list oneshot processes
-
-**Request body**:
-
-```typescript
-{
-  allocation: {
-    max_reserve_gb?: number | null
-    min_reserve_gb?: number | null
-    mode?: string | null
-    reserve_gb?: number | null
-  }
-  command?: string[] | null
-  devices?: {
-    placement?: string | null
-  } | null
-  health?: {
-    http: string
-    probe_interval?: string | null
-    timeout?: string | null
-  } | null
-  metadata?: Record<string, any>
-  name?: string | null
-  port?: number | null
-  priority?: number | null
-  template: string
-  ttl?: string | null
-  workdir?: string | null
-}
-```
-
-| Status | Description | Body |
-| --- | --- | --- |
-| 200 |  | `OneshotResponse` |
-| 400 | invalid_request_error | `ApiError` |
-| 503 | start_failed, start_queue_full | `ApiError` |
-
-**Response (200)**:
-
-```typescript
-{
-  id: string
-  logs_url: string
-  name: string
-  port: number
-}
-```
-
-#### GET /api/oneshot/{id}
-
-Get or delete a oneshot process
-
-| Parameter | In | Required | Description |
-| --- | --- | --- | --- |
-| `id` | path | yes |  |
-
-| Status | Description | Body |
-| --- | --- | --- |
-| 200 |  | `OneshotStatus` |
-| 404 | service_not_found | `ApiError` |
-
-**Response (200)**:
-
-```typescript
-{
-  ended_at_ms?: number | null
-  exit_code?: number | null
-  id: string
-  logs_url: string
-  name: string
-  port: number
-  started_at_ms?: number | null
-  state: string
-  submitted_at_ms: number
-}
-```
-
-#### DELETE /api/oneshot/{id}
-
-Get or delete a oneshot process
-
-| Parameter | In | Required | Description |
-| --- | --- | --- | --- |
-| `id` | path | yes |  |
-
-| Status | Description | Body |
-| --- | --- | --- |
-| 204 |  | — |
-| 404 | service_not_found | `ApiError` |
-
 ### Other
+
+#### GET /api/events/history
+
+List recent events
+
+| Status | Description | Body |
+| --- | --- | --- |
+| 200 |  | `EventHistory` |
+
+**Response (200)**:
+
+```typescript
+{
+  events:
+    // state_changed
+    | {
+      at_ms: number
+      disabled_reason?: "launch_failed" | "health_timeout" | "oom" | "user_disabled" | "auto_restart_loop" | null
+      from: "idle" | "starting" | "running" | "draining" | "stopped" | "evicted" | "failed" | "disabled" | "unknown"
+      service: string
+      to: "idle" | "starting" | "running" | "draining" | "stopped" | "evicted" | "failed" | "disabled" | "unknown"
+      type: "state_changed"
+    }
+    // allocation_changed
+    | {
+      at_ms: number
+      reservations: Record<string, number>
+      service: string
+      type: "allocation_changed"
+    }
+    // config_reloaded
+    | {
+      at_ms: number
+      changed_services: string[]
+      type: "config_reloaded"
+    }
+    // estimator_drift
+    | {
+      at_ms: number
+      class: string
+      rolling_mean: number
+      service: string
+      type: "estimator_drift"
+    }
+    // auto_restarted
+    | {
+      at_ms: number
+      detail: string
+      service: string
+      trigger: string
+      type: "auto_restarted"
+    }[]
+  since_ms: number
+}
+```
 
 #### GET /api/restarts
 
@@ -551,6 +492,8 @@ List all services
   openai_api_port: number
   services: {
     ananke_metadata?: Record<string, any>
+    description?: string | null
+    disabled_reason?: "launch_failed" | "health_timeout" | "oom" | "user_disabled" | "auto_restart_loop" | null
     elastic_borrower?: string | null
     fit_verdict?:
       // fits
@@ -578,14 +521,15 @@ List all services
     has_mmproj?: boolean | null
     inflight_count?: number
     last_used_ms?: number | null
-    lifecycle: string
+    lifecycle: "persistent" | "on_demand"
     modality?: "chat" | "embedding"
     name: string
+    openai_compat: boolean
     pid?: number | null
     port: number
     priority: number
     run_id?: number | null
-    state: string
+    state: "idle" | "starting" | "running" | "draining" | "stopped" | "evicted" | "failed" | "disabled" | "unknown"
   }[]
 }
 ```
@@ -608,6 +552,12 @@ Get service detail
 ```typescript
 {
   ananke_metadata?: Record<string, any>
+  command?: {
+    private_port_fixed: boolean
+    shutdown_command?: string[] | null
+    upstream_model?: string | null
+    workdir?: string | null
+  } | null
   container?: {
     container_id?: string | null
     container_name?: string | null
@@ -616,6 +566,8 @@ Get service detail
     runtime: string
   } | null
   current_allocation: Record<string, number>
+  description?: string | null
+  disabled_reason?: "launch_failed" | "health_timeout" | "oom" | "user_disabled" | "auto_restart_loop" | null
   elastic_borrower?: string | null
   estimate?: {
     compute_buffer_bytes_per_device: number
@@ -626,7 +578,7 @@ Get service detail
   } | null
   idle_timeout_ms: number
   last_used_ms?: number | null
-  lifecycle: string
+  lifecycle: "persistent" | "on_demand"
   modality?: "chat" | "embedding"
   model_info?: {
     architecture: string
@@ -642,7 +594,34 @@ Get service detail
   } | null
   name: string
   observed_peak_bytes: number
+  openai_compat: boolean
   pid?: number | null
+  placement: {
+    allocation:
+      // estimated
+      | {
+        kind: "estimated"
+      }
+      // static
+      | {
+        kind: "static"
+        reserve_bytes: number
+      }
+      // dynamic
+      | {
+        kind: "dynamic"
+        max_bytes: number
+        min_borrower_runtime_ms: number
+        min_bytes: number
+      }
+    gpu_allow?: number[]
+    gpu_headroom_bytes: number
+    policy: "gpu-only" | "cpu-only" | "hybrid"
+    split?: {
+      mode: "layer" | "row" | "tensor"
+      tensor_split_weights?: number[] | null
+    } | null
+  }
   placement_override: Record<string, number>
   placement_preview?: {
     devices: {
@@ -676,13 +655,6 @@ Get service detail
   port: number
   priority: number
   private_port: number
-  recent_logs: {
-    line: string
-    run_id: number
-    seq: number
-    stream: string
-    timestamp_ms: number
-  }[]
   recent_restarts?: {
     at_ms: number
     detail: string
@@ -706,8 +678,10 @@ Get service detail
   serving?: {
     batch_size?: number | null
     binary: string
+    cache_ram_bytes: number
     cache_type_k: string
     cache_type_v: string
+    context?: number | null
     draft_model?: string | null
     effective_context_per_slot?: number | null
     expert_offload: string
@@ -715,6 +689,7 @@ Get service detail
     kv_unified: boolean
     mlock: boolean
     mmap: boolean
+    n_gpu_layers?: number | null
     numa?: string | null
     parallel: number
     spec_type?: string | null
@@ -722,7 +697,7 @@ Get service detail
     threads_batch?: number | null
     ubatch_size?: number | null
   } | null
-  state: string
+  state: "idle" | "starting" | "running" | "draining" | "stopped" | "evicted" | "failed" | "disabled" | "unknown"
   template: string
 }
 ```
@@ -888,6 +863,10 @@ Get service logs (paginated)
 
 ```typescript
 {
+  follow_after?: {
+    run_id: number
+    seq: number
+  } | null
   logs: {
     line: string
     run_id: number
@@ -932,7 +911,7 @@ Restart a service
   // unavailable
   | {
     error: {
-      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "other"
+      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "invalid_live_request" | "duplicate_subscription_id" | "subscription_limit" | "other"
       message: string
       type: "invalid_request_error" | "server_error" | "other"
     }
@@ -973,7 +952,7 @@ Start a service
   // unavailable
   | {
     error: {
-      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "other"
+      code: "model_not_found" | "service_not_found" | "service_disabled" | "start_queue_full" | "start_failed" | "insufficient_capacity" | "service_blocked" | "upstream_unavailable" | "proxy_internal" | "not_implemented" | "invalid_request_error" | "invalid_cursor" | "if_match_required" | "hash_mismatch" | "persist_failed" | "query_failed" | "preview_failed" | "invalid_live_request" | "duplicate_subscription_id" | "subscription_limit" | "other"
       message: string
       type: "invalid_request_error" | "server_error" | "other"
     }
@@ -1058,28 +1037,25 @@ Each service is in exactly one state at any time. The state machine drives lifec
 
 ### Disabled reasons
 
-A `disabled` state carries a reason that explains why:
+A `disabled` service says why in `disabled_reason`, which the service list, the service detail, and the `state_changed` event carry exactly when the state is `disabled`:
 
 | Reason | Description |
 | --- | --- |
-| `config_error` | The service's config is invalid. |
 | `launch_failed` | The process failed to launch 3 times (retry cap exceeded). |
 | `health_timeout` | The health check didn't pass within the timeout. |
 | `oom` | The process was killed by the OOM killer. |
-| `crash_loop` | The process crashed repeatedly after becoming healthy. |
-| `no_fit` | The model doesn't fit on any available device. |
 | `user_disabled` | An operator disabled the service via the management API. |
-| `auto_restart_loop` | Auto-restart fired more times than its flap cap allowed within the flap window; the service kept degrading in service (as opposed to `crash_loop`, where the process never launched), so it is disabled rather than restarted again. |
+| `auto_restart_loop` | Auto-restart fired more times than its flap cap allowed within the flap window; the service launched but kept degrading in service (as opposed to `launch_failed`, where it never launched), so it is disabled rather than restarted again. |
 
 ### Transitions
 
 - `idle → starting`: spawn requested (first request or persistent watcher).
 - `starting → running`: health check passed.
 - `starting → failed`: launch failed (retry 0–2).
-- `starting → disabled`: health check timed out.
+- `starting → disabled`: health check timed out → `health_timeout`, or the process was OOM-killed twice → `oom`.
 - `running → draining`: drain requested (stop, evict, or shutdown).
 - `running → stopped`: process exited.
-- `running → disabled`: crash loop detected, or the auto-restart flap cap was tripped → `auto_restart_loop`.
+- `running → disabled`: the auto-restart flap cap was tripped → `auto_restart_loop`.
 - `draining → idle`: drain complete.
 - `draining → stopped`: process exited during drain.
 - `stopped → starting`: re-spawn requested.
@@ -1088,15 +1064,11 @@ A `disabled` state carries a reason that explains why:
 - `disabled → idle`: user enable.
 - `* → disabled`: user disable.
 
-## WebSocket: /api/events
+## Events
 
-The `/api/events` WebSocket delivers a system-wide stream of daemon events. Connect with a standard WebSocket handshake to `ws://<host>:7071/api/events`.
+The daemon publishes lifecycle events on an internal bus and keeps the newest 1000 in memory. `GET /api/events/history` returns that window, and the `/api/live` socket's `events` resource pushes it again whenever an event arrives. The window starts afresh when the daemon restarts.
 
-An optional `?service=<name>` query parameter filters events to a single service. Events that don't carry a service field (`config_reloaded`, `overflow`) are always delivered.
-
-### Frame format
-
-Each frame is a text message containing a single JSON object with a `type` tag. The `at_ms` field (millisecond UNIX timestamp) is present on every variant except `overflow`.
+Each event is a JSON object with a `type` tag. Every variant carries `at_ms`, a millisecond UNIX timestamp.
 
 ### Variants
 
@@ -1169,71 +1141,100 @@ Emitted when a `Running` service is drained and respawned by its auto-restart po
 }
 ```
 
-#### `overflow`
+## WebSocket: /api/live
 
-Emitted when the event bus drops events because a subscriber fell behind.
+The `/api/live` WebSocket carries read-only, multiplexed subscriptions to the management API's live state, and follows of append-only feeds such as a service's log. The embedded frontend reads all of its live state through it, logs included. Each subscription delivers a full snapshot of its resource straight away, then another whenever something the resource depends on changes and the new body differs from the last one sent. Snapshot bodies are the same DTOs the resource's HTTP `GET` returns, so a client can load over HTTP and switch to the socket, or fall back to HTTP while the socket is down.
 
-```json
-{
-  "type": "overflow",
-  "dropped": 42
-}
-```
+The socket carries no commands. Starting, stopping, and editing config stay on their HTTP endpoints; the resulting state changes arrive as snapshots.
 
-### Heartbeat
+### Requests
 
-The server sends a WebSocket Ping frame every 30 seconds. Clients should respond with Pong to keep intermediaries from closing the connection.
-
-## WebSocket: /api/services/{name}/logs/stream
-
-The `/api/services/{name}/logs/stream` WebSocket delivers a live tail of captured stdout/stderr lines for a single service.
-
-### Frame format
-
-Each frame is a text message containing a single JSON object with a `type` tag.
-
-### Variants
-
-#### `line`
-
-One captured log line.
+The client sends JSON text frames, each a `LiveRequest`. The `id` is chosen by the client, is 1 to 128 bytes long, and must not already be active on the connection.
 
 ```json
-{
-  "type": "line",
-  "timestamp_ms": 1700000000000,
-  "stream": "stdout",
-  "line": "model loaded",
-  "run_id": 1,
-  "seq": 42
-}
+{"type": "subscribe", "id": "services", "resource": {"kind": "services"}}
+{"type": "subscribe", "id": "detail:demo", "resource": {"kind": "service", "name": "demo"}}
+{"type": "follow", "id": "logs:demo", "feed": {"kind": "logs", "service": "demo", "after": {"run_id": 1761000000000, "seq": 812}}}
+{"type": "cancel", "id": "detail:demo"}
 ```
 
-#### `overflow`
+Subscriptions and follows share the id space and the limit, and both end with `cancel`. Cancelling an unknown id does nothing.
 
-Emitted when the subscriber's broadcast buffer lagged and frames were dropped.
+### Resources
+
+| Resource | Body | Pushed when |
+| --- | --- | --- |
+| `{"kind": "services"}` | `GET /api/services` | any event, a device sample, an in-flight count change, an activity stamp, or a supervisor's state, run id, or pid changing |
+| `{"kind": "service", "name": "…"}` | `GET /api/services/{name}` | the same as `services`, with events limited to that service and config reloads |
+| `{"kind": "devices"}` | `GET /api/devices` | a device sample, an `allocation_changed` event, or a config reload |
+| `{"kind": "events"}` | `GET /api/events/history` | any event |
+| `{"kind": "info"}` | `GET /api/info` | a config reload |
+
+"Pushed when" lists what makes the daemon recompute the body; it sends the result only if it differs byte for byte from the previous frame for that subscription. Changes within 100 ms of each other are coalesced into one recompute. A `services` subscription recomputes on every device sample (about every 2 seconds), so fit verdicts and free memory follow the hardware even when no event fires.
+
+### Feeds
+
+A follow has no snapshot. The daemon sends what the feed holds after the client's position, then each new entry as it lands, and the client keeps its own position so it can resume after a reconnect.
+
+`{"kind": "logs", "service": "…"}` follows a service's captured log lines, the same lines `GET /api/services/{name}/logs` returns. Optional fields:
+
+| Field | Meaning |
+| --- | --- |
+| `after` | a position `{"run_id", "seq"}`; only lines after it are sent. `null` or absent starts from the oldest retained line. |
+| `run` | only lines from this run |
+| `stream` | only lines from `stdout`, `stderr`, or `combined`; any other value is a 400 |
+
+A position orders lines by run id, then by `seq` within the run, and a later run always has a larger run id. To continue a page of history without a gap, pass the page's `follow_after` as `after`: it is the newest position in the whole log when the page was read, ignoring the page's `run`, `stream`, and `since`, which the follow applies itself. `follow_after` is `null` for a request with `before` or `until`, since rows newer than that page exist, and for a service with no lines.
+
+The daemon first sends the stored lines after `after` as `log_lines` frames, oldest first, then `log_caught_up`, then new lines as they are written. Lines are never repeated and none are skipped between the stored and the new ones. A follower that falls behind the live stream rereads the store and sends `log_caught_up` again, without losing lines. One read sends at most 1000 lines; when more match, the oldest are skipped and a `log_gap` says how many and where. A client that wants them can fetch them over HTTP with `before`.
+
+One case can skip lines: a line from an older run written after a newer run's line has already been sent. This needs a restart and a straggling write from the old process within the same moment, and is accepted.
+
+An unknown service is a 404 that leaves the follow active, as for the `service` resource; it starts once a config reload adds the service.
+
+### Messages
+
+The daemon sends JSON text frames, each a `LiveMessage`.
+
+The first frame on every connection is a hello carrying a build identifier: the daemon's version plus a hash of its embedded frontend. A client that sees it change after reconnecting is talking to an upgraded daemon; the embedded frontend responds by offering to reload.
 
 ```json
-{
-  "type": "overflow",
-  "dropped": 10
-}
+{"type": "hello", "build": "0.2.0+3f9a1c2b7d4e"}
 ```
 
-### Heartbeat
+A snapshot carries the subscription id and a body tagged with its resource:
 
-The server sends a WebSocket Ping frame every 30 seconds.
+```json
+{"type": "snapshot", "id": "services", "data": {"resource": "services", "body": {"services": [], "openai_api_port": 7070}}}
+```
 
-### Cursor pagination (REST)
+A follow's frames carry its id. `log_lines` holds one or more lines, oldest first; `log_gap` reports lines a read skipped, between `after` (`null` from the start of the log) and `before`, the first line sent after the gap; `log_caught_up` marks the end of a read of the store:
 
-For historical logs, use `GET /api/services/{name}/logs` with cursor-based pagination:
+```json
+{"type": "log_lines", "id": "logs:demo", "lines": [{"timestamp_ms": 1761000000123, "stream": "stderr", "line": "model loaded", "run_id": 1761000000000, "seq": 813}]}
+{"type": "log_gap", "id": "logs:demo", "after": null, "before": {"run_id": 1761000000000, "seq": 501}, "skipped": 500}
+{"type": "log_caught_up", "id": "logs:demo"}
+```
 
-1. Request the first page with `?limit=200`.
-2. If `next_cursor` is present in the response, pass it as `?before=<cursor>`
-   on the next request.
-3. Repeat until `next_cursor` is `null`.
+An error carries the subscription id, the HTTP status the same error would have, and the standard error envelope:
 
-The cursor is an opaque base64-encoded string encoding `(run_id, seq)`. Rows are returned newest-first. Other filters: `since`, `until`, `run`, `stream`.
+```json
+{"type": "error", "id": "detail:ghost", "status": 404, "error": {"error": {"code": "service_not_found", "message": "service `ghost` not found", "type": "invalid_request_error"}}}
+```
+
+A resource error such as `service_not_found` leaves the subscription or follow active: a config reload can make the name valid, and the next snapshot supersedes the error. Protocol errors use `invalid_live_request` (400; `id` is `null` when the frame could not be parsed), `duplicate_subscription_id` (409), and `subscription_limit` (429).
+
+### Limits and keepalive
+
+A connection holds at most 64 subscriptions and follows together. Inbound frames are capped at 64 KiB. Outbound frames queue in a bounded buffer; if one takes more than 10 seconds to send, the daemon closes the connection with code 1008. The daemon sends a Ping every 30 seconds and answers Pings with Pongs.
+
+### Origin
+
+A handshake with an `Origin` header must match the `Host` header in scheme, host, and port, or it is refused with 403. This stops pages on other sites from reading the daemon's state through a visitor's browser. Clients that send no `Origin`, such as `anankectl` and scripts, are allowed.
+
+### Reconnecting
+
+Subscriptions and follows do not survive a disconnect. A client reconnects with backoff and subscribes again; the first frame for each subscription is a full snapshot, so nothing needs replaying. A follow resumes by sending `follow` again with `after` set to the last line it received.
 
 ## Error codes
 
@@ -1284,6 +1285,9 @@ The `POST /api/services/{name}/start` endpoint returns `202 Accepted` even when 
 | `persist_failed` | Config write failed at the IO layer. |
 | `query_failed` | The daemon could not read the metrics, restart, or device history you asked for. |
 | `preview_failed` | The launch command for this service could not be built. |
+| `invalid_live_request` | A `/api/live` frame could not be parsed as a request. |
+| `duplicate_subscription_id` | A `/api/live` subscribe reused an id already active on the connection. |
+| `subscription_limit` | A `/api/live` connection reached its subscription limit. |
 | `other` | Forward-compatibility fallback for unknown codes. |
 
 ## Prometheus metrics
@@ -1335,4 +1339,6 @@ The spec is produced by `utoipa`'s compile-time derive from the `#[utoipa::path]
 The daemon embeds the frontend SPA as a fallback handler. Any request that doesn't match an `/api/*`, `/v1/*`, `/metrics`, or WebSocket route is served from the embedded `frontend/dist` directory.
 
 The embedded assets are built at compile time via `rust-embed`. Set the `ANANKE_SKIP_FRONTEND_BUILD=1` environment variable during `cargo build` to skip the frontend build (useful for Rust-only dev loops).
+
+The frontend reads live state (services, service detail, devices, the event history, and daemon info) through one `/api/live` WebSocket, loading over HTTP first and polling over HTTP every 5 seconds while the socket is down. Logs load their history over HTTP and then follow new lines over the same socket. Commands such as starting a service or saving the config go over HTTP.
 

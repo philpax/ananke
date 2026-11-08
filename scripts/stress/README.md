@@ -64,7 +64,6 @@ gets stopped). Pass `--keep-running` to skip the cleanup stop.
 | 02 | `eviction_cascade` | Priority-driven eviction: start low-prio services until saturated, then bring in high-prio services and verify the right victims get drained. |
 | 03 | `hybrid_cohabitation` | Hybrid CPU-offload model + dynamic-allocation service coexisting on shared devices. Verifies allocation accounting is stable across overlapping reservations. |
 | 04 | `concurrent_coalescing` | N simultaneous first-requests to one idle service. Start-queue coalescing: only one spawn actually fires; all N get the same broadcast outcome. |
-| 05 | `oneshot_lifecycle` | Submit a oneshot via the command template, observe TTL-driven drain, verify DB row + port-pool cleanup. |
 | 06 | `config_reload_live` | PUT `/api/config` while a service is actively serving requests. Verify the reload event fires and the live service isn't disturbed. |
 | 07 | `log_flood` | Drive a chatty service for a minute, measure batcher throughput + the retention trim's per-service cap. |
 

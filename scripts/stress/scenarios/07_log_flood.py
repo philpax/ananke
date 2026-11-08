@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Scenario 07 — log-stream throughput + retention cap.
+"""Scenario 07 — log-follow throughput + retention cap.
 
-Start a service, subscribe to its log-stream WebSocket, and fire a stream of
-chat requests that provoke verbose token-by-token output. Watch for:
-- Overflow frames (subscriber lag: batcher's broadcast channel capacity is
-  256, so if we can't keep up, we'll see `{"type": "overflow", "dropped": N}`).
+Start a service, follow its log on `/api/live`, and fire a stream of chat
+requests that provoke verbose token-by-token output. Watch for:
+- Resyncs: a follower that lags the batcher's broadcast (256 flushes) rereads
+  the store and sends another `log_caught_up`, so more than one means it fell
+  behind. No lines are lost to a resync.
+- Gaps: `log_gap` frames, sent only when one reread holds more than 1000
+  lines, with the number of lines skipped.
 - GET /logs response shape under load (cursor pagination works).
 - Retention doesn't kick in during this short run, but we verify the DB
   doesn't crash at volume.
@@ -15,7 +18,7 @@ Matrix config:
 
 What this exercises:
 - `db::logs::spawn` batcher under sustained write load.
-- `BatcherHandle::subscribe()` broadcast channel lag semantics.
+- `BatcherHandle::subscribe()` lag, and the follow's resync from the store.
 - GET /api/services/{name}/logs pagination with real data.
 """
 
@@ -34,22 +37,35 @@ SCENARIO = "07_log_flood"
 
 
 async def ws_consumer(matrix: Matrix, svc: str, stats: dict) -> None:
-    url = matrix.log_stream_ws(svc)
     stats["lines"] = 0
-    stats["overflow_frames"] = 0
-    stats["overflow_dropped"] = 0
+    stats["caught_up"] = 0
+    stats["gap_frames"] = 0
+    stats["gap_skipped"] = 0
+    follow = {
+        "type": "follow",
+        "id": "logs",
+        "feed": {"kind": "logs", "service": svc, "after": None},
+    }
     try:
-        async with websockets.connect(url) as ws:
+        async with websockets.connect(matrix.live_ws()) as ws:
             async for frame in ws:
                 msg = json.loads(frame)
                 t = msg.get("type")
-                if t == "line":
-                    stats["lines"] += 1
-                elif t == "overflow":
-                    stats["overflow_frames"] += 1
-                    stats["overflow_dropped"] += msg.get("dropped", 0)
+                if t == "hello":
+                    await ws.send(json.dumps(follow))
+                elif t == "log_lines":
+                    stats["lines"] += len(msg.get("lines", []))
+                elif t == "log_caught_up":
+                    stats["caught_up"] += 1
+                elif t == "log_gap":
+                    stats["gap_frames"] += 1
+                    stats["gap_skipped"] += msg.get("skipped", 0)
+                elif t == "error":
+                    stats["live_error"] = msg.get("error")
     except Exception as e:
         stats["ws_error"] = str(e)
+    # The first catch-up ends the initial backfill; each later one is a resync.
+    stats["resyncs"] = max(0, stats["caught_up"] - 1)
 
 
 async def fire_request(api: Api, svc: str, results: list) -> None:
@@ -68,7 +84,7 @@ async def body(matrix: Matrix, api: Api, rec: Recorder) -> None:
     await api.start(svc)
     await rec.wait_running(svc, timeout_s=300)
 
-    print(f"\n>>> subscribing to log stream of {svc}")
+    print(f"\n>>> following the log of {svc}")
     stats: dict = {}
     ws_task = asyncio.create_task(ws_consumer(matrix, svc, stats))
     await asyncio.sleep(1)

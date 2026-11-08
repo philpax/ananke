@@ -65,6 +65,55 @@ async fn disable_then_enable_roundtrip() {
     h.cleanup().await;
 }
 
+/// `GET` a management path and parse the body as JSON.
+async fn get_json(app: &axum::Router, uri: &str) -> serde_json::Value {
+    let req = axum::http::Request::builder()
+        .uri(uri)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn post(app: &axum::Router, uri: &str) {
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(uri)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn disabled_reason_is_reported_only_while_disabled() {
+    let h = build_harness(vec![minimal_llama_service("demo", 0)]).await;
+    let app = router(h.state.clone());
+
+    post(&app, "/api/services/demo/disable").await;
+    let list = get_json(&app, "/api/services").await;
+    let row = &list["services"][0];
+    assert_eq!(row["state"], "disabled");
+    assert_eq!(row["disabled_reason"], "user_disabled");
+    // The lifecycle is spelled as it is in config, on both endpoints.
+    assert_eq!(row["lifecycle"], "on_demand");
+    let detail = get_json(&app, "/api/services/demo").await;
+    assert_eq!(detail["lifecycle"], "on_demand");
+    assert_eq!(detail["state"], "disabled");
+    assert_eq!(detail["disabled_reason"], "user_disabled");
+
+    post(&app, "/api/services/demo/enable").await;
+    let list = get_json(&app, "/api/services").await;
+    assert_eq!(list["services"][0]["state"], "idle");
+    assert!(list["services"][0].get("disabled_reason").is_none());
+    let detail = get_json(&app, "/api/services/demo").await;
+    assert!(detail.get("disabled_reason").is_none());
+
+    h.cleanup().await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn start_on_missing_service_returns_404() {
     let h = build_harness(vec![]).await;

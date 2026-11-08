@@ -9,6 +9,8 @@ type Schemas = components["schemas"];
 export type ServiceSummary = Schemas["ServiceSummary"];
 export type ServicesResponse = Schemas["ServicesResponse"];
 export type ServiceDetail = Schemas["ServiceDetail"];
+export type ServiceStateKind = Schemas["ServiceStateKind"];
+export type DisableReason = Schemas["DisableReason"];
 export type ContainerDetail = Schemas["ContainerDetail"];
 export type RestartEvent = Schemas["RestartEvent"];
 export type RestartsResponse = Schemas["RestartsResponse"];
@@ -19,6 +21,8 @@ export type ModelInfo = Schemas["ModelInfo"];
 export type IkParams = Schemas["IkParams"];
 export type RuntimeInfo = Schemas["RuntimeInfo"];
 export type ServingConfig = Schemas["ServingConfig"];
+export type PlacementConfig = Schemas["PlacementConfig"];
+export type CommandDetail = Schemas["CommandDetail"];
 export type EstimateSummary = Schemas["EstimateSummary"];
 export type PlacementPreview = Schemas["PlacementPreview"];
 export type DevicePlacement = Schemas["DevicePlacement"];
@@ -27,7 +31,7 @@ export type FitVerdict = Schemas["FitVerdict"];
 export type DeviceShortfall = Schemas["DeviceShortfall"];
 export type LogLine = Schemas["LogLine"];
 export type LogsResponse = Schemas["LogsResponse"];
-export type LogStreamMessage = Schemas["LogStreamMessage"];
+export type LogPosition = Schemas["LogPosition"];
 export type DeviceSummary = Schemas["DeviceSummary"];
 export type DeviceReservation = Schemas["DeviceReservation"];
 export type StartResponse = Schemas["StartResponse"];
@@ -43,9 +47,15 @@ export type MetricBucketResponse = Schemas["MetricBucketResponse"];
 export type DeviceSamplesResponse = Schemas["DeviceSamplesResponse"];
 export type DeviceSampleResponse = Schemas["DeviceSampleResponse"];
 export type DaemonInfoResponse = Schemas["DaemonInfoResponse"];
-export type OneshotRequest = Schemas["OneshotRequest"];
-export type OneshotResponse = Schemas["OneshotResponse"];
-export type OneshotStatus = Schemas["OneshotStatus"];
+// `Event` would shadow the DOM type of the same name.
+export type DaemonEvent = Schemas["Event"];
+export type EventHistory = Schemas["EventHistory"];
+export type LiveResource = Schemas["LiveResource"];
+export type LiveRequest = Schemas["LiveRequest"];
+export type LiveMessage = Schemas["LiveMessage"];
+export type LiveData = Schemas["LiveData"];
+export type LiveFeed = Schemas["LiveFeed"];
+export type LogFeed = Schemas["LogFeed"];
 
 export type LogsQuery = {
   since?: number;
@@ -157,10 +167,6 @@ export const api = {
     const path = `/api/services/${encodeURIComponent(name)}/logs${qs ? `?${qs}` : ""}`;
     return getJson<LogsResponse>(path);
   },
-  logStreamUrl: (name: string) => {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.host}/api/services/${encodeURIComponent(name)}/logs/stream`;
-  },
   getConfig: () => getJson<ConfigResponse>("/api/config"),
   validateConfig: (content: string) =>
     postJson<ConfigValidateResponse>("/api/config/validate", { content }),
@@ -194,22 +200,7 @@ export const api = {
   },
   getPrometheusMetrics: () => fetch("/metrics").then((r) => r.text()),
   getInfo: () => getJson<DaemonInfoResponse>("/api/info"),
-  listOneshots: () =>
-    getJson<
-      paths["/api/oneshot"]["get"]["responses"]["200"]["content"]["application/json"]
-    >("/api/oneshot"),
-  createOneshot: (req: OneshotRequest) =>
-    postJson<OneshotResponse>("/api/oneshot", req),
-  getOneshot: (id: string) =>
-    getJson<OneshotStatus>(`/api/oneshot/${encodeURIComponent(id)}`),
-  deleteOneshot: async (id: string): Promise<void> => {
-    const resp = await fetch(`/api/oneshot/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    if (!resp.ok && resp.status !== 204) {
-      throw new Error(await errorMessage(resp));
-    }
-  },
+  getEventHistory: () => getJson<EventHistory>("/api/events/history"),
   start: (name: string) =>
     postJson<StartResponse>(`/api/services/${encodeURIComponent(name)}/start`),
   stop: (name: string) =>
@@ -226,8 +217,8 @@ export const api = {
     postJson<DisableResponse>(
       `/api/services/${encodeURIComponent(name)}/disable`,
     ),
-  eventsStreamUrl: () => {
+  liveUrl: () => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.host}/api/events`;
+    return `${proto}//${window.location.host}/api/live`;
   },
 };

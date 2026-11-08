@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod echo_server;
+pub mod live;
 
 use std::net::TcpListener;
 
@@ -156,6 +157,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
     let inflight = InflightTable::new();
 
     let estimate_cache = ananke_events::EstimateCache::new();
+    let mirror_changed = ananke_events::ChangeSignal::new();
     let deps = ananke::supervise::SupervisorDeps {
         db: db.clone(),
         batcher: batcher.clone(),
@@ -170,6 +172,7 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         inflight: inflight.clone(),
         activity: activity.clone(),
         estimate_cache: estimate_cache.clone(),
+        mirror_changed: mirror_changed.clone(),
     };
     let mut supervisors = Vec::new();
     for svc in &services_rewritten {
@@ -197,12 +200,12 @@ pub async fn build_harness(services: Vec<ServiceConfig>) -> TestHarness {
         db,
         inflight,
         progress: ananke_tracking::progress::ProgressTable::new(),
-        port_pool: Arc::new(Mutex::new(ananke::oneshot::PortPool::new(18000..19000))),
-        oneshots: ananke::oneshot::OneshotRegistry::new(),
         batcher,
         events: events.clone(),
         system: system.clone(),
         estimate_cache,
+        mirror_changed,
+        started_at: tokio::time::Instant::now(),
     };
 
     // Drain-on-remove + spawn-on-add reconciler. Matches what daemon::run

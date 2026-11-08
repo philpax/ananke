@@ -22,7 +22,7 @@ The backend's crates, leaves first. Package names keep the `ananke-` prefix; the
 | `ananke-gguf` | `crates/gguf` | the GGUF reader, including sharded models; the `Architecture` enum and every metadata key the workspace reads; `dump-gguf` | `ananke-fs` |
 | `ananke-tuning-schema` | `crates/tuning-schema` | the type of `tuning.json`, shared by everything that reads or writes it | `serde` |
 | `ananke-tuning` | `crates/tuning` | `tuning.json` and the build script that turns it into constants | `ananke-tuning-schema` (build) |
-| `ananke-events` | `crates/events` | the daemon-wide `EventBus` and the generic estimate cache | `ananke-api`, `tokio` |
+| `ananke-events` | `crates/events` | the daemon-wide `EventBus` with its bounded history, `ChangeSignal`, and the generic estimate cache | `ananke-api`, `ananke-time`, `tokio` |
 | `ananke-config` | `crates/config` | config defaults, the descriptor table the docs are generated from, the placement vocabulary (`SplitMode`, `DeviceSlot`), the parse → merge → validate pipeline, the config manager, and the input distillers | `ananke-api`, `ananke-errors`, `ananke-events`, `ananke-fs`, `ananke-gguf`, `ananke-time` |
 | `ananke-estimate` | `crates/estimate` | the VRAM estimator and the design-column contract the fitter shares | the four above |
 | `ananke-placement` | `crates/placement` | the packer, the device snapshot types, `ServiceRegistry<T>`, `KillHandle`, `DrainReason`, and the `estimate` example | `ananke-config`, `ananke-estimate`, `ananke-gguf` |
@@ -31,12 +31,12 @@ The backend's crates, leaves first. Package names keep the `ananke-` prefix; the
 | `ananke-db` | `crates/db` | the SQLite store, migrations, and log retention | `ananke-api`, `ananke-errors`, `ananke-time`, `rusqlite` |
 | `ananke-observation` | `crates/observation` | `SharedSnapshot`, `ObservationTable`, and the per-service attribution helpers | `ananke-placement`, `ananke-system` |
 | `ananke-devices` | `crates/devices` | the `GpuProbe`/NVML probe, cpu, cuda-env, and the device snapshotter | `ananke-observation`, `ananke-placement`, `ananke-system` |
-| `ananke-tracking` | `crates/tracking` | activity, in-flight, progress, rolling, and the device-sample writer | `ananke-api`, `ananke-db`, `ananke-events`, `ananke-observation`, `ananke-placement`, `ananke-time` |
+| `ananke-proxy` | `crates/proxy` | the hyper reverse-proxy data plane, the in-flight counter and guard, and `ApiErrorCode` | `ananke-api`, `ananke-errors`, `ananke-events`, `axum`, `hyper` |
+| `ananke-tracking` | `crates/tracking` | activity, in-flight, progress, rolling, and the device-sample writer | `ananke-api`, `ananke-db`, `ananke-events`, `ananke-observation`, `ananke-placement`, `ananke-proxy`, `ananke-time` |
 | `ananke-templates` | `crates/templates` | the placeholder substitution engine | `ananke-devices` |
-| `ananke-proxy` | `crates/proxy` | the hyper reverse-proxy data plane and `ApiErrorCode` | `ananke-api`, `ananke-errors`, `axum`, `hyper` |
 | `ananke-allocator` | `crates/allocator` | the feasibility check, eviction planner, and balloon resolver | `ananke-config`, `ananke-events`, `ananke-observation`, `ananke-placement` |
 | `ananke-supervise` | `crates/supervise` | the supervisor state machine, child lifecycle, health, provision + reconcile | `ananke-config`, `ananke-system`, `ananke-devices`, `ananke-tracking`, `ananke-db`, `ananke-allocator`, `ananke-templates`, `ananke-api`, `ananke-events`, `ananke-proxy` |
-| `ananke` | `ananke` | the daemon shell: HTTP surface (`api`), composition root (`daemon`), oneshot services, the input distillers re-exported at `config`, and the placeholder checker | all of the above |
+| `ananke` | `ananke` | the daemon shell: HTTP surface (`api`), composition root (`daemon`), the input distillers re-exported at `config`, and the placeholder checker | all of the above |
 | `anankectl` | `anankectl` | the CLI | `ananke-api` |
 
 Three more live under `calibration/crates/`, because nothing shipped links them — see [`calibration/README.md`](calibration/README.md):
@@ -111,7 +111,7 @@ anankectl logs <service> --follow
 anankectl logs <service> --stream stderr --run <run-id>
 ```
 
-Pass `--endpoint <url>` (or set `ANANKE_ENDPOINT`) when the management API isn't on the default `http://127.0.0.1:7071`. The same data is reachable over HTTP at `GET /api/services/{name}/logs` (paginated history) and `GET /api/services/{name}/logs/stream` (WebSocket live tail). Reach for these whenever a service reports "child exited during starting" — the daemon log only tells you the exit status; the captured child logs tell you why.
+Pass `--endpoint <url>` (or set `ANANKE_ENDPOINT`) when the management API isn't on the default `http://127.0.0.1:7071`. The same data is reachable over HTTP at `GET /api/services/{name}/logs` (paginated history), and live on the `/api/live` WebSocket as a `follow` with `feed.kind = "logs"`. Reach for these whenever a service reports "child exited during starting" — the daemon log only tells you the exit status; the captured child logs tell you why.
 
 ### The Rust ↔ TypeScript boundary
 

@@ -67,9 +67,6 @@ dynamic_elastic = "comfyui"
 # Scenario 04: how many concurrent ensure() requests to fire.
 "04_concurrent_coalescing" = { service = "mid_gpu", concurrent_requests = 12 }
 
-# Scenario 05: oneshot TTL experiment.
-"05_oneshot_lifecycle" = { ttl_seconds = 60 }
-
 # Scenario 06: which service to keep warm during the config reload.
 "06_config_reload_live" = { service = "small_gpu" }
 

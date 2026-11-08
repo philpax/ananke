@@ -3,10 +3,7 @@
 //! [`serve_with_activity`] loop, and the [`WebSocketLifecycle`] /
 //! [`ProxyMetrics`] contexts threaded through each connection.
 
-use std::{
-    net::SocketAddr,
-    sync::{Arc, atomic::AtomicU64},
-};
+use std::{net::SocketAddr, sync::Arc};
 
 use ananke_errors::ExpectedError;
 use futures::future::BoxFuture;
@@ -19,7 +16,10 @@ use hyper_util::{
 use tokio::{net::TcpListener, sync::watch};
 use tracing::{info, warn};
 
-use crate::{InflightGuard, ProxyBody, ProxyError, handle, metrics::RecorderFactory};
+use crate::{
+    InflightGuard, ProxyBody, ProxyError, handle, inflight::InflightCounter,
+    metrics::RecorderFactory,
+};
 
 /// Per-upgrade-session bookkeeping handed down from `serve_with_activity`
 /// to `handle_upgrade`. A WebSocket session lives well beyond the HTTP
@@ -36,12 +36,12 @@ use crate::{InflightGuard, ProxyBody, ProxyError, handle, metrics::RecorderFacto
 /// per-connection task without recomputing the captures each time.
 #[derive(Clone)]
 pub struct WebSocketLifecycle {
-    pub(crate) inflight: Arc<AtomicU64>,
+    pub(crate) inflight: Arc<InflightCounter>,
     pub(crate) activity_ping: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl WebSocketLifecycle {
-    pub fn new(inflight: Arc<AtomicU64>, activity_ping: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub fn new(inflight: Arc<InflightCounter>, activity_ping: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
             inflight,
             activity_ping,
@@ -148,7 +148,7 @@ pub async fn serve_with_activity(
     upstream_port: u16,
     mut shutdown: watch::Receiver<bool>,
     before_request: Arc<dyn Fn() -> BoxFuture<'static, Option<ProxyError>> + Send + Sync>,
-    inflight_counter: Arc<AtomicU64>,
+    inflight_counter: Arc<InflightCounter>,
     activity_ping: Arc<dyn Fn() + Send + Sync>,
     metrics: Option<ProxyMetrics>,
 ) -> Result<(), ExpectedError> {

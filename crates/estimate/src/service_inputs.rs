@@ -82,10 +82,10 @@ pub fn estimator_inputs(svc: &ServiceConfig) -> Option<EstimatorInputs<'_>> {
         kv_unified: kv_unified_from_extra_args(&svc.extra_args).or(lc.kv_unified),
         // An operator who set the flag by hand in `extra_args` gets that
         // value in the estimate too, so the reservation matches the
-        // runtime rather than the default the flag overrode.
-        cache_ram_mb: lc
-            .cache_ram_mb
-            .or_else(|| cache_ram_from_extra_args(&svc.extra_args)),
+        // runtime rather than the default the flag overrode. The flag wins
+        // over `cache_ram_mb` because the launch command omits the config
+        // value when the flag is present.
+        cache_ram_mb: cache_ram_from_extra_args(&svc.extra_args).or(lc.cache_ram_mb),
     })
 }
 

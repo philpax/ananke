@@ -18,6 +18,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -59,7 +74,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "mime_guess",
- "nix",
+ "nix 0.29.0",
  "notify",
  "nvml-wrapper",
  "parking_lot",
@@ -83,7 +98,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "ulid",
  "utoipa",
  "utoipa-axum",
 ]
@@ -181,7 +195,7 @@ dependencies = [
  "ananke-api",
  "ananke-errors",
  "ananke-time",
- "nix",
+ "nix 0.29.0",
  "parking_lot",
  "rusqlite",
  "sha2 0.10.9",
@@ -231,6 +245,7 @@ name = "ananke-events"
 version = "0.2.0"
 dependencies = [
  "ananke-api",
+ "ananke-time",
  "parking_lot",
  "smol_str",
  "tokio",
@@ -260,7 +275,7 @@ dependencies = [
  "clap",
  "flate2",
  "jiff",
- "nix",
+ "nix 0.29.0",
  "parking_lot",
  "pretty_assertions",
  "regex",
@@ -277,6 +292,7 @@ dependencies = [
  "ananke-system",
  "parking_lot",
  "smol_str",
+ "tokio",
 ]
 
 [[package]]
@@ -302,6 +318,7 @@ version = "0.2.0"
 dependencies = [
  "ananke-api",
  "ananke-errors",
+ "ananke-events",
  "axum 0.7.9",
  "bytes",
  "futures",
@@ -368,7 +385,7 @@ dependencies = [
  "ananke-fs",
  "ananke-spawn",
  "async-trait",
- "nix",
+ "nix 0.29.0",
  "parking_lot",
  "tokio",
  "tracing",
@@ -396,6 +413,7 @@ dependencies = [
  "ananke-events",
  "ananke-observation",
  "ananke-placement",
+ "ananke-proxy",
  "ananke-time",
  "parking_lot",
  "smol_str",
@@ -707,6 +725,27 @@ checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
 dependencies = [
  "bytes",
  "cfg_aliases",
+]
+
+[[package]]
+name = "brotli"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8b851b75c23ca7873623d612fe49bd1989aeb03d08fb9432187eb253d3d4c6b"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "6.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "941cd9bd4ddab83cb46fa5a2d428f1c857b24ac78cb876cf7beb710840934bd7"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
 ]
 
 [[package]]
@@ -2113,6 +2152,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkwebfont_hb-subset"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "272d805af0dd58afb9a7160e8e5012e625098c8e2171fbd63b351b64d55a73c6"
+dependencies = [
+ "cc",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2123,6 +2172,18 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "memoffset",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -3491,6 +3552,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "ttf2woff2"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e13bfd9cb6a94529c1d33b0f15b69746fe8583a52b9509f59ace80340f4dcf3"
+dependencies = [
+ "brotli",
+ "byteorder",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "tungstenite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3528,20 +3600,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "ulid"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
-dependencies = [
- "rand 0.9.5",
- "web-time",
-]
 
 [[package]]
 name = "unarray"
@@ -4070,9 +4138,13 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "insta",
+ "mkwebfont_hb-subset",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "toml_edit",
+ "ttf2woff2",
+ "zip",
 ]
 
 [[package]]
@@ -4182,6 +4254,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.7",
+]
+
+[[package]]
+name = "zip"
+version = "9.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "nix 0.31.3",
+ "typed-path",
 ]
 
 [[package]]

@@ -17,6 +17,11 @@ use crate::daemon::app_state::AppState;
     responses((status = 200, body = Vec<DeviceSummary>))
 )]
 pub async fn list_devices(State(state): State<AppState>) -> Response {
+    (StatusCode::OK, Json(devices_snapshot(&state))).into_response()
+}
+
+/// The `GET /api/devices` body; the live `devices` resource shares it.
+pub(crate) fn devices_snapshot(state: &AppState) -> Vec<DeviceSummary> {
     let snap = state.snapshot.read().clone();
     let alloc = state.allocations.lock().clone();
 
@@ -66,5 +71,5 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
         });
     }
 
-    (StatusCode::OK, Json(out)).into_response()
+    out
 }

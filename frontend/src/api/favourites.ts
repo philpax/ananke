@@ -9,10 +9,17 @@ function load(): Set<string> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return new Set();
-    return new Set(JSON.parse(raw) as string[]);
+    return new Set(parseFavourites(JSON.parse(raw)));
   } catch {
     return new Set();
   }
+}
+
+/// Stored favourites, checked: anything but an array of strings is
+/// treated as none rather than trusted.
+export function parseFavourites(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string");
 }
 
 function save(favs: Set<string>): void {

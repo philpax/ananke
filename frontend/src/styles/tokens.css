@@ -1,0 +1,161 @@
+/*
+ * Raw design tokens. Every colour is declared once as a `light-dark()`
+ * pair, and the theme is chosen by `color-scheme`: the page follows the
+ * OS unless `data-theme` on <html> pins it. `color-scheme` also makes
+ * native controls (date pickers, checkboxes, scrollbars) follow along.
+ *
+ * Names match the `ui-redesign` branch so values can be compared side by
+ * side. `theme.css` maps them onto Tailwind utilities; `tokens.test.ts`
+ * holds the contrast ratios, so check it after changing a value.
+ */
+
+:root {
+  color-scheme: light dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root {
+  --theme-h: 269;
+  --theme-s: 58%;
+
+  /* Surfaces: neutral graphite; only the selected pair is tinted. */
+  --tone-canvas: light-dark(#f3f3f5, #101114);
+  --tone-sunken: light-dark(#f8f8fa, #0a0b0d);
+  --tone-surface: light-dark(#ffffff, #17181c);
+  --tone-raised: light-dark(#ececf0, #202126);
+  --tone-hover: light-dark(#e3e3e9, #292a31);
+  --tone-selected: light-dark(
+    hsl(var(--theme-h) 70% 94%),
+    hsl(var(--theme-h) 26% 20%)
+  );
+  --tone-selected-soft: light-dark(
+    hsl(var(--theme-h) 50% 97%),
+    hsl(var(--theme-h) 17% 16%)
+  );
+
+  /* Lines. `line-control` is the one at 3:1 for input boundaries. */
+  --line-subtle: light-dark(#e7e7ec, #292a31);
+  --line: light-dark(#d7d7de, #35363e);
+  --line-strong: light-dark(#b4b4bf, #454650);
+  --line-control: light-dark(#8a8a96, #666771);
+  --line-hover: light-dark(
+    hsl(var(--theme-h) 25% 60%),
+    hsl(var(--theme-h) 17% 40%)
+  );
+
+  /* Accent, all derived from the hue. */
+  --accent-strong: hsl(var(--theme-h) var(--theme-s) 48%);
+  --accent-data: light-dark(
+    hsl(var(--theme-h) 55% 52%),
+    hsl(var(--theme-h) 64% 63%)
+  );
+  --accent: light-dark(
+    hsl(var(--theme-h) 55% 46%),
+    hsl(var(--theme-h) 60% 70%)
+  );
+  --accent-hover: light-dark(
+    hsl(var(--theme-h) 60% 38%),
+    hsl(var(--theme-h) 61% 81%)
+  );
+  --accent-text: light-dark(
+    hsl(var(--theme-h) 55% 32%),
+    hsl(var(--theme-h) 55% 87%)
+  );
+  --text-on-accent: hsl(var(--theme-h) 25% 99%);
+
+  /* Text ramp. `faint` is for placeholders, disabled text, and
+   * decoration only; it does not reach 4.5:1. */
+  --text: light-dark(hsl(var(--theme-h) 18% 11%), hsl(var(--theme-h) 20% 96%));
+  --text-body: light-dark(
+    hsl(var(--theme-h) 10% 24%),
+    hsl(var(--theme-h) 13% 84%)
+  );
+  --text-soft: light-dark(
+    hsl(var(--theme-h) 8% 31%),
+    hsl(var(--theme-h) 13% 77%)
+  );
+  --text-muted: light-dark(
+    hsl(var(--theme-h) 6% 43%),
+    hsl(var(--theme-h) 11% 63%)
+  );
+  --text-faint: light-dark(
+    hsl(var(--theme-h) 5% 58%),
+    hsl(var(--theme-h) 10% 48%)
+  );
+
+  /* Status triples: foreground, line, background. */
+  --status-ok: light-dark(#1d6b36, #7ee08c);
+  --status-ok-line: light-dark(#9fd1ab, #2f6b3a);
+  --status-ok-bg: light-dark(#e9f6ec, #12251a);
+  --status-warn: light-dark(#7a5200, #f5c451);
+  --status-warn-line: light-dark(#e2c27a, #7a5a17);
+  --status-warn-bg: light-dark(#fbf3dc, #241d0f);
+  --status-danger: light-dark(#a3261b, #ff9a8d);
+  --status-danger-line: light-dark(#e8aaa1, #8a4038);
+  --status-danger-bg: light-dark(#fcebe8, #241512);
+
+  /* Modality chips: foreground and line on a transparent fill. */
+  --chip-vision: light-dark(#1d5f8a, #84c9f4);
+  --chip-vision-line: light-dark(#9fc6e2, #416078);
+  --chip-embedding: light-dark(#1b6a4b, #7ed6b0);
+  --chip-embedding-line: light-dark(#98cfb6, #376b55);
+
+  /* Chart series: a categorical set whose first member is the accent, so
+   * a single-series chart reads as "the" colour. */
+  --series-1: var(--accent-data);
+  --series-2: light-dark(#2b78b0, #84c9f4);
+  --series-3: light-dark(#a86f00, #e8b04f);
+  --series-4: light-dark(#13836d, #5fd0b8);
+  --series-5: light-dark(#c03c66, #f08aa8);
+  --series-6: var(--text-muted);
+  --series-1-fill: color-mix(in srgb, var(--series-1) 12%, transparent);
+  --series-2-fill: color-mix(in srgb, var(--series-2) 12%, transparent);
+  --series-3-fill: color-mix(in srgb, var(--series-3) 12%, transparent);
+  --series-4-fill: color-mix(in srgb, var(--series-4) 12%, transparent);
+  --series-5-fill: color-mix(in srgb, var(--series-5) 12%, transparent);
+  --series-6-fill: color-mix(in srgb, var(--series-6) 12%, transparent);
+  --device-cpu: var(--text-soft);
+
+  /* Chat roles. The model side sits 55 degrees round the wheel. */
+  --role-user-surface: light-dark(
+    hsl(var(--theme-h) 50% 97%),
+    hsl(var(--theme-h) 29% 13%)
+  );
+  --role-user-line: light-dark(
+    hsl(var(--theme-h) 30% 78%),
+    hsl(var(--theme-h) 25% 36%)
+  );
+  --role-user-line-soft: light-dark(
+    hsl(var(--theme-h) 30% 86%),
+    hsl(var(--theme-h) 24% 29%)
+  );
+  --role-model-surface: light-dark(
+    hsl(calc(var(--theme-h) - 55) 40% 97%),
+    hsl(calc(var(--theme-h) - 55) 30% 11%)
+  );
+  --role-model-raised: light-dark(
+    hsl(calc(var(--theme-h) - 55) 35% 93%),
+    hsl(calc(var(--theme-h) - 55) 31% 15%)
+  );
+  --role-model-line: light-dark(
+    hsl(calc(var(--theme-h) - 55) 25% 80%),
+    hsl(calc(var(--theme-h) - 55) 25% 27%)
+  );
+  --role-model-accent: light-dark(
+    hsl(calc(var(--theme-h) - 55) 40% 42%),
+    hsl(calc(var(--theme-h) - 55) 38% 54%)
+  );
+
+  /* Syntax, shared by CodeMirror and highlight.js. */
+  --syntax-keyword: var(--accent);
+  --syntax-string: var(--status-ok);
+  --syntax-number: var(--series-3);
+  --syntax-property: var(--series-2);
+  --syntax-comment: var(--text-faint);
+  --syntax-punct: var(--text-muted);
+}

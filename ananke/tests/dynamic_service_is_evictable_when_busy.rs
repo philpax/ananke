@@ -15,7 +15,7 @@
 
 mod common;
 
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
 use ananke::{
     api::openai,
@@ -23,6 +23,7 @@ use ananke::{
     supervise::state::ServiceState,
 };
 use ananke_placement::devices::{CpuSnapshot, DeviceSnapshot};
+use ananke_proxy::InflightGuard;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -87,8 +88,8 @@ async fn busy_dynamic_peer_is_evicted_by_tied_priority_request() {
     // "busy" and unreachable to eviction, but the dynamic-mode declaration
     // overrides the busy bit and comfy stays evictable.
     let comfy_inflight = h.state.inflight.counter(&SmolStr::new("comfy"));
-    comfy_inflight.fetch_add(1, Ordering::Relaxed);
-    assert_eq!(comfy_inflight.load(Ordering::Relaxed), 1);
+    let _comfy_busy = InflightGuard::new(comfy_inflight.clone());
+    assert_eq!(comfy_inflight.current(), 1);
 
     // Step 3: qwen fires while comfy is "busy". The OpenAI handler's
     // `await_ensure` is bounded by the service's `max_request_duration_ms`

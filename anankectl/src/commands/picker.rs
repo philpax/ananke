@@ -7,6 +7,7 @@ use std::{collections::HashSet, io};
 use ananke_api::{
     openai::ModelsResponse,
     services::list::{ServiceSummary, ServicesResponse},
+    shared::{DisableReason, ServiceStateKind},
 };
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -21,7 +22,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::client::{ApiClient, ApiClientError};
+use crate::{
+    client::{ApiClient, ApiClientError},
+    output::{StateTone, state_label, state_rank, state_tone},
+};
 
 /// Fetch services, intersect with `/v1/models`, and let the user pick
 /// one interactively. Returns `Ok(Some(name))` on confirm, `Ok(None)`
@@ -48,8 +52,8 @@ pub async fn pick_service(client: &ApiClient) -> Result<Option<String>, ApiClien
     // Hot models first — running, then idle, then everything else.
     // Within a tier, sort by name so the order is stable across calls.
     candidates.sort_by(|a, b| {
-        state_rank(&a.state)
-            .cmp(&state_rank(&b.state))
+        state_rank(a.state)
+            .cmp(&state_rank(b.state))
             .then_with(|| a.name.cmp(&b.name))
     });
 
@@ -237,11 +241,11 @@ fn render_list(f: &mut Frame, area: Rect, services: &[ServiceSummary], selected:
         } else {
             Style::default()
         };
-        let state_color = state_color(&svc.state);
+        let state_color = state_color(svc.state, svc.disabled_reason);
         let line = Line::from(vec![
             Span::styled(prefix, row_style),
             Span::styled(
-                format!("{:<10}", svc.state),
+                format!("{:<10}", state_label(svc.state, svc.disabled_reason)),
                 Style::default().fg(state_color),
             ),
             Span::raw(" "),
@@ -255,22 +259,12 @@ fn render_list(f: &mut Frame, area: Rect, services: &[ServiceSummary], selected:
     }
 }
 
-/// Order services by how "ready" they are: running first (already hot),
-/// idle next (warm — child process up), then anything else.
-fn state_rank(state: &str) -> u8 {
-    match state {
-        "running" => 0,
-        "idle" => 1,
-        _ => 2,
-    }
-}
-
-fn state_color(state: &str) -> Color {
-    match state {
-        "running" => Color::Green,
-        "idle" => Color::Yellow,
-        s if s.starts_with("disabled") => Color::DarkGray,
-        s if s.starts_with("error") || s.contains("failed") => Color::Red,
-        _ => Color::White,
+fn state_color(state: ServiceStateKind, reason: Option<DisableReason>) -> Color {
+    match state_tone(state, reason) {
+        StateTone::Hot => Color::Green,
+        StateTone::Warm => Color::Yellow,
+        StateTone::Quiet => Color::DarkGray,
+        StateTone::Fault => Color::Red,
+        StateTone::Plain => Color::White,
     }
 }

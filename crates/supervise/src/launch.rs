@@ -41,6 +41,7 @@ pub enum LaunchError {
     Render(String),
     Create(String),
     Persist(String),
+    RunId(String),
     Spawn(String),
     Start(String),
 }
@@ -51,6 +52,7 @@ impl std::fmt::Display for LaunchError {
             LaunchError::Render(e) => write!(f, "render workload: {e}"),
             LaunchError::Create(e) => write!(f, "create container: {e}"),
             LaunchError::Persist(e) => write!(f, "persist ownership: {e}"),
+            LaunchError::RunId(e) => write!(f, "allocate run id: {e}"),
             LaunchError::Spawn(e) => write!(f, "spawn process: {e}"),
             LaunchError::Start(e) => write!(f, "start container: {e}"),
         }
@@ -75,7 +77,11 @@ pub async fn launch_workload(
     system: &SystemDeps,
     db: &Database,
 ) -> Result<LaunchedWorkload, LaunchError> {
-    let run_id = ananke_tracking::now_unix_ms() & RUN_ID_MASK;
+    let previous = db
+        .max_run_id(service_id)
+        .await
+        .map_err(|e| LaunchError::RunId(e.to_string()))?;
+    let run_id = next_run_id(ananke_tracking::now_unix_ms(), previous);
     let allocation_json = allocation_json(svc, alloc);
 
     if svc.container.is_some() {
@@ -105,9 +111,15 @@ pub async fn launch_workload(
     }
 }
 
-/// Mask kept in sync with `starting.rs` so `run_id` stays a positive `i64`
-/// for a clean SQLite round-trip.
-const RUN_ID_MASK: i64 = 0x7FFF_FFFF;
+/// Pick the next run id: the launch time in ms, clamped to exceed every id the
+/// service has used. Log positions order by `(run_id, seq)`, so a later run must
+/// always get a larger id, even when the wall clock steps backwards.
+fn next_run_id(now_ms: i64, previous: Option<i64>) -> i64 {
+    match previous {
+        Some(prev) => now_ms.max(prev.saturating_add(1)),
+        None => now_ms,
+    }
+}
 
 fn allocation_json(svc: &ServiceConfig, alloc: &Allocation) -> String {
     // Match the existing starting.rs serialisation: the init allocation bytes
@@ -324,4 +336,29 @@ async fn launch_container(
         container_id: Some(prepared.id),
         container_name: Some(prepared.name),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_run_takes_the_clock() {
+        assert_eq!(next_run_id(1_761_000_000_000, None), 1_761_000_000_000);
+    }
+
+    #[test]
+    fn run_ids_increase_when_the_clock_goes_backwards() {
+        let first = next_run_id(1_761_000_000_000, None);
+        let second = next_run_id(1_760_000_000_000, Some(first));
+        let third = next_run_id(1_760_000_000_000, Some(second));
+        assert!(first < second && second < third);
+    }
+
+    #[test]
+    fn ids_from_the_old_masked_scheme_stay_below_new_ones() {
+        // Rows written before run ids stopped being masked to 31 bits.
+        let old = 0x7FFF_FFFE;
+        assert_eq!(next_run_id(1_761_000_000_000, Some(old)), 1_761_000_000_000);
+    }
 }

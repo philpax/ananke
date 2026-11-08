@@ -12,6 +12,7 @@ mod gen_api_docs;
 mod gen_api_types;
 mod gen_config_docs;
 mod release;
+mod subset_fonts;
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "ananke workspace automation")]
@@ -30,6 +31,8 @@ enum Command {
     GenApiTypes(gen_api_types::GenApiTypesArgs),
     /// Generate `docs/configuration.md` from the descriptor table.
     GenConfigDocs(gen_config_docs::GenConfigDocsArgs),
+    /// Regenerate the frontend's Iosevka web fonts from the pinned release.
+    SubsetFonts(subset_fonts::SubsetFontsArgs),
 }
 
 fn main() -> ExitCode {
@@ -39,6 +42,7 @@ fn main() -> ExitCode {
         Command::GenApiDocs(args) => gen_api_docs::run(args).map_err(Into::into),
         Command::GenApiTypes(args) => gen_api_types::run(args).map_err(Into::into),
         Command::GenConfigDocs(args) => gen_config_docs::run(args).map_err(Into::into),
+        Command::SubsetFonts(args) => subset_fonts::run(args).map_err(Into::into),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

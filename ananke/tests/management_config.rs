@@ -27,6 +27,7 @@ async fn get_config_returns_content_and_hash() {
     // The in-memory config manager starts with an empty raw string, so the
     // hash must still be present (it is the hash of the empty string).
     assert!(!parsed.hash.is_empty());
+    assert_eq!(parsed.path, "<in-memory>");
     h.cleanup().await;
 }
 

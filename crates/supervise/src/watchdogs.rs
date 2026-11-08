@@ -126,10 +126,7 @@ impl RunLoop {
                 "generation-stall watchdog cannot read progress counters from /metrics; the watchdog will not fire (is the child started with --metrics?)"
             );
         }
-        let inflight = self
-            .init
-            .inflight
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let inflight = self.init.inflight.current();
         let timeout = Duration::from_millis(gs.timeout_ms);
         g.state.observe(progress, inflight, timeout).then(|| {
             format!(

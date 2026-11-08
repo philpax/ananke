@@ -3,16 +3,14 @@
 //! so the escalation can be exercised without real signal plumbing.
 #![cfg(feature = "test-fakes")]
 
-use std::{
-    sync::{Arc, atomic::AtomicU64},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use ananke::supervise::{
     SpawnConfig,
     drain::{DrainConfig, DrainReason, drain_pipeline},
     workload::ManagedWorkload,
 };
+use ananke_proxy::InflightCounter;
 use ananke_system::{FakeProcessState, FakeSpawner, ProcessSpawner};
 
 fn spawn_cfg() -> SpawnConfig {
@@ -30,7 +28,7 @@ async fn sigkill_after_sigterm_grace() {
     let child = spawner.spawn(&spawn_cfg()).await.unwrap();
     let mut workload = ManagedWorkload::Process(child);
 
-    let counter = Arc::new(AtomicU64::new(0));
+    let counter = InflightCounter::detached();
     let cfg = DrainConfig {
         max_request_duration: Duration::from_millis(100),
         drain_timeout: Duration::from_millis(50),
@@ -86,7 +84,7 @@ allocation = {{ mode = "static", reserve_gb = 1 }}
             drain_pipeline(
                 &mut workload,
                 &cfg,
-                Arc::new(AtomicU64::new(0)),
+                InflightCounter::detached(),
                 DrainReason::Eviction
             ),
             complete_checkpoint,

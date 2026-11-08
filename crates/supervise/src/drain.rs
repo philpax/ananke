@@ -4,15 +4,10 @@
 //! same pipeline works against real children under `LocalSpawner` and
 //! against purely virtual ones under `FakeSpawner` in tests.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 pub use ananke_placement::DrainReason;
+use ananke_proxy::InflightCounter;
 use tracing::{info, warn};
 
 use crate::workload::ManagedWorkload;
@@ -43,10 +38,10 @@ pub struct DrainConfig {
 pub async fn drain_pipeline(
     workload: &mut ManagedWorkload,
     cfg: &DrainConfig,
-    inflight: Arc<AtomicU64>,
+    inflight: Arc<InflightCounter>,
     reason: DrainReason,
 ) {
-    let initial_inflight = inflight.load(Ordering::Relaxed);
+    let initial_inflight = inflight.current();
     if initial_inflight > 0 {
         info!(
             ?reason,
@@ -57,7 +52,7 @@ pub async fn drain_pipeline(
         if timed_out {
             warn!(
                 ?reason,
-                inflight = inflight.load(Ordering::Relaxed),
+                inflight = inflight.current(),
                 "drain: max_request_duration elapsed with requests still in flight"
             );
         }
@@ -75,7 +70,7 @@ pub async fn drain_pipeline(
         // Extended SSE drain only if there are still requests active —
         // they are very likely streaming clients (the non-streaming
         // path decrements the guard on response end).
-        if inflight.load(Ordering::Relaxed) > 0 {
+        if inflight.current() > 0 {
             info!(?reason, "drain: extended stream drain");
             let _ = wait_inflight_zero(&inflight, cfg.extended_stream_drain).await;
         }
@@ -147,10 +142,10 @@ pub enum SigtermOutcome {
 
 /// Poll `inflight` until it reaches zero or `bound` elapses. Returns `true`
 /// if the bound expired before the counter reached zero.
-async fn wait_inflight_zero(inflight: &AtomicU64, bound: Duration) -> bool {
+async fn wait_inflight_zero(inflight: &InflightCounter, bound: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + bound;
     loop {
-        if inflight.load(Ordering::Relaxed) == 0 {
+        if inflight.current() == 0 {
             return false;
         }
         if tokio::time::Instant::now() >= deadline {

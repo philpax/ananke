@@ -13,7 +13,7 @@ What this exercises:
 - GGUF reading + layer-aware estimator.
 - Placement engine on single-GPU first-fits.
 - Rolling-correction table as services cycle through spawn/drain.
-- `/api/events` StateChanged + AllocationChanged publishers.
+- StateChanged + AllocationChanged publishers (recorded from the `/api/live` events resource).
 """
 
 import asyncio

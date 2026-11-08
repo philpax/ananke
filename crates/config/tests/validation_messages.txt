@@ -6,28 +6,27 @@
 005|failed to parse config at <config>: service a: unknown devices.split `x` (expected "layer", "row", "tensor")
 006|failed to parse config at <config>: service a: unknown lifecycle `x`
 007|failed to parse config at <config>: service a: unknown modality `x` (valid: `chat`, `embedding`)
-008|failed to parse config at <config>: service a: lifecycle `oneshot` is invalid in a [[service]] block (API-only)
-009|failed to parse config at <config>: service a: draft_model requires spec_type to be set (e.g. spec_type = "draft-mtp")
-010|failed to parse config at <config>: service a: launcher is present but empty
-011|failed to parse config at <config>: service a: auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)
-012|failed to parse config at <config>: service a: auto_restart.periodic = true needs an interval; write `periodic = { interval = "6h" }`
-013|failed to parse config at <config>: service a idle_timeout: unrecognised duration: zzz
-014|failed to parse config at <config>: service a: command is empty
-015|failed to parse config at <config>: service a: command template requires allocation.mode (static|dynamic)
-016|failed to parse config at <config>: service a: allocation.mode=dynamic requires min_reserve_gb
-017|failed to parse config at <config>: service a: max_reserve_gb must be > min_reserve_gb
-018|failed to parse config at <config>: service a: unknown allocation.mode `zzz`
-019|failed to parse config at <config>: service a: tracking.cgroup_parent must be an absolute cgroup v2 path starting with `/` (got `rel`)
-020|failed to parse config at <config>: service a: tracking.cgroup_parent contains invalid characters (allowed: alphanumeric, `.`, `_`, `/`, `-`); got `/a b!`
-021|failed to parse config at <config>: duplicate service name: a
-022|failed to parse config at <config>: duplicate service port 1
-023|failed to parse config at <config>: service a extends nope which does not exist
-024|failed to parse config at <config>: daemon.private_port_end (50000) must exceed daemon.private_port_start (60000)
-025|failed to parse config at <config>: daemon.management_listen is non-loopback but daemon.allow_external_management is false; the management API has no authentication
-026|failed to parse config at <config>: daemon.shutdown_timeout: unrecognised duration: zzz
-027|failed to parse config at <config>: daemon.management_listen: invalid socket address syntax
-028|failed to parse config at /config.toml: TOML parse error at line 1, column 6\n  |\n1 | this is not toml [[[\n  |      ^\nexpected `.`, `=`\n
-029|failed to parse config at <config>: service a: devices.placement=cpu-only with n_gpu_layers=40 is invalid
-030|failed to parse config at <config>: service a: unknown placement `zzz`
-031|failed to parse config at <config>: service a: devices.placement_override is empty
-032|failed to parse config at <config>: service a: devices.split=`tensor` requires placement=gpu-only (tensor/row split cannot spill to CPU)
+008|failed to parse config at <config>: service a: draft_model requires spec_type to be set (e.g. spec_type = "draft-mtp")
+009|failed to parse config at <config>: service a: launcher is present but empty
+010|failed to parse config at <config>: service a: auto_restart.spec_collapse requires spec_type to be set (without speculative decoding, responses carry no draft counts and the watchdog can never fire)
+011|failed to parse config at <config>: service a: auto_restart.periodic = true needs an interval; write `periodic = { interval = "6h" }`
+012|failed to parse config at <config>: service a idle_timeout: unrecognised duration: zzz
+013|failed to parse config at <config>: service a: command is empty
+014|failed to parse config at <config>: service a: command template requires allocation.mode (static|dynamic)
+015|failed to parse config at <config>: service a: allocation.mode=dynamic requires min_reserve_gb
+016|failed to parse config at <config>: service a: max_reserve_gb must be > min_reserve_gb
+017|failed to parse config at <config>: service a: unknown allocation.mode `zzz`
+018|failed to parse config at <config>: service a: tracking.cgroup_parent must be an absolute cgroup v2 path starting with `/` (got `rel`)
+019|failed to parse config at <config>: service a: tracking.cgroup_parent contains invalid characters (allowed: alphanumeric, `.`, `_`, `/`, `-`); got `/a b!`
+020|failed to parse config at <config>: duplicate service name: a
+021|failed to parse config at <config>: duplicate service port 1
+022|failed to parse config at <config>: service a extends nope which does not exist
+023|failed to parse config at <config>: daemon.private_port_end (50000) must exceed daemon.private_port_start (60000)
+024|failed to parse config at <config>: daemon.management_listen is non-loopback but daemon.allow_external_management is false; the management API has no authentication
+025|failed to parse config at <config>: daemon.shutdown_timeout: unrecognised duration: zzz
+026|failed to parse config at <config>: daemon.management_listen: invalid socket address syntax
+027|failed to parse config at /config.toml: TOML parse error at line 1, column 6\n  |\n1 | this is not toml [[[\n  |      ^\nexpected `.`, `=`\n
+028|failed to parse config at <config>: service a: devices.placement=cpu-only with n_gpu_layers=40 is invalid
+029|failed to parse config at <config>: service a: unknown placement `zzz`
+030|failed to parse config at <config>: service a: devices.placement_override is empty
+031|failed to parse config at <config>: service a: devices.split=`tensor` requires placement=gpu-only (tensor/row split cannot spill to CPU)

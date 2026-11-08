@@ -16,7 +16,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -208,7 +208,7 @@ async fn websocket_session_holds_inflight_and_pings_activity() {
     //   side channel that bypasses the activity hook.
     // * `activity_pings` is bumped by the heartbeat the proxy spawns
     //   for an active WebSocket session.
-    let inflight_counter = Arc::new(AtomicU64::new(0));
+    let inflight_counter = proxy::InflightCounter::detached();
     let before_request_calls = Arc::new(AtomicUsize::new(0));
     let activity_pings = Arc::new(AtomicUsize::new(0));
 
@@ -287,7 +287,7 @@ async fn websocket_session_holds_inflight_and_pings_activity() {
     // — the only remaining holder is the splice task. A 0 reading
     // here would mean `drain_pipeline` could SIGTERM mid-session.
     assert_eq!(
-        inflight_counter.load(Ordering::Relaxed),
+        inflight_counter.current(),
         1,
         "WebSocket session must keep one inflight guard alive"
     );
@@ -328,13 +328,13 @@ async fn websocket_session_holds_inflight_and_pings_activity() {
     // The splice task drops the guard once `copy_bidirectional` finishes.
     // Poll a few yield+sleep cycles in real time for that to land.
     for _ in 0..50 {
-        if inflight_counter.load(Ordering::Relaxed) == 0 {
+        if inflight_counter.current() == 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
-        inflight_counter.load(Ordering::Relaxed),
+        inflight_counter.current(),
         0,
         "inflight must return to 0 once the WebSocket closes"
     );

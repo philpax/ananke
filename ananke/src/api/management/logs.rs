@@ -2,7 +2,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use ananke_api::{
-    internal::log_line::LogLine, services::logs::LogsResponse, shared::errors::ApiError,
+    internal::log_line::{LogLine, LogPosition},
+    services::logs::{LogsQuery, LogsResponse},
+    shared::errors::ApiError,
 };
 use axum::{
     Json,
@@ -18,16 +20,6 @@ use crate::{api::errors::ApiErrorCode, daemon::app_state::AppState};
 
 const DEFAULT_LIMIT: u32 = 200;
 const MAX_LIMIT: u32 = 1000;
-
-#[derive(Debug, Deserialize)]
-pub struct LogsQuery {
-    pub since: Option<i64>,
-    pub until: Option<i64>,
-    pub run: Option<i64>,
-    pub stream: Option<String>,
-    pub limit: Option<u32>,
-    pub before: Option<String>,
-}
 
 #[derive(Serialize, Deserialize)]
 struct Cursor {
@@ -85,6 +77,20 @@ pub async fn get_logs(
         .await
         .unwrap_or_default();
 
+    // Read from the same rows the page is cut from, so every line on the
+    // page is at or below it. Rows past `until` or above `before` are newer
+    // than the page, so a follow from the newest line would skip them.
+    let follow_after = if q.before.is_none() && q.until.is_none() {
+        rows.iter()
+            .map(|r| LogPosition {
+                run_id: r.run_id,
+                seq: r.seq,
+            })
+            .max()
+    } else {
+        None
+    };
+
     // Apply filters in memory. The retention cap bounds this at 50k lines
     // per service.
     rows.retain(|r| {
@@ -97,8 +103,10 @@ pub async fn get_logs(
                 .is_none_or(|c| (r.run_id, r.seq) < (c.run_id, c.seq))
     });
 
-    // Newest-first sort by (timestamp_ms DESC, seq DESC).
-    rows.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms).then(b.seq.cmp(&a.seq)));
+    // Newest first by position, the same order the cursor compares in, so a
+    // page never skips or repeats a row. Timestamps are not unique and can
+    // step backwards with the wall clock; positions are neither.
+    rows.sort_by_key(|r| std::cmp::Reverse((r.run_id, r.seq)));
 
     let truncated = rows.len() > limit;
     rows.truncate(limit);
@@ -125,7 +133,15 @@ pub async fn get_logs(
         })
         .collect();
 
-    (StatusCode::OK, Json(LogsResponse { logs, next_cursor })).into_response()
+    (
+        StatusCode::OK,
+        Json(LogsResponse {
+            logs,
+            next_cursor,
+            follow_after,
+        }),
+    )
+        .into_response()
 }
 
 async fn resolve_service_id(state: &AppState, name: &str) -> Option<i64> {

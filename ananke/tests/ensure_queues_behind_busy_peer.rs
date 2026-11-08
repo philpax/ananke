@@ -10,10 +10,11 @@
 
 mod common;
 
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
 use ananke::{api::openai, config::DeviceSlot};
 use ananke_placement::devices::{CpuSnapshot, DeviceSnapshot};
+use ananke_proxy::InflightGuard;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -70,8 +71,7 @@ async fn ensure_queues_behind_busy_same_priority_peer() {
     // its inflight counter. The real handler's `InflightGuard` does the same
     // thing around a proxied request; we stand in for it here so the test
     // isn't timing-sensitive on a real HTTP stream.
-    let alpha_inflight = h.state.inflight.counter(&SmolStr::new("alpha"));
-    alpha_inflight.fetch_add(1, Ordering::Relaxed);
+    let alpha_busy = InflightGuard::new(h.state.inflight.counter(&SmolStr::new("alpha")));
 
     // Step 3: fire beta while alpha is "busy". Rather than 503ing, the Ensure
     // parks on a broadcast bus and the Idle loop's poll-tick branch retries
@@ -80,10 +80,10 @@ async fn ensure_queues_behind_busy_same_priority_peer() {
     //
     // Run the request concurrently with a task that clears alpha's inflight
     // after a short delay; assert that beta eventually returns 200.
-    let counter_for_release = alpha_inflight.clone();
+
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(400)).await;
-        counter_for_release.fetch_sub(1, Ordering::Relaxed);
+        drop(alpha_busy);
     });
 
     let (st, body) = chat(openai::router(h.state.clone()), "beta").await;

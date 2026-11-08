@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 ananke-api.workspace = true
 ananke-errors.workspace = true
+ananke-events.workspace = true
 axum.workspace = true
 bytes.workspace = true
 futures.workspace = true

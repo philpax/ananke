@@ -1,5 +1,7 @@
-//! `/api/events` WebSocket endpoint — system-wide event bus.
+//! `/api/events` endpoints — the system-wide event bus's history.
 
-pub mod stream;
+pub mod history;
+
+pub use history::EventHistory;
 
 pub use crate::internal::event::Event;

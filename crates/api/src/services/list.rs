@@ -5,7 +5,12 @@ use utoipa::ToSchema;
 
 use crate::{
     internal::fit_verdict::FitVerdict,
-    shared::{metadata::AnankeMetadata, modality::Modality},
+    shared::{
+        lifecycle::Lifecycle,
+        metadata::AnankeMetadata,
+        modality::Modality,
+        service_state::{DisableReason, ServiceStateKind},
+    },
 };
 
 /// Response from `GET /api/services`.
@@ -22,10 +27,20 @@ pub struct ServicesResponse {
 pub struct ServiceSummary {
     /// Service name (matches `[[service]]` table in config).
     pub name: String,
-    /// State like `"idle"`, `"running"`, `"disabled_user_disabled"`.
-    pub state: String,
-    /// `"persistent"` or `"ondemand"`.
-    pub lifecycle: String,
+    /// Free-form description from the service's config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether the service is reachable through the OpenAI-compatible API,
+    /// and so can be chatted with or embedded against.
+    pub openai_compat: bool,
+    /// Current state.
+    pub state: ServiceStateKind,
+    /// Why the service is disabled; present exactly when `state` is
+    /// `disabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<DisableReason>,
+    /// When the service starts and stops.
+    pub lifecycle: Lifecycle,
     /// Eviction priority.
     pub priority: u8,
     /// Public port the proxy listens on.

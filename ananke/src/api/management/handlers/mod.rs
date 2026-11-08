@@ -5,6 +5,7 @@ mod estimate;
 mod services;
 
 use axum::routing::{Router, get};
+pub(crate) use devices::devices_snapshot;
 // `utoipa::path` generates a hidden `__path_<fn>` sibling item next to each
 // handler; the `OpenApi` derive in `api::openapi` resolves both through
 // this re-export, so it must travel alongside the handler function.
@@ -14,6 +15,7 @@ pub use services::{
     __path_list_services, __path_service_command, __path_service_detail, list_services,
     service_command, service_detail,
 };
+pub(crate) use services::{service_detail_snapshot, services_snapshot};
 
 use crate::daemon::app_state::AppState;
 

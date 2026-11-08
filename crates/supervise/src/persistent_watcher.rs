@@ -1,13 +1,12 @@
 //! Background loop that re-ensures every persistent service sitting in
-//! a dormant state (Idle / Evicted / Disabled{NoFit}).
+//! a dormant state (Idle / Evicted).
 //!
 //! A persistent service auto-respawns when VRAM permits — the corollary
 //! of making persistent services evictable while idle. The cheapest
 //! implementation is a short poll: tick every
 //! `TICK` seconds, snapshot each persistent supervisor, and fire
-//! `enable()` + `ensure()` on anything dormant. If the ensure itself
-//! hits `NoFit` (capacity still not available), it drops the service
-//! back into `Disabled{NoFit}` and we try again on the next tick — no
+//! `ensure()` on anything dormant. If the ensure finds no capacity, the
+//! service stays where it was and we try again on the next tick — no
 //! special-case needed for "wait until VRAM frees".
 //!
 //! The tick is deliberately slower than the supervisor command
@@ -22,10 +21,7 @@ use ananke_config::{Lifecycle, manager::ConfigManager};
 use tokio::sync::watch;
 use tracing::info;
 
-use crate::{
-    registry::SupervisorRegistry,
-    state::{DisableReason, ServiceState},
-};
+use crate::{registry::SupervisorRegistry, state::ServiceState};
 
 const TICK: Duration = Duration::from_secs(5);
 
@@ -109,11 +105,8 @@ async fn re_ensure_persistent(deps: &PersistentWatchDeps) {
         let name = svc_cfg.name.clone();
         tokio::spawn(async move {
             info!(service = %name, dormant_state = %peer_state.name(), "re-ensuring persistent service");
-            // Disabled{NoFit} supervisors reject Ensure outright; Enable
-            // transitions back to Idle so the next Ensure can run. Enable
-            // is a no-op on non-Disabled states so it's safe to fire
-            // unconditionally.
-            let _ = h.enable().await;
+            // No `enable()` here: a disabled service is never dormant, and
+            // enabling would undo an operator's disable that raced the peek.
             let _ = h.ensure(crate::EnsureSource::BackgroundWatcher).await;
         });
     }
@@ -121,31 +114,21 @@ async fn re_ensure_persistent(deps: &PersistentWatchDeps) {
 
 /// States from which a persistent service can be legally restarted
 /// without operator intervention. `Failed` needs its retry backoff;
-/// `Disabled` for reasons other than `NoFit` (ConfigError, CrashLoop,
-/// UserDisabled, etc.) stays disabled until something human-shaped
-/// intervenes.
+/// `Disabled`, whatever the reason, stays disabled until something
+/// human-shaped intervenes.
 fn dormant(state: &ServiceState) -> bool {
-    matches!(
-        state,
-        ServiceState::Idle
-            | ServiceState::Evicted
-            | ServiceState::Disabled {
-                reason: DisableReason::NoFit,
-            }
-    )
+    matches!(state, ServiceState::Idle | ServiceState::Evicted)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::DisableReason;
 
     #[test]
     fn dormant_matches_expected_states() {
         assert!(dormant(&ServiceState::Idle));
         assert!(dormant(&ServiceState::Evicted));
-        assert!(dormant(&ServiceState::Disabled {
-            reason: DisableReason::NoFit,
-        }));
 
         assert!(!dormant(&ServiceState::Starting));
         assert!(!dormant(&ServiceState::Running));
@@ -156,10 +139,7 @@ mod tests {
             reason: DisableReason::UserDisabled,
         }));
         assert!(!dormant(&ServiceState::Disabled {
-            reason: DisableReason::CrashLoop,
-        }));
-        assert!(!dormant(&ServiceState::Disabled {
-            reason: DisableReason::ConfigError("x".into()),
+            reason: DisableReason::AutoRestartLoop,
         }));
     }
 }

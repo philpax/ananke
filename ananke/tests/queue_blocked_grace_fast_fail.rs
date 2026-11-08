@@ -19,10 +19,11 @@
 
 mod common;
 
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
 use ananke::{api::openai, config::DeviceSlot};
 use ananke_placement::devices::{CpuSnapshot, DeviceSnapshot};
+use ananke_proxy::InflightGuard;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -87,8 +88,7 @@ async fn queued_ensure_fails_with_service_blocked_after_grace() {
     // for the duration of the test. The release task in the
     // happy-path queue test is *intentionally absent* here — we want
     // the grace bound to fire.
-    let alpha_inflight = h.state.inflight.counter(&SmolStr::new("alpha"));
-    alpha_inflight.fetch_add(1, Ordering::Relaxed);
+    let _alpha_busy = InflightGuard::new(h.state.inflight.counter(&SmolStr::new("alpha")));
 
     // Step 3: beta fires. The supervisor enters the queue (alpha is busy
     // at tied priority and non-elastic), polls every 250 ms, and after

@@ -4,11 +4,7 @@
 
 mod common;
 
-use std::{
-    net::SocketAddr,
-    sync::{Arc, atomic::AtomicU64},
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use ananke_db::Database;
 use ananke_proxy as proxy;
@@ -76,7 +72,7 @@ async fn per_service_proxy_records_token_endpoints_only() {
     let before_request: Arc<
         dyn Fn() -> BoxFuture<'static, Option<proxy::ProxyError>> + Send + Sync,
     > = Arc::new(|| Box::pin(async { None }));
-    let inflight = Arc::new(AtomicU64::new(0));
+    let inflight = proxy::InflightCounter::detached();
     let activity_ping: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
 
     tokio::spawn(proxy::serve_with_activity(

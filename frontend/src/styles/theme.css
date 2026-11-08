@@ -1,0 +1,156 @@
+/*
+ * Tailwind theme: maps the raw tokens in `tokens.css` onto utilities
+ * (`bg-canvas`, `text-muted`, `border-line-strong`) and sets the type
+ * scale, control sizes, and breakpoints. `inline` makes each utility
+ * emit the `var()` itself, so a theme flip needs no rebuilt values.
+ * `static` emits every `--color-*` variable even when no utility or
+ * source string names it: the chart and the code editor build those
+ * names at runtime, and an unemitted one silently resolves to the
+ * text colour.
+ */
+
+@theme static inline {
+  /* Square and flat everywhere. `rounded-full` still works; it is not a
+   * token. */
+  --radius-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+
+  --color-canvas: var(--tone-canvas);
+  --color-sunken: var(--tone-sunken);
+  --color-surface: var(--tone-surface);
+  --color-raised: var(--tone-raised);
+  --color-hover: var(--tone-hover);
+  --color-selected: var(--tone-selected);
+  --color-selected-soft: var(--tone-selected-soft);
+
+  --color-line-subtle: var(--line-subtle);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-line-control: var(--line-control);
+  --color-line-hover: var(--line-hover);
+
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-data: var(--accent-data);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-on-accent: var(--text-on-accent);
+
+  --color-ink: var(--text);
+  --color-body: var(--text-body);
+  --color-soft: var(--text-soft);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+
+  --color-ok: var(--status-ok);
+  --color-ok-line: var(--status-ok-line);
+  --color-ok-bg: var(--status-ok-bg);
+  --color-warn: var(--status-warn);
+  --color-warn-line: var(--status-warn-line);
+  --color-warn-bg: var(--status-warn-bg);
+  --color-danger: var(--status-danger);
+  --color-danger-line: var(--status-danger-line);
+  --color-danger-bg: var(--status-danger-bg);
+
+  --color-vision: var(--chip-vision);
+  --color-vision-line: var(--chip-vision-line);
+  --color-embedding: var(--chip-embedding);
+  --color-embedding-line: var(--chip-embedding-line);
+
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --color-series-1-fill: var(--series-1-fill);
+  --color-series-2-fill: var(--series-2-fill);
+  --color-series-3-fill: var(--series-3-fill);
+  --color-series-4-fill: var(--series-4-fill);
+  --color-series-5-fill: var(--series-5-fill);
+  --color-series-6-fill: var(--series-6-fill);
+  --color-device-cpu: var(--device-cpu);
+
+  --color-user: var(--role-user-surface);
+  --color-user-line: var(--role-user-line);
+  --color-user-line-soft: var(--role-user-line-soft);
+  --color-model: var(--role-model-surface);
+  --color-model-raised: var(--role-model-raised);
+  --color-model-line: var(--role-model-line);
+  --color-model-accent: var(--role-model-accent);
+
+  --color-syntax-keyword: var(--syntax-keyword);
+  --color-syntax-string: var(--syntax-string);
+  --color-syntax-number: var(--syntax-number);
+  --color-syntax-property: var(--syntax-property);
+  --color-syntax-comment: var(--syntax-comment);
+  --color-syntax-punct: var(--syntax-punct);
+}
+
+@theme {
+  --font-sans: "Work Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Iosevka Extended", ui-monospace, monospace;
+  /* Slashed zero, so 0 and O never get confused in ids and hashes. */
+  --font-mono--font-feature-settings: "zero" 1;
+
+  /* Type scale. Body is `text-base`; `text-2xs` is reserved for tracked
+   * uppercase group and column headers, axis ticks, and dense labels. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.35;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.4;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.5;
+  --text-md: 0.9375rem;
+  --text-md--line-height: 1.6;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.3;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.2;
+
+  /* Named control and chrome heights: `h-control`, `size-control-sm`,
+   * `min-h-header`. */
+  --spacing-control-sm: 1.75rem;
+  --spacing-control: 2rem;
+  --spacing-control-lg: 2.25rem;
+  --spacing-touch: 2.75rem;
+  --spacing-header: 3.5rem;
+
+  /* App shell: the hardware band's height and identity block, and the
+   * navigation rail's width (`h-band`, `w-band-identity`, `w-nav`). */
+  --spacing-band: 5.5rem;
+  --spacing-band-identity: 19.75rem;
+  --spacing-nav: 11rem;
+
+  /* Component widths for container queries (`@chart-2:`). */
+  --container-chart-2: 47.5rem;
+  --container-chart-3: 82.5rem;
+  /* The band's cell area stops growing here, and a device cell switches
+   * from compact to full above `cell-full` and to dense below
+   * `cell-dense` (`@min-cell-full/cell:`). */
+  --container-band-cells: 70rem;
+  --container-cell-full: 13rem;
+  --container-cell-dense: 8.75rem;
+  /* The services list shows sparklines and device chips above
+   * `list-spark`; the service detail goes two panels across above
+   * `detail-2col`. Both panes resize, so these are container widths. */
+  --container-list-spark: 20rem;
+  --container-detail-2col: 48rem;
+  /* The events list lays its rows out as columns under a sticky header
+   * above `events-cols`, and stacks each row's fields below it. */
+  --container-events-cols: 50rem;
+}
+
+/* Breakpoints are replaced rather than extended. `static` always emits
+ * the variables, so `useBreakpoint` can read them at runtime. */
+@theme static {
+  --breakpoint-*: initial;
+  --breakpoint-sm: 40rem;
+  --breakpoint-md: 56.25rem;
+  --breakpoint-lg: 73.75rem;
+  --breakpoint-xl: 90rem;
+}

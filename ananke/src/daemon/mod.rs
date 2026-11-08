@@ -23,7 +23,6 @@ use crate::{
         app_state::AppState,
         signals::{ShutdownKind, await_shutdown},
     },
-    oneshot::{OneshotRegistry, PortPool},
     supervise::{SupervisorHandle, orphans::reconcile, registry::SupervisorRegistry},
 };
 
@@ -109,9 +108,6 @@ pub async fn run() -> Result<(), ExpectedError> {
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    let port_pool = Arc::new(Mutex::new(PortPool::new(18000..19000)));
-    let oneshots = OneshotRegistry::new();
-
     // Build AppState early — it holds only Arc-backed handles, and the
     // provisioner wants to pull `ProvisioningDeps` out of it. Supervisors
     // get registered into `app_state.registry` as `provision_service`
@@ -127,12 +123,12 @@ pub async fn run() -> Result<(), ExpectedError> {
         db: db.clone(),
         inflight: inflight.clone(),
         progress,
-        port_pool,
-        oneshots,
         batcher: batcher.clone(),
         events: events.clone(),
         system: system.clone(),
         estimate_cache: crate::supervise::estimate_cache::EstimateCacheHandle::new(),
+        mirror_changed: ananke_events::ChangeSignal::new(),
+        started_at: tokio::time::Instant::now(),
     };
 
     let provisioning_deps = app_state.provisioning_deps(shutdown_rx.clone());

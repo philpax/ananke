@@ -14,14 +14,19 @@ mod common;
 use std::time::Duration;
 
 use ananke::{
-    api::openai,
+    api::{management, openai},
     config::{AutoRestartSettings, ErrorRateTrigger, ErrorStatusClass},
     supervise::state::ServiceState,
+};
+use ananke_api::{
+    events::Event,
+    services::list::ServicesResponse,
+    shared::{DisableReason, ServiceStateKind},
 };
 use ananke_db::models::RequestMetric;
 use ananke_system::FakeProcessState;
 use axum::{
-    body::Body,
+    body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
 use common::{build_harness, minimal_llama_service};
@@ -293,6 +298,40 @@ async fn repeated_storms_trip_flap_cap_and_disable() {
         "expected AutoRestartLoop disable reason; state = {:?}",
         sup.peek_state()
     );
+
+    // The reason reaches the wire on both the list and the transition event.
+    let resp = management::router(h.state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/services")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let list: ServicesResponse = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(list.services[0].state, ServiceStateKind::Disabled);
+    assert_eq!(
+        list.services[0].disabled_reason,
+        Some(DisableReason::AutoRestartLoop)
+    );
+    let disabled_event = h
+        .state
+        .events
+        .history()
+        .events
+        .into_iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::StateChanged {
+                to: ServiceStateKind::Disabled,
+                disabled_reason,
+                ..
+            } => Some(disabled_reason),
+            _ => None,
+        });
+    assert_eq!(disabled_event, Some(Some(DisableReason::AutoRestartLoop)));
 
     h.cleanup().await;
 }

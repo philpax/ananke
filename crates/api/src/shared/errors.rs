@@ -86,6 +86,12 @@ pub enum ApiErrorCodeSlug {
     QueryFailed,
     /// A launch-command preview could not be built for the service.
     PreviewFailed,
+    /// A `/api/live` frame could not be parsed as a request.
+    InvalidLiveRequest,
+    /// A `/api/live` subscribe reused an id already active on the connection.
+    DuplicateSubscriptionId,
+    /// A `/api/live` connection reached its subscription limit.
+    SubscriptionLimit,
     /// Deserialization fallback for forward compatibility.
     #[serde(other)]
     Other,

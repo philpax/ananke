@@ -101,10 +101,10 @@ The stall triggers use a shortened drain wait. Their premise is that in-flight r
 Each firing is:
 
 - logged by the daemon (`auto-restart: watchdog firing`, with trigger and detail),
-- broadcast as an `auto_restarted` event on the `/api/events` WebSocket, shown in the web UI's events view, and
+- published as an `auto_restarted` event, shown in the web UI's events view, and
 - persisted to the daemon's store, capped at the newest 50 entries per service.
 
-Persistence exists because the WebSocket only reaches clients connected at the time of the firing. The stored history is served in the service detail response (`GET /api/services/{name}`, field `recent_restarts`) and shown on the web UI's service page and in `anankectl show <service>`.
+Persistence exists because the daemon's event history is in memory, bounded, and lost on restart. The stored history is served in the service detail response (`GET /api/services/{name}`, field `recent_restarts`) and shown on the web UI's service page and in `anankectl show <service>`.
 
 The firing that trips the flap cap is recorded and logged like any other, but broadcasts a state change to `disabled` rather than an `auto_restarted` event, since nothing is restarted.
 

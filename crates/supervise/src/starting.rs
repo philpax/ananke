@@ -167,10 +167,15 @@ impl RunLoop {
                         // container. Only on a confirmed exit, though: an
                         // `Err` is the runtime failing to answer, and
                         // removing on that would destroy a live container.
-                        if exit.is_ok()
-                            && let Err(e) = workload.cleanup().await
-                        {
-                            warn!(service = %self.init.identity.name, error = %e, "cleanup after early exit failed");
+                        // The running row stays on an unconfirmed exit for the
+                        // same reason; the mirror is cleared either way.
+                        if exit.is_ok() {
+                            if let Err(e) = workload.cleanup().await {
+                                warn!(service = %self.init.identity.name, error = %e, "cleanup after early exit failed");
+                            }
+                            self.end_run(run_id).await;
+                        } else {
+                            self.clear_running_ids();
                         }
                         return self.on_child_exit_during_start(exit, spawn_time);
                     }

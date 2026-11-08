@@ -178,6 +178,7 @@ mod tests {
             inflight: ananke_tracking::inflight::InflightTable::new(),
             activity: activity.clone(),
             estimate_cache: crate::estimate_cache::EstimateCacheHandle::new(),
+            mirror_changed: ananke_events::ChangeSignal::new(),
         };
 
         for svc in services {

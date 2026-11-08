@@ -4,17 +4,17 @@ use std::sync::Arc;
 
 use ananke_allocator::AllocationTable;
 use ananke_db::{Database, logs::BatcherHandle};
-use ananke_events::EventBus;
+use ananke_events::{ChangeSignal, EventBus};
 use ananke_observation::{ObservationTable, SharedSnapshot};
 use ananke_tracking::{
     activity::ActivityTable, inflight::InflightTable, progress::ProgressTable,
     rolling::RollingTable,
 };
 use parking_lot::Mutex;
+use tokio::time::Instant;
 
 use crate::{
     config::manager::ConfigManager,
-    oneshot::{OneshotRegistry, PortPool},
     supervise::{estimate_cache::EstimateCacheHandle, registry::SupervisorRegistry},
 };
 
@@ -33,8 +33,6 @@ pub struct AppState {
     /// time-to-first-token stall watchdog to tell a wedged child from a
     /// request queued behind healthy work.
     pub progress: ProgressTable,
-    pub port_pool: Arc<Mutex<PortPool>>,
-    pub oneshots: OneshotRegistry,
     pub batcher: BatcherHandle,
     pub events: EventBus,
     pub system: ananke_system::SystemDeps,
@@ -42,6 +40,12 @@ pub struct AppState {
     /// name. Populated lazily by the management `ServiceDetail`
     /// handler so successive detail polls don't re-parse the GGUF.
     pub estimate_cache: EstimateCacheHandle,
+    /// Bumped whenever any supervisor's mirrored state, run id, or pid
+    /// changes; shared with every supervisor through `SupervisorDeps`.
+    pub mirror_changed: ChangeSignal,
+    /// When the daemon started, for the uptime `GET /api/info` reports. A
+    /// `tokio` instant so tests on paused time see a deterministic uptime.
+    pub started_at: Instant,
 }
 
 impl AppState {
@@ -62,6 +66,7 @@ impl AppState {
             inflight: self.inflight.clone(),
             activity: self.activity.clone(),
             estimate_cache: self.estimate_cache.clone(),
+            mirror_changed: self.mirror_changed.clone(),
         }
     }
 

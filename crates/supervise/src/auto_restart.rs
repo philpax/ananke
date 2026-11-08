@@ -140,12 +140,7 @@ impl RunLoop {
                 PeriodicOutcome::Continue
             }
             PeriodicMode::OnIdle => {
-                if self
-                    .init
-                    .inflight
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    == 0
-                {
+                if self.init.inflight.current() == 0 {
                     self.perform_periodic_restart(
                         workload,
                         run_id,

@@ -16,28 +16,25 @@ Each service is in exactly one state at any time. The state machine drives lifec
 
 ### Disabled reasons
 
-A `disabled` state carries a reason that explains why:
+A `disabled` service says why in `disabled_reason`, which the service list, the service detail, and the `state_changed` event carry exactly when the state is `disabled`:
 
 | Reason | Description |
 | --- | --- |
-| `config_error` | The service's config is invalid. |
 | `launch_failed` | The process failed to launch 3 times (retry cap exceeded). |
 | `health_timeout` | The health check didn't pass within the timeout. |
 | `oom` | The process was killed by the OOM killer. |
-| `crash_loop` | The process crashed repeatedly after becoming healthy. |
-| `no_fit` | The model doesn't fit on any available device. |
 | `user_disabled` | An operator disabled the service via the management API. |
-| `auto_restart_loop` | Auto-restart fired more times than its flap cap allowed within the flap window; the service kept degrading in service (as opposed to `crash_loop`, where the process never launched), so it is disabled rather than restarted again. |
+| `auto_restart_loop` | Auto-restart fired more times than its flap cap allowed within the flap window; the service launched but kept degrading in service (as opposed to `launch_failed`, where it never launched), so it is disabled rather than restarted again. |
 
 ### Transitions
 
 - `idle → starting`: spawn requested (first request or persistent watcher).
 - `starting → running`: health check passed.
 - `starting → failed`: launch failed (retry 0–2).
-- `starting → disabled`: health check timed out.
+- `starting → disabled`: health check timed out → `health_timeout`, or the process was OOM-killed twice → `oom`.
 - `running → draining`: drain requested (stop, evict, or shutdown).
 - `running → stopped`: process exited.
-- `running → disabled`: crash loop detected, or the auto-restart flap cap was tripped → `auto_restart_loop`.
+- `running → disabled`: the auto-restart flap cap was tripped → `auto_restart_loop`.
 - `draining → idle`: drain complete.
 - `draining → stopped`: process exited during drain.
 - `stopped → starting`: re-spawn requested.

@@ -7,7 +7,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { LogLine } from "../../api/client.ts";
-import { LogRow } from "./LogsViewer.tsx";
+import { LogRow } from "./LogRow.tsx";
 import { filterLines } from "./logFilter.ts";
 
 function line(stream: string, text: string, run_id = 1, seq = 1): LogLine {

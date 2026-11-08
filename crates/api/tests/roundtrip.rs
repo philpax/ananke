@@ -1,11 +1,16 @@
 use ananke_api::{
     config::ConfigResponse,
     devices::list::{DeviceReservation, DeviceSummary},
-    internal::{event::Event, log_line::LogLine},
-    oneshot::create::{OneshotAllocation, OneshotDevices, OneshotRequest, OneshotResponse},
+    internal::{
+        event::Event,
+        log_line::{LogLine, LogPosition},
+    },
     services::{
         command::{EnvVar, LaunchCommand, LaunchCommandSource},
-        detail::ServiceDetail,
+        detail::{
+            AllocationConfig, CommandDetail, PlacementConfig, PlacementPolicy, ServiceDetail,
+            SplitConfig, SplitMode,
+        },
         disable::DisableResponse,
         enable::EnableResponse,
         list::{DeviceFootprint, ServiceSummary},
@@ -13,7 +18,10 @@ use ananke_api::{
         start::StartResponse,
         stop::StopResponse,
     },
-    shared::errors::{ApiErrorBody, ApiErrorCodeSlug, ApiErrorKind},
+    shared::{
+        DisableReason, Lifecycle, ServiceStateKind,
+        errors::{ApiErrorBody, ApiErrorCodeSlug, ApiErrorKind},
+    },
 };
 use pretty_assertions::assert_eq;
 use smol_str::SmolStr;
@@ -33,8 +41,11 @@ fn service_summary_roundtrips() {
     ananke_metadata.insert("discord_visible".into(), serde_json::json!(true));
     let v = ServiceSummary {
         name: "demo".into(),
-        state: "running".into(),
-        lifecycle: "persistent".into(),
+        description: None,
+        openai_compat: true,
+        state: ServiceStateKind::Running,
+        disabled_reason: None,
+        lifecycle: Lifecycle::Persistent,
         priority: 50,
         port: 11435,
         run_id: Some(1),
@@ -88,47 +99,46 @@ fn start_response_tagged_union() {
 }
 
 #[test]
+fn lifecycle_is_spelled_as_in_config() {
+    assert_eq!(
+        serde_json::to_value(Lifecycle::OnDemand).unwrap(),
+        "on_demand"
+    );
+    assert_eq!(
+        serde_json::to_value(Lifecycle::Persistent).unwrap(),
+        "persistent"
+    );
+}
+
+#[test]
 fn event_state_changed_tag() {
     let v = Event::StateChanged {
         service: SmolStr::new("demo"),
-        from: "idle".into(),
-        to: "starting".into(),
+        from: ServiceStateKind::Idle,
+        to: ServiceStateKind::Starting,
+        disabled_reason: None,
         at_ms: 1,
     };
     let json = serde_json::to_value(&v).unwrap();
     assert_eq!(json["type"], "state_changed");
     assert_eq!(json["service"], "demo");
+    assert_eq!(json["from"], "idle");
+    assert!(json.get("disabled_reason").is_none());
 }
 
 #[test]
-fn oneshot_request_optional_fields_omitted() {
-    let v = OneshotRequest {
-        name: None,
-        template: "command".into(),
-        command: Some(vec!["python".into(), "batch.py".into()]),
-        workdir: None,
-        allocation: OneshotAllocation {
-            mode: Some("static".into()),
-            reserve_gb: Some(16.0),
-            min_reserve_gb: None,
-            max_reserve_gb: None,
-        },
-        devices: Some(OneshotDevices {
-            placement: Some("gpu-only".into()),
-        }),
-        priority: Some(40),
-        ttl: Some("2h".into()),
-        port: None,
-        health: None,
-        metadata: Default::default(),
+fn event_state_changed_carries_the_disable_reason() {
+    let v = Event::StateChanged {
+        service: SmolStr::new("demo"),
+        from: ServiceStateKind::Starting,
+        to: ServiceStateKind::Disabled,
+        disabled_reason: Some(DisableReason::HealthTimeout),
+        at_ms: 1,
     };
     let json = serde_json::to_value(&v).unwrap();
-    let obj = json.as_object().unwrap();
-    assert!(!obj.contains_key("name"));
-    assert!(!obj.contains_key("workdir"));
-    assert!(!obj.contains_key("port"));
-    assert!(!obj.contains_key("health"));
-    assert!(!obj.contains_key("metadata"));
+    assert_eq!(json["to"], "disabled");
+    assert_eq!(json["disabled_reason"], "health_timeout");
+    assert_eq!(roundtrip(v.clone()), v);
 }
 
 #[test]
@@ -142,6 +152,7 @@ fn logs_response_roundtrips() {
             seq: 1,
         }],
         next_cursor: None,
+        follow_after: Some(LogPosition { run_id: 1, seq: 1 }),
     };
     assert_eq!(v.clone(), roundtrip(v));
 }
@@ -151,6 +162,7 @@ fn config_response_roundtrips() {
     let v = ConfigResponse {
         content: "[daemon]\n".into(),
         hash: "abc".into(),
+        path: "/etc/ananke/config.toml".into(),
         writable: true,
     };
     assert_eq!(v.clone(), roundtrip(v));
@@ -176,17 +188,30 @@ fn device_summary_roundtrips() {
 fn service_detail_roundtrips() {
     let v = ServiceDetail {
         name: "demo".into(),
-        state: "idle".into(),
-        lifecycle: "persistent".into(),
+        state: ServiceStateKind::Idle,
+        disabled_reason: None,
+        lifecycle: Lifecycle::Persistent,
         priority: 50,
         port: 11435,
         private_port: 40000,
         template: "llamacpp".into(),
+        description: Some("A chat model.".into()),
+        openai_compat: true,
+        placement: PlacementConfig {
+            policy: PlacementPolicy::GpuOnly,
+            gpu_allow: vec![0, 1],
+            gpu_headroom_bytes: 512 * 1024 * 1024,
+            split: Some(SplitConfig {
+                mode: SplitMode::Tensor,
+                tensor_split_weights: Some(vec![1.0, 2.0]),
+            }),
+            allocation: AllocationConfig::Estimated,
+        },
+        command: None,
         placement_override: Default::default(),
         idle_timeout_ms: 600_000,
         run_id: None,
         pid: None,
-        recent_logs: vec![],
         recent_restarts: vec![],
         rolling_mean: None,
         rolling_mean_host: None,
@@ -216,6 +241,9 @@ fn service_detail_roundtrips() {
             cache_type_v: "f16".into(),
             flash_attn: false,
             parallel: 2,
+            n_gpu_layers: Some(99),
+            context: Some(131072),
+            cache_ram_bytes: 8 * 1024 * 1024 * 1024,
             kv_unified: false,
             effective_context_per_slot: Some(65536),
             spec_type: None,
@@ -244,17 +272,30 @@ fn service_detail_roundtrips() {
 fn service_detail_roundtrips_mainline() {
     let v = ServiceDetail {
         name: "demo".into(),
-        state: "idle".into(),
-        lifecycle: "persistent".into(),
+        state: ServiceStateKind::Idle,
+        disabled_reason: None,
+        lifecycle: Lifecycle::Persistent,
         priority: 50,
         port: 11435,
         private_port: 40000,
         template: "llamacpp".into(),
+        description: None,
+        openai_compat: true,
+        placement: PlacementConfig {
+            policy: PlacementPolicy::Hybrid,
+            gpu_allow: vec![],
+            gpu_headroom_bytes: 0,
+            split: Some(SplitConfig {
+                mode: SplitMode::Layer,
+                tensor_split_weights: None,
+            }),
+            allocation: AllocationConfig::Estimated,
+        },
+        command: None,
         placement_override: Default::default(),
         idle_timeout_ms: 600_000,
         run_id: None,
         pid: None,
-        recent_logs: vec![],
         recent_restarts: vec![],
         rolling_mean: None,
         rolling_mean_host: None,
@@ -283,17 +324,36 @@ fn service_detail_roundtrips_mainline() {
 fn service_detail_roundtrips_no_runtime() {
     let v = ServiceDetail {
         name: "demo".into(),
-        state: "idle".into(),
-        lifecycle: "persistent".into(),
+        state: ServiceStateKind::Idle,
+        disabled_reason: None,
+        lifecycle: Lifecycle::Persistent,
         priority: 50,
         port: 11435,
         private_port: 40000,
         template: "command".into(),
+        description: None,
+        openai_compat: false,
+        placement: PlacementConfig {
+            policy: PlacementPolicy::GpuOnly,
+            gpu_allow: vec![],
+            gpu_headroom_bytes: 0,
+            split: None,
+            allocation: AllocationConfig::Dynamic {
+                min_bytes: 1024,
+                max_bytes: 4096,
+                min_borrower_runtime_ms: 30_000,
+            },
+        },
+        command: Some(CommandDetail {
+            upstream_model: None,
+            shutdown_command: Some(vec!["stop".into()]),
+            private_port_fixed: true,
+            workdir: Some("/srv".into()),
+        }),
         placement_override: Default::default(),
         idle_timeout_ms: 600_000,
         run_id: None,
         pid: None,
-        recent_logs: vec![],
         recent_restarts: vec![],
         rolling_mean: None,
         rolling_mean_host: None,
@@ -317,17 +377,6 @@ fn service_detail_roundtrips_no_runtime() {
             container_id: None,
             container_name: None,
         }),
-    };
-    assert_eq!(v.clone(), roundtrip(v));
-}
-
-#[test]
-fn oneshot_response_roundtrips() {
-    let v = OneshotResponse {
-        id: "oneshot_01H".into(),
-        name: "sd-batch".into(),
-        port: 18001,
-        logs_url: "/api/oneshot/oneshot_01H/logs/stream".into(),
     };
     assert_eq!(v.clone(), roundtrip(v));
 }

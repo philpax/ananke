@@ -2,7 +2,29 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Paint the pre-CSS page in the OS theme, and apply a stored
+         override before first paint. Keep in step with
+         src/components/ui/theme/theme.ts; boot.test.ts checks it. -->
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        var t = localStorage.getItem("ananke-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.dataset.theme = t;
+          document.documentElement.style.colorScheme = t;
+        }
+      } catch (e) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Mono carries most of the dashboard's data, so its swap is the most
+         visible; Vite rewrites the href to the fingerprinted file. -->
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      crossorigin
+      href="/src/assets/fonts/iosevka-extended-400.woff2"
+    />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0"

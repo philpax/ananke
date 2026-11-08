@@ -59,6 +59,14 @@ pub enum ApiErrorCode {
     /// operator can correct rather than transient pressure to retry
     /// through.
     PreviewFailed { name: SmolStr, reason: String },
+    /// A `/api/live` frame failed to parse, or broke a protocol limit
+    /// such as the subscription id length.
+    InvalidLiveRequest { reason: String },
+    /// A `/api/live` subscribe reused an id already active on the
+    /// connection.
+    DuplicateSubscriptionId { id: String },
+    /// A `/api/live` connection already holds `limit` subscriptions.
+    SubscriptionLimit { limit: usize },
 }
 
 impl ApiErrorCode {
@@ -85,6 +93,9 @@ impl ApiErrorCode {
             Self::PersistFailed { .. } => ApiErrorCodeSlug::PersistFailed,
             Self::QueryFailed { .. } => ApiErrorCodeSlug::QueryFailed,
             Self::PreviewFailed { .. } => ApiErrorCodeSlug::PreviewFailed,
+            Self::InvalidLiveRequest { .. } => ApiErrorCodeSlug::InvalidLiveRequest,
+            Self::DuplicateSubscriptionId { .. } => ApiErrorCodeSlug::DuplicateSubscriptionId,
+            Self::SubscriptionLimit { .. } => ApiErrorCodeSlug::SubscriptionLimit,
         }
     }
 
@@ -102,7 +113,11 @@ impl ApiErrorCode {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             Self::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
-            Self::InvalidRequest { .. } | Self::InvalidCursor => StatusCode::BAD_REQUEST,
+            Self::InvalidRequest { .. } | Self::InvalidCursor | Self::InvalidLiveRequest { .. } => {
+                StatusCode::BAD_REQUEST
+            }
+            Self::DuplicateSubscriptionId { .. } => StatusCode::CONFLICT,
+            Self::SubscriptionLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::PreviewFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::IfMatchRequired => StatusCode::PRECONDITION_REQUIRED,
             Self::HashMismatch { .. } => StatusCode::PRECONDITION_FAILED,
@@ -123,7 +138,10 @@ impl ApiErrorCode {
             | Self::InvalidCursor
             | Self::IfMatchRequired
             | Self::HashMismatch { .. }
-            | Self::PreviewFailed { .. } => ApiErrorKind::InvalidRequestError,
+            | Self::PreviewFailed { .. }
+            | Self::InvalidLiveRequest { .. }
+            | Self::DuplicateSubscriptionId { .. }
+            | Self::SubscriptionLimit { .. } => ApiErrorKind::InvalidRequestError,
             Self::ServiceDisabled { .. }
             | Self::StartQueueFull { .. }
             | Self::StartFailed { .. }
@@ -183,6 +201,13 @@ impl ApiErrorCode {
             }
             Self::PreviewFailed { name, reason } => {
                 format!("cannot build launch-command preview for `{name}`: {reason}")
+            }
+            Self::InvalidLiveRequest { reason } => format!("invalid live request: {reason}"),
+            Self::DuplicateSubscriptionId { id } => {
+                format!("subscription id `{id}` is already in use on this connection")
+            }
+            Self::SubscriptionLimit { limit } => {
+                format!("this connection already holds the maximum of {limit} subscriptions")
             }
         }
     }

@@ -6,8 +6,13 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
-    internal::{fit_verdict::FitVerdict, log_line::LogLine},
-    shared::{metadata::AnankeMetadata, modality::Modality},
+    internal::fit_verdict::FitVerdict,
+    shared::{
+        lifecycle::Lifecycle,
+        metadata::AnankeMetadata,
+        modality::Modality,
+        service_state::{DisableReason, ServiceStateKind},
+    },
 };
 
 /// `GET /api/services/{name}` response body.
@@ -15,10 +20,14 @@ use crate::{
 pub struct ServiceDetail {
     /// Service name.
     pub name: String,
-    /// Current state name.
-    pub state: String,
-    /// `"persistent"` or `"ondemand"`.
-    pub lifecycle: String,
+    /// Current state.
+    pub state: ServiceStateKind,
+    /// Why the service is disabled; present exactly when `state` is
+    /// `disabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<DisableReason>,
+    /// When the service starts and stops.
+    pub lifecycle: Lifecycle,
     /// Eviction priority.
     pub priority: u8,
     /// Public port.
@@ -27,6 +36,17 @@ pub struct ServiceDetail {
     pub private_port: u16,
     /// Template name, e.g. `"llamacpp"` or `"command"`.
     pub template: String,
+    /// Free-form description from the service's config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Whether the service is reachable through the OpenAI-compatible API,
+    /// and so can be chatted with or embedded against.
+    pub openai_compat: bool,
+    /// The validated placement constraints the packer works under.
+    pub placement: PlacementConfig,
+    /// Command-template settings. `None` for llama-cpp services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandDetail>,
     /// Manual placement override, keyed by device slot string.
     pub placement_override: BTreeMap<String, u64>,
     /// Idle-before-drain timeout.
@@ -35,8 +55,6 @@ pub struct ServiceDetail {
     pub run_id: Option<i64>,
     /// Child PID if any.
     pub pid: Option<i32>,
-    /// Most recent log lines for a frontend's first-paint context.
-    pub recent_logs: Vec<LogLine>,
     /// Rolling estimator correction factor for the service's VRAM footprint.
     /// `None` until the first observation lands.
     pub rolling_mean: Option<f32>,
@@ -86,7 +104,7 @@ pub struct ServiceDetail {
     pub last_used_ms: Option<i64>,
     /// Recent auto-restart watchdog firings, most recent first. Sourced
     /// from the daemon's durable `service_restarts` store, so firings are
-    /// visible after the fact — not only to a live `/api/events` listener.
+    /// visible after the fact — not only to a client that was connected when it happened.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_restarts: Vec<RestartEvent>,
     /// Serving-runtime details for a llama-cpp service. `None` for
@@ -102,6 +120,100 @@ pub struct ServiceDetail {
     /// so containerized llama.cpp retains its engine semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerDetail>,
+}
+
+/// The placement constraints a service's config sets, as validated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct PlacementConfig {
+    /// Which device classes the service may land on.
+    pub policy: PlacementPolicy,
+    /// GPU indices the service may use; empty means every GPU.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_allow: Vec<u32>,
+    /// VRAM this service keeps free on each GPU it uses, on top of the global
+    /// reserves.
+    pub gpu_headroom_bytes: u64,
+    /// How a multi-GPU llama-cpp service splits across cards. `None` for
+    /// command services, where the split mode means nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<SplitConfig>,
+    /// How the allocator sizes the service's reservation.
+    pub allocation: AllocationConfig,
+}
+
+/// Which device classes a service may be placed on, spelled as in config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementPolicy {
+    /// GPUs only; a model that does not fit fails placement.
+    GpuOnly,
+    /// Host memory only.
+    CpuOnly,
+    /// GPUs first, spilling to the host.
+    Hybrid,
+}
+
+/// A llama-cpp service's inter-GPU split.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SplitConfig {
+    /// The split strategy.
+    pub mode: SplitMode,
+    /// Per-GPU `--tensor-split` weights in ascending GPU order, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_split_weights: Option<Vec<f32>>,
+}
+
+/// How llama.cpp spreads a model across GPUs, spelled as in config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitMode {
+    /// Whole layers pipelined across the cards.
+    Layer,
+    /// Every layer's weights split by row across the cards.
+    Row,
+    /// Every layer's weights split across the cards as one fused device.
+    Tensor,
+}
+
+/// How the allocator sizes a service's reservation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AllocationConfig {
+    /// Sized by the estimator (llama-cpp services).
+    Estimated,
+    /// A fixed reservation.
+    Static {
+        /// The reservation, in bytes.
+        reserve_bytes: u64,
+    },
+    /// A balloon that grows and shrinks between two bounds with observed use.
+    Dynamic {
+        /// The lower bound, in bytes.
+        min_bytes: u64,
+        /// The upper bound, in bytes.
+        max_bytes: u64,
+        /// How long a borrower must run before its memory may be reclaimed.
+        min_borrower_runtime_ms: u64,
+    },
+}
+
+/// A command-template service's settings that its launch command does not
+/// show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CommandDetail {
+    /// The model name rewritten into proxied OpenAI requests, when the
+    /// service has an `openai_proxy` block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_model: Option<String>,
+    /// The command run to stop the workload, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown_command: Option<Vec<String>>,
+    /// `true` when the config fixes the private port; `false` when it comes
+    /// from the daemon's pool.
+    pub private_port_fixed: bool,
+    /// The working directory the command runs in, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
 }
 
 /// Container identity for a service running under Docker/Podman.
@@ -154,6 +266,15 @@ pub struct ServingConfig {
     pub flash_attn: bool,
     /// Request parallelism (`-np`).
     pub parallel: u32,
+    /// Layers offloaded to the GPU (`-ngl`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_gpu_layers: Option<i32>,
+    /// The configured context window, before any default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u32>,
+    /// The prompt cache's host RAM cap (`-cram`), resolved the way the
+    /// launch command resolves it. Zero when the cache is disabled.
+    pub cache_ram_bytes: u64,
     /// Unified KV pool across slots (`--kv-unified`).
     pub kv_unified: bool,
     /// The context window a single request actually gets: `context`

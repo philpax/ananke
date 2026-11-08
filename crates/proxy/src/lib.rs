@@ -16,7 +16,7 @@ pub mod metrics;
 use bytes::Bytes;
 pub use errors::ApiErrorCode;
 use hyper::Response;
-pub use inflight::InflightGuard;
+pub use inflight::{InflightCounter, InflightGuard};
 pub use metrics::{ErasedRecorder, MetricsBody, NoRecorder, RecorderFactory, no_recorder_factory};
 pub use request::error_response;
 pub(crate) use request::handle;

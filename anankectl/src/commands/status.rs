@@ -3,6 +3,7 @@
 use ananke_api::{
     devices::list::DeviceSummary,
     services::list::{ServiceSummary, ServicesResponse},
+    shared::{DisableReason, ServiceStateKind},
 };
 use serde::Serialize;
 
@@ -30,22 +31,34 @@ pub async fn run(client: &ApiClient, json: bool) -> Result<(), ApiClientError> {
     let running = services
         .services
         .iter()
-        .filter(|s| s.state == "running")
+        .filter(|s| s.state == ServiceStateKind::Running)
         .count();
     let idle = services
         .services
         .iter()
-        .filter(|s| s.state == "idle")
+        .filter(|s| s.state == ServiceStateKind::Idle)
         .count();
     let disabled = services
         .services
         .iter()
-        .filter(|s| s.state.starts_with("disabled"))
+        .filter(|s| s.state == ServiceStateKind::Disabled)
+        .count();
+    let faulted = services
+        .services
+        .iter()
+        .filter(|s| s.disabled_reason.is_some_and(DisableReason::is_fault))
         .count();
     let total = services.services.len();
 
     let dot = if running > 0 { "●" } else { "○" };
-    println!("{dot} {total} services · {running} running · {idle} idle · {disabled} disabled");
+    let faulted = if faulted > 0 {
+        format!(" ({faulted} faulted)")
+    } else {
+        String::new()
+    };
+    println!(
+        "{dot} {total} services · {running} running · {idle} idle · {disabled} disabled{faulted}"
+    );
     println!(
         "  endpoint    {}  (openai port {})",
         client.endpoint.as_str(),

@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use ananke_api::internal::log_line::LogStream;
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod client;
 mod commands;
@@ -65,54 +66,6 @@ enum ConfigCommand {
 }
 
 #[derive(Subcommand)]
-enum OneshotCommand {
-    /// Submit a oneshot job from a TOML file.
-    Submit {
-        /// Path to the TOML file describing the job.
-        file: std::path::PathBuf,
-    },
-    /// Submit a oneshot job built from inline flags and a trailing command.
-    Run {
-        /// Optional human-readable name.
-        #[arg(long)]
-        name: Option<String>,
-        /// Eviction priority (higher wins).
-        #[arg(long, default_value_t = 50)]
-        priority: u8,
-        /// Time-to-live duration string (e.g. "2h", "30m").
-        #[arg(long)]
-        ttl: Option<String>,
-        /// Working directory for the spawned child.
-        #[arg(long)]
-        workdir: Option<std::path::PathBuf>,
-        /// Device-placement mode.
-        #[arg(long, default_value = "gpu-only")]
-        placement: String,
-        /// Static reservation in GiB; conflicts with --min-reserve-gb/--max-reserve-gb.
-        /// The reservation lands on host RAM for a cpu-only service and on VRAM
-        /// otherwise. `--vram-gb` is accepted as a device-specific alias.
-        #[arg(long, alias = "vram-gb", conflicts_with_all = ["min_reserve_gb", "max_reserve_gb"])]
-        reserve_gb: Option<f32>,
-        /// Dynamic lower bound for the reservation in GiB; requires --max-reserve-gb.
-        #[arg(long, alias = "min-vram-gb", requires = "max_reserve_gb")]
-        min_reserve_gb: Option<f32>,
-        /// Dynamic upper bound for the reservation in GiB.
-        #[arg(long, alias = "max-vram-gb")]
-        max_reserve_gb: Option<f32>,
-        /// Command and arguments to run.
-        #[arg(trailing_var_arg = true, required = true)]
-        command: Vec<String>,
-    },
-    /// List all known oneshot jobs.
-    List,
-    /// Cancel a oneshot job by ID.
-    Kill {
-        /// Oneshot job ID to cancel.
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum Command {
     /// Show daemon, device, and service snapshot in one view.
     Status,
@@ -163,7 +116,8 @@ enum Command {
     Logs {
         /// Service name.
         name: String,
-        /// Follow new lines as they arrive.
+        /// Follow new lines as they arrive. With `--json`, every line is
+        /// printed as its own JSON object, one per line.
         #[arg(long)]
         follow: bool,
         /// Filter to a specific run id.
@@ -173,21 +127,16 @@ enum Command {
         /// (`2026-07-24 15:30`), a local date, or an age like `2h` / `30m`.
         #[arg(long, value_parser = parse_time_arg)]
         since: Option<i64>,
-        /// Maximum timestamp; accepts the same forms as `--since`.
-        #[arg(long, value_parser = parse_time_arg)]
+        /// Maximum timestamp; accepts the same forms as `--since`. A follow
+        /// has no end, so this cannot be combined with `--follow`.
+        #[arg(long, value_parser = parse_time_arg, conflicts_with = "follow")]
         until: Option<i64>,
         /// Cap on number of historical lines returned.
         #[arg(long, default_value_t = 200)]
         limit: u32,
-        /// Filter to one stream: `stdout`, `stderr`, or `combined` (a
-        /// container's merged output).
-        #[arg(long)]
-        stream: Option<String>,
-    },
-    /// Manage oneshot jobs.
-    Oneshot {
-        #[command(subcommand)]
-        command: OneshotCommand,
+        /// Filter to one stream; `combined` is a container's merged output.
+        #[arg(long, value_enum)]
+        stream: Option<StreamArg>,
     },
     /// Manage daemon configuration over the management API.
     ServerConfig {
@@ -252,43 +201,18 @@ async fn main() -> ExitCode {
             stream,
         } => {
             commands::logs::run(
-                &client, cli.json, &name, follow, run, since, until, limit, stream,
+                &client,
+                cli.json,
+                &name,
+                follow,
+                run,
+                since,
+                until,
+                limit,
+                stream.map(LogStream::from),
             )
             .await
         }
-        Command::Oneshot { command } => match command {
-            OneshotCommand::Submit { file } => {
-                commands::oneshot::submit(&client, cli.json, &file).await
-            }
-            OneshotCommand::Run {
-                name,
-                priority,
-                ttl,
-                workdir,
-                placement,
-                reserve_gb,
-                min_reserve_gb,
-                max_reserve_gb,
-                command,
-            } => {
-                commands::oneshot::run(
-                    &client,
-                    cli.json,
-                    name,
-                    priority,
-                    ttl,
-                    workdir,
-                    placement,
-                    reserve_gb,
-                    min_reserve_gb,
-                    max_reserve_gb,
-                    command,
-                )
-                .await
-            }
-            OneshotCommand::List => commands::oneshot::list(&client, cli.json).await,
-            OneshotCommand::Kill { id } => commands::oneshot::kill(&client, cli.json, &id).await,
-        },
         Command::ServerConfig { command } => match command {
             ServerConfigCommand::Show => commands::server_config::show(&client, cli.json).await,
             ServerConfigCommand::Validate { file } => {
@@ -321,6 +245,24 @@ async fn main() -> ExitCode {
         Err(e) => {
             eprintln!("anankectl: {e}");
             e.exit_code()
+        }
+    }
+}
+
+/// The `--stream` values, mirroring [`LogStream`] so clap can list them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum StreamArg {
+    Stdout,
+    Stderr,
+    Combined,
+}
+
+impl From<StreamArg> for LogStream {
+    fn from(arg: StreamArg) -> Self {
+        match arg {
+            StreamArg::Stdout => LogStream::Stdout,
+            StreamArg::Stderr => LogStream::Stderr,
+            StreamArg::Combined => LogStream::Combined,
         }
     }
 }
@@ -376,9 +318,6 @@ fn parse_relative_age_ms(s: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    /// `--stream combined` must reach the query string; the daemon owns
-    /// the vocabulary, so the CLI passes the value through rather than
-    /// re-validating it.
     #[test]
     fn logs_accepts_combined_stream_flag() {
         let cli = Cli::try_parse_from(["anankectl", "logs", "demo", "--stream", "combined"])
@@ -387,7 +326,23 @@ mod tests {
             panic!("expected the logs subcommand");
         };
         assert_eq!(name, "demo");
-        assert_eq!(stream.as_deref(), Some("combined"));
+        assert_eq!(stream.map(LogStream::from), Some(LogStream::Combined));
+    }
+
+    #[test]
+    fn logs_rejects_an_unknown_stream() {
+        assert!(Cli::try_parse_from(["anankectl", "logs", "demo", "--stream", "stdin"]).is_err());
+    }
+
+    #[test]
+    fn logs_follow_conflicts_with_until() {
+        let err = Cli::try_parse_from(["anankectl", "logs", "demo", "--follow", "--until", "0"])
+            .err()
+            .expect("--follow with --until must be refused");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(
+            Cli::try_parse_from(["anankectl", "logs", "demo", "--follow", "--since", "0"]).is_ok()
+        );
     }
 
     #[test]

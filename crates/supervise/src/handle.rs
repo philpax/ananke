@@ -2,13 +2,14 @@
 //! exchanged over its mailbox, [`SupervisorHandle`] itself, and
 //! [`spawn_supervisor`], which starts the actor task and returns a handle to it.
 
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::Arc;
 
 use ananke_config::validate::ServiceConfig;
 use ananke_db::{Database, logs::BatcherHandle};
 use ananke_devices::Allocation;
-use ananke_events::EventBus;
+use ananke_events::{ChangeSignal, EventBus};
 use ananke_observation::ObservationTable;
+use ananke_proxy::InflightCounter;
 use ananke_tracking::rolling::RollingTable;
 use parking_lot::Mutex as SyncMutex;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -48,7 +49,7 @@ pub enum SupervisorCommand {
     },
     /// Record that a request was served; resets the idle timer.
     ActivityPing,
-    /// Enter the full drain pipeline for eviction / TTL / user-kill.
+    /// Enter the full drain pipeline for eviction / idle timeout / user-kill.
     BeginDrain {
         reason: crate::drain::DrainReason,
         ack: tokio::sync::oneshot::Sender<()>,
@@ -337,6 +338,9 @@ pub struct SupervisorDeps {
     /// `ServiceDetail` handler sees the same numbers without doing a
     /// second GGUF read.
     pub estimate_cache: EstimateCacheHandle,
+    /// Bumped whenever any supervisor's mirrored state, run id, or pid
+    /// changes. The run id and pid move without an event of their own.
+    pub mirror_changed: ChangeSignal,
 }
 
 /// Identity fields that don't change across a reload. Everything else a
@@ -371,7 +375,7 @@ pub struct SupervisorInit {
     pub allocation: Allocation,
     pub service_id: i64,
     pub last_activity: ananke_tracking::activity::ActivityStamp,
-    pub inflight: Arc<AtomicU64>,
+    pub inflight: Arc<InflightCounter>,
 }
 
 /// Spawn a supervisor task. `boot_svc` seeds the `current_svc()` fallback

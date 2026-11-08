@@ -100,16 +100,8 @@ A dashboard (pictured above) is served by the daemon at the management API's por
 - **Daemon configuration**: `server-config`, `reload`.
 - **Client configuration**: `config`
 - **Chat**: `chat` for an interactive TUI session; `chat <model> <prompt>` streams a one-shot completion to stdout.
-- **Oneshots**: `oneshot submit`, `oneshot list`, `oneshot kill`.
 
 Each command has its own `--help` with full usage details.
-
-## Configured vs temporary services
-
-ananke distinguishes between services defined persistently in TOML and short-lived services spawned via the Oneshot API.
-
-- **Configured services**: declared as `[[service]]` blocks in the config file; they survive daemon restarts and can be managed via `anankectl` and the management API. See [docs/configuration.md](docs/configuration.md).
-- **Temporary services**: spawned on demand through the Oneshot API with an optional TTL; torn down automatically when their TTL expires or when explicitly killed. They are allocated from the same resource pool as configured services but do not persist across daemon restarts. See [docs/api.md](docs/api.md) for the Oneshot API.
 
 ## Comparing Alternatives
 
@@ -160,8 +152,7 @@ Goldseam is llama.cpp-only (requires a patched build) and uses a per-GPU VRAM bu
 | Real-time events    | WebSocket                    | No                               | No                                   | No                                          |
 | Web dashboard       | Yes                          | Yes                              | Yes                                  | No                                          |
 | Service inheritance | `extends` with deep merge    | Macros                           | No                                   | No                                          |
-| Oneshot API         | Yes                          | No                               | No                                   | No                                          |
-| Model TTL           | Per model + oneshots         | Per model                        | Per model                            | No                                          |
+| Model TTL           | Per model                    | Per model                        | Per model                            | No                                          |
 
 **Choose ananke if:** You want automatic VRAM estimation (no manual declarations needed), a CLI/API for programmatic management, and a web dashboard for monitoring and chatting with models. ananke is designed for users who want to add models to their config and trust the daemon to figure out where they fit.
 

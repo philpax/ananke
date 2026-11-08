@@ -12,7 +12,8 @@ use ananke_api::{
     },
     shared::errors::ApiError,
 };
-use ananke_tracking::{inflight::InflightGuard, progress::ProgressCell};
+use ananke_proxy::InflightGuard;
+use ananke_tracking::progress::ProgressCell;
 use axum::{
     Json,
     body::Body,

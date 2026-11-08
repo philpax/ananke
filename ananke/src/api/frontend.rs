@@ -24,6 +24,24 @@ pub fn register(router: Router) -> Router {
     router.fallback(serve_asset)
 }
 
+/// Identifies the embedded frontend: the package version plus a hash of
+/// `index.html`, which names every content-hashed bundle, so it changes
+/// exactly when the served UI does. An open tab compares it across
+/// reconnects to notice that the daemon was upgraded underneath it.
+pub(crate) fn build_id() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    match Assets::get("index.html") {
+        Some(index) => {
+            let hash: String = index.metadata.sha256_hash()[..6]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!("{version}+{hash}")
+        }
+        None => version.to_owned(),
+    }
+}
+
 async fn serve_asset(uri: Uri) -> Response {
     let raw = uri.path().trim_start_matches('/');
     let path = if raw.is_empty() { "index.html" } else { raw };

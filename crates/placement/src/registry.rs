@@ -22,14 +22,12 @@ pub trait KillHandle: Send + Sync {
 }
 
 /// Why a service is being drained or killed. Shared between the supervise
-/// drain pipeline, the allocator's balloon fast-kill path, and the oneshot
-/// TTL watchdog.
+/// drain pipeline and the allocator's balloon fast-kill path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrainReason {
     Shutdown,
     IdleTimeout,
     Eviction,
-    TtlExpired,
     UserKilled,
     ConfigChanged,
     /// Self-healing restart: the error-rate watchdog or periodic timer

@@ -1,6 +1,4 @@
-import type { TimeWindow } from "./components/ui/timeWindow.ts";
-
-// Formatting helpers shared across the dashboard. All user-facing
+// Formatting helpers shared across the views. All user-facing
 // formatting goes through here so units, precision, and rounding stay
 // consistent.
 
@@ -53,10 +51,6 @@ export function formatTokenRate(tokensPerSecond: number): string {
   if (tokensPerSecond < 1) return tokensPerSecond.toFixed(2);
   if (tokensPerSecond < 100) return tokensPerSecond.toFixed(1);
   return Math.round(tokensPerSecond).toString();
-}
-
-export function serviceProxyUrl(port: number): string {
-  return `${window.location.protocol}//${window.location.hostname}:${port}`;
 }
 
 // Construct the OpenAI API base URL from the daemon's `openai_listen`
@@ -203,24 +197,4 @@ export type BucketSize = keyof typeof BUCKET_MS;
 
 export function bucketMsOf(bucket: BucketSize): number {
   return BUCKET_MS[bucket];
-}
-
-// Resolve a TimeWindow into concrete metrics-query parameters. For
-// relative windows `now` is captured at call time — memoise on the
-// window object so the query key doesn't churn every render.
-export function metricsWindow(w: TimeWindow): {
-  since: number;
-  until: number | undefined;
-  end: number;
-  bucket: BucketSize;
-} {
-  const now = Date.now();
-  const since =
-    w.kind === "relative"
-      ? now - (w.durationMs ?? 3_600_000)
-      : (w.sinceMs ?? now);
-  const until =
-    w.kind === "absolute" && w.untilMs != null ? w.untilMs : undefined;
-  const end = until ?? now;
-  return { since, until, end, bucket: bucketFor(end - since) };
 }

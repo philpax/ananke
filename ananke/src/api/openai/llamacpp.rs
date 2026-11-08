@@ -26,8 +26,7 @@
 
 use std::{error::Error, sync::Arc, task::Poll, time::Duration};
 
-use ananke_proxy::ProxyBody;
-use ananke_tracking::inflight::InflightGuard;
+use ananke_proxy::{InflightGuard, ProxyBody};
 use axum::{
     RequestExt, Router,
     body::Body,

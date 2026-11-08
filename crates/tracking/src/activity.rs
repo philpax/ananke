@@ -12,13 +12,16 @@
 //!
 //! The wall-clock `last_used_ms` map is seeded from `request_metrics` on
 //! boot so it survives daemon restarts without a dedicated persistence
-//! column. `ping()` updates it in real time; no per-request DB write.
+//! column. `ping()` updates it in real time; no per-request DB write, but a
+//! table-wide [`ChangeSignal`] so live readers of `last_ms()` can wake.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use ananke_db::Database;
+use ananke_events::ChangeSignal;
 use parking_lot::{Mutex, RwLock};
 use smol_str::SmolStr;
+use tokio::sync::watch;
 
 /// Per-service activity stamp. Cloneable handle around a shared tokio
 /// `Instant`.
@@ -31,6 +34,7 @@ pub struct ActivityTable {
     /// tokio `Instant` on every `ping`. Seeded from `request_metrics` on
     /// boot so `last_ms()` survives daemon restarts.
     wall_ms: Arc<RwLock<BTreeMap<SmolStr, i64>>>,
+    changed: ChangeSignal,
 }
 
 impl ActivityTable {
@@ -63,6 +67,12 @@ impl ActivityTable {
         self.wall_ms
             .write()
             .insert(service.clone(), ananke_time::now_unix_ms());
+        self.changed.notify();
+    }
+
+    /// Wakes whenever any service's `last_ms()` changes.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     /// Read the last activity instant for `service`. Returns `None` if
@@ -82,10 +92,13 @@ impl ActivityTable {
     /// activity.
     pub async fn load_from_db(&self, db: &Database) {
         let rows = db.load_last_request_times().await.unwrap_or_default();
-        let mut guard = self.wall_ms.write();
-        for (name, ms) in rows {
-            guard.entry(SmolStr::new(name)).or_insert(ms);
+        {
+            let mut guard = self.wall_ms.write();
+            for (name, ms) in rows {
+                guard.entry(SmolStr::new(name)).or_insert(ms);
+            }
         }
+        self.changed.notify();
     }
 }
 
@@ -124,5 +137,13 @@ mod tests {
         assert!(t.last_ms(&svc).is_none());
         t.ping(&svc);
         assert!(t.last_ms(&svc).is_some());
+    }
+
+    #[tokio::test]
+    async fn ping_notifies_the_table_signal() {
+        let t = ActivityTable::new();
+        let rx = t.changes();
+        t.ping(&SmolStr::new("demo"));
+        assert!(rx.has_changed().unwrap());
     }
 }

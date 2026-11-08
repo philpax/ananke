@@ -14,6 +14,7 @@ ananke-db.workspace = true
 ananke-events.workspace = true
 ananke-observation.workspace = true
 ananke-placement.workspace = true
+ananke-proxy.workspace = true
 ananke-time.workspace = true
 parking_lot.workspace = true
 smol_str.workspace = true

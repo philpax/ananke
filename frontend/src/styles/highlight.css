@@ -1,0 +1,75 @@
+/*
+ * highlight.js token colours from the shared `syntax-*` tokens, replacing
+ * a dark-only vendor theme. Custom CSS because the class names are
+ * highlight.js's, emitted by rehype-highlight, so no utility can reach
+ * them.
+ */
+
+.hljs {
+  color: var(--text-body);
+  background: transparent;
+}
+
+.hljs-keyword,
+.hljs-literal,
+.hljs-built_in,
+.hljs-type,
+.hljs-selector-tag,
+.hljs-meta .hljs-keyword {
+  color: var(--syntax-keyword);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-meta .hljs-string {
+  color: var(--syntax-string);
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--syntax-number);
+}
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-tag,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syntax-property);
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: var(--syntax-comment);
+}
+
+.hljs-comment {
+  font-style: italic;
+}
+
+.hljs-punctuation,
+.hljs-operator,
+.hljs-params {
+  color: var(--syntax-punct);
+}
+
+.hljs-deletion {
+  color: var(--status-danger);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 700;
+}

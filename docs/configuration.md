@@ -366,7 +366,7 @@ The trip condition requires a collapse, not just absence: the run must have acce
 | `min_draft_tokens` | u64 | `200` | Minimum count of drafted tokens in the window before an all-zero acceptance is trusted. Counted in tokens rather than requests so that slow-arriving long generations — which draft thousands of tokens each — reach the floor on their own; one short unlucky generation stays under it. |
 | `poll_interval` | duration string | `30s` | How often the watchdog queries the metrics store. |
 
-When a trigger fires, the service drains (SIGTERM with grace, then SIGKILL) and returns to `Idle`; the normal ensure path respawns it — on the next request for an on-demand service, or within a few seconds for a persistent one. An auto-restart emits an `auto_restarted` event on the daemon event stream (see [the API guide](api.md)) and is persisted to the daemon's store, so the recent history is visible after the fact in the service detail view (web UI and `anankectl show`) even when nothing was listening at firing time. Oneshot services never auto-restart.
+When a trigger fires, the service drains (SIGTERM with grace, then SIGKILL) and returns to `Idle`; the normal ensure path respawns it — on the next request for an on-demand service, or within a few seconds for a persistent one. An auto-restart emits an `auto_restarted` event on the daemon event stream (see [the API guide](api.md)) and is persisted to the daemon's store, so the recent history is visible after the fact in the service detail view (web UI and `anankectl show`) even when nothing was listening at firing time.
 
 ## Templates
 ### llama-cpp

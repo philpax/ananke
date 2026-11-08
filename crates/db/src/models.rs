@@ -4,6 +4,7 @@
 //! from `rusqlite::Row` are defined in one place and every caller reads the
 //! same definition.
 
+use ananke_api::internal::log_line::LogLine;
 use rusqlite::Row;
 
 #[derive(Debug, Clone)]
@@ -135,6 +136,17 @@ impl ServiceLog {
     }
 
     pub const COLUMNS: &'static str = "service_id, run_id, timestamp_ms, seq, stream, line";
+
+    /// The row as the wire carries it, without its service id.
+    pub fn into_line(self) -> LogLine {
+        LogLine {
+            timestamp_ms: self.timestamp_ms,
+            stream: self.stream,
+            line: self.line,
+            run_id: self.run_id,
+            seq: self.seq,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

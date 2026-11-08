@@ -73,6 +73,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/events/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List recent events */
+    get: operations["get_events_history"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/info": {
     parameters: {
       query?: never;
@@ -80,7 +97,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Get daemon listen addresses */
+    /** Get daemon listen addresses and uptime */
     get: operations["get_info"];
     put?: never;
     post?: never;
@@ -102,42 +119,6 @@ export interface paths {
     put?: never;
     post?: never;
     delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/oneshot": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Create or list oneshot processes */
-    get: operations["list_oneshots"];
-    put?: never;
-    /** Create or list oneshot processes */
-    post: operations["post_oneshot"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/oneshot/{id}": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Get or delete a oneshot process */
-    get: operations["get_oneshot"];
-    put?: never;
-    post?: never;
-    /** Get or delete a oneshot process */
-    delete: operations["delete_oneshot"];
     options?: never;
     head?: never;
     patch?: never;
@@ -385,6 +366,40 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** @description How the allocator sizes a service's reservation. */
+    AllocationConfig:
+      | {
+          /** @enum {string} */
+          kind: "estimated";
+        }
+      | {
+          /** @enum {string} */
+          kind: "static";
+          /**
+           * Format: int64
+           * @description The reservation, in bytes.
+           */
+          reserve_bytes: number;
+        }
+      | {
+          /** @enum {string} */
+          kind: "dynamic";
+          /**
+           * Format: int64
+           * @description The upper bound, in bytes.
+           */
+          max_bytes: number;
+          /**
+           * Format: int64
+           * @description How long a borrower must run before its memory may be reclaimed.
+           */
+          min_borrower_runtime_ms: number;
+          /**
+           * Format: int64
+           * @description The lower bound, in bytes.
+           */
+          min_bytes: number;
+        };
     /**
      * @description `{"error": {"code", "message", "type"}}`. The shared wire DTO; the
      *     daemon-side `ApiErrorCode` enum is the source of truth for which
@@ -443,6 +458,9 @@ export interface components {
       | "persist_failed"
       | "query_failed"
       | "preview_failed"
+      | "invalid_live_request"
+      | "duplicate_subscription_id"
+      | "subscription_limit"
       | "other";
     /**
      * @description OpenAI's error-type taxonomy. `InvalidRequestError` for anything the
@@ -464,6 +482,26 @@ export interface components {
       model: string;
     };
     /**
+     * @description A command-template service's settings that its launch command does not
+     *     show.
+     */
+    CommandDetail: {
+      /**
+       * @description `true` when the config fixes the private port; `false` when it comes
+       *     from the daemon's pool.
+       */
+      private_port_fixed: boolean;
+      /** @description The command run to stop the workload, when set. */
+      shutdown_command?: string[] | null;
+      /**
+       * @description The model name rewritten into proxied OpenAI requests, when the
+       *     service has an `openai_proxy` block.
+       */
+      upstream_model?: string | null;
+      /** @description The working directory the command runs in, when set. */
+      workdir?: string | null;
+    };
+    /**
      * @description `POST /v1/completions` request envelope.
      *
      *     The daemon only interprets the `model` field; all other keys are
@@ -481,6 +519,11 @@ export interface components {
       content: string;
       /** @description SHA-256 of `content`, base64-encoded; used as an `If-Match` value on PUT. */
       hash: string;
+      /**
+       * @description Where the daemon reads the config from, as it was given or resolved
+       *     at startup.
+       */
+      path: string;
       /**
        * @description Whether the config file can be written to. `false` when the file
        *     is on a read-only store (e.g. NixOS-managed); the frontend should
@@ -519,6 +562,13 @@ export interface components {
       management_listen: string;
       /** @description The OpenAI-compatible API listen address (e.g. `"0.0.0.0:7070"`). */
       openai_listen: string;
+      /**
+       * Format: int64
+       * @description Milliseconds since the daemon started. A duration rather than a start
+       *     timestamp, so a client adds its own elapsed time instead of comparing
+       *     against a clock that may disagree with the daemon's.
+       */
+      uptime_ms: number;
     };
     /** @description One device's share of a [`ServiceSummary`]'s footprint. */
     DeviceFootprint: {
@@ -651,6 +701,16 @@ export interface components {
       total_bytes: number;
     };
     /**
+     * @description Why a `disabled` service is disabled.
+     * @enum {string}
+     */
+    DisableReason:
+      | "launch_failed"
+      | "health_timeout"
+      | "oom"
+      | "user_disabled"
+      | "auto_restart_loop";
+    /**
      * @description `POST /api/services/{name}/disable` response body.
      *
      *     The `status` tag tells the caller the outcome of the disable request. All
@@ -738,8 +798,8 @@ export interface components {
       weights_bytes: number;
     };
     /**
-     * @description One event delivered over `/api/events`. The `type` tag discriminates the
-     *     variant; `at_ms` is present on every variant except `overflow`. The same
+     * @description One daemon lifecycle event. The `type` tag discriminates the variant, and
+     *     every variant carries `at_ms`. The same
      *     `Event` is used as a broadcast bus message internally, so it must stay
      *     serializable and stable — anything published here is part of the wire
      *     contract the frontend and other clients read.
@@ -751,12 +811,13 @@ export interface components {
            * @description When the transition happened, in unix milliseconds.
            */
           at_ms: number;
-          /** @description The state it left, e.g. `"starting"` or `"running"`. */
-          from: string;
+          disabled_reason?: null | components["schemas"]["DisableReason"];
+          /** @description The state it left. */
+          from: components["schemas"]["ServiceStateKind"];
           /** @description The service that changed state. */
           service: string;
           /** @description The state it entered. */
-          to: string;
+          to: components["schemas"]["ServiceStateKind"];
           /** @enum {string} */
           type: "state_changed";
         }
@@ -821,16 +882,19 @@ export interface components {
           trigger: string;
           /** @enum {string} */
           type: "auto_restarted";
-        }
-      | {
-          /**
-           * Format: int64
-           * @description How many events were dropped for the slow subscriber.
-           */
-          dropped: number;
-          /** @enum {string} */
-          type: "overflow";
         };
+    /** @description The daemon's bounded window of recent events, oldest first. */
+    EventHistory: {
+      /** @description The retained events, oldest first. */
+      events: components["schemas"]["Event"][];
+      /**
+       * Format: int64
+       * @description The start of the window, in unix milliseconds: the daemon's start time
+       *     until the window first evicts, then the oldest retained event's
+       *     timestamp. Earlier events may have happened but are not listed.
+       */
+      since_ms: number;
+    };
     /**
      * @description Whether a service's estimated placement fits under current conditions.
      *
@@ -974,6 +1038,171 @@ export interface components {
       /** @description Absolute container path. */
       target: string;
     };
+    /**
+     * @description When a service starts and stops relative to the daemon's own lifecycle.
+     * @enum {string}
+     */
+    Lifecycle: "persistent" | "on_demand";
+    /** @description A snapshot body, tagged by the resource it belongs to. */
+    LiveData:
+      | {
+          /** @description A `services` snapshot. */
+          body: components["schemas"]["ServicesResponse"];
+          /** @enum {string} */
+          resource: "services";
+        }
+      | {
+          /** @description A `devices` snapshot. */
+          body: components["schemas"]["DeviceSummary"][];
+          /** @enum {string} */
+          resource: "devices";
+        }
+      | {
+          /** @description An `events` snapshot. */
+          body: components["schemas"]["EventHistory"];
+          /** @enum {string} */
+          resource: "events";
+        }
+      | {
+          /** @description An `info` snapshot. */
+          body: components["schemas"]["DaemonInfoResponse"];
+          /** @enum {string} */
+          resource: "info";
+        }
+      | {
+          /** @description A `service` snapshot. */
+          body: components["schemas"]["ServiceDetail"];
+          /** @enum {string} */
+          resource: "service";
+        };
+    /** @description An append-only feed a client can follow on `/api/live`. */
+    LiveFeed: components["schemas"]["LogFeed"] & {
+      /** @enum {string} */
+      kind: "logs";
+    };
+    /** @description A frame the daemon sends on `/api/live`. */
+    LiveMessage:
+      | {
+          /** @description Identifies the daemon's version and embedded frontend build. */
+          build: string;
+          /** @enum {string} */
+          type: "hello";
+        }
+      | {
+          /** @description The resource body, tagged by resource kind. */
+          data: components["schemas"]["LiveData"];
+          /** @description The subscription's id. */
+          id: string;
+          /** @enum {string} */
+          type: "snapshot";
+        }
+      | {
+          /** @description The follow's id. */
+          id: string;
+          /** @description The lines, in position order. */
+          lines: components["schemas"]["LogLine"][];
+          /** @enum {string} */
+          type: "log_lines";
+        }
+      | {
+          after?: null | components["schemas"]["LogPosition"];
+          /** @description The first line the follow sends after the gap. */
+          before: components["schemas"]["LogPosition"];
+          /** @description The follow's id. */
+          id: string;
+          /**
+           * Format: int64
+           * @description How many matching lines were skipped.
+           */
+          skipped: number;
+          /** @enum {string} */
+          type: "log_gap";
+        }
+      | {
+          /** @description The follow's id. */
+          id: string;
+          /** @enum {string} */
+          type: "log_caught_up";
+        }
+      | {
+          /** @description The standard error envelope. */
+          error: components["schemas"]["ApiError"];
+          /**
+           * @description The subscription the error belongs to, or `null` when the frame
+           *     it answers could not be parsed.
+           */
+          id?: string | null;
+          /**
+           * Format: int32
+           * @description The HTTP status the same error would carry.
+           */
+          status: number;
+          /** @enum {string} */
+          type: "error";
+        };
+    /** @description A frame the client sends on `/api/live`. */
+    LiveRequest:
+      | {
+          /**
+           * @description A connection-local id, 1 to 128 bytes, that every reply for this
+           *     subscription carries. It must not be in use on this connection.
+           */
+          id: string;
+          /** @description What to subscribe to. */
+          resource: components["schemas"]["LiveResource"];
+          /** @enum {string} */
+          type: "subscribe";
+        }
+      | {
+          /** @description What to follow, and from where. */
+          feed: components["schemas"]["LiveFeed"];
+          /** @description A connection-local id, as for `subscribe`. */
+          id: string;
+          /** @enum {string} */
+          type: "follow";
+        }
+      | {
+          /** @description The id the subscription or follow was started with. */
+          id: string;
+          /** @enum {string} */
+          type: "cancel";
+        };
+    /** @description A resource a client can subscribe to on `/api/live`. */
+    LiveResource:
+      | {
+          /** @enum {string} */
+          kind: "services";
+        }
+      | {
+          /** @enum {string} */
+          kind: "devices";
+        }
+      | {
+          /** @enum {string} */
+          kind: "events";
+        }
+      | {
+          /** @enum {string} */
+          kind: "info";
+        }
+      | {
+          /** @enum {string} */
+          kind: "service";
+          /** @description The service's name. */
+          name: string;
+        };
+    /** @description Which log lines to follow, and from where. */
+    LogFeed: {
+      after?: null | components["schemas"]["LogPosition"];
+      /**
+       * Format: int64
+       * @description Restrict to one run.
+       */
+      run?: number | null;
+      /** @description The service's name. */
+      service: string;
+      stream?: null | components["schemas"]["LogStream"];
+    };
     /** @description One captured stdout/stderr/combined line. */
     LogLine: {
       /** @description The line content (sans trailing newline). */
@@ -996,23 +1225,30 @@ export interface components {
        */
       timestamp_ms: number;
     };
-    /** @description Frame sent over `/api/services/{name}/logs/stream`. */
-    LogStreamMessage:
-      | (components["schemas"]["LogLine"] & {
-          /** @enum {string} */
-          type: "line";
-        })
-      | {
-          /**
-           * Format: int64
-           * @description Number of dropped frames.
-           */
-          dropped: number;
-          /** @enum {string} */
-          type: "overflow";
-        };
+    /**
+     * @description Where a line sits in its service's log. Positions order by `(run_id, seq)`:
+     *     a later run always has a larger id, and `seq` counts up within a run.
+     */
+    LogPosition: {
+      /**
+       * Format: int64
+       * @description The run the line belongs to.
+       */
+      run_id: number;
+      /**
+       * Format: int64
+       * @description The line's sequence number within the run.
+       */
+      seq: number;
+    };
+    /**
+     * @description Which output stream a line came from, as a filter.
+     * @enum {string}
+     */
+    LogStream: "stdout" | "stderr" | "combined";
     /** @description `GET /api/services/{name}/logs` response body. */
     LogsResponse: {
+      follow_after?: null | components["schemas"]["LogPosition"];
       /** @description Newest-first page of log lines. */
       logs: components["schemas"]["LogLine"][];
       /** @description Opaque cursor for paging further back; `None` when exhausted. */
@@ -1202,126 +1438,27 @@ export interface components {
       /** @description Always `"list"`. */
       object: string;
     };
-    /** @description Allocation-mode knobs for [`OneshotRequest`]. */
-    OneshotAllocation: {
+    /** @description The placement constraints a service's config sets, as validated. */
+    PlacementConfig: {
+      /** @description How the allocator sizes the service's reservation. */
+      allocation: components["schemas"]["AllocationConfig"];
+      /** @description GPU indices the service may use; empty means every GPU. */
+      gpu_allow?: number[];
       /**
-       * Format: float
-       * @description Dynamic maximum reservation in GiB.
+       * Format: int64
+       * @description VRAM this service keeps free on each GPU it uses, on top of the global
+       *     reserves.
        */
-      max_reserve_gb?: number | null;
-      /**
-       * Format: float
-       * @description Dynamic minimum reservation in GiB.
-       */
-      min_reserve_gb?: number | null;
-      /** @description `"static"` or `"dynamic"`; `None` for llama-cpp template. */
-      mode?: string | null;
-      /**
-       * Format: float
-       * @description Static reservation in GiB. Lands on whichever device the service is
-       *     placed on — host RAM for a cpu-only command service, VRAM otherwise.
-       *     `vram_gb` is accepted as an alias for clients that spell it that way.
-       */
-      reserve_gb?: number | null;
-    };
-    /** @description Device-placement hints for [`OneshotRequest`]. */
-    OneshotDevices: {
-      /** @description `"gpu-only"` / `"cpu-only"` / `"hybrid"`. */
-      placement?: string | null;
-    };
-    /** @description Health-check configuration for a oneshot. */
-    OneshotHealth: {
-      /** @description HTTP path to probe (e.g. `"/health"`, `"/system_stats"`). */
-      http: string;
-      /** @description Probe interval duration string. Defaults to 5 seconds. */
-      probe_interval?: string | null;
-      /** @description Timeout duration string (e.g. `"30s"`, `"2m"`). Defaults to 3 minutes. */
-      timeout?: string | null;
-    };
-    /** @description `POST /api/oneshot` request body. */
-    OneshotRequest: {
-      /** @description Allocation mode + sizes. */
-      allocation: components["schemas"]["OneshotAllocation"];
-      /** @description Command + args for the `"command"` template. */
-      command?: string[] | null;
-      devices?: null | components["schemas"]["OneshotDevices"];
-      health?: null | components["schemas"]["OneshotHealth"];
-      /** @description Free-form metadata passed through to responses. */
-      metadata?: {
-        [key: string]: unknown;
-      };
-      /** @description Optional human-meaningful name; daemon auto-generates if absent. */
-      name?: string | null;
-      /**
-       * Format: int32
-       * @description Explicit port request; `None` means daemon picks from the pool.
-       */
-      port?: number | null;
-      /**
-       * Format: int32
-       * @description Eviction priority.
-       */
-      priority?: number | null;
-      /** @description `"llama-cpp"` or `"command"`. */
-      template: string;
-      /** @description Time-to-live duration string (`"2h"`, `"30m"`). */
-      ttl?: string | null;
-      /** @description Working directory for the spawned child. */
-      workdir?: string | null;
-    };
-    /** @description `POST /api/oneshot` response body. */
-    OneshotResponse: {
-      /** @description ULID identifier (prefixed `oneshot_`). */
-      id: string;
-      /** @description Path component suitable for appending to `ANANKE_ENDPOINT` to open the log stream. */
-      logs_url: string;
-      /** @description Assigned name. */
-      name: string;
-      /**
-       * Format: int32
-       * @description Bound port.
-       */
-      port: number;
+      gpu_headroom_bytes: number;
+      /** @description Which device classes the service may land on. */
+      policy: components["schemas"]["PlacementPolicy"];
+      split?: null | components["schemas"]["SplitConfig"];
     };
     /**
-     * @description `GET /api/oneshot/{id}` response body. Also used by `GET /api/oneshot`
-     *     (which returns `Vec<OneshotStatus>`).
+     * @description Which device classes a service may be placed on, spelled as in config.
+     * @enum {string}
      */
-    OneshotStatus: {
-      /**
-       * Format: int64
-       * @description End timestamp, if terminal.
-       */
-      ended_at_ms?: number | null;
-      /**
-       * Format: int32
-       * @description Exit code when the child terminated with one.
-       */
-      exit_code?: number | null;
-      /** @description ULID id. */
-      id: string;
-      /** @description Path component for the WS log-stream endpoint. */
-      logs_url: string;
-      /** @description Name. */
-      name: string;
-      /**
-       * Format: int32
-       * @description Port.
-       */
-      port: number;
-      /**
-       * Format: int64
-       * @description Start timestamp, if reached Running.
-       */
-      started_at_ms?: number | null;
-      /** @description Current state (`"pending"`, `"running"`, `"ended"`, `"evicted"`, etc.). */
-      state: string;
-      /**
-       * Format: int64
-       * @description Submission timestamp.
-       */
-      submitted_at_ms: number;
-    };
+    PlacementPolicy: "gpu-only" | "cpu-only" | "hybrid";
     /**
      * @description Where a service's memory would land per device under current conditions, and
      *     whether it fits without the daemon having to evict or reclaim. Computed by
@@ -1389,6 +1526,7 @@ export interface components {
        *     [`crate::services::list::ServiceSummary::ananke_metadata`].
        */
       ananke_metadata?: Record<string, never>;
+      command?: null | components["schemas"]["CommandDetail"];
       container?: null | components["schemas"]["ContainerDetail"];
       /**
        * @description What pledge the service is currently holding on each device.
@@ -1398,6 +1536,9 @@ export interface components {
       current_allocation: {
         [key: string]: number;
       };
+      /** @description Free-form description from the service's config. */
+      description?: string | null;
+      disabled_reason?: null | components["schemas"]["DisableReason"];
       /** @description Placeholder for elastic-borrower tracking. */
       elastic_borrower?: string | null;
       estimate?: null | components["schemas"]["EstimateSummary"];
@@ -1413,8 +1554,8 @@ export interface components {
        *     service has never been started.
        */
       last_used_ms?: number | null;
-      /** @description `"persistent"` or `"ondemand"`. */
-      lifecycle: string;
+      /** @description When the service starts and stops. */
+      lifecycle: components["schemas"]["Lifecycle"];
       /**
        * @description What kind of OpenAI endpoint the service serves. See
        *     [`crate::services::list::ServiceSummary::modality`] for the rendering rule.
@@ -1429,10 +1570,17 @@ export interface components {
        */
       observed_peak_bytes: number;
       /**
+       * @description Whether the service is reachable through the OpenAI-compatible API,
+       *     and so can be chatted with or embedded against.
+       */
+      openai_compat: boolean;
+      /**
        * Format: int32
        * @description Child PID if any.
        */
       pid?: number | null;
+      /** @description The validated placement constraints the packer works under. */
+      placement: components["schemas"]["PlacementConfig"];
       /** @description Manual placement override, keyed by device slot string. */
       placement_override: {
         [key: string]: number;
@@ -1453,12 +1601,10 @@ export interface components {
        * @description Private (upstream) port.
        */
       private_port: number;
-      /** @description Most recent log lines for a frontend's first-paint context. */
-      recent_logs: components["schemas"]["LogLine"][];
       /**
        * @description Recent auto-restart watchdog firings, most recent first. Sourced
        *     from the daemon's durable `service_restarts` store, so firings are
-       *     visible after the fact — not only to a live `/api/events` listener.
+       *     visible after the fact — not only to a client that was connected when it happened.
        */
       recent_restarts?: components["schemas"]["RestartEvent"][];
       /**
@@ -1491,8 +1637,8 @@ export interface components {
       run_id?: number | null;
       runtime?: null | components["schemas"]["RuntimeInfo"];
       serving?: null | components["schemas"]["ServingConfig"];
-      /** @description Current state name. */
-      state: string;
+      /** @description Current state. */
+      state: components["schemas"]["ServiceStateKind"];
       /** @description Template name, e.g. `"llamacpp"` or `"command"`. */
       template: string;
     };
@@ -1522,6 +1668,20 @@ export interface components {
        */
       trigger: string;
     };
+    /**
+     * @description The state a service is in. `docs/api.md` describes each one.
+     * @enum {string}
+     */
+    ServiceStateKind:
+      | "idle"
+      | "starting"
+      | "running"
+      | "draining"
+      | "stopped"
+      | "evicted"
+      | "failed"
+      | "disabled"
+      | "unknown";
     /** @description One entry in `GET /api/services`. */
     ServiceSummary: {
       /**
@@ -1531,6 +1691,9 @@ export interface components {
        *     metadata.
        */
       ananke_metadata?: Record<string, never>;
+      /** @description Free-form description from the service's config. */
+      description?: string | null;
+      disabled_reason?: null | components["schemas"]["DisableReason"];
       /** @description Placeholder for elastic-borrower tracking (future work). */
       elastic_borrower?: string | null;
       fit_verdict?: null | components["schemas"]["FitVerdict"];
@@ -1585,8 +1748,8 @@ export interface components {
        *     service has never been started.
        */
       last_used_ms?: number | null;
-      /** @description `"persistent"` or `"ondemand"`. */
-      lifecycle: string;
+      /** @description When the service starts and stops. */
+      lifecycle: components["schemas"]["Lifecycle"];
       /**
        * @description What kind of OpenAI endpoint the service serves. Elided from
        *     JSON when [`Modality::Chat`] (the default), so a chat service's
@@ -1596,6 +1759,11 @@ export interface components {
       modality?: components["schemas"]["Modality"];
       /** @description Service name (matches `[[service]]` table in config). */
       name: string;
+      /**
+       * @description Whether the service is reachable through the OpenAI-compatible API,
+       *     and so can be chatted with or embedded against.
+       */
+      openai_compat: boolean;
       /**
        * Format: int32
        * @description Child PID if currently running.
@@ -1616,8 +1784,8 @@ export interface components {
        * @description Active run id if currently running.
        */
       run_id?: number | null;
-      /** @description State like `"idle"`, `"running"`, `"disabled_user_disabled"`. */
-      state: string;
+      /** @description Current state. */
+      state: components["schemas"]["ServiceStateKind"];
     };
     /** @description Response from `GET /api/services`. */
     ServicesResponse: {
@@ -1647,10 +1815,21 @@ export interface components {
        *     a service uses is a first-class fact.
        */
       binary: string;
+      /**
+       * Format: int64
+       * @description The prompt cache's host RAM cap (`-cram`), resolved the way the
+       *     launch command resolves it. Zero when the cache is disabled.
+       */
+      cache_ram_bytes: number;
       /** @description KV cache type for keys (`f16` when unset). */
       cache_type_k: string;
       /** @description KV cache type for values (`f16` when unset). */
       cache_type_v: string;
+      /**
+       * Format: int32
+       * @description The configured context window, before any default applies.
+       */
+      context?: number | null;
       /**
        * @description Draft model file name (not full path), when a separate draft
        *     GGUF is configured.
@@ -1673,6 +1852,11 @@ export interface components {
       mlock: boolean;
       /** @description Model file memory-mapped (llama.cpp's default is `true`). */
       mmap: boolean;
+      /**
+       * Format: int32
+       * @description Layers offloaded to the GPU (`-ngl`), when set.
+       */
+      n_gpu_layers?: number | null;
       /** @description `--numa` strategy, when set. */
       numa?: string | null;
       /**
@@ -1698,6 +1882,18 @@ export interface components {
        */
       ubatch_size?: number | null;
     };
+    /** @description A llama-cpp service's inter-GPU split. */
+    SplitConfig: {
+      /** @description The split strategy. */
+      mode: components["schemas"]["SplitMode"];
+      /** @description Per-GPU `--tensor-split` weights in ascending GPU order, when set. */
+      tensor_split_weights?: number[] | null;
+    };
+    /**
+     * @description How llama.cpp spreads a model across GPUs, spelled as in config.
+     * @enum {string}
+     */
+    SplitMode: "layer" | "row" | "tensor";
     /**
      * @description `POST /api/services/{name}/start` response body.
      *
@@ -1921,6 +2117,25 @@ export interface operations {
       };
     };
   };
+  get_events_history: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EventHistory"];
+        };
+      };
+    };
+  };
   get_info: {
     parameters: {
       query?: never;
@@ -1977,124 +2192,6 @@ export interface operations {
       };
       /** @description query_failed */
       500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ApiError"];
-        };
-      };
-    };
-  };
-  list_oneshots: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["OneshotStatus"][];
-        };
-      };
-    };
-  };
-  post_oneshot: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["OneshotRequest"];
-      };
-    };
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["OneshotResponse"];
-        };
-      };
-      /** @description invalid_request_error */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ApiError"];
-        };
-      };
-      /** @description start_failed, start_queue_full */
-      503: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ApiError"];
-        };
-      };
-    };
-  };
-  get_oneshot: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["OneshotStatus"];
-        };
-      };
-      /** @description service_not_found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ApiError"];
-        };
-      };
-    };
-  };
-  delete_oneshot: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      204: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description service_not_found */
-      404: {
         headers: {
           [name: string]: unknown;
         };

@@ -1,254 +1,206 @@
-// Config editor (`/config`). A CodeMirror 6 TOML editor with debounced
-// validation, ETag-gated save, reload, and a read-only toggle. Validation
-// errors from the backend are shown in a panel below the editor with
-// line/column references. A hash mismatch (412) surfaces a reload dialog
-// so the operator can pull the server's current version.
+// Config (`/config`): the daemon's TOML in an editor, validated while it
+// is typed and saved against the hash it was read at. The draft lives in a
+// store outside the view (`configDraftStore`), so leaving the view keeps
+// unsaved edits, and a newer version on disk never replaces them silently:
+// a reload event or a refused save holds it for the operator to take or
+// set aside.
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation, Trans } from "react-i18next";
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
-import {
-  useConfig,
-  useValidateConfig,
-  useSaveConfig,
-} from "../../api/hooks.ts";
-import type { ValidationError } from "../../api/client.ts";
-import { Button } from "../ui/Button.tsx";
-import { Card } from "../ui/Card.tsx";
-import { ViewHeader } from "../ui/ViewHeader.tsx";
-import { Spinner } from "../ui/Spinner.tsx";
-import { Badge } from "../ui/Badge.tsx";
+import { useConfig, useSaveConfig } from "../../api/hooks.ts";
+import { Button } from "../ui/button/Button.tsx";
+import { Message } from "../ui/feedback/Message.tsx";
+import { PageHeader } from "../ui/layout/PageHeader.tsx";
+import { Chip } from "../ui/status/Chip.tsx";
 import { CodeMirrorEditor } from "./CodeMirrorEditor.tsx";
-
-const VALIDATE_DEBOUNCE_MS = 600;
+import {
+  DiskChangeNotice,
+  ReadOnlyNotice,
+  SaveErrorNotice,
+} from "./ConfigNotices.tsx";
+import { ConflictDialog } from "./ConflictDialog.tsx";
+import { ValidationPanel } from "./ValidationPanel.tsx";
+import {
+  conflict,
+  discard,
+  edit,
+  isDirty,
+  keepDraft,
+  receive,
+  saved,
+} from "./configDraft.ts";
+import { updateDraft, useDraft } from "./configDraftStore.ts";
+import { useConfigValidation } from "./useConfigValidation.ts";
 
 export function ConfigEditorView() {
   const { t } = useTranslation();
   const config = useConfig();
-  const validateMut = useValidateConfig();
-  const saveMut = useSaveConfig();
-  const [content, setContent] = useState("");
-  const [originalHash, setOriginalHash] = useState("");
-  const [readOnly, setReadOnly] = useState(false);
-  const [hashMismatch, setHashMismatch] = useState<string | null>(null);
-  const [loadedHash, setLoadedHash] = useState("");
+  const save = useSaveConfig();
+  const [locked, setLocked] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const dirty =
-    content !== "" && config.data && content !== config.data.content
-      ? true
-      : false;
+  // `receive` is idempotent, so the fetched copy is applied while
+  // rendering (no frame of stale state) and committed after.
+  const server = config.data;
+  const readAt = config.dataUpdatedAt;
+  const stored = useDraft();
+  const state = server ? receive(stored, server, readAt) : stored;
+  useEffect(() => {
+    if (server) updateDraft((s) => receive(s, server, readAt));
+  }, [server, readAt]);
 
-  const serverReadOnly = config.data ? !config.data.writable : false;
+  const { base, draft, diskChange } = state;
+  const dirty = isDirty(state);
+  const validationErrors = useConfigValidation(draft, dirty);
+  const saveErrors =
+    save.data?.kind === "validation_errors" && save.variables?.content === draft
+      ? save.data.errors
+      : [];
+  const errors = saveErrors.length > 0 ? saveErrors : validationErrors;
 
-  // Sync local state when server data changes (initial load, reload, save).
-  // Using the "adjust state during render" pattern endorsed by React docs
-  // instead of a useEffect, which would trigger cascading renders.
-  const serverHash = config.data?.hash ?? "";
-  if (serverHash !== "" && serverHash !== loadedHash) {
-    setLoadedHash(serverHash);
-    setContent(config.data?.content ?? "");
-    setOriginalHash(serverHash);
-    setHashMismatch(null);
-    setReadOnly(serverReadOnly);
+  if (base === null) {
+    return (
+      <div className="flex h-full flex-col">
+        <PageHeader title={t("config.title")} />
+        <div className="px-4">
+          {config.error ? (
+            <Message kind="error" text={config.error.message} />
+          ) : (
+            <Message kind="loading" />
+          )}
+        </div>
+      </div>
+    );
   }
 
-  // Debounced validation: fire when content changes, after a short idle.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!content || !dirty) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      validateMut.mutate(content);
-    }, VALIDATE_DEBOUNCE_MS);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [content, dirty, validateMut]);
+  const writable = base.writable;
+  const readOnly = !writable || locked;
 
-  // Clear save error when the user starts editing again.
-  const handleChange = useCallback((value: string) => {
-    setContent(value);
+  function handleSave() {
+    if (base === null || !dirty) return;
     setSaveError(null);
-  }, []);
-
-  const handleSave = useCallback(() => {
-    if (!dirty || !originalHash) return;
-    setSaveError(null);
-    saveMut.mutate(
-      { content, hash: originalHash },
+    const content = draft;
+    save.mutate(
+      { content, hash: base.hash },
       {
         onSuccess: (result) => {
-          if (result.kind === "hash_mismatch") {
-            setHashMismatch(result.serverHash);
-          } else if (result.kind === "error") {
-            setSaveError(result.message);
-            // If the persist failed, switch to read-only so the
-            // user doesn't keep trying to save.
-            setReadOnly(true);
+          switch (result.kind) {
+            case "ok":
+              updateDraft((s) => saved(s, content));
+              break;
+            case "hash_mismatch":
+              updateDraft((s) => conflict(s, result.serverHash));
+              break;
+            case "validation_errors":
+              break;
+            case "error":
+              setSaveError(result.message);
+              // The file could not be written; stop offering a save that
+              // will fail the same way.
+              setLocked(true);
+              break;
+            default: {
+              const unreachable: never = result;
+              return unreachable;
+            }
           }
         },
-        onError: (err) => {
-          setSaveError(err.message);
-        },
+        onError: (err) => setSaveError(err.message),
       },
     );
-  }, [content, dirty, originalHash, saveMut]);
+  }
 
-  const handleReload = useCallback(() => {
-    setHashMismatch(null);
+  function handleReload() {
     setSaveError(null);
+    updateDraft(discard);
     void config.refetch();
-  }, [config]);
-
-  const validationErrors =
-    validateMut.data?.valid === false ? validateMut.data.errors : [];
-  const saveErrors =
-    saveMut.data?.kind === "validation_errors" ? saveMut.data.errors : [];
-  const allErrors = [...validationErrors, ...saveErrors];
-
-  if (config.isPending && !config.data) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    );
-  }
-
-  if (config.error) {
-    return (
-      <div className="p-4 text-sm text-danger">{config.error.message}</div>
-    );
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <ViewHeader>
-        <h1 className="eyebrow !text-primary">{t("nav.config")}</h1>
-        {readOnly && (
-          <Badge variant="neutral">{t("config.readOnlyBadge")}</Badge>
-        )}
-        {dirty && <Badge variant="warning">{t("config.unsaved")}</Badge>}
-        {saveMut.isPending && (
-          <Badge variant="accent">{t("config.saving")}</Badge>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          {!serverReadOnly && (
-            <button
-              type="button"
-              onClick={() => setReadOnly((r) => !r)}
-              className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
-                readOnly
-                  ? "bg-elevated text-primary"
-                  : "text-tertiary hover:text-secondary"
-              }`}
-            >
-              {readOnly ? t("config.readOnly") : t("config.editable")}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={handleReload}
-            disabled={config.isFetching}
-            className="rounded-md bg-elevated px-2.5 py-1 text-xs text-primary transition-colors hover:bg-border-strong disabled:opacity-40"
-          >
-            {t("config.reload")}
-          </button>
-          {!serverReadOnly && (
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        title={t("config.title")}
+        meta={
+          <span className="font-mono text-xs text-soft">
+            {base.path}
+            {state.readAtMs !== null &&
+              ` · ${t("config.readAt", {
+                time: new Date(state.readAtMs).toLocaleTimeString(),
+              })}`}
+          </span>
+        }
+        actions={
+          <>
+            <span role="status" className="flex gap-1.5">
+              {!writable && <Chip>{t("config.readOnlyBadge")}</Chip>}
+              {dirty && <Chip tone="warn">{t("config.unsaved")}</Chip>}
+              {save.isPending && (
+                <Chip tone="accent">{t("config.saving")}</Chip>
+              )}
+              {state.saved && !dirty && !save.isPending && (
+                <Chip tone="ok">{t("config.saved")}</Chip>
+              )}
+            </span>
+            {writable && (
+              <Button
+                size="sm"
+                tone="quiet"
+                aria-pressed={locked}
+                onClick={() => setLocked((l) => !l)}
+              >
+                {t("config.lockEditing")}
+              </Button>
+            )}
             <Button
-              type="button"
-              variant="iris"
               size="sm"
-              onClick={handleSave}
-              disabled={!dirty || saveMut.isPending || readOnly}
+              icon="restart"
+              title={dirty ? t("config.discardTitle") : undefined}
+              disabled={config.isFetching}
+              onClick={handleReload}
             >
-              {t("config.save")}
+              {dirty ? t("config.discard") : t("config.reload")}
             </Button>
-          )}
-        </div>
-      </ViewHeader>
-
-      {saveError && (
-        <div className="shrink-0 border-b border-border-default bg-danger/10 px-4 py-2 text-xs text-danger">
-          {saveError}
-        </div>
+            {writable && (
+              <Button
+                size="sm"
+                tone="primary"
+                disabled={!dirty || save.isPending || readOnly}
+                onClick={handleSave}
+              >
+                {t("config.save")}
+              </Button>
+            )}
+          </>
+        }
+      />
+      {!writable && <ReadOnlyNotice />}
+      {diskChange?.cause === "reload" && (
+        <DiskChangeNotice
+          onReload={() => updateDraft(discard)}
+          onKeep={() => updateDraft(keepDraft)}
+        />
       )}
-
-      <div className="flex-1 overflow-hidden">
+      {saveError && <SaveErrorNotice message={saveError} />}
+      <div className="min-h-0 flex-1">
         <CodeMirrorEditor
-          content={content}
+          content={draft}
           readOnly={readOnly}
-          onChange={handleChange}
+          label={t("config.editorLabel")}
+          onChange={(value) => {
+            setSaveError(null);
+            updateDraft((s) => edit(s, value));
+          }}
         />
       </div>
-
-      {allErrors.length > 0 && <ValidationPanel errors={allErrors} />}
-
-      {hashMismatch && (
-        <HashMismatchDialog
-          serverHash={hashMismatch}
-          onReload={handleReload}
-          onDismiss={() => setHashMismatch(null)}
+      {errors.length > 0 && <ValidationPanel errors={errors} />}
+      {diskChange?.cause === "conflict" && (
+        <ConflictDialog
+          serverHash={diskChange.hash}
+          onKeep={() => updateDraft(keepDraft)}
+          onReload={() => updateDraft(discard)}
         />
       )}
-    </div>
-  );
-}
-
-function ValidationPanel({ errors }: { errors: ValidationError[] }) {
-  const { t } = useTranslation();
-  return (
-    <div className="max-h-40 shrink-0 overflow-auto border-t border-border-default bg-surface px-4 py-2">
-      <div className="eyebrow mb-1 text-danger">
-        {t("config.validationErrors")}
-      </div>
-      <ul className="space-y-0.5">
-        {errors.map((e, i) => (
-          <li key={i} className="font-mono text-xs text-danger">
-            <span className="text-tertiary">
-              L{e.line}:{e.column}
-            </span>{" "}
-            {e.message}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function HashMismatchDialog({
-  serverHash,
-  onReload,
-  onDismiss,
-}: {
-  serverHash: string;
-  onReload: () => void;
-  onDismiss: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <Card header={t("config.changedOnDisk")} className="max-w-md">
-        <p className="text-sm text-secondary">
-          <Trans
-            i18nKey="config.changedOnDiskBody"
-            components={[<code className="font-mono text-xs text-primary" />]}
-            values={{ hash: serverHash.slice(0, 12) }}
-          />
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onDismiss}
-            className="rounded-md bg-elevated px-3 py-1.5 text-sm text-primary transition-colors hover:bg-border-strong"
-          >
-            {t("config.keepLocalChanges")}
-          </button>
-          <Button type="button" variant="iris" size="md" onClick={onReload}>
-            {t("config.reloadFromServer")}
-          </Button>
-        </div>
-      </Card>
     </div>
   );
 }

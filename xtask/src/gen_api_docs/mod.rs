@@ -32,8 +32,8 @@ const PROSE_OPENAI_API: &str = include_str!("prose/openai_api.md");
 const PROSE_MANAGEMENT_API: &str = include_str!("prose/management_api.md");
 const PROSE_PER_SERVICE_PROXY: &str = include_str!("prose/per_service_proxy.md");
 const PROSE_SERVICE_STATES: &str = include_str!("prose/service_states.md");
-const PROSE_EVENTS_WS: &str = include_str!("prose/events_ws.md");
-const PROSE_LOGS_WS: &str = include_str!("prose/logs_ws.md");
+const PROSE_EVENTS: &str = include_str!("prose/events.md");
+const PROSE_LIVE_WS: &str = include_str!("prose/live_ws.md");
 const PROSE_ERRORS: &str = include_str!("prose/errors.md");
 const PROSE_PROMETHEUS: &str = include_str!("prose/prometheus.md");
 const PROSE_OPENAPI_SPEC: &str = include_str!("prose/openapi_spec.md");
@@ -58,8 +58,8 @@ pub fn run(args: GenApiDocsArgs) -> Result<(), Error> {
         management_api: PROSE_MANAGEMENT_API,
         per_service_proxy: PROSE_PER_SERVICE_PROXY,
         service_states: PROSE_SERVICE_STATES,
-        events_ws: PROSE_EVENTS_WS,
-        logs_ws: PROSE_LOGS_WS,
+        events: PROSE_EVENTS,
+        live_ws: PROSE_LIVE_WS,
         errors: PROSE_ERRORS,
         prometheus: PROSE_PROMETHEUS,
         openapi_spec: PROSE_OPENAPI_SPEC,
@@ -312,8 +312,8 @@ mod tests {
             management_api: "",
             per_service_proxy: "",
             service_states: "",
-            events_ws: "",
-            logs_ws: "",
+            events: "",
+            live_ws: "",
             errors: "",
             prometheus: "",
             openapi_spec: "",

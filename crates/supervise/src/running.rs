@@ -86,12 +86,17 @@ impl RunLoop {
                     // the runtime was unreachable, not that the workload
                     // stopped, and force-removing on that would destroy a
                     // healthy container over one failed query.
+                    // The running row stays on an unconfirmed exit for the
+                    // same reason; the mirror is cleared either way, since
+                    // this supervisor no longer tracks the workload.
                     if exit.is_ok() {
                         if let Err(e) = workload.cleanup().await {
                             warn!(service = %self.init.identity.name, error = %e, "cleanup after exit failed");
                         }
+                        self.end_run(run_id).await;
                     } else {
                         warn!(service = %self.init.identity.name, "exit unconfirmed; leaving the workload for reconciliation");
+                        self.clear_running_ids();
                     }
                     self.record_drain_complete();
                     self.set_state(ServiceState::Failed { retry_count: 0 });

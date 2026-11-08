@@ -124,11 +124,6 @@ pub(crate) fn validate_service(
     let lifecycle = match lifecycle_str.as_str() {
         "persistent" => Lifecycle::Persistent,
         "on_demand" => Lifecycle::OnDemand,
-        "oneshot" => {
-            return Err(fail(format!(
-                "service {name}: lifecycle `oneshot` is invalid in a [[service]] block (API-only)"
-            )));
-        }
         other => return Err(fail(format!("service {name}: unknown lifecycle `{other}`"))),
     };
 

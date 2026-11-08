@@ -3,6 +3,10 @@
 
 use std::collections::BTreeMap;
 
+// The wire enum is the config one, so the API spells a lifecycle the way a
+// config file does.
+pub use ananke_api::shared::Lifecycle;
+
 pub use crate::placement::{DeviceReserves, DeviceSlot, PlacementPolicy};
 use crate::validate::gib_to_mib;
 
@@ -51,9 +55,7 @@ pub enum AllocationMode {
 
 impl AllocationMode {
     /// Resolve an allocation mode from a `(template, mode)` pair plus the
-    /// associated reservation knobs. Shared by the TOML validator and the
-    /// oneshot API so both paths agree on the semantics of `"static"`,
-    /// `"dynamic"`, and the llama-cpp exclusions.
+    /// associated reservation knobs.
     ///
     /// The returned error is a bare sentence fragment; the caller is
     /// expected to prepend context (e.g. `service {name}: `).
@@ -101,25 +103,6 @@ impl AllocationMode {
     }
 }
 
-/// When a service starts and stops relative to the daemon's own lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lifecycle {
-    /// Started at boot and restarted when it exits.
-    Persistent,
-    /// Started on first request and stopped after `idle_timeout`.
-    OnDemand,
-}
-
-impl Lifecycle {
-    /// The lifecycle name as it appears in config files.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Lifecycle::Persistent => "persistent",
-            Lifecycle::OnDemand => "ondemand",
-        }
-    }
-}
-
 /// Request-scrubbing rules applied before a request is forwarded to a
 /// service.
 #[derive(Debug, Clone, Default)]
@@ -152,23 +135,6 @@ mod tests {
         parse::parse_toml,
         validate::{test_fixtures::parse_and_merge, validate},
     };
-
-    #[test]
-    fn rejects_oneshot_lifecycle_in_service_block() {
-        let cfg = parse_and_merge(
-            r#"
-[[service]]
-name = "a"
-template = "llama-cpp"
-model = "/m/x.gguf"
-port = 11000
-lifecycle = "oneshot"
-devices.placement_override = { "gpu:0" = 1000 }
-"#,
-        );
-        let err = validate(&cfg).unwrap_err();
-        assert!(format!("{err}").contains("oneshot"));
-    }
 
     #[test]
     fn phase2_accepts_on_demand() {

@@ -7,8 +7,8 @@ The daemon listens on two HTTP sockets:
 - **OpenAI-compatible API** (`127.0.0.1:7070` by default): `/v1/models`,
   `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`.
 - **Management API** (`127.0.0.1:7071` by default): `/api/services`,
-  `/api/config`, `/api/devices`, `/api/metrics`, `/api/oneshot`, `/api/events`,
-  `/api/info`, and `/api/openapi.json`.
+  `/api/config`, `/api/devices`, `/api/metrics`, `/api/events/history`,
+  `/api/info`, `/api/live`, and `/api/openapi.json`.
 
 Both addresses are configurable via `[daemon]` in the TOML config.
 

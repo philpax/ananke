@@ -1,0 +1,65 @@
+/*
+ * Element defaults that no utility can reach: the page itself, the focus
+ * ring, scrollbars, and reduced motion.
+ */
+
+@layer base {
+  body {
+    background-color: var(--tone-canvas);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* Disable double-tap-to-zoom and the 300ms click delay while still
+     * allowing pinch-zoom. */
+    touch-action: manipulation;
+    /* Stop scroll chaining from the body into the browser chrome. */
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* iOS Safari zooms into inputs under 16px. Force 16px below the `sm`
+   * breakpoint so every input is covered without per-input overrides. */
+  @media (width < 40rem) {
+    input[type="text"],
+    input[type="number"],
+    input[type="search"],
+    input[type="datetime-local"],
+    input[type="url"],
+    input[type="email"],
+    textarea,
+    select {
+      font-size: 16px;
+    }
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  button:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}

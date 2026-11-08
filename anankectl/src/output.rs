@@ -7,7 +7,9 @@
 
 use ananke_api::{
     devices::list::DeviceSummary,
+    internal::log_line::LogLine,
     services::{detail::ServiceDetail, list::ServiceSummary},
+    shared::{DisableReason, ServiceStateKind},
 };
 use ananke_config::units::{GIB, MIB};
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, presets};
@@ -49,13 +51,13 @@ pub fn print_devices_table(devices: &[DeviceSummary]) {
 pub fn print_services_table(services: &[ServiceSummary], show_all: bool) {
     let mut rows: Vec<&ServiceSummary> = services
         .iter()
-        .filter(|s| show_all || !s.state.starts_with("disabled"))
+        .filter(|s| show_all || s.state != ServiceStateKind::Disabled)
         .collect();
     // Hot first (running, then idle), then everything else; alphabetical
     // tiebreaker so the order is stable across calls.
     rows.sort_by(|a, b| {
-        state_rank(&a.state)
-            .cmp(&state_rank(&b.state))
+        state_rank(a.state)
+            .cmp(&state_rank(b.state))
             .then_with(|| a.name.cmp(&b.name))
     });
 
@@ -70,14 +72,15 @@ pub fn print_services_table(services: &[ServiceSummary], show_all: bool) {
     ]));
 
     for s in rows {
-        let state_cell = match state_color(&s.state) {
-            Some(c) => Cell::new(&s.state).fg(c),
-            None => Cell::new(&s.state),
+        let label = state_label(s.state, s.disabled_reason);
+        let state_cell = match state_color(s.state, s.disabled_reason) {
+            Some(c) => Cell::new(label).fg(c),
+            None => Cell::new(label),
         };
         table.add_row(vec![
             Cell::new(&s.name),
             state_cell,
-            Cell::new(&s.lifecycle),
+            Cell::new(s.lifecycle),
             Cell::new(s.priority).set_alignment(CellAlignment::Right),
             Cell::new(s.port).set_alignment(CellAlignment::Right),
             Cell::new(s.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()))
@@ -88,9 +91,14 @@ pub fn print_services_table(services: &[ServiceSummary], show_all: bool) {
     println!("{table}");
 }
 
-pub fn print_service_detail(detail: &ServiceDetail) {
+/// Print a service's detail, with `recent_logs` newest first as the logs
+/// endpoint returns them.
+pub fn print_service_detail(detail: &ServiceDetail, recent_logs: &[LogLine]) {
     println!("{}", detail.name);
-    println!("  state:     {}", detail.state);
+    match detail.disabled_reason {
+        Some(reason) => println!("  state:     {} ({reason})", detail.state),
+        None => println!("  state:     {}", detail.state),
+    }
     println!("  lifecycle: {}", detail.lifecycle);
     println!("  priority:  {}", detail.priority);
     println!("  template:  {}", detail.template);
@@ -121,9 +129,9 @@ pub fn print_service_detail(detail: &ServiceDetail) {
             );
         }
     }
-    if !detail.recent_logs.is_empty() {
-        println!("  recent logs (last {}):", detail.recent_logs.len());
-        for line in detail.recent_logs.iter().rev().take(10).rev() {
+    if !recent_logs.is_empty() {
+        println!("  recent logs (last {}):", recent_logs.len());
+        for line in recent_logs.iter().rev() {
             println!("    [{}] {}", line.stream, line.line);
         }
     }
@@ -168,24 +176,61 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// A state cell's text: the state, plus the reason when disabled
+/// (`disabled · oom`).
+pub fn state_label(state: ServiceStateKind, reason: Option<DisableReason>) -> String {
+    match reason {
+        Some(reason) => format!("{state} · {reason}"),
+        None => state.to_string(),
+    }
+}
+
 /// Map a service state to a display colour; `None` for states that
 /// shouldn't draw the eye (defaults to terminal-default).
-pub fn state_color(state: &str) -> Option<Color> {
+fn state_color(state: ServiceStateKind, reason: Option<DisableReason>) -> Option<Color> {
+    match state_tone(state, reason) {
+        StateTone::Hot => Some(Color::Green),
+        StateTone::Warm => Some(Color::Yellow),
+        StateTone::Quiet => Some(Color::DarkGrey),
+        StateTone::Fault => Some(Color::Red),
+        StateTone::Plain => None,
+    }
+}
+
+/// How a state should draw the eye, shared by the table and the picker so
+/// the two colour a state the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateTone {
+    Hot,
+    Warm,
+    Quiet,
+    Fault,
+    Plain,
+}
+
+pub fn state_tone(state: ServiceStateKind, reason: Option<DisableReason>) -> StateTone {
     match state {
-        "running" => Some(Color::Green),
-        "idle" => Some(Color::Yellow),
-        s if s.starts_with("disabled") => Some(Color::DarkGrey),
-        s if s.starts_with("error") || s.contains("failed") => Some(Color::Red),
-        _ => None,
+        ServiceStateKind::Running => StateTone::Hot,
+        ServiceStateKind::Idle => StateTone::Warm,
+        ServiceStateKind::Failed => StateTone::Fault,
+        ServiceStateKind::Disabled if reason.is_some_and(DisableReason::is_fault) => {
+            StateTone::Fault
+        }
+        ServiceStateKind::Disabled => StateTone::Quiet,
+        ServiceStateKind::Starting
+        | ServiceStateKind::Draining
+        | ServiceStateKind::Stopped
+        | ServiceStateKind::Evicted
+        | ServiceStateKind::Unknown => StateTone::Plain,
     }
 }
 
 /// Order services by how "ready" they are: running first (already hot),
 /// idle next (warm), then anything else.
-fn state_rank(state: &str) -> u8 {
+pub fn state_rank(state: ServiceStateKind) -> u8 {
     match state {
-        "running" => 0,
-        "idle" => 1,
+        ServiceStateKind::Running => 0,
+        ServiceStateKind::Idle => 1,
         _ => 2,
     }
 }

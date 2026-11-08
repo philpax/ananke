@@ -105,14 +105,9 @@ class Matrix:
     def scenario_config(self, scenario: str) -> dict[str, Any]:
         return self.scenarios.get(scenario, {})
 
-    def events_ws(self, service: str | None = None) -> str:
+    def live_ws(self) -> str:
         base = self.management.replace("http://", "ws://").replace("https://", "wss://")
-        suffix = f"?service={service}" if service else ""
-        return f"{base}/api/events{suffix}"
-
-    def log_stream_ws(self, service: str) -> str:
-        base = self.management.replace("http://", "ws://").replace("https://", "wss://")
-        return f"{base}/api/services/{service}/logs/stream"
+        return f"{base}/api/live"
 
 
 # --- event recorder --------------------------------------------------------
@@ -175,14 +170,33 @@ async def subscribe_events(
     *,
     service: str | None = None,
 ) -> AsyncIterator[asyncio.Task]:
+    # The live socket's `events` resource pushes the daemon's whole retained
+    # history on every change; record only what is new since the previous
+    # snapshot, and skip the backfill so only events after connecting count.
     async def pump() -> None:
-        async with websockets.connect(matrix.events_ws(service)) as ws:
+        async with websockets.connect(matrix.live_ws()) as ws:
+            await ws.send(
+                json.dumps(
+                    {"type": "subscribe", "id": "events", "resource": {"kind": "events"}}
+                )
+            )
+            newest: str | None = None
+            primed = False
             async for frame in ws:
                 try:
-                    event = json.loads(frame)
+                    message = json.loads(frame)
                 except json.JSONDecodeError:
                     continue
-                recorder.record(event)
+                if message.get("type") != "snapshot" or message.get("id") != "events":
+                    continue
+                events = message["data"]["body"]["events"]
+                fresh = _events_after(events, newest) if primed else []
+                primed = True
+                if events:
+                    newest = json.dumps(events[-1], sort_keys=True)
+                for event in fresh:
+                    if service is None or event.get("service", service) == service:
+                        recorder.record(event)
 
     task = asyncio.create_task(pump())
     try:
@@ -192,6 +206,16 @@ async def subscribe_events(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+
+def _events_after(events: list[dict[str, Any]], newest: str | None) -> list[dict[str, Any]]:
+    """The events after the last occurrence of ``newest`` (all of them if absent)."""
+    if newest is None:
+        return events
+    for i in range(len(events) - 1, -1, -1):
+        if json.dumps(events[i], sort_keys=True) == newest:
+            return events[i + 1 :]
+    return events
 
 
 # --- API wrappers ----------------------------------------------------------
@@ -260,16 +284,6 @@ class Api:
             timeout=30.0,
         )
         return resp.status_code
-
-    async def submit_oneshot(self, body: dict[str, Any]) -> Any:
-        resp = await self._client.post(
-            f"{self.matrix.management}/api/oneshot", json=body, timeout=30.0
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def get_oneshot(self, oneshot_id: str) -> Any:
-        return await self._get(f"/api/oneshot/{oneshot_id}")
 
     async def chat(
         self, model: str, prompt: str, *, timeout: float = 300.0
