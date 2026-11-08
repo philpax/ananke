@@ -17,7 +17,7 @@ use crate::{
     devices::{DeviceId, DeviceSnapshot},
     entry::{ONE_LAYER_FUDGE_MULTIPLIER, PackMode},
     reserve::{allowed_gpu_list, gpu_reserve_bytes, sum_reserved},
-    types::{DeviceShortfall, ShardedPlan},
+    types::{DeviceShortfall, PackError, ShardedPlan},
 };
 
 /// Mutable bag threaded through the pack steps. Each method mutates the
@@ -94,10 +94,7 @@ pub(crate) struct Packer<'a> {
     /// `--n-cpu-moe N` value set by [`Self::distribute_experts_ncmoe`]. Drives
     /// the coarse whole-layer offload emission in [`Self::finish`].
     pub(crate) n_cpu_moe: Option<u32>,
-    /// Total GPU-resident (retained) expert bytes on the `--n-cpu-moe` path.
-    /// The runtime piles these on the last CUDA device, so `finish` uses this
-    /// to bias `--tensor-split`.
-    pub(crate) ncmoe_kept_expert_bytes: u64,
+    pub(crate) expert_tensor_split: Option<Vec<u32>>,
 }
 
 impl<'a> Packer<'a> {
@@ -171,7 +168,7 @@ impl<'a> Packer<'a> {
             expert_offload_cpu_bytes: 0,
             expert_offload_cpu_layers: BTreeSet::new(),
             n_cpu_moe: None,
-            ncmoe_kept_expert_bytes: 0,
+            expert_tensor_split: None,
         }
     }
 
@@ -273,7 +270,7 @@ impl<'a> Packer<'a> {
         for gpu in &self.allowed_gpus {
             let slot = DeviceSlot::Gpu(*gpu);
             let device_compute = if head_gpu == Some(*gpu) {
-                compute_headroom
+                compute_headroom.saturating_add(self.estimate.buffers.mmproj_graph_bytes)
             } else {
                 compute_headroom.saturating_sub(logits)
             };
@@ -374,6 +371,23 @@ impl<'a> Packer<'a> {
         };
         total / n
     }
+
+    pub(crate) fn check_gpu_capacity(&self) -> Result<(), PackError> {
+        for (slot, &needed) in &self.per_device {
+            let DeviceSlot::Gpu(gpu) = slot else {
+                continue;
+            };
+            let available = self.gpu_available(*gpu);
+            if needed > available {
+                return Err(PackError::GpuDoesNotFit {
+                    gpu_index: *gpu,
+                    needed,
+                    available,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -438,7 +452,7 @@ mod tests {
         // headroom and sorts first — `allowed_gpus.first()` is now gpu:1.
         let mut reserved = AllocationTable::new();
         let mut resident = BTreeMap::new();
-        resident.insert(DeviceSlot::Gpu(0), 15 * GIB);
+        resident.insert(DeviceSlot::Gpu(0), 15 * 1024);
         reserved.insert(SmolStr::new("resident"), resident);
         let packed = pack(&e, &svc, &snap, &reserved).unwrap();
         let g0 = packed

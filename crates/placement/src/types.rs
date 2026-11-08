@@ -85,6 +85,11 @@ pub enum PackError {
     /// an unknown architecture) and the weights can't fit on any
     /// allowed device.
     WeightsDoNotFit { shortfalls: Vec<DeviceShortfall> },
+    GpuDoesNotFit {
+        gpu_index: u32,
+        needed: u64,
+        available: u64,
+    },
     /// A sharded (tensor/row) split's equal per-GPU share didn't fit on one
     /// of the spanned GPUs. Unlike layer split there is no CPU spill — every
     /// spanned GPU must hold its shard, so a single overflow fails the pack.
@@ -124,7 +129,12 @@ impl PackError {
             Self::LayerDoesNotFit { shortfalls, .. }
             | Self::WeightsDoNotFit { shortfalls }
             | Self::ManualExpertsDoNotFit { shortfalls, .. } => shortfalls.clone(),
-            Self::ShardDoesNotFit {
+            Self::GpuDoesNotFit {
+                gpu_index,
+                needed: bytes,
+                available,
+            }
+            | Self::ShardDoesNotFit {
                 gpu_index,
                 bytes,
                 available,
@@ -155,6 +165,14 @@ impl std::fmt::Display for PackError {
                 )
             }
             Self::WeightsDoNotFit { .. } => f.write_str("weights do not fit on any allowed device"),
+            Self::GpuDoesNotFit {
+                gpu_index,
+                needed,
+                available,
+            } => write!(
+                f,
+                "placement on gpu:{gpu_index}: {needed} bytes exceed available memory ({available} bytes)"
+            ),
             Self::ShardDoesNotFit {
                 gpu_index, bytes, ..
             } => {

@@ -2,8 +2,16 @@
 //! [`crate::experts_ncmoe`]: auto and manual offload
 //! counts, the pooled-overflow rejection, and multi-GPU expert spread.
 
-use ananke_estimate::{Buffers, Estimate, ExpertKind, ExpertTensor, Layout, NonLayer};
-use ananke_gguf::Architecture;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
+
+use ananke_estimate::{
+    Buffers, Estimate, EstimatorInputs, ExpertKind, ExpertTensor, Fork, IkAssignment, Layout,
+    NonLayer,
+};
+use ananke_gguf::{Architecture, GgufSummary, GgufTensor, GgufType, GgufValue};
 
 use super::*;
 use crate::{
@@ -12,6 +20,397 @@ use crate::{
     entry::{NGL_OFFLOAD_ALL, pack},
     test_support::{GIB, MIB, cpu_bytes, moe_estimate, moe_svc, snapshot},
 };
+
+#[test]
+fn experts_mainline_command_replay_matches_reservation_on_asymmetric_devices() {
+    let e = moe_estimate(12, 120, 250);
+    let svc = moe_svc(OffloadMode::Auto);
+    let snap = snapshot(&[3, 8]);
+    let packed = pack(&e, &svc, &snap, &AllocationTable::new()).unwrap();
+    let split = packed.args.tensor_split.as_ref().unwrap();
+    let sum = split.iter().sum::<u32>() as f32;
+    let boundary = split[0] as f32 / sum;
+    let n_cpu = packed.args.n_cpu_moe.unwrap_or(0);
+    let mut expected = [0u64; 2];
+    for layer in 0..12 {
+        let home = usize::from(layer as f32 / 13.0 >= boundary);
+        expected[home] += 120 * MIB;
+        if layer >= n_cpu {
+            expected[home] += 750 * MIB;
+        }
+    }
+    for (gpu, bytes) in expected.iter_mut().enumerate() {
+        *bytes += (e.buffers.compute_mb as u64 + 120) * MIB;
+        assert_eq!(packed.allocation.bytes[&DeviceId::Gpu(gpu as u32)], *bytes);
+        assert!(*bytes <= snap.gpus[gpu].free_bytes);
+    }
+    assert!(packed.args.override_tensor.is_empty());
+}
+
+#[test]
+fn experts_manual_rejects_indivisible_layer_even_with_sufficient_combined_room() {
+    let e = moe_estimate(2, 100, 1500);
+    let snap = snapshot(&[4, 4]);
+    let error = pack(
+        &e,
+        &moe_svc(OffloadMode::Layers(1)),
+        &snap,
+        &AllocationTable::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, PackError::ManualExpertsDoNotFit { .. }));
+    assert!(
+        error
+            .shortfalls()
+            .iter()
+            .all(|s| s.requested_bytes > s.available_bytes)
+    );
+    let automatic = pack(
+        &e,
+        &moe_svc(OffloadMode::Auto),
+        &snap,
+        &AllocationTable::new(),
+    )
+    .unwrap();
+    assert_eq!(automatic.args.n_cpu_moe, Some(2));
+}
+
+#[test]
+fn experts_ik_offloads_device_local_suffixes_not_one_global_suffix() {
+    let e = moe_estimate(12, 100, 200);
+    let mut svc = moe_svc(OffloadMode::Layers(4));
+    svc.ik_llama = true;
+    let snap = snapshot(&[24, 24]);
+    let alloc = AllocationTable::new();
+    let mut packer = Packer::new(
+        &e,
+        &svc,
+        &snap,
+        &alloc,
+        PackMode::Strict,
+        crate::Corrections::NEUTRAL,
+    );
+    packer.seed_non_layer();
+    packer.initialise_gpu_remaining();
+    packer.distribute_experts_ncmoe().unwrap();
+    for gpu in 0..2 {
+        let hosted: Vec<u32> = packer
+            .layer_home
+            .iter()
+            .filter_map(|(&l, &home)| (home == gpu).then_some(l))
+            .collect();
+        assert!(
+            hosted
+                .iter()
+                .any(|l| packer.expert_offload_cpu_layers.contains(l))
+        );
+        assert!(
+            hosted
+                .iter()
+                .any(|l| !packer.expert_offload_cpu_layers.contains(l))
+        );
+    }
+    assert_eq!(packer.n_cpu_moe, Some(4));
+    assert_eq!(packer.expert_offload_cpu_layers.len(), 4);
+}
+
+#[test]
+fn experts_ik_conservative_reservations_keep_gpu_experts_and_bound_unknown_ranges() {
+    let e = moe_estimate(12, 100, 200);
+    let mut svc = moe_svc(OffloadMode::Auto);
+    svc.ik_llama = true;
+    let snap = snapshot(&[6, 6]);
+    let packed = pack(&e, &svc, &snap, &AllocationTable::new()).unwrap();
+    assert!(packed.expert_offload_layers > 0 && packed.expert_offload_layers < 12);
+    let retained_bound = (12 - packed.args.n_cpu_moe.unwrap()) as u64 * 600 * MIB;
+    for gpu in 0..2 {
+        let bytes = packed.allocation.bytes[&DeviceId::Gpu(gpu)];
+        assert!(bytes >= 1200 * MIB + retained_bound);
+        assert!(bytes <= 6 * GIB);
+    }
+    assert!(packed.args.override_tensor.is_empty());
+}
+
+#[test]
+fn experts_ik_eighty_nonexpert_layers_fit_two_six_gib_devices() {
+    let mut e = moe_estimate(80, 100, 100);
+    e.layout.ik_assignment = Some(IkAssignment {
+        layer_weights: e.layout.per_layer_bytes.clone().unwrap(),
+        cache_lower: vec![0; 80],
+        cache_upper: vec![0; 80],
+        output_weights: 0,
+        logits_bytes: 128 * MIB,
+        scratch_upper: 2 * GIB,
+    });
+    let mut svc = moe_svc(OffloadMode::Auto);
+    svc.ik_llama = true;
+    let packed = pack(&e, &svc, &snapshot(&[6, 6]), &AllocationTable::new()).unwrap();
+    assert!(packed.args.n_cpu_moe.is_some());
+    assert_eq!(packed.allocation.gpu_ids(), vec![0, 1]);
+    for gpu in 0..2 {
+        let reserved = packed.allocation.bytes[&DeviceId::Gpu(gpu)];
+        assert!((4000 * MIB..=6 * GIB).contains(&reserved));
+    }
+}
+
+#[test]
+fn experts_ik_production_estimator_assignment_fits_eighty_layers() {
+    let mut summary = GgufSummary {
+        path: "/fake/moe.gguf".into(),
+        total_tensor_bytes: 0,
+        tensors: BTreeMap::new(),
+        metadata: BTreeMap::new(),
+        block_count: Some(80),
+        architecture: Architecture::Qwen3Moe,
+        shards: vec![],
+    };
+    for (key, value) in [
+        ("embedding_length", 128),
+        ("attention.head_count", 4),
+        ("attention.head_count_kv", 1),
+        ("expert_used_count", 2),
+    ] {
+        summary
+            .metadata
+            .insert(format!("qwen3moe.{key}").into(), GgufValue::U32(value));
+    }
+    for layer in 0..80 {
+        for suffix in [
+            "attn_q.weight",
+            "ffn_gate_exps.weight",
+            "ffn_up_exps.weight",
+            "ffn_down_exps.weight",
+        ] {
+            let name = format!("blk.{layer}.{suffix}");
+            let tensor = GgufTensor {
+                name: name.clone().into(),
+                dtype: GgufType::F16,
+                shape: vec![128, 128],
+                byte_size: 100 * MIB,
+                shard_idx: 0,
+                offset: 0,
+            };
+            summary.total_tensor_bytes += tensor.byte_size;
+            summary.tensors.insert(name.into(), tensor);
+        }
+    }
+    summary.tensors.insert(
+        "output.weight".into(),
+        GgufTensor {
+            name: "output.weight".into(),
+            dtype: GgufType::F16,
+            shape: vec![128, 512],
+            byte_size: 128 * 512 * 2,
+            shard_idx: 0,
+            offset: 0,
+        },
+    );
+    let inputs = EstimatorInputs {
+        fork: Fork::Ik { dsa: false },
+        context: 1025,
+        ubatch: Some(32),
+        compute_buffer_mb: Some(400),
+        ..EstimatorInputs::empty(Path::new("/fake/moe.gguf"))
+    };
+    let estimate = ananke_estimate::dispatch(&summary, &inputs).unwrap();
+    assert!(estimate.layout.ik_assignment.is_some());
+    let mut placement = moe_svc(OffloadMode::Auto);
+    placement.ik_llama = true;
+    let packed = pack(
+        &estimate,
+        &placement,
+        &snapshot(&[6, 6]),
+        &AllocationTable::new(),
+    )
+    .unwrap();
+    assert!(packed.args.n_cpu_moe.is_some());
+    for gpu in 0..2 {
+        assert!(packed.allocation.bytes[&DeviceId::Gpu(gpu)] <= 6 * GIB);
+    }
+}
+
+#[test]
+fn experts_ik_range_bounds_cover_independent_runtime_replays() {
+    let n = 16;
+    let weights: Vec<_> = (0..n).map(|i| (100 + i as u64 * 13) * MIB).collect();
+    let experts: Vec<_> = weights.iter().map(|&w| w / 2).collect();
+    let cache_upper: Vec<_> = (0..n)
+        .map(|i| if i % 3 == 0 { 70 * MIB } else { 2 * MIB })
+        .collect();
+    let assignment = IkAssignment {
+        layer_weights: weights.clone(),
+        cache_lower: vec![0; n],
+        cache_upper: cache_upper.clone(),
+        output_weights: 99 * MIB,
+        logits_bytes: 900 * MIB,
+        scratch_upper: 3 * GIB,
+    };
+    for budgets in [
+        vec![3 * GIB, 3 * GIB],
+        vec![2 * GIB, 7 * GIB],
+        vec![2 * GIB, 3 * GIB, 5 * GIB],
+    ] {
+        for n_cpu in [0, 3, 8, 16] {
+            let input = plan::Inputs {
+                weights: &weights,
+                experts: &experts,
+                budgets: &budgets,
+                kv: cache_upper.iter().sum(),
+                compute: 123 * MIB,
+                output: assignment.output_weights,
+                ik: true,
+                n_cpu,
+                assignment: Some(&assignment),
+            };
+            let result = plan::plan(&input);
+            for scratch in [0, 1, 127 * MIB, 899 * MIB, 900 * MIB, 901 * MIB, 3 * GIB] {
+                for cache_case in 0..4 {
+                    let cache: Vec<_> = cache_upper
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &upper)| {
+                            if cache_case == 0
+                                || cache_case == 2 && i < n / 2
+                                || cache_case == 3 && i >= n / 2
+                            {
+                                upper
+                            } else {
+                                0
+                            }
+                        })
+                        .collect();
+                    let homes = replay_ik_homes(&assignment, &cache, scratch, &result.split);
+                    let cpu = replay_ik_cpu(&homes, budgets.len(), n_cpu);
+                    let mut actual = vec![assignment.output_weights; budgets.len()];
+                    for (layer, &home) in homes.iter().enumerate() {
+                        actual[home] += weights[layer] + cache[layer]
+                            - if cpu.contains(&(layer as u32)) {
+                                experts[layer]
+                            } else {
+                                0
+                            };
+                    }
+                    for (id, &bytes) in actual.iter().enumerate() {
+                        assert!(
+                            bytes <= result.costs[id],
+                            "gpu={id} scratch={scratch} cache={cache_case} ncmoe={n_cpu}: {bytes} > {}",
+                            result.costs[id]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn replay_ik_cpu(homes: &[usize], devices: usize, n_cpu: u32) -> BTreeSet<u32> {
+    let counts: Vec<_> = (0..devices)
+        .map(|id| homes.iter().filter(|&&h| h == id).count())
+        .collect();
+    let wanted: Vec<_> = counts
+        .iter()
+        .map(|&n| n as f32 / homes.len() as f32 * n_cpu as f32)
+        .collect();
+    let mut quotas: Vec<_> = wanted.iter().map(|&x| x.round() as usize).collect();
+    while quotas.iter().sum::<usize>() > n_cpu as usize {
+        let id = (0..devices)
+            .filter(|&i| quotas[i] > 0)
+            .max_by(|&a, &b| {
+                (quotas[a] as f32 - 1.0 - wanted[a])
+                    .total_cmp(&(quotas[b] as f32 - 1.0 - wanted[b]))
+                    .then_with(|| b.cmp(&a))
+            })
+            .unwrap();
+        quotas[id] -= 1;
+    }
+    while quotas.iter().sum::<usize>() < n_cpu as usize {
+        let id = (0..devices)
+            .filter(|&i| quotas[i] < counts[i])
+            .min_by(|&a, &b| {
+                (quotas[a] as f32 + 1.0 - wanted[a])
+                    .total_cmp(&(quotas[b] as f32 + 1.0 - wanted[b]))
+                    .then_with(|| a.cmp(&b))
+            })
+            .unwrap();
+        quotas[id] += 1;
+    }
+    let mut cpu = BTreeSet::new();
+    for layer in (0..homes.len()).rev() {
+        let id = homes[layer];
+        if quotas[id] > 0 {
+            quotas[id] -= 1;
+            cpu.insert(layer as u32);
+        }
+    }
+    cpu
+}
+
+fn replay_ik_homes(
+    assignment: &IkAssignment,
+    cache: &[u64],
+    scratch: u64,
+    split: &[u32],
+) -> Vec<usize> {
+    let n = assignment.layer_weights.len();
+    let mut sizes: Vec<_> = assignment
+        .layer_weights
+        .iter()
+        .zip(cache)
+        .map(|(&w, &kv)| (w + kv) as f64)
+        .collect();
+    sizes
+        .push((assignment.output_weights + assignment.logits_bytes.saturating_sub(scratch)) as f64);
+    let total = sizes.iter().sum::<f64>() + scratch as f64 * split.len() as f64;
+    let mut cumulative = 0.0f32;
+    let points: Vec<_> = split
+        .iter()
+        .map(|&s| {
+            cumulative += s as f32;
+            cumulative
+        })
+        .collect();
+    let mut loaded = 0.0f32;
+    let mut last = 0;
+    let mut homes = vec![split.len() - 1; n + 1];
+    for (id, point) in points.iter().enumerate() {
+        loaded = (f64::from(loaded) + scratch as f64) as f32;
+        let target = (f64::from(*point / cumulative) * total) as f32;
+        while last < sizes.len() {
+            let next = f64::from(loaded) + sizes[last];
+            if next <= f64::from(target) {
+                homes[last] = id;
+                loaded = next as f32;
+                last += 1;
+            } else {
+                if next - f64::from(target) < f64::from(target - loaded) {
+                    homes[last] = id;
+                    loaded = next as f32;
+                    last += 1;
+                }
+                break;
+            }
+        }
+    }
+    homes.truncate(n);
+    homes
+}
+
+#[test]
+fn experts_ik_single_gpu_offloads_trailing_expert_layers() {
+    let mut e = moe_estimate(6, 100, 200);
+    let tensors = e.layout.expert_tensors.as_mut().unwrap();
+    for t in tensors.iter_mut().filter(|t| t.layer >= 4) {
+        t.bytes *= 2;
+    }
+    let per_layer = e.layout.per_layer_bytes.as_mut().unwrap();
+    for bytes in &mut per_layer[4..] {
+        *bytes += 600 * MIB;
+    }
+    let mut svc = moe_svc(OffloadMode::Layers(2));
+    svc.ik_llama = true;
+    let packed = pack(&e, &svc, &snapshot(&[24]), &AllocationTable::new()).unwrap();
+    assert_eq!(packed.expert_offload_bytes, 2400 * MIB);
+}
 
 #[test]
 fn expert_offload_auto_spills_surplus_experts_to_cpu() {
@@ -60,7 +459,7 @@ fn expert_offload_auto_no_offload_when_everything_fits() {
     let alloc = AllocationTable::new();
     let packed = pack(&e, &moe_svc(OffloadMode::Auto), &snap, &alloc).unwrap();
 
-    assert_eq!(packed.args.ngl, Some(10));
+    assert_eq!(packed.args.ngl, Some(NGL_OFFLOAD_ALL));
     assert_eq!(packed.expert_offload_bytes, 0);
     assert_eq!(packed.expert_offload_layers, 0);
     assert!(cpu_bytes(&packed) == 0);
@@ -243,7 +642,7 @@ fn expert_offload_auto_prefers_second_gpu() {
     let alloc = AllocationTable::new();
     let packed = pack(&e, &moe_svc(OffloadMode::Auto), &snap, &alloc).unwrap();
 
-    assert_eq!(packed.args.ngl, Some(20));
+    assert_eq!(packed.args.ngl, Some(NGL_OFFLOAD_ALL));
     assert_eq!(
         packed.args.n_cpu_moe, None,
         "nothing offloaded → no --n-cpu-moe"
